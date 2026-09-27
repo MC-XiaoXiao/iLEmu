@@ -152,6 +152,20 @@ struct XnuThreadSchedulingInfo {
     bool depressed { };
 };
 
+enum class XnuThreadSuspension : std::uint8_t { User, Process, Preparation };
+
+// Query-only snapshot; time conversion stays outside scheduling hot paths.
+struct XnuThreadStatistics {
+    XnuThreadSchedulingInfo scheduling;
+    std::uint64_t user_ticks { };
+    std::uint64_t scheduler_tick_ticks { };
+    std::uint64_t quantum_ticks { };
+    std::uint32_t ticks_per_second { };
+    std::uint32_t suspend_count { };
+    std::uint32_t user_suspend_count { };
+    bool uninterruptible { };
+};
+
 // A deterministic implementation of XNU's traditional processor-set run
 // queue. It preserves FIFO order at each of the 128 priorities. A thread keeps
 // the head position while its first timeslice remains; equal-priority threads
@@ -186,8 +200,10 @@ public:
     // wake without treating it as a failed wake.
     XnuThreadWakeResult wake_thread(XnuThreadId thread);
     bool block(XnuThreadId thread);
-    bool suspend_thread(XnuThreadId thread);
-    bool resume_thread(XnuThreadId thread);
+    bool suspend_thread(XnuThreadId thread,
+        XnuThreadSuspension reason = XnuThreadSuspension::User);
+    bool resume_thread(XnuThreadId thread,
+        XnuThreadSuspension reason = XnuThreadSuspension::User);
     bool set_base_priority(XnuThreadId thread, std::int32_t priority);
     bool set_qos_override_priority(
         XnuThreadId thread, std::optional<std::int32_t> priority);
@@ -229,6 +245,8 @@ public:
     [[nodiscard]] bool contains(XnuThreadId thread) const;
     [[nodiscard]] std::optional<XnuThreadSchedulingInfo> info(
         XnuThreadId thread) const;
+    [[nodiscard]] std::optional<XnuThreadStatistics> statistics(
+        XnuThreadId thread, std::uint64_t pending_ticks = 0) const;
     [[nodiscard]] std::size_t thread_count() const { return threads_.size(); }
     [[nodiscard]] std::size_t processor_count() const
     {
@@ -311,6 +329,8 @@ private:
         std::optional<std::size_t> queued_processor;
         std::optional<std::uint64_t> depression_deadline;
         std::uint32_t suspend_count { };
+        std::array<std::uint32_t, 3> suspension_counts { };
+        std::uint64_t user_ticks { };
         bool resume_runnable { };
         bool wake_pending { };
         std::int32_t failsafe_saved_base_priority { };
@@ -375,6 +395,7 @@ private:
     std::size_t active_timeshare_count_ { };
     std::uint64_t quantum_ticks_ { };
     std::uint64_t scheduler_tick_ticks_ { };
+    std::uint32_t guest_ticks_per_second_ { };
     std::uint64_t minimum_realtime_computation_ticks_ { };
     std::uint64_t maximum_realtime_computation_ticks_ { };
     std::uint32_t priority_usage_shift_ { };

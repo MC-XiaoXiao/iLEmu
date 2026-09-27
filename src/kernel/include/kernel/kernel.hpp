@@ -120,6 +120,8 @@ public:
         std::function<XnuThreadWakeResult(std::uint32_t, std::uint32_t)>;
     using ThreadSchedulingStateQuery = std::function<std::optional<XnuThreadState>(
         std::uint32_t, std::uint32_t)>;
+    using ThreadStatisticsQuery = std::function<std::optional<XnuThreadStatistics>(
+        std::uint32_t, std::uint32_t)>;
     using MachMessageWakeHandler =
         std::function<XnuThreadWakeResult(std::uint32_t, std::uint32_t)>;
     using ForkHandler = std::function<std::optional<std::uint32_t>(Cpu&)>;
@@ -236,6 +238,17 @@ public:
     void set_thread_scheduling_state_query(ThreadSchedulingStateQuery query)
     {
         thread_scheduling_state_query_ = std::move(query);
+    }
+    void set_thread_statistics_query(ThreadStatisticsQuery query)
+    {
+        thread_statistics_query_ = std::move(query);
+    }
+    [[nodiscard]] bool thread_wait_uninterruptible(std::size_t processor) const
+    {
+        return pending_file_syncs_.contains(processor) ||
+               pending_file_renames_.contains(processor) ||
+               pending_filesystem_dispatches_.contains(processor) ||
+               pending_file_mappings_.contains(processor);
     }
     void set_mach_message_wake_handler(MachMessageWakeHandler handler)
     {
@@ -1024,6 +1037,7 @@ private:
     ProcessSocketsShutdownHandler process_sockets_shutdown_handler_;
     ThreadWakeHandler thread_wake_handler_;
     ThreadSchedulingStateQuery thread_scheduling_state_query_;
+    ThreadStatisticsQuery thread_statistics_query_;
     MachMessageWakeHandler mach_message_wake_handler_;
     ForkHandler fork_handler_;
     SpawnCreateHandler spawn_create_handler_;

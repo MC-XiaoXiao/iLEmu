@@ -21,6 +21,10 @@ constexpr std::size_t basic_word_count = 10;
 
 constexpr std::uint32_t sched_timeshare_flavor = 10;
 constexpr std::size_t sched_timeshare_word_count = 5;
+constexpr std::uint32_t sched_fifo_flavor = 11;
+constexpr std::size_t sched_fifo_word_count = 4;
+constexpr std::uint32_t sched_rr_flavor = 12;
+constexpr std::size_t sched_rr_word_count = 5;
 constexpr std::size_t timeshare_max_priority_index = 0;
 constexpr std::size_t timeshare_base_priority_index = 1;
 constexpr std::size_t timeshare_current_priority_index = 2;
@@ -28,6 +32,12 @@ constexpr std::size_t timeshare_depressed_index = 3;
 constexpr std::size_t timeshare_depress_priority_index = 4;
 
 constexpr std::uint32_t standard_policy = 1;
+constexpr std::uint32_t round_robin_policy = 2;
+constexpr std::uint32_t running_state = 1;
+constexpr std::uint32_t stopped_state = 2;
 constexpr std::uint32_t waiting_state = 3;
+constexpr std::uint32_t uninterruptible_state = 4;
+constexpr std::uint32_t usage_scale = 1000;
+constexpr std::uint32_t invalid_policy = 28;
 
 } // namespace ilemu::darwin::mach::thread_info

@@ -53,6 +53,10 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
     }
 
     std::uint32_t kernel_result = darwin::mach::invalid_argument;
+    // thread_resume only releases user_stop_count. A valid thread with no
+    // user suspension returns KERN_FAILURE, even when held by its task.
+    if (resumes && target)
+        kernel_result = darwin::mach::failure;
     if ((suspends || resumes) && target && thread_runnable_handler_ &&
         thread_runnable_handler_(target->first, target->second, resumes)) {
         kernel_result = darwin::mach::success;

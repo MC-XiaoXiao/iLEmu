@@ -1447,6 +1447,7 @@ void EmulatorSession::run()
     // A captured deferred SVC has entered the kernel even before its serial
     // dispatch. Track the uncommitted suffix without per-slice allocation.
     std::span<const PreparedGuestSlice> pending_kernel_entries;
+    std::optional<std::pair<XnuThreadId, std::uint64_t>> active_thread_accounting;
     std::function<void(Runtime&)> configure_runtime;
     configure_runtime = [&](Runtime& runtime) {
         auto* runtime_ptr = &runtime;
@@ -1660,6 +1661,30 @@ void EmulatorSession::run()
                 std::uint32_t slot) -> std::optional<XnuThreadState> {
                 const auto info = scheduler.info(XnuThreadId { pid, slot });
                 return info ? std::optional { info->state } : std::nullopt;
+            });
+        runtime.kernel->set_thread_statistics_query(
+            [&runtime_index, &scheduler, &pending_kernel_entries,
+                &active_thread_accounting](std::uint32_t pid, std::uint32_t slot) {
+                const XnuThreadId thread { pid, slot };
+                std::uint64_t pending_ticks = 0;
+                if (active_thread_accounting &&
+                    active_thread_accounting->first == thread) {
+                    pending_ticks = active_thread_accounting->second;
+                } else {
+                    for (const auto& entry : pending_kernel_entries) {
+                        if (entry.scheduled.thread == thread) {
+                            pending_ticks = entry.execution.result.ticks_consumed;
+                            break;
+                        }
+                    }
+                }
+                auto result = scheduler.statistics(thread, pending_ticks);
+                if (result) {
+                    if (auto* target = runtime_index.find(pid))
+                        result->uninterruptible =
+                            target->kernel->thread_wait_uninterruptible(slot);
+                }
+                return result;
             });
         runtime.kernel->set_mach_message_wake_handler(
             [&runtime_index, &scheduler](
@@ -1888,7 +1913,8 @@ void EmulatorSession::run()
                     const auto initial_thread = XnuThreadId { child_pid, 0 };
                     const auto held_for_prepare =
                         start_suspended ||
-                        scheduler.suspend_thread(initial_thread);
+                        scheduler.suspend_thread(
+                            initial_thread, XnuThreadSuspension::Preparation);
                     if (held_for_prepare) {
                         child_runtime
                             ->execution_prepare_task = host_resources.submit(
@@ -1911,7 +1937,8 @@ void EmulatorSession::run()
                             transition_destination && !start_suspended);
                     } else if (held_for_prepare && !start_suspended) {
                         static_cast<void>(
-                            scheduler.resume_thread(initial_thread));
+                            scheduler.resume_thread(
+                                initial_thread, XnuThreadSuspension::Preparation));
                     }
                 }
                 if (start_suspended) {
@@ -3247,7 +3274,8 @@ void EmulatorSession::run()
                     runtime->activation_release_deadline.reset();
                 }
                 static_cast<void>(scheduler.resume_thread(
-                    XnuThreadId { runtime->kernel->process().pid, 0 }));
+                    XnuThreadId { runtime->kernel->process().pid, 0 },
+                    XnuThreadSuspension::Preparation));
             }
             runtime->resume_after_execution_prepare = false;
         }
@@ -3868,7 +3896,10 @@ void EmulatorSession::run()
                 result.host_execution_ns, prepared.deferred_svc,
                 result.translated_code);
             if (prepared.deferred_svc && result.svc) {
+                active_thread_accounting = std::pair {
+                    scheduled->thread, result.ticks_consumed };
                 runtime.kernel->dispatch(cpu, *result.svc);
+                active_thread_accounting.reset();
                 // UserDefined2 is shared by deferred SVC and host cooperation.
                 // The explicit host-only marker remains attached to the result;
                 // only the reason explicitly requested by the serial kernel

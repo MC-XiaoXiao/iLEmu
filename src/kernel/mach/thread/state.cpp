@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "../support.hpp"
+#include "information.hpp"
 
 namespace ilemu {
 namespace {
@@ -90,27 +91,28 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
         }
 
         const auto requested_word_count =
-            flavor && *flavor == darwin::mach::thread_info::basic_flavor
-                ? darwin::mach::thread_info::basic_word_count
-            : flavor &&
-                    *flavor == darwin::mach::thread_info::sched_timeshare_flavor
-                ? darwin::mach::thread_info::sched_timeshare_word_count
-                : 0U;
-        if (!flavor || !capacity || !target_owner ||
-            requested_word_count == 0U || *capacity < requested_word_count) {
+            flavor ? ThreadInformation::word_count(*flavor) : 0U;
+        std::optional<XnuThreadStatistics> statistics;
+        if (flavor && capacity && target_owner && requested_word_count != 0U &&
+            *capacity >= requested_word_count && thread_statistics_query_)
+            statistics = thread_statistics_query_(target_owner->first, target_owner->second);
+        const auto kernel_result = statistics
+                                       ? ThreadInformation { *statistics }.result(*flavor)
+                                       : kernel_invalid_argument;
+        if (kernel_result != 0) {
             const std::array<std::uint32_t,
                 simple_reply_size / sizeof(std::uint32_t)>
                 reply { darwin::mig_wire::message_bits(
                             darwin::mig_wire::disposition_move_send_once),
                     simple_reply_size, request.local_port, 0, 0,
-                    request.identifier + 100, 0, 1, kernel_invalid_argument };
+                    request.identifier + 100, 0, 1, kernel_result };
             registers[0] = write_words(memory_, request.address, reply)
                                ? mach_message_success
                                : mach_receive_invalid_data;
             output_.write(
                 "[mach] thread_info caller=" + std::to_string(process_.pid) +
                 " flavor=" + std::to_string(flavor.value_or(0)) + " capacity=" +
-                std::to_string(capacity.value_or(0)) + " result=4\n");
+                std::to_string(capacity.value_or(0)) + " result=" + std::to_string(kernel_result) + "\n");
             return true;
         }
 
@@ -134,42 +136,10 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
             mach_message_success,
             static_cast<std::uint32_t>(requested_word_count),
         };
-        if (*flavor == darwin::mach::thread_info::basic_flavor) {
-            const std::array<std::uint32_t,
-                darwin::mach::thread_info::basic_word_count>
-                basic_info {
-                    0, // user_time.seconds
-                    0, // user_time.microseconds
-                    0, // system_time.seconds
-                    0, // system_time.microseconds
-                    0, // cpu_usage
-                    darwin::mach::thread_info::standard_policy,
-                    darwin::mach::thread_info::waiting_state,
-                    0, // flags
-                    0, // suspend_count
-                    0, // sleep_time
-                };
-            reply.insert(reply.end(), basic_info.begin(), basic_info.end());
-        } else {
-            const auto priority = static_cast<std::uint32_t>(
-                target_owner->first == process_.pid
-                    ? std::clamp(process_.thread_base_priority,
-                          xnu::scheduler::minimum_priority,
-                          xnu::scheduler::maximum_user_priority)
-                    : xnu::scheduler::default_base_priority);
-            const std::array<std::uint32_t,
-                darwin::mach::thread_info::sched_timeshare_word_count>
-                timeshare_info {
-                    static_cast<std::uint32_t>(
-                        xnu::scheduler::maximum_user_priority),
-                    priority,
-                    priority,
-                    0, // depressed
-                    priority,
-                };
-            reply.insert(
-                reply.end(), timeshare_info.begin(), timeshare_info.end());
-        }
+        reply.resize(state_reply_prefix_size / sizeof(std::uint32_t) +
+                     requested_word_count);
+        ThreadInformation { *statistics }.write(*flavor,
+            std::span { reply }.subspan(state_reply_prefix_size / sizeof(std::uint32_t)));
         registers[0] = write_words(memory_, request.address, reply)
                            ? mach_message_success
                            : mach_receive_invalid_data;

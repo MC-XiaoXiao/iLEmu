@@ -44,6 +44,7 @@ XnuScheduler::XnuScheduler(std::uint64_t quantum_ticks,
     : processor_run_queues_(processor_count)
     , quantum_ticks_ { quantum_ticks }
     , scheduler_tick_ticks_ { scheduler_tick_ticks }
+    , guest_ticks_per_second_ { guest_ticks_per_second }
     , minimum_realtime_computation_ticks_ { std::max<std::uint64_t>(1,
           static_cast<std::uint64_t>(guest_ticks_per_second) * 50 /
               xnu::scheduler::microseconds_per_second) }
@@ -282,7 +283,7 @@ std::size_t XnuScheduler::suspend_process(std::uint32_t process)
     };
     std::size_t changed = 0;
     for (const auto thread : process_threads) {
-        if (suspend_thread(thread))
+        if (suspend_thread(thread, XnuThreadSuspension::Process))
             ++changed;
     }
     return changed;
@@ -299,7 +300,7 @@ std::size_t XnuScheduler::resume_process(std::uint32_t process)
     };
     std::size_t changed = 0;
     for (const auto thread : process_threads) {
-        if (resume_thread(thread))
+        if (resume_thread(thread, XnuThreadSuspension::Process))
             ++changed;
     }
     return changed;
@@ -354,7 +355,7 @@ bool XnuScheduler::block(XnuThreadId thread)
     return true;
 }
 
-bool XnuScheduler::suspend_thread(XnuThreadId thread)
+bool XnuScheduler::suspend_thread(XnuThreadId thread, XnuThreadSuspension reason)
 {
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end() ||
@@ -364,6 +365,7 @@ bool XnuScheduler::suspend_thread(XnuThreadId thread)
     }
 
     auto& record = iterator->second;
+    ++record.suspension_counts[static_cast<std::size_t>(reason)];
     if (record.suspend_count++ != 0)
         return true;
     record.resume_runnable = record.info.state == XnuThreadState::Runnable ||
@@ -381,13 +383,15 @@ bool XnuScheduler::suspend_thread(XnuThreadId thread)
     return true;
 }
 
-bool XnuScheduler::resume_thread(XnuThreadId thread)
+bool XnuScheduler::resume_thread(XnuThreadId thread, XnuThreadSuspension reason)
 {
     const auto iterator = threads_.find(thread);
-    if (iterator == threads_.end() || iterator->second.suspend_count == 0)
+    if (iterator == threads_.end() ||
+        iterator->second.suspension_counts[static_cast<std::size_t>(reason)] == 0)
         return false;
 
     auto& record = iterator->second;
+    --record.suspension_counts[static_cast<std::size_t>(reason)];
     --record.suspend_count;
     if (record.suspend_count != 0 || !record.resume_runnable)
         return true;
@@ -707,6 +711,7 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
     }
     record.info.cpu_usage =
         saturating_add(record.info.cpu_usage, consumed_ticks);
+    record.user_ticks = saturating_add(record.user_ticks, consumed_ticks);
     record.info.remaining_quantum -=
         std::min(record.info.remaining_quantum, consumed_ticks);
     if (!record.info.timeshare) {
@@ -823,6 +828,23 @@ std::optional<XnuThreadSchedulingInfo> XnuScheduler::info(
     if (iterator == threads_.end())
         return std::nullopt;
     return iterator->second.info;
+}
+
+std::optional<XnuThreadStatistics> XnuScheduler::statistics(
+    XnuThreadId thread, std::uint64_t pending_ticks) const
+{
+    const auto iterator = threads_.find(thread);
+    if (iterator == threads_.end())
+        return std::nullopt;
+    const auto& record = iterator->second;
+    XnuThreadStatistics result { record.info,
+        saturating_add(record.user_ticks, pending_ticks),
+        scheduler_tick_ticks_, quantum_ticks_, guest_ticks_per_second_,
+        record.suspend_count,
+        record.suspension_counts[static_cast<std::size_t>(XnuThreadSuspension::User)] };
+    result.scheduling.cpu_usage =
+        saturating_add(result.scheduling.cpu_usage, pending_ticks);
+    return result;
 }
 
 std::size_t XnuScheduler::waiting_count() const { return waiting_count_; }
