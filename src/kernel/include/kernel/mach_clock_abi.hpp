@@ -30,8 +30,9 @@ constexpr std::uint32_t alarm_current_resolution_flavor = 3;
 constexpr std::uint32_t alarm_minimum_resolution_flavor = 4;
 constexpr std::uint32_t alarm_maximum_resolution_flavor = 5;
 constexpr std::uint32_t attribute_word_count = 1;
-// VirtualClock advances in deterministic nanoseconds; ordinary execution
-// samples it in one-microsecond quanta.
-constexpr std::uint32_t virtual_resolution_nanoseconds = 1'000;
+// The legacy clock attribute interface reports a 100 Hz resolution in
+// XNU's common clock_oldops backend (and the earlier PPC clock backend).
+// This is independent of the counter and alarm deadline granularity.
+constexpr std::uint32_t legacy_resolution_nanoseconds = 10'000'000;
 
 } // namespace ilemu::darwin::mach::clock

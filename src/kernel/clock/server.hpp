@@ -77,8 +77,14 @@ public:
                 payload[2] = darwin::mach::invalid_value;
             } else {
                 payload[3] = darwin::mach::clock::attribute_word_count;
+                // Calendar clocks expose time but have no alarm operation.
+                // Keep this capability report consistent with clock_alarm.
                 payload[4] =
-                    darwin::mach::clock::virtual_resolution_nanoseconds;
+                    clock == darwin::mach::clock::calendar_clock_id &&
+                            flavor !=
+                                darwin::mach::clock::get_time_resolution_flavor
+                        ? 0U
+                        : darwin::mach::clock::legacy_resolution_nanoseconds;
             }
         }
         return payload;
