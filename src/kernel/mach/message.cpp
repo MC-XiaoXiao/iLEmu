@@ -518,6 +518,19 @@ void CompatibilityKernel::dispatch_mach_message(
             registers[0] = darwin::mach_message::send_invalid_data;
             return;
         }
+        // ipc_kmsg_copyin_header permits only Send/SendOnce dispositions in
+        // header slots. Receive rights may move in body descriptors, never
+        // in the reply slot; reject before capturing or consuming any rights.
+        const auto sends_right = [](std::uint32_t disposition) {
+            return disposition >= 17U && disposition <= 21U;
+        };
+        const auto header_reply_disposition = (*bits >> 8U) & 0xffU;
+        if (!sends_right(*bits & 0xffU) ||
+            (header_reply_disposition == 0U ? *local_port != xnu::ipc::null_name
+                                     : !sends_right(header_reply_disposition))) {
+            registers[0] = darwin::mach_message::send_invalid_header;
+            return;
+        }
         std::uint32_t remote_object = 0;
         std::uint32_t remote_owner = 0;
         std::size_t remote_queue_depth = 0;
@@ -823,13 +836,9 @@ void CompatibilityKernel::dispatch_mach_message(
                         reply_object = transfer->object;
                         reply_right = transfer->right;
                     } else {
-                        // The destination is valid, but the reply right is not
-                        // present in the sender's IPC namespace (or its
-                        // disposition is invalid). ipc_kmsg_copyin reports this
-                        // as a send-right error; treating it as an unknown trap
-                        // incorrectly terminates otherwise healthy servers
-                        // which intentionally probe optional rights.
-                        registers[0] = darwin::mach_message::send_invalid_right;
+                        // Header reply rights have a distinct native error
+                        // from invalid port descriptors in the message body.
+                        registers[0] = darwin::mach_message::send_invalid_reply;
                         return;
                     }
                 }

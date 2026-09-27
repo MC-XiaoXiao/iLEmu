@@ -181,6 +181,8 @@ namespace mach_message {
     inline constexpr std::uint32_t type_make_send = 20U;
     inline constexpr std::uint32_t type_make_send_once = 21U;
     inline constexpr std::uint32_t bits_complex = 0x8000'0000U;
+    inline constexpr std::uint32_t send_invalid_header = 0x1000'0010U;
+    inline constexpr std::uint32_t send_invalid_reply = 0x1000'0009U;
     inline constexpr std::uint32_t send_invalid_right = 0x1000'000AU;
     inline constexpr std::uint32_t send_invalid_data = 0x1000'0002U;
     inline constexpr std::uint32_t send_message_too_small = 0x1000'0008U;
