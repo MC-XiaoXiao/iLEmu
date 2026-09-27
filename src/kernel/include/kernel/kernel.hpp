@@ -139,8 +139,8 @@ public:
     using SchedulerRunnableQuery = std::function<bool(std::size_t)>;
     using LegacyThreadPolicyHandler =
         std::function<bool(std::size_t, std::uint32_t, std::int32_t, bool)>;
-    using ThreadPolicyHandler = std::function<bool(
-        std::size_t, std::uint32_t, std::span<const std::uint32_t>)>;
+    using ThreadPolicyHandler = std::function<bool(std::uint32_t,
+        std::uint32_t, std::uint32_t, std::span<const std::uint32_t>)>;
     using ThreadQosOverrideHandler =
         std::function<bool(std::size_t, std::optional<std::int32_t>)>;
     using TaskPriorityHandler = std::function<void(std::int32_t)>;

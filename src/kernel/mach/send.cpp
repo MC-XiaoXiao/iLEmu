@@ -38,6 +38,7 @@
 
 #include "host/service_ports.hpp"
 #include "task/lifecycle.hpp"
+#include "thread/policy.hpp"
 #include "transport/copyin_cleanup.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/port_copyin.hpp"
@@ -241,6 +242,9 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
         const auto destination = task_mig::Lifecycle::handles(message_id)
             ? task_mig::Lifecycle::dispatch_locked(*shared_state_, process_.pid,
                   remote_object, queued, task_suspended)
+            : thread_mig::Policy::handles(message_id)
+            ? thread_mig::Policy::dispatch_locked(*shared_state_, remote_object, queued,
+                  thread_policy_handler_, thread_statistics_query_)
             : host_mig::ServicePorts::dispatch_locked(*shared_state_, remote_object, queued);
         remote_object = destination.value_or(0U);
     } else if (clock_service) {

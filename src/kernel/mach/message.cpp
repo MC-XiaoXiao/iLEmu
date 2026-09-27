@@ -38,6 +38,7 @@
 
 #include "host/service_ports.hpp"
 #include "task/lifecycle.hpp"
+#include "thread/policy.hpp"
 #include "transport/port_copyin.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/copyin_cleanup.hpp"
@@ -170,7 +171,9 @@ void CompatibilityKernel::dispatch_mach_message(
         }
     }
     const bool task_service_request = task_mig::Lifecycle::handles(*message_id);
-    if (!separate_receive && !clock_service_request && !host_service_request && !task_service_request) {
+    const bool thread_policy_request = thread_mig::Policy::handles(*message_id);
+    if (!separate_receive && !clock_service_request && !host_service_request &&
+        !task_service_request && !thread_policy_request) {
         const MachMessageRequest request { message_address, *bits, *remote_port,
             *local_port, *message_id };
         if (dispatch_mach_host_message(cpu, request) ||
@@ -561,7 +564,7 @@ void CompatibilityKernel::dispatch_mach_message(
                     ? kernel_clock::Server::identify(*destination_object, *message_id)
                     : std::nullopt;
             const auto kernel_service = destination_port &&
-                destination_port->kernel_owned && (host_service_request || task_service_request);
+                destination_port->kernel_owned && (host_service_request || task_service_request || thread_policy_request);
             if (destination_port && destination_port->kernel_owned &&
                 !clock_service && !kernel_service) {
                 if (separate_receive) {

@@ -2026,7 +2026,7 @@ void EmulatorSession::run()
                     processor < runtime_ptr->allocated.size(); ++processor) {
                     if (!runtime_ptr->allocated[processor])
                         continue;
-                    static_cast<void>(scheduler.set_base_priority(
+                    static_cast<void>(scheduler.set_task_priority(
                         XnuThreadId { runtime_ptr->kernel->process().pid,
                             static_cast<std::uint32_t>(processor) },
                         priority));
@@ -2044,7 +2044,9 @@ void EmulatorSession::run()
                     return false;
                 }
                 return scheduler.set_timeshare(thread, timeshare) &&
-                       scheduler.set_base_priority(thread, base_priority);
+                       scheduler.set_precedence(thread,
+                           runtime_ptr->kernel->process().thread_base_priority,
+                           base_priority - runtime_ptr->kernel->process().thread_base_priority);
             });
         runtime.kernel->set_thread_qos_override_handler(
             [runtime_ptr, &scheduler](std::size_t processor,
@@ -2054,42 +2056,37 @@ void EmulatorSession::run()
                         static_cast<std::uint32_t>(processor) }, priority);
             });
         runtime.kernel->set_thread_policy_handler(
-            [runtime_ptr, &scheduler, guest_ticks_per_second](
-                std::size_t processor, std::uint32_t flavor,
+            [runtime_ptr, &runtime_index, &scheduler, guest_ticks_per_second,
+                timeshare_abi = darwin_abi.thread_timeshare](
+                std::uint32_t pid, std::uint32_t processor, std::uint32_t flavor,
                 std::span<const std::uint32_t> policy) {
                 using namespace darwin::mach::thread_policy;
-                const XnuThreadId thread { runtime_ptr->kernel->process().pid,
-                    static_cast<std::uint32_t>(processor) };
-                if (flavor == extended_policy &&
-                    policy.size() >= extended_policy_word_count) {
-                    return scheduler.set_timeshare(thread, policy[0] != 0);
+                const auto* target = runtime_index.find(pid);
+                if (!target)
+                    return false;
+                const XnuThreadId thread { pid, processor };
+                if (flavor == extended_policy) {
+                    const auto timeshare = policy.empty() ||
+                        (timeshare_abi == DarwinThreadTimeshareAbi::CanonicalBoolean
+                                ? policy[0] == 1U : policy[0] != 0U);
+                    return scheduler.set_timeshare(thread, timeshare);
                 }
                 if (flavor == time_constraint_policy &&
                     policy.size() >= time_constraint_policy_word_count) {
                     scheduler.set_realtime_clock_ticks(duration_to_guest_ticks(
                         runtime_ptr->kernel->current_absolute_time(),
-                        darwin::mach::thread_policy::
-                            absolute_time_units_per_second,
-                        guest_ticks_per_second));
-                    const auto to_scheduler_ticks = [guest_ticks_per_second](
-                                                        std::uint32_t value) {
-                        return duration_to_guest_ticks(value,
-                            absolute_time_units_per_second,
-                            guest_ticks_per_second);
-                    };
-                    return scheduler.set_realtime(thread,
-                        to_scheduler_ticks(policy[realtime_period_index]),
-                        to_scheduler_ticks(policy[realtime_computation_index]),
-                        to_scheduler_ticks(policy[realtime_constraint_index]),
-                        policy[realtime_preemptible_index] != 0);
+                        absolute_time_units_per_second, guest_ticks_per_second));
+                    return scheduler.set_realtime_policy(thread, {
+                        policy[realtime_period_index],
+                        policy[realtime_computation_index],
+                        policy[realtime_constraint_index],
+                        policy[realtime_preemptible_index] });
                 }
                 if (flavor == precedence_policy &&
                     policy.size() >= precedence_policy_word_count) {
-                    const auto importance = std::bit_cast<std::int32_t>(
-                        policy[precedence_importance_index]);
-                    return scheduler.set_base_priority(thread,
-                        runtime_ptr->kernel->process().thread_base_priority +
-                            importance);
+                    return scheduler.set_precedence(thread,
+                        target->kernel->process().thread_base_priority,
+                        std::bit_cast<std::int32_t>(policy[precedence_importance_index]));
                 }
                 return false;
             });

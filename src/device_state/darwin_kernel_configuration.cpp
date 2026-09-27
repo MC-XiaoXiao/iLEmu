@@ -80,6 +80,7 @@ namespace {
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
         .task_suspension = DarwinTaskSuspensionAbi::ResumePortTokens,
+        .thread_timeshare = DarwinThreadTimeshareAbi::CanonicalBoolean,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,

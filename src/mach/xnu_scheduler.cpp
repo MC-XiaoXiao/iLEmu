@@ -426,6 +426,33 @@ bool XnuScheduler::set_base_priority(XnuThreadId thread, std::int32_t priority)
     return true;
 }
 
+bool XnuScheduler::set_precedence(XnuThreadId thread,
+    std::int32_t task_priority, std::int32_t importance)
+{
+    const auto iterator = threads_.find(thread);
+    if (iterator == threads_.end())
+        return false;
+    auto& record = iterator->second;
+    record.importance = importance;
+    const auto priority = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+        static_cast<std::int64_t>(task_priority) + std::clamp(importance,
+            -xnu::scheduler::maximum_priority, xnu::scheduler::maximum_priority),
+        xnu::scheduler::minimum_priority, xnu::scheduler::maximum_user_priority));
+    if (record.info.failsafe) {
+        record.failsafe_saved_base_priority = priority;
+        if (record.failsafe_saved_realtime)
+            return true;
+    }
+    return set_base_priority(thread, priority);
+}
+
+bool XnuScheduler::set_task_priority(XnuThreadId thread, std::int32_t priority)
+{
+    const auto iterator = threads_.find(thread);
+    return iterator != threads_.end() &&
+           set_precedence(thread, priority, iterator->second.importance);
+}
+
 bool XnuScheduler::set_qos_override_priority(
     XnuThreadId thread, std::optional<std::int32_t> priority)
 {
@@ -494,6 +521,11 @@ bool XnuScheduler::set_timeshare(XnuThreadId thread, bool timeshare)
     if (iterator == threads_.end())
         return false;
     auto& record = iterator->second;
+    if (record.info.failsafe) {
+        record.failsafe_saved_realtime = false;
+        record.failsafe_saved_timeshare = timeshare;
+        return true;
+    }
     if (!record.info.realtime && record.info.timeshare == timeshare)
         return true;
     const auto was_timeshare = record.info.timeshare;
@@ -525,6 +557,17 @@ bool XnuScheduler::set_realtime(XnuThreadId thread, std::uint64_t period_ticks,
     if (iterator == threads_.end())
         return false;
     auto& record = iterator->second;
+    if (record.info.failsafe) {
+        record.failsafe_saved_realtime = true;
+        record.failsafe_saved_timeshare = false;
+        record.info.realtime_preemptible = preemptible;
+        record.info.realtime_period = period_ticks;
+        record.info.realtime_computation = computation_ticks;
+        record.info.realtime_constraint = constraint_ticks;
+        record.info.realtime_deadline =
+            saturating_add(realtime_clock_ticks_, constraint_ticks);
+        return true;
+    }
     const auto was_timeshare = record.info.timeshare;
     // A queued RT thread can change its deadline without changing priority.
     // Remove its old ordering key before updating either field.
@@ -546,6 +589,23 @@ bool XnuScheduler::set_realtime(XnuThreadId thread, std::uint64_t period_ticks,
     recompute_priority(thread, record);
     if (was_queued)
         enqueue(thread, QueuePosition::Back);
+    return true;
+}
+
+bool XnuScheduler::set_realtime_policy(XnuThreadId thread, XnuRealtimePolicy policy)
+{
+    // XNU validates absolute-time values before execution-clock conversion.
+    if (policy.constraint < policy.computation ||
+        policy.computation < 50'000U || policy.computation > 50'000'000U)
+        return false;
+    const auto ticks = [this](std::uint32_t value) {
+        return static_cast<std::uint64_t>(value) * guest_ticks_per_second_ /
+               1'000'000'000U;
+    };
+    if (!set_realtime(thread, ticks(policy.period), ticks(policy.computation),
+            ticks(policy.constraint), policy.preemptible != 0))
+        return false;
+    threads_.at(thread).realtime_policy = policy;
     return true;
 }
 
@@ -855,6 +915,9 @@ std::optional<XnuThreadStatistics> XnuScheduler::statistics(
         scheduler_tick_ticks_, quantum_ticks_, guest_ticks_per_second_,
         record.suspend_count,
         record.suspension_counts[static_cast<std::size_t>(XnuThreadSuspension::User)] };
+    result.policy = { record.importance, record.realtime_policy,
+        record.info.failsafe ? record.failsafe_saved_timeshare : record.info.timeshare,
+        record.info.failsafe ? record.failsafe_saved_realtime : record.info.realtime };
     result.scheduling.cpu_usage =
         saturating_add(result.scheduling.cpu_usage, pending_ticks);
     return result;

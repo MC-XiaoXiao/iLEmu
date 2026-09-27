@@ -230,12 +230,18 @@ enum class DarwinTaskSuspensionAbi : std::uint8_t {
     SharedUserCount, ProtectedPidHold, ResumePortTokens,
 };
 
+// XNU 2782 changes extended-policy mode selection from nonzero to TRUE.
+enum class DarwinThreadTimeshareAbi : std::uint8_t {
+    NonzeroBoolean, CanonicalBoolean,
+};
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
         DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors
     };
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
+    DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers
     };

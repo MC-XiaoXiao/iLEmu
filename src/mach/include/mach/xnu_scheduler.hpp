@@ -154,6 +154,21 @@ struct XnuThreadSchedulingInfo {
 
 enum class XnuThreadSuspension : std::uint8_t { User, Process, Preparation };
 
+// Mach absolute-time values, independent of execution tick rounding.
+struct XnuRealtimePolicy {
+    std::uint32_t period { };
+    std::uint32_t computation { };
+    std::uint32_t constraint { };
+    std::uint32_t preemptible { };
+};
+
+struct XnuThreadPolicyState {
+    std::int32_t importance { };
+    XnuRealtimePolicy realtime;
+    bool timeshare { true };
+    bool realtime_mode { };
+};
+
 // Query-only snapshot; time conversion stays outside scheduling hot paths.
 struct XnuThreadStatistics {
     XnuThreadSchedulingInfo scheduling;
@@ -164,6 +179,7 @@ struct XnuThreadStatistics {
     std::uint32_t suspend_count { };
     std::uint32_t user_suspend_count { };
     bool uninterruptible { };
+    XnuThreadPolicyState policy { };
 };
 
 // A deterministic implementation of XNU's traditional processor-set run
@@ -205,6 +221,9 @@ public:
     bool resume_thread(XnuThreadId thread,
         XnuThreadSuspension reason = XnuThreadSuspension::User);
     bool set_base_priority(XnuThreadId thread, std::int32_t priority);
+    bool set_precedence(XnuThreadId thread, std::int32_t task_priority,
+        std::int32_t importance);
+    bool set_task_priority(XnuThreadId thread, std::int32_t priority);
     bool set_qos_override_priority(
         XnuThreadId thread, std::optional<std::int32_t> priority);
     bool depress(XnuThreadId thread, std::uint64_t duration_ticks = 0);
@@ -213,6 +232,7 @@ public:
     bool set_realtime(XnuThreadId thread, std::uint64_t period_ticks,
         std::uint64_t computation_ticks, std::uint64_t constraint_ticks,
         bool preemptible);
+    bool set_realtime_policy(XnuThreadId thread, XnuRealtimePolicy policy);
     // Realtime policy deadlines are defined from mach_absolute_time(), not
     // from the amount of guest execution that has completed. The interactive
     // host loop updates this converted device-clock value before processing
@@ -315,6 +335,8 @@ private:
 
     struct ThreadRecord {
         XnuThreadSchedulingInfo info;
+        std::int32_t importance { };
+        XnuRealtimePolicy realtime_policy;
         bool queued { };
         // A hold can change visible state before the dispatched slice returns.
         // Its execution must still be accounted exactly once.
