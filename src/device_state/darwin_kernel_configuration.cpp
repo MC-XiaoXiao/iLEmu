@@ -18,6 +18,8 @@ namespace {
 
     constexpr DarwinAbi disk_policy_abi {
         .abi_epoch = DarwinAbiEpoch::IphoneOs2,
+        .mach_descriptor_copyin =
+            DarwinMachDescriptorCopyinAbi::ReverseCompactDescriptors,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidSizedQueries,
         .activation_hardware_model_policy =
             ActivationHardwareModelPolicy::DevelopmentBoard,
@@ -26,6 +28,8 @@ namespace {
 
     constexpr DarwinAbi darwin11_wide_vm_abi {
         .abi_epoch = DarwinAbiEpoch::Darwin11,
+        .mach_descriptor_copyin =
+            DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi =
             DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
@@ -72,6 +76,8 @@ namespace {
 
     constexpr DarwinAbi darwin14_expanded_shared_region_abi {
         .abi_epoch = DarwinAbiEpoch::Later,
+        .mach_descriptor_copyin =
+            DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
@@ -125,6 +131,8 @@ namespace {
             .darwin_release = "9.0.0d1",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::IphoneOs1,
+                .mach_descriptor_copyin =
+                    DarwinMachDescriptorCopyinAbi::ReverseCompactDescriptors,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
                 .capabilities = {
@@ -159,6 +167,8 @@ namespace {
             .darwin_release = "10.3.1",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .mach_descriptor_copyin =
+                    DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
@@ -178,6 +188,8 @@ namespace {
             .darwin_release = "10.3.1",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .mach_descriptor_copyin =
+                    DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
@@ -197,6 +209,8 @@ namespace {
             .darwin_release = "10.4.0",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .mach_descriptor_copyin =
+                    DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1TsdBase,
                 .apple80211_ioctl =
@@ -217,6 +231,8 @@ namespace {
             .darwin_release = "11.0.0",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Darwin11,
+                .mach_descriptor_copyin =
+                    DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi =
                     DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,

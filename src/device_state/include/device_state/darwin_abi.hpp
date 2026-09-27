@@ -217,8 +217,18 @@ struct DarwinGuestCapabilities {
     bool arm_cache_trap_grants_execute { };
 };
 
+// Older kernels compact descriptors backwards; expanded kernel descriptors
+// copy forwards. OOL port-array elements always copy forwards.
+enum class DarwinMachDescriptorCopyinAbi : std::uint8_t {
+    ReverseCompactDescriptors,
+    ForwardExpandedDescriptors,
+};
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
+    DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
+        DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors
+    };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers
     };

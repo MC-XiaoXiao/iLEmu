@@ -38,6 +38,7 @@
 
 #include "host/service_ports.hpp"
 #include "transport/port_copyin.hpp"
+#include "transport/copyin_cleanup.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -817,8 +818,8 @@ void CompatibilityKernel::dispatch_mach_message(
                 std::optional<std::uint32_t> destination_send_object;
                 std::uint32_t reply_disposition = 0;
                 std::uint32_t voucher_disposition = 0;
-                std::vector<KernelSharedState::MachMessage::PortTransfer>
-                    port_transfers;
+                KernelSharedState::MachMessage queued;
+                auto& port_transfers = queued.port_transfers;
                 std::vector<KernelSharedState::MachMessage::PortTransfer>
                     dead_transfers;
                 const mach_transport::PortCopyin copyin {
@@ -870,67 +871,8 @@ void CompatibilityKernel::dispatch_mach_message(
                     }
                 }
 
-                if (routable) {
-                    for (const auto& descriptor : *descriptors) {
-                        if (descriptor.kind ==
-                            mach_transport::DescriptorKind::Port) {
-                            const auto name = descriptor.address_or_name;
-                            if (name == xnu::ipc::null_name ||
-                                name == xnu::ipc::dead_name)
-                                continue;
-                            if (const auto transfer =
-                                    copyin.capture(name, descriptor.disposition(),
-                                        descriptor.offset)) {
-                                if (transfer->right == xnu::ipc::Right::DeadName)
-                                    dead_transfers.push_back(*transfer);
-                                else
-                                    port_transfers.push_back(*transfer);
-                            } else {
-                                registers[0] =
-                                    darwin::mach_message::send_invalid_right;
-                                return;
-                            }
-                            continue;
-                        }
-                        if (descriptor.kind !=
-                            mach_transport::DescriptorKind::OutOfLinePorts) {
-                            continue;
-                        }
-                        for (std::uint32_t element = 0;
-                            element < descriptor.count_or_size; ++element) {
-                            const auto name =
-                                memory_
-                                    .read32(
-                                        descriptor.address_or_name +
-                                        element * darwin::mig_wire::word_size)
-                                    .value_or(0);
-                            if (name == xnu::ipc::null_name ||
-                                name == xnu::ipc::dead_name)
-                                continue;
-                            if (const auto transfer =
-                                    copyin.capture(name, descriptor.disposition(),
-                                        descriptor.offset, element)) {
-                                if (transfer->right == xnu::ipc::Right::DeadName)
-                                    dead_transfers.push_back(*transfer);
-                                else
-                                    port_transfers.push_back(*transfer);
-                            } else {
-                                registers[0] =
-                                    darwin::mach_message::send_invalid_right;
-                                return;
-                            }
-                        }
-                        if (!routable)
-                            break;
-                    }
-                }
-
-                // ipc_kmsg_copyin validates every MOVE right before mutating
-                // the sender's ipc_space. Do the same preflight here. Without
-                // it, a malformed message that repeats one MOVE_SEND/
-                // MOVE_RECEIVE name could consume the first right, fail on the
-                // second, and leave the queue/in-flight bookkeeping
-                // inconsistent even though no message was enqueued.
+                // Destination and reply copyin is atomic. Body rights are
+                // deliberately excluded: native copyin consumes them in order.
                 if (routable) {
                     std::map<std::pair<std::uint32_t, std::uint32_t>,
                         std::uint32_t>
@@ -956,15 +898,6 @@ void CompatibilityKernel::dispatch_mach_message(
                     if (routable && voucher_object &&
                         !count_move(voucher_name, voucher_disposition)) {
                         routable = false;
-                    }
-                    if (routable) {
-                        for (const auto& transfer : port_transfers) {
-                            if (!count_move(transfer.sender_name,
-                                    transfer.disposition)) {
-                                routable = false;
-                                break;
-                            }
-                        }
                     }
                     for (const auto& transfer : dead_transfers) {
                         if (transfer.disposition == 17U ||
@@ -1059,18 +992,6 @@ void CompatibilityKernel::dispatch_mach_message(
                     !consume_transfer(voucher_name, voucher_disposition)) {
                     routable = false;
                 }
-                if (routable) {
-                    for (const auto& transfer : port_transfers) {
-                        if (!consume_transfer(
-                                transfer.sender_name, transfer.disposition)) {
-                            routable = false;
-                            break;
-                        }
-                        if (transfer.right == xnu::ipc::Right::Receive) {
-                            transferred_receive = transfer.object;
-                        }
-                    }
-                }
                 const auto destination_move_disposition = *bits & 0xffU;
                 const auto consumes_destination_right =
                     destination_move_disposition == 17U ||
@@ -1111,14 +1032,85 @@ void CompatibilityKernel::dispatch_mach_message(
                         retain_inflight(*voucher_object, *voucher_right,
                             voucher_disposition);
                     }
-                    for (const auto& transfer : port_transfers) {
-                        retain_inflight(transfer.object, transfer.right,
-                            transfer.disposition);
-                    }
                     if (destination_send_object) {
                         ++shared_state_->mach_inflight_send_rights
                               [*destination_send_object];
                     }
+                    queued.reply_object = reply_object;
+                    queued.reply_right = reply_right;
+                    queued.voucher_object = voucher_object;
+                    queued.voucher_right = voucher_right;
+                    queued.destination_send_object = destination_send_object;
+                    mach_transport::CopyinCleanup cleanup { *shared_state_,
+                        queued, destination_right == xnu::ipc::Right::SendOnce
+                                     ? destination_object : std::nullopt };
+                    const auto copy_port = [&](std::uint32_t name,
+                                               const auto& descriptor,
+                                               std::optional<std::uint32_t> element) {
+                        if (name == xnu::ipc::null_name ||
+                            name == xnu::ipc::dead_name)
+                            return true;
+                        const auto transfer = copyin.capture(name,
+                            descriptor.disposition(), descriptor.offset, element);
+                        if (!transfer)
+                            return false;
+                        if (transfer->right == xnu::ipc::Right::DeadName) {
+                            if (transfer->disposition != 19U &&
+                                modify_port_references_locked(*shared_state_,
+                                    process_.pid, name, xnu::ipc::Right::DeadName, -1) !=
+                                    darwin::mach::success)
+                                return false;
+                            if (element) {
+                                for (auto& array : ool_port_arrays) {
+                                    if (array.descriptor_offset == descriptor.offset) {
+                                        array.dead_elements.push_back(*element);
+                                        break;
+                                    }
+                                }
+                            } else {
+                                write_little_word(*bytes, descriptor.offset,
+                                    xnu::ipc::dead_name);
+                            }
+                            return true;
+                        }
+                        if (!consume_transfer(name, transfer->disposition))
+                            return false;
+                        retain_inflight(transfer->object, transfer->right,
+                            transfer->disposition);
+                        port_transfers.push_back(*transfer);
+                        if (transfer->right == xnu::ipc::Right::Receive)
+                            transferred_receive = transfer->object;
+                        return true;
+                    };
+                    const auto reverse = shared_state_->darwin_abi.mach_descriptor_copyin ==
+                        DarwinMachDescriptorCopyinAbi::ReverseCompactDescriptors;
+                    for (std::size_t index = 0; index < descriptors->size(); ++index) {
+                        const auto& descriptor = (*descriptors)[
+                            reverse ? descriptors->size() - 1U - index : index];
+                        bool copied = true;
+                        if (descriptor.kind == mach_transport::DescriptorKind::Port) {
+                            copied = copy_port(descriptor.address_or_name,
+                                descriptor, std::nullopt);
+                        } else if (descriptor.kind ==
+                                   mach_transport::DescriptorKind::OutOfLinePorts) {
+                            for (std::uint32_t element = 0;
+                                element < descriptor.count_or_size; ++element) {
+                                const auto name = memory_.read32(
+                                    descriptor.address_or_name +
+                                    element * darwin::mig_wire::word_size).value_or(0);
+                                if (!copy_port(name, descriptor, element)) {
+                                    cleanup.failed_array(descriptor.offset);
+                                    copied = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!copied) {
+                            registers[0] = darwin::mach_message::send_invalid_right;
+                            return;
+                        }
+                    }
+                    cleanup.commit();
                     if (bootstrap_lookup && !bootstrap_service_name.empty() &&
                         reply_object) {
                         graphics_services_input::record_bootstrap_lookup_locked(
@@ -1166,7 +1158,6 @@ void CompatibilityKernel::dispatch_mach_message(
                                     scene_coordinator_.get());
                         }
                     }
-                    KernelSharedState::MachMessage queued;
                     queued.bytes = *bytes;
                     queued.destination = remote_object;
                     queued.sender_pid = process_.pid;
@@ -1189,13 +1180,7 @@ void CompatibilityKernel::dispatch_mach_message(
                     queued.sender_gid = process_.effective_gid;
                     queued.ool_payloads = std::move(ool_payloads);
                     queued.ool_port_arrays = std::move(ool_port_arrays);
-                    queued.reply_object = reply_object;
                     routed_reply_object = reply_object;
-                    queued.reply_right = reply_right;
-                    queued.voucher_object = voucher_object;
-                    queued.voucher_right = voucher_right;
-                    queued.destination_send_object = destination_send_object;
-                    queued.port_transfers = std::move(port_transfers);
                     if (host_service) {
                         kernel_service_handled = true;
                         const auto destination = host_mig::ServicePorts::dispatch_locked(
