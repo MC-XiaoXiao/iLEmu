@@ -3064,6 +3064,8 @@ void EmulatorSession::run()
         // into a full submission interval. Delivery does not advance guest
         // time; the urgent display thread below is the only exception that may
         // execute while the guest is ahead.
+        const auto polled_mach_generation =
+            initial_runtime->kernel->mach_message_generation();
         for (auto& runtime : runtimes) {
             const auto display_vsync_receiver =
                 display_urgent_process && runtime->kernel->process().pid ==
@@ -3130,6 +3132,11 @@ void EmulatorSession::run()
                 }
             }
         }
+        // Completing a blocked send can make receivers ready after their
+        // candidate lists were sampled. Revisit that generation before
+        // advancing idle time or running a syscall without its copyout.
+        if (initial_runtime->kernel->mach_message_generation() != polled_mach_generation)
+            continue;
         if (realtime_pacer) {
             const auto display_urgent_runnable = [&]() {
                 const auto is_runnable = [&](const auto& thread) {

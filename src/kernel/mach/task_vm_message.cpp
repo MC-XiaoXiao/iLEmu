@@ -628,7 +628,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                                     shared_state_->mach_queues.find(member);
                                 queue != shared_state_->mach_queues.end()) {
                                 msgcount += static_cast<std::uint32_t>(
-                                    queue->second.size());
+                                    shared_state_->mach_message_count_locked(member));
                             }
                         }
                     }
@@ -662,7 +662,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                             shared_state_->mach_queues.find(entry->object);
                         queue != shared_state_->mach_queues.end()) {
                         msgcount =
-                            static_cast<std::uint32_t>(queue->second.size());
+                            static_cast<std::uint32_t>(shared_state_->mach_message_count_locked(entry->object));
                     }
                     result = 0;
                 } else if (entry) {

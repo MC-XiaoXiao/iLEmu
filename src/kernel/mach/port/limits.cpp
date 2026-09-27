@@ -60,6 +60,8 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
         const auto entry =
             target ? shared_state_->mach_namespaces.lookup(*target, name)
                    : std::nullopt;
+        const auto old_port = entry ? shared_state_->mach_port_objects.lookup(entry->object) : std::nullopt;
+        const auto old_limit = old_port ? old_port->queue_limit : 0U;
         if (count > (registers[2] - minimum_request_size) / 4U) {
             result = darwin::mach::invalid_argument;
         } else if (!target) {
@@ -86,6 +88,8 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
                        entry->object, queue_limit)) {
             result = darwin::mach::failure;
         } else {
+            if (queue_limit > old_limit)
+                shared_state_->grant_mach_send_slots_locked(entry->object, queue_limit - old_limit);
             shared_state_->notify_send_possible_locked(entry->object);
         }
     }

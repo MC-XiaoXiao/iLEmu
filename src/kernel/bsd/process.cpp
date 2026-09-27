@@ -56,6 +56,7 @@ void CompatibilityKernel::release_process_mach_rights()
     // A blocked receive/wait is a thread-local continuation, not a surviving
     // Mach right. Drop it with the task so a later PID/processor reuse cannot
     // consume a stale message or semaphore wakeup.
+    pending_mach_sends_.clear();
     pending_mach_receives_.clear();
     pending_semaphore_waits_.clear();
     pending_psynch_waits_.clear();
@@ -63,6 +64,7 @@ void CompatibilityKernel::release_process_mach_rights()
     shared_state_->psynch_runtime->clear_process(process_.pid);
     process_.waiting_for_events = false;
     std::lock_guard mach_lock { shared_state_->mach_mutex };
+    shared_state_->cancel_mach_sends_locked(process_.pid);
     auto entries = shared_state_->mach_namespaces.entries(process_.pid);
 
     // An application can relinquish its receive right before calling exit, so

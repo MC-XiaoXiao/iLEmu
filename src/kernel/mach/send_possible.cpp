@@ -17,9 +17,7 @@ void KernelSharedState::notify_send_possible_locked(std::uint32_t destination)
     const auto port = mach_port_objects.lookup(destination);
     if (!port || mach_ports_being_removed.contains(destination))
         return;
-    const auto queue = mach_queues.find(destination);
-    const bool has_capacity = port->kernel_owned || queue == mach_queues.end() ||
-        queue->second.size() < port->queue_limit;
+    const bool has_capacity = port->kernel_owned || mach_message_count_locked(destination) < port->queue_limit;
     for (auto it = mach_dead_name_notifications.begin();
          it != mach_dead_name_notifications.end();) {
         const auto& request = it->second;

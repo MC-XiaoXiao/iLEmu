@@ -477,6 +477,10 @@ public:
     // kernel owns the topology/generation/deadline gate so an idle frontend has
     // an O(1) fast path and never rediscovers wait state by scanning CPUs.
     [[nodiscard]] std::vector<std::size_t> pending_event_poll_candidates();
+    [[nodiscard]] std::uint64_t mach_message_generation() const
+    {
+        return shared_state_->mach_queue_generation_snapshot();
+    }
     // Returns the graphics input sequence delivered while waking this guest
     // thread. The scheduler consumes it immediately to record runnable/dispatch
     // latency without assigning meaning to unrelated wakeups.
@@ -734,6 +738,18 @@ private:
         bool shared_cache_mapping = false);
     void install_commpage();
     void configure_darwin_notify_state();
+    struct PendingMachSend {
+        KernelSharedState::MachSendWaiters::Handle ticket;
+        std::array<std::uint32_t, 7> arguments;
+        std::optional<std::uint32_t> receive_address;
+        std::uint32_t caller_header_size;
+    };
+    void begin_mach_receive(Cpu& cpu, std::optional<std::uint32_t> receive_address);
+    void post_mach_send(Cpu& cpu, KernelSharedState::MachMessage&& message,
+        std::uint32_t caller_header_size, bool host_service,
+        std::optional<std::uint32_t> receive_address, std::unique_lock<std::mutex>& mach_lock,
+        bool scheduler_completion = false);
+    bool complete_pending_mach_send(Cpu& cpu);
     [[nodiscard]] bool mach_receive_poll_required_locked(
         const PendingMachReceive& pending, std::uint64_t now) const;
     bool deliver_pending_mach_if_ready_locked(
@@ -1012,6 +1028,7 @@ private:
     std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
     std::map<std::size_t, XnuThreadId> scheduler_handoffs_;
     std::map<std::size_t, PendingWait> pending_waits_;
+    std::map<std::size_t, PendingMachSend> pending_mach_sends_;
     std::map<std::size_t, PendingMachReceive> pending_mach_receives_;
     std::map<std::size_t, std::uint64_t> last_delivered_graphics_inputs_;
     std::map<std::size_t, PendingKevent> pending_kevents_;

@@ -93,48 +93,6 @@ void CompatibilityKernel::dispatch_mach_message(
 {
     auto& registers = cpu.registers();
     const auto message_address = registers[0];
-    const auto begin_receive = [&] {
-        const auto timeout_enabled =
-            (registers[1] & darwin::mach_message::option_receive_timeout) != 0;
-        const auto timeout_milliseconds = registers[5];
-        std::optional<std::uint64_t> deadline;
-        if (timeout_enabled) {
-            const auto interval =
-                static_cast<std::uint64_t>(timeout_milliseconds) *
-                darwin::mach::scheduler::nanoseconds_per_millisecond;
-            const auto now = shared_state_->clock.now();
-            deadline =
-                interval > std::numeric_limits<std::uint64_t>::max() - now
-                    ? std::numeric_limits<std::uint64_t>::max()
-                    : now + interval;
-        }
-        {
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto receive_object = resolve_receive_object(
-                *shared_state_, process_.pid, registers[4]);
-            if (!receive_object) {
-                registers[0] = darwin::mach_message::receive_invalid_name;
-                return;
-            }
-            pending_mach_receives_[cpu.processor_id()] =
-                PendingMachReceive { receive_address.value_or(message_address),
-                    registers[3],
-                    registers[4], registers[1], cpu.processor_id(), deadline,
-                    receive_object,
-                    shared_state_->mach_port_sets.contains(*receive_object), 0,
-                    shared_state_->allocate_mach_wait_queue_sequence_locked() };
-            process_.waiting_for_events = true;
-            if (deliver_pending_mach_locked(cpu, false))
-                return;
-        }
-        if (timeout_enabled && timeout_milliseconds == 0) {
-            pending_mach_receives_.erase(cpu.processor_id());
-            process_.waiting_for_events = false;
-            registers[0] = darwin::mach_message::receive_timed_out;
-            return;
-        }
-        cpu.halt(Dynarmic::HaltReason::UserDefined5);
-    };
     const auto wants_send =
         (registers[1] & darwin::mach_message::option_send) != 0;
     const auto wants_receive =
@@ -145,7 +103,7 @@ void CompatibilityKernel::dispatch_mach_message(
         return;
     }
     if (!wants_send && wants_receive) {
-        begin_receive();
+        begin_mach_receive(cpu, receive_address);
         return;
     }
     const auto bits =
@@ -551,61 +509,12 @@ void CompatibilityKernel::dispatch_mach_message(
             return;
         }
         std::uint32_t remote_object = 0;
-        std::uint32_t remote_owner = 0;
-        std::size_t remote_queue_depth = 0;
-        std::optional<std::size_t> local_pending_receiver;
-        std::string bootstrap_service_name;
         const auto caller_header_size =
             memory_
                 .read32(message_address + darwin::mig_wire::header_size_offset)
                 .value_or(0);
         bool routable = false;
-        bool kernel_service_handled = false;
-        std::optional<std::uint32_t> graphics_event_type;
-        std::optional<std::uint32_t> routed_reply_object;
-        std::optional<std::string> service_source_create_path;
-        std::optional<std::uint32_t> transferred_receive;
         if (bytes && mach_ipc::normalize_send_header(*bytes, registers[2])) {
-            graphics_event_type = graphics_services_input::event_type(*bytes);
-            const auto bootstrap_lookup =
-                *message_id ==
-                mig_message_id(xnu::mig::bootstrap::Routine::look_up);
-            const auto bootstrap_registration =
-                *message_id ==
-                mig_message_id(xnu::mig::bootstrap::Routine::mig_register);
-            const auto bootstrap_check_in =
-                *message_id ==
-                mig_message_id(xnu::mig::bootstrap::Routine::check_in);
-            std::optional<std::size_t> service_offset;
-            if (bootstrap_lookup) {
-                service_offset =
-                    xnu::mig::bootstrap::look_up_arguments[2].request_offset;
-            } else if (bootstrap_registration) {
-                service_offset =
-                    xnu::mig::bootstrap::mig_register_arguments[2]
-                        .request_offset;
-            } else if (bootstrap_check_in) {
-                service_offset = xnu::mig::bootstrap::check_in_arguments[1]
-                                     .request_offset;
-            }
-            if (service_offset) {
-                constexpr std::size_t maximum_service_length = 128;
-                for (std::size_t index = 0;
-                    index < maximum_service_length &&
-                    *service_offset + index < bytes->size();
-                    ++index) {
-                    const auto character = std::to_integer<unsigned char>(
-                        (*bytes)[*service_offset + index]);
-                    if (character == 0)
-                        break;
-                    if (character < 0x20U || character > 0x7eU) {
-                        bootstrap_service_name.clear();
-                        break;
-                    }
-                    bootstrap_service_name.push_back(
-                        static_cast<char>(character));
-                }
-            }
             const auto descriptor_table = mach_transport::preflight_copyin_descriptors(*bytes);
             const auto& descriptors = descriptor_table.descriptors;
             std::unique_lock mach_lock { shared_state_->mach_mutex };
@@ -666,7 +575,7 @@ void CompatibilityKernel::dispatch_mach_message(
                 trace_unknown(cpu, "MIG routine", *message_id);
                 if (*local_port == xnu::ipc::null_name) {
                     if (wants_receive) {
-                        begin_receive();
+                        begin_mach_receive(cpu, receive_address);
                     } else {
                         registers[0] = darwin::mach::success;
                     }
@@ -714,8 +623,7 @@ void CompatibilityKernel::dispatch_mach_message(
                     registers[5] != 0)
                     return false;
                 const auto port = shared_state_->mach_port_objects.lookup(remote_object);
-                const auto queue = shared_state_->mach_queues.find(remote_object);
-                const auto depth = queue == shared_state_->mach_queues.end() ? 0U : queue->second.size();
+                const auto depth = shared_state_->mach_message_count_locked(remote_object);
                 return port && depth >= port->queue_limit;
             };
             const auto arm_send_possible = [&] {
@@ -1025,8 +933,6 @@ void CompatibilityKernel::dispatch_mach_message(
                         retain_inflight(transfer->object, transfer->right,
                             transfer->disposition);
                         port_transfers.push_back(*transfer);
-                        if (transfer->right == xnu::ipc::Right::Receive)
-                            transferred_receive = transfer->object;
                         return true;
                     };
                     const auto reverse = shared_state_->darwin_abi.mach_descriptor_copyin ==
@@ -1087,208 +993,44 @@ void CompatibilityKernel::dispatch_mach_message(
                         registers[0] = darwin::mach_message::send_timed_out | copyout_error;
                         return;
                     }
-                    for (const auto& payload : ool_payloads) {
-                        service_source_create_path =
-                            celestial_volume_protocol::decode_source_create_path(
-                                *message_id, payload.bytes);
-                        if (service_source_create_path)
-                            break;
-                    }
                     cleanup.commit();
-                    if (bootstrap_lookup && !bootstrap_service_name.empty() &&
-                        reply_object) {
-                        graphics_services_input::record_bootstrap_lookup_locked(
-                            *shared_state_, *reply_object,
-                            bootstrap_service_name, process_.pid);
-                    }
-                    if (bootstrap_check_in &&
-                        !bootstrap_service_name.empty() && reply_object) {
-                        graphics_services_input::record_bootstrap_check_in_locked(
-                            *shared_state_, *reply_object,
-                            bootstrap_service_name, process_.pid);
-                    }
-                    if (bootstrap_registration &&
-                        !bootstrap_service_name.empty()) {
-                        graphics_services_input::
-                            record_bootstrap_registration_locked(
-                                *shared_state_, bootstrap_service_name);
-                    }
-                    if (bootstrap_check_in && !bootstrap_service_name.empty()) {
-                        shared_state_->bootstrap_checked_in_services.insert(
-                            bootstrap_service_name);
-                    }
-                    if (const auto process =
-                            shared_state_->processes.find(process_.pid);
-                        process != shared_state_->processes.end() &&
-                        process->second.core_animation_remote_abi) {
-                        const auto& profile =
-                            *process->second.core_animation_remote_abi;
-                        const auto exact_transaction =
-                            profile.is_transaction_message(*message_id);
-                        const auto render_server =
-                            shared_state_->bootstrap_service_objects.find(
-                                std::string { graphics_services_input::
-                                        render_server_service });
-                        const auto render_server_request =
-                            profile.render_server_port_rendezvous &&
-                            render_server !=
-                                shared_state_->bootstrap_service_objects
-                                    .end() &&
-                            render_server->second == remote_object;
-                        if (exact_transaction || render_server_request) {
-                            graphics_services_input::
-                                record_application_remote_scene_commit_locked(
-                                    *shared_state_, process_.pid, remote_object,
-                                    scene_coordinator_.get());
-                        }
-                    }
-                    queued.bytes = *bytes;
+                    queued.bytes = std::move(*bytes);
                     queued.destination = remote_object;
-                    queued.sender_pid = process_.pid;
-                    if (const auto sender = shared_state_->processes.find(process_.pid);
-                        sender != shared_state_->processes.end()) {
-                        queued.sender_identity_version =
-                            sender->second.audit_identity_version;
+                    // Simple copyin cannot change the destination under this lock.
+                    const auto send_destination = simple_copy_send ? destination_port :
+                        shared_state_->mach_port_objects.lookup(remote_object);
+                    if (send_destination && !host_service && !clock_service &&
+                        *destination_right != xnu::ipc::Right::SendOnce &&
+                        shared_state_->mach_message_count_locked(remote_object) >=
+                            send_destination->queue_limit) {
+                        std::optional<std::uint64_t> deadline;
+                        if ((registers[1] & darwin::mach_message::option_send_timeout) != 0U)
+                            deadline = shared_state_->clock.now() +
+                                static_cast<std::uint64_t>(registers[5]) *
+                                darwin::mach::scheduler::nanoseconds_per_millisecond;
+                        std::array<std::uint32_t, 7> arguments;
+                        std::copy_n(registers.begin(), arguments.size(), arguments.begin());
+                        // A sleeping send retains its destination independently of the namespace.
+                        if (!queued.destination_send_object) {
+                            queued.destination_send_object = remote_object;
+                            ++shared_state_->mach_inflight_send_rights[remote_object];
+                        }
+                        auto ticket = shared_state_->mach_send_waiters.wait(std::move(queued),
+                            process_.pid, static_cast<std::uint32_t>(cpu.processor_id()),
+                            remote_object, deadline);
+                        pending_mach_sends_.emplace(cpu.processor_id(), PendingMachSend {
+                            std::move(ticket), arguments, receive_address, caller_header_size });
+                        process_.waiting_for_events = true;
+                        cpu.halt(Dynarmic::HaltReason::UserDefined5);
+                        return;
                     }
-                    if (performance_counters()
-                            .cpu_source_diagnostics_configured()) {
-                        queued.host_enqueue_nanoseconds =
-                            static_cast<std::uint64_t>(
-                                std::chrono::duration_cast<
-                                    std::chrono::nanoseconds>(
-                                    std::chrono::steady_clock::now()
-                                        .time_since_epoch())
-                                    .count());
-                    }
-                    queued.sender_uid = process_.effective_uid;
-                    queued.sender_gid = process_.effective_gid;
-                    routed_reply_object = reply_object;
-                    if (host_service) {
-                        kernel_service_handled = true;
-                        const auto destination = host_mig::ServicePorts::dispatch_locked(
-                            *shared_state_, remote_object, queued);
-                        remote_object = destination.value_or(0U);
-                    } else if (clock_service) {
-                        kernel_service_handled = true;
-                        const auto destination =
-                            kernel_clock::Server::dispatch_locked(
-                                *shared_state_, *clock_service, queued);
-                        remote_object = destination.value_or(0U);
-                    } else {
-                        shared_state_->enqueue_mach_message_locked(
-                            remote_object, std::move(queued));
-                    }
-                    remote_owner =
-                        shared_state_->mach_port_objects.lookup(remote_object)
-                            .value_or(xnu::ipc::PortObject { })
-                            .receive_owner;
-                    const auto response_queue =
-                        shared_state_->mach_queues.find(remote_object);
-                    remote_queue_depth =
-                        response_queue == shared_state_->mach_queues.end()
-                            ? 0U
-                            : response_queue->second.size();
-                    if (remote_owner == process_.pid) {
-                        local_pending_receiver =
-                            preferred_pending_mach_receiver_locked(
-                                remote_object);
-                    }
+                    post_mach_send(cpu, std::move(queued), caller_header_size,
+                        host_service, receive_address, mach_lock);
+                    return;
                 }
             }
         }
-        if (routable) {
-            XnuThreadWakeResult receiver_wake_result { };
-            if (local_pending_receiver && thread_wake_handler_) {
-                receiver_wake_result = thread_wake_handler_(process_.pid,
-                    static_cast<std::uint32_t>(*local_pending_receiver));
-            } else if (remote_owner != process_.pid &&
-                       mach_message_wake_handler_ && remote_owner != 0) {
-                // The sender's CompatibilityKernel does not own the receiver's
-                // pending-mach map. The app-level callback resolves that map
-                // and wakes the selected receiver without touching Dynarmic
-                // from a different host thread.
-                receiver_wake_result =
-                    mach_message_wake_handler_(remote_owner, remote_object);
-            }
-            if (receiver_wake_result.preemption_needed &&
-                scheduler_preemption_query_ &&
-                scheduler_preemption_query_(cpu.processor_id())) {
-                cpu.request_guest_preemption();
-            }
-            if (bytes) {
-                if (service_source_create_path && routed_reply_object) {
-                    audio_service_->observe_service_source_create_request(
-                        *routed_reply_object, *service_source_create_path);
-                }
-                if (const auto created =
-                        celestial_volume_protocol::decode_source_create_reply(
-                            *message_id, *bytes)) {
-                    if (const auto path =
-                            audio_service_->observe_service_source_create_reply(
-                                remote_object, created->source)) {
-                        output_.line("[audio] source-create source=" +
-                                     std::to_string(created->source) +
-                                     " path=" + path->string());
-                    }
-                }
-                if (const auto property = celestial_volume_protocol::
-                        decode_source_float_property_request(
-                            *message_id, *bytes)) {
-                    if (audio_service_->observe_service_source_property(
-                            property->source, property->property,
-                            property->value)) {
-                        output_.line("[audio] source-property source=" +
-                                     (property->source
-                                             ? std::to_string(*property->source)
-                                             : std::string { "current" }) +
-                                     " key=" + property->property + " value=" +
-                                     std::to_string(property->value));
-                    }
-                }
-                if (const auto update = celestial_volume_protocol::decode_reply(
-                        *message_id, *bytes)) {
-                    audio_service_->observe_category_volume(
-                        update->category, update->value);
-                    output_.write(
-                        "[audio] category-volume category=" + update->category +
-                        " value=" + std::to_string(update->value) + "\n");
-                }
-            }
-            if (transferred_receive) {
-                output_.write("[mach] move-receive in-transit port=" +
-                              std::to_string(*transferred_receive) +
-                              " from=" + std::to_string(process_.pid) + "\n");
-            }
-            if (!kernel_service_handled)
-                output_.write(
-                    "[mach] enqueue sender=" + std::to_string(process_.pid) +
-                    " port=" + std::to_string(*remote_port) +
-                    " object=" + std::to_string(remote_object) +
-                    " owner=" + std::to_string(remote_owner) +
-                    " depth=" + std::to_string(remote_queue_depth) +
-                    " id=" + std::to_string(*message_id) +
-                    mig_message_label(*message_id) +
-                    (bootstrap_service_name.empty()
-                            ? std::string { }
-                            : " service=" + bootstrap_service_name) +
-                    " caller-header=" + std::to_string(caller_header_size) +
-                    " bytes=" + std::to_string(registers[2]) + "\n");
-            if (process_.pid != 0) {
-                if (graphics_event_type) {
-                    output_.write(
-                        "[graphics-event] sender=" +
-                        std::to_string(process_.pid) +
-                        " type=" + std::to_string(*graphics_event_type) +
-                        " bytes=" + std::to_string(registers[2]) + "\n");
-                }
-            }
-            if (wants_receive) {
-                begin_receive();
-            } else {
-                registers[0] = 0;
-            }
-            return;
-        }
+
     }
     std::uint32_t unsupported_object = 0;
     std::uint32_t unsupported_owner = 0;

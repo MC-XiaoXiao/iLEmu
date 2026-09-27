@@ -961,6 +961,11 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     last_delivered_graphics_inputs_.clear();
     disabled_thread_signals_.clear();
     pending_waits_.clear();
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        shared_state_->cancel_mach_sends_locked(process_.pid);
+    }
+    pending_mach_sends_.clear();
     pending_mach_receives_.clear();
     pending_kevents_.clear();
     pending_recvmsgs_.clear();
@@ -1461,7 +1466,10 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
     std::lock_guard lock { mutex_ };
     bool delivered = false;
     const auto processor = cpu.processor_id();
-    if (pending_mach_receives_.contains(processor) &&
+    if (pending_mach_sends_.contains(processor)) {
+        delivered = complete_pending_mach_send(cpu);
+        note_timer_deadline_transition();
+    } else if (pending_mach_receives_.contains(processor) &&
         hid_event_system_hle_.prepare_pending_event(
             cpu, process_.pid, 0x80U) &&
         userland_hle_.dispatch(cpu, process_.pid, 0x80U)) {
@@ -1535,12 +1543,14 @@ CompatibilityKernel::pending_event_poll_candidates()
     std::optional<std::uint64_t> next_deadline;
     bool requires_host_probe = false;
     for (const auto processor : pending_event_processors_) {
+        const auto send = pending_mach_sends_.find(processor);
         const auto receive = pending_mach_receives_.find(processor);
         // HID callbacks enter through a blocked receive independently of its
         // Mach queue. Keep that consumer eligible even while the queue is empty.
         const auto hid_receiver =
             hid_event_system_hle_.is_event_consumer(process_.pid, processor);
-        if (receive != pending_mach_receives_.end()
+        if (send != pending_mach_sends_.end() ? send->second.ticket->ready(guest_now) :
+            receive != pending_mach_receives_.end()
                 ? hid_receiver || mach_receive_poll_required_locked(
                                       receive->second, guest_now)
                 : pending_io_poll_required_locked(processor)) {
@@ -1565,7 +1575,8 @@ CompatibilityKernel::pending_event_poll_candidates()
 bool CompatibilityKernel::has_pending_event_locked(
     std::size_t processor) const
 {
-    return pending_mach_receives_.contains(processor) ||
+    return pending_mach_sends_.contains(processor) ||
+           pending_mach_receives_.contains(processor) ||
            pending_record_locks_.contains(processor) ||
            pending_flocks_.contains(processor) ||
            pending_host_connects_.contains(processor) ||
@@ -1705,6 +1716,8 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
         found != pending_socket_reads_.end()) {
         consider(found->second.deadline);
     }
+    if (const auto send = pending_mach_sends_.find(processor); send != pending_mach_sends_.end())
+        consider(send->second.ticket->deadline);
     if (const auto found = pending_mach_receives_.find(processor);
         found != pending_mach_receives_.end()) {
         consider(found->second.deadline);
@@ -2390,6 +2403,8 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
         }
         return reason + ")";
     }
+    if (const auto send = pending_mach_sends_.find(processor); send != pending_mach_sends_.end())
+        return std::string { "mach_msg_send(object=" } + std::to_string(send->second.ticket->destination) + ")";
     if (const auto pending = pending_mach_receives_.find(processor);
         pending != pending_mach_receives_.end()) {
         std::string reason =
@@ -2468,6 +2483,10 @@ CompatibilityKernel::timer_deadline_snapshot() const
         for (const auto& [processor, read] : pending_socket_reads_) {
             static_cast<void>(processor);
             consider(local_deadline, read.deadline);
+        }
+        for (const auto& [processor, send] : pending_mach_sends_) {
+            static_cast<void>(processor);
+            consider(local_deadline, send.ticket->deadline);
         }
         for (const auto& [processor, receive] : pending_mach_receives_) {
             static_cast<void>(processor);

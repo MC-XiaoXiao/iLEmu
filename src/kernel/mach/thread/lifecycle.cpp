@@ -101,11 +101,13 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
             if (target->first == process_.pid) {
                 clear_thread_pthread_state(target->second);
                 process_.thread_disk_io_policies.erase(*target_object);
+                pending_mach_sends_.erase(target->second);
                 pending_psynch_waits_.erase(target->second);
                 thread_ports_.erase(target->second);
                 alternate_signal_stacks_.erase(target->second);
             }
             std::lock_guard mach_lock { shared_state_->mach_mutex };
+            shared_state_->cancel_mach_sends_locked(target->first, target->second);
             auto task =
                 shared_state_->task_thread_port_objects.find(target->first);
             if (task != shared_state_->task_thread_port_objects.end()) {

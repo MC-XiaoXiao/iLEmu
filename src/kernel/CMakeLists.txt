@@ -446,6 +446,7 @@ target_sources(ilemu_kernel PRIVATE
     mach/kevent_receive.cpp
     mach/semaphore.cpp
     mach/message.cpp
+    mach/send.cpp
     mach/host_message.cpp
     mach/host_special_port.cpp
     mach/voucher_message.cpp

@@ -12,6 +12,7 @@
 #pragma once
 
 #include "kernel/unix_socket_node.hpp"
+#include "kernel/mach_send_wait_queue.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/kevent_timer.hpp"
@@ -1329,6 +1330,8 @@ struct KernelSharedState {
     // Host exception handlers belong to the kernel host, independent of any
     // task's lifetime or namespace.
     TaskExceptionActions host_exception_actions { };
+    using MachSendWaiters = MachSendWaitQueue<MachMessage>;
+    MachSendWaiters mach_send_waiters;
     std::map<std::uint32_t, std::deque<MachMessage>> mach_queues;
     // Queue producers may run on host input/device threads while guest kernels
     // poll from the scheduler. Keep the cheap readiness snapshot lock-free;
@@ -1384,10 +1387,22 @@ struct KernelSharedState {
     // The caller holds mach_mutex. Deliver armed name notifications when a
     // destination can accept another message.
     void notify_send_possible_locked(std::uint32_t destination);
+    void grant_mach_send_slots_locked(std::uint32_t destination, std::size_t slots);
+    void cancel_mach_sends_locked(std::uint32_t task, std::optional<std::uint32_t> processor = std::nullopt);
+    std::size_t mach_message_count_locked(std::uint32_t object) const
+    {
+        const auto queue = mach_queues.find(object);
+        return (queue == mach_queues.end() ? 0U : queue->second.size()) + mach_send_waiters.reserved(object);
+    }
 
     // Remove empty members from every prepost queue after delivery/discard.
     void note_mach_message_dequeued_locked(std::uint32_t destination)
     {
+        if (!mach_send_waiters.empty()) {
+            const auto port = mach_port_objects.lookup(destination);
+            if (port && mach_message_count_locked(destination) < port->queue_limit)
+                grant_mach_send_slots_locked(destination, 1);
+        }
         notify_send_possible_locked(destination);
         const auto links = mach_port_set_links_by_member.find(destination);
         if (links == mach_port_set_links_by_member.end())
