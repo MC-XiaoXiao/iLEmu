@@ -525,8 +525,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
     // A queued message keeps the semantic right in its sidecar, but the
     // backing ipc_port may have been retired while the receiver was asleep.
     // Never let copyout recreate a live Send/Receive name for such an object.
-    // Send-like rights can still be represented as a dead name (the equivalent
-    // of ipc_right_copyout on a dead port); receive rights cannot be recovered
+    // XNU copies dead send-like objects out as MACH_PORT_DEAD without
+    // allocating a namespace entry; receive rights cannot be recovered
     // once their port object is gone and invalidate the queued message.
     const auto copyout_received_right =
         [&](std::uint32_t object,
@@ -540,12 +540,11 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             }
             // Directly retired legacy objects may not have gone through
             // terminate_receive_object_locked. Normalize any stale namespace
-            // send entries before installing the dead-name result so a PID/name
-            // reuse cannot observe a resurrected Send right.
+            // send entries before returning the sentinel so a PID/name reuse
+            // cannot observe a resurrected Send right.
             static_cast<void>(
                 shared_state_->mach_namespaces.mark_object_dead(object));
-            return shared_state_->mach_namespaces.copyout(process_.pid, object,
-                xnu::ipc::type_mask(xnu::ipc::Right::DeadName));
+            return xnu::ipc::dead_name;
         }
         return shared_state_->mach_namespaces.copyout(
             process_.pid, object, xnu::ipc::type_mask(right));
@@ -573,7 +572,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
     const auto sender_reply_name = read_little_word(pending_message.bytes, 12);
     std::optional<std::uint32_t> reply_object;
     std::optional<xnu::ipc::Right> reply_right;
-    if (sender_reply_name != xnu::ipc::null_name) {
+    if (sender_reply_name != xnu::ipc::null_name &&
+        sender_reply_name != xnu::ipc::dead_name) {
         reply_object = pending_message.reply_object
                            ? pending_message.reply_object
                            : resolve_message_object(*shared_state_,
@@ -616,7 +616,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
     // swap that lets a MIG server reply using request.msgh_remote_port.
     write_little_word(received->bytes, 12, *destination_name);
 
-    if (sender_reply_name != xnu::ipc::null_name) {
+    if (sender_reply_name != xnu::ipc::null_name &&
+        sender_reply_name != xnu::ipc::dead_name) {
         if (reply_right) {
             if (!reply_object) {
                 outcome.status = 0x10004008U;

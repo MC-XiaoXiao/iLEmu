@@ -814,6 +814,7 @@ void CompatibilityKernel::dispatch_mach_message(
                 std::optional<std::uint32_t> voucher_object;
                 std::optional<xnu::ipc::Right> voucher_right;
                 std::optional<std::uint32_t> destination_send_object;
+                bool named_dead_reply = false;
                 std::uint32_t reply_disposition = 0;
                 std::uint32_t voucher_disposition = 0;
                 std::vector<KernelSharedState::MachMessage::PortTransfer>
@@ -845,17 +846,28 @@ void CompatibilityKernel::dispatch_mach_message(
                         .read32(message_address +
                                 darwin::mig_wire::header_local_port_offset)
                         .value_or(0);
-                if (reply_name != xnu::ipc::null_name) {
+                // NULL and DEAD are literal header values, not namespace
+                // lookups (ipc_kmsg_copyin_header's no-reply branch).
+                if (reply_name != xnu::ipc::null_name &&
+                    reply_name != xnu::ipc::dead_name) {
                     reply_disposition = (*bits >> 8U) & 0xffU;
                     if (const auto transfer =
                             capture(reply_name, reply_disposition, 0)) {
                         reply_object = transfer->object;
                         reply_right = transfer->right;
                     } else {
-                        // Header reply rights have a distinct native error
-                        // from invalid port descriptors in the message body.
-                        registers[0] = darwin::mach_message::send_invalid_reply;
-                        return;
+                        // Native deadok copyin accepts named dead rights for
+                        // COPY_SEND/MOVE_SEND/MOVE_SEND_ONCE, but never MAKE.
+                        const auto entry = shared_state_->mach_namespaces.lookup(
+                            process_.pid, reply_name);
+                        named_dead_reply = reply_disposition >= 17U &&
+                            reply_disposition <= 19U && entry &&
+                            (entry->type & xnu::ipc::type_mask(
+                                xnu::ipc::Right::DeadName)) != 0U;
+                        if (!named_dead_reply) {
+                            registers[0] = darwin::mach_message::send_invalid_reply;
+                            return;
+                        }
                     }
                 }
 
@@ -1005,6 +1017,22 @@ void CompatibilityKernel::dispatch_mach_message(
                         registers[0] = darwin::mach_message::send_invalid_right;
                         return;
                     }
+                }
+
+                if (routable && named_dead_reply) {
+                    // Only consume a dead-name uref after all copyin checks.
+                    // The message carries IP_DEAD, not a task-local name or
+                    // an in-flight reference to a backing port object.
+                    if (reply_disposition != 19U &&
+                        modify_port_references_locked(*shared_state_,
+                            process_.pid, reply_name, xnu::ipc::Right::DeadName,
+                            -1) != darwin::mach::success) {
+                        registers[0] = darwin::mach_message::send_invalid_reply;
+                        return;
+                    }
+                    write_little_word(*bytes,
+                        darwin::mig_wire::header_local_port_offset,
+                        xnu::ipc::dead_name);
                 }
 
                 const auto consume_transfer = [&](std::uint32_t name,
