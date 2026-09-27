@@ -1557,7 +1557,7 @@ void EmulatorSession::run()
                     return false;
                 }
                 runtime_ptr->kernel->clear_thread_io_policy(processor);
-                runtime_ptr->kernel->clear_thread_pthread_state(processor);
+                runtime_ptr->kernel->retire_thread_continuations(processor);
                 guest_execution_policy.forget(
                     XnuThreadId { pid, static_cast<std::uint32_t>(processor) });
                 guest_parallelism_policy.forget(

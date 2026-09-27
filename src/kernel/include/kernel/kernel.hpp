@@ -268,6 +268,8 @@ public:
         thread_qos_override_handler_ = std::move(handler);
     }
     void clear_thread_pthread_state(std::size_t processor);
+    // Called by serialized kernel/runtime lifecycle paths before slot reuse.
+    void retire_thread_continuations(std::size_t processor);
 
     void set_thread_policy_handler(ThreadPolicyHandler handler)
     {

@@ -401,6 +401,7 @@ target_link_libraries(ilemu_kernel_mach_task PRIVATE
     iLEmu::mach)
 
 add_library(ilemu_kernel_mach_thread STATIC
+    mach/thread/continuations.cpp
     mach/thread/creation.cpp
     mach/thread/lifecycle.cpp
     mach/thread/self.cpp

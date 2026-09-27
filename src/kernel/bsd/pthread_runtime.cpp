@@ -471,14 +471,8 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             return true;
         }
 
-        pthread_runtime_.remove_worker(processor);
+        retire_thread_continuations(processor);
         thread_ports_.erase(processor);
-        alternate_signal_stacks_.erase(processor);
-        pending_mach_sends_.erase(processor);
-        pending_mach_receives_.erase(processor);
-        pending_psynch_waits_.erase(processor);
-        shared_state_->psynch_runtime->cancel_wait(
-            DarwinPsynchThread { process_.pid, processor });
         std::optional<WokenThread> woken_thread;
         std::uint32_t semaphore_result = darwin::mach::success;
         {

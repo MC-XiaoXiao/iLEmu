@@ -33,17 +33,9 @@ CompatibilityKernel::create_guest_thread(
     if (!processor)
         return std::nullopt;
 
-    // A terminated thread can leave a host persistence operation in flight.
-    // Its completion belongs to the old thread, never a reused processor slot.
-    clear_thread_pthread_state(*processor);
-    pending_file_syncs_.erase(*processor);
-    pending_file_renames_.erase(*processor);
-    pending_filesystem_dispatches_.erase(*processor);
-    pending_file_mappings_.erase(*processor);
-    pending_io_poll_cache_.erase(*processor);
-    refresh_pending_event_processor_locked(*processor);
+    // A reused slot must not inherit any previous syscall continuation.
+    retire_thread_continuations(*processor);
     thread_ports_.erase(*processor);
-    alternate_signal_stacks_.erase(*processor);
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         if (auto task =

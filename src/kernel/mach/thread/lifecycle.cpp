@@ -99,12 +99,9 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
             shared_state_->psynch_runtime->cancel_wait(
                 DarwinPsynchThread { target->first, target->second });
             if (target->first == process_.pid) {
-                clear_thread_pthread_state(target->second);
+                retire_thread_continuations(target->second);
                 process_.thread_disk_io_policies.erase(*target_object);
-                pending_mach_sends_.erase(target->second);
-                pending_psynch_waits_.erase(target->second);
                 thread_ports_.erase(target->second);
-                alternate_signal_stacks_.erase(target->second);
             }
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             shared_state_->cancel_mach_sends_locked(target->first, target->second);
@@ -129,9 +126,6 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
                   ":" + std::to_string(target ? target->second : 0U) +
                   " result=" + std::to_string(kernel_result) + "\n");
     if (self_termination) {
-        thread_ports_.erase(cpu.processor_id());
-        pending_mach_receives_.erase(cpu.processor_id());
-        pending_psynch_waits_.erase(cpu.processor_id());
         cpu.registers()[0] = darwin::mach::success;
         cpu.halt(Dynarmic::HaltReason::UserDefined1);
         return true;
