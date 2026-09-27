@@ -38,6 +38,7 @@
 
 #include "host/service_ports.hpp"
 #include "task/enumeration.hpp"
+#include "task/special_ports.hpp"
 #include "task/lifecycle.hpp"
 #include "thread/policy.hpp"
 #include "transport/port_copyin.hpp"
@@ -171,13 +172,25 @@ void CompatibilityKernel::dispatch_mach_message(
             }
         }
     }
-    if (task_mig::Enumeration::handles(*message_id) &&
+    const bool special_port_query = *message_id ==
+        xnu::mig::task::id(xnu::mig::task::Routine::task_get_special_port);
+    if ((task_mig::Enumeration::handles(*message_id) || special_port_query) &&
         pending_mach_receives_.empty()) {
-        bool enqueued;
+        bool enqueued = false;
         {
             std::lock_guard lock { shared_state_->mach_mutex };
-            enqueued = task_mig::Enumeration::try_synchronous_enqueue_locked(
-                memory_, *shared_state_, process_, registers, *bits, *local_port);
+            if (special_port_query) {
+                const auto result = task_mig::SpecialPorts::try_synchronous_locked(
+                    memory_, *shared_state_, process_, registers, *bits, *local_port,
+                    receive_address.value_or(message_address));
+                if (result) {
+                    registers[0] = *result;
+                    return;
+                }
+            } else {
+                enqueued = task_mig::Enumeration::try_synchronous_enqueue_locked(
+                    memory_, *shared_state_, process_, registers, *bits, *local_port);
+            }
         }
         if (enqueued) {
             begin_mach_receive(cpu, receive_address);
@@ -185,10 +198,18 @@ void CompatibilityKernel::dispatch_mach_message(
         }
     }
     const bool task_service_request = task_mig::Lifecycle::handles(*message_id) ||
-                                      task_mig::Enumeration::handles(*message_id);
+                                      task_mig::Enumeration::handles(*message_id) ||
+                                      task_mig::SpecialPorts::handles(*message_id);
     const bool thread_policy_request = thread_mig::Policy::handles(*message_id);
     if (!separate_receive && !clock_service_request && !host_service_request &&
         !task_service_request && !thread_policy_request) {
+        const auto is_bootstrap_port = [&] {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            const auto task = mach_task_identity::control_port_locked(*shared_state_, process_);
+            const auto bootstrap = mach_task_identity::special_port_locked(*shared_state_, task, 4U);
+            return bootstrap != xnu::ipc::null_name &&
+                shared_state_->mach_namespaces.resolve(process_.pid, *remote_port) == bootstrap;
+        };
         const MachMessageRequest request { message_address, *bits, *remote_port,
             *local_port, *message_id };
         if (dispatch_mach_host_message(cpu, request) ||
@@ -269,7 +290,7 @@ void CompatibilityKernel::dispatch_mach_message(
         }
         if (*message_id ==
                 mig_message_id(xnu::mig::bootstrap::Routine::get_self) &&
-            *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
+            registers[3] >= 40U && is_bootstrap_port()) {
             // The root bootstrap provider can query its own job port before it has
             // created a server receive loop. Handle only this structural
             // self-owned case; child requests continue to route to their provider.
@@ -337,7 +358,7 @@ void CompatibilityKernel::dispatch_mach_message(
 
         if (*message_id ==
                 mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
-            *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
+            registers[3] >= 40U && is_bootstrap_port()) {
             const auto service_name = memory_.read_c_string(
                 message_address +
                     xnu::mig::bootstrap::look_up_arguments[2].request_offset,

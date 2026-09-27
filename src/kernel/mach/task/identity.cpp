@@ -12,6 +12,7 @@
 
 #include "kernel/kernel_shared_state.hpp"
 
+#include <algorithm>
 #include <array>
 #include <optional>
 
@@ -42,6 +43,42 @@ namespace {
     }
 
 } // namespace
+
+std::uint32_t control_port_locked(
+    const KernelSharedState& state, const ProcessContext& process)
+{
+    const auto named = state.mach_namespaces.resolve(process.pid, process.task_port);
+    if (named) {
+        const auto task = state.task_port_pids.find(*named);
+        if (task != state.task_port_pids.end() && task->second == process.pid)
+            return *named;
+    }
+    // The original name may have been renamed or deallocated.
+    const auto task = std::find_if(state.task_port_pids.begin(), state.task_port_pids.end(),
+        [&](const auto& entry) { return entry.second == process.pid; });
+    return task == state.task_port_pids.end() ? 0U : task->first;
+}
+
+std::uint32_t special_port_locked(
+    const KernelSharedState& state, std::uint32_t task, std::uint32_t which)
+{
+    const auto slots = state.task_special_ports.find(task);
+    if (slots == state.task_special_ports.end()) return xnu::ipc::null_name;
+    const auto port = slots->second.find(which);
+    return port == slots->second.end() ? xnu::ipc::null_name : port->second;
+}
+
+std::uint32_t name_port_locked(KernelSharedState& state, std::uint32_t pid)
+{
+    const auto found = std::find_if(state.task_name_port_pids.begin(),
+        state.task_name_port_pids.end(),
+        [pid](const auto& entry) { return entry.second == pid; });
+    if (found != state.task_name_port_pids.end()) return found->first;
+    const auto object = state.allocate_mach_object();
+    if (!state.mach_port_objects.create(object)) return xnu::ipc::null_name;
+    state.task_name_port_pids.emplace(object, pid);
+    return object;
+}
 
 bool initialize_root(KernelSharedState& state, ProcessContext& process)
 {
@@ -76,6 +113,10 @@ bool initialize_root(KernelSharedState& state, ProcessContext& process)
 
     state.task_port_pids.emplace(task_object, process.pid);
     state.task_thread_port_objects[process.pid][0] = thread_object;
+    state.task_special_ports[task_object][1] = task_object;
+    state.task_special_ports[task_object][2] = initial_host_self_name;
+    ++state.mach_kernel_send_rights[task_object];
+    ++state.mach_kernel_send_rights[initial_host_self_name];
     state.task_special_ports[task_object][4] = bootstrap_object;
     // The task structure owns a kernel-held reference independent of the
     // bootstrap receive name installed in the root ipc_space.
@@ -92,19 +133,9 @@ bool initialize_root(KernelSharedState& state, ProcessContext& process)
 bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
     ProcessContext& child, bool inherit_registered_ports)
 {
-    const auto parent_task_object =
-        state.mach_namespaces.resolve(parent.pid, parent.task_port);
-    if (!parent_task_object) {
+    const auto parent_task_object = control_port_locked(state, parent);
+    if (parent_task_object == xnu::ipc::null_name) {
         return false;
-    }
-
-    std::optional<std::uint32_t> bootstrap_object;
-    if (const auto task = state.task_special_ports.find(*parent_task_object);
-        task != state.task_special_ports.end()) {
-        if (const auto bootstrap = task->second.find(4);
-            bootstrap != task->second.end() && bootstrap->second != 0) {
-            bootstrap_object = bootstrap->second;
-        }
     }
 
     child.task_port = initial_task_self_name;
@@ -140,7 +171,7 @@ bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
     }
 
     if (const auto actions =
-            state.task_exception_actions.find(*parent_task_object);
+            state.task_exception_actions.find(parent_task_object);
         actions != state.task_exception_actions.end()) {
         state.task_exception_actions[child_task_object] = actions->second;
         for (const auto& action : actions->second) {
@@ -149,20 +180,31 @@ bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
         }
     }
 
-    if (bootstrap_object) {
-        state.task_special_ports[child_task_object][4] = *bootstrap_object;
-        ++state.mach_kernel_send_rights[*bootstrap_object];
-        child.bootstrap_port =
-            state.mach_namespaces
-                .copyout_at_name(child.pid, *bootstrap_object, send_right,
-                    parent.bootstrap_port)
-                .value_or(xnu::ipc::null_name);
-    } else {
-        child.bootstrap_port = xnu::ipc::null_name;
+    state.task_special_ports[child_task_object][1] = child_task_object;
+    ++state.mach_kernel_send_rights[child_task_object];
+    for (const auto which : { 2U, 4U, 7U, 8U, 9U, 10U }) {
+        // Debug control is not inherited. XNU 1228 slot 10 was automount.
+        if (which == 10U && state.darwin_abi.task_special_ports !=
+                DarwinTaskSpecialPortsAbi::SecurityLedgerAutomount) continue;
+        auto object = special_port_locked(state, parent_task_object, which);
+        if (object != xnu::ipc::null_name && object != xnu::ipc::dead_name) {
+            if (state.mach_port_objects.contains(object))
+                ++state.mach_kernel_send_rights[object];
+            else
+                object = xnu::ipc::dead_name;
+        }
+        state.task_special_ports[child_task_object][which] = object;
     }
-
+    const auto copy_special = [&](std::uint32_t which, std::uint32_t preferred) {
+        const auto object = special_port_locked(state, child_task_object, which);
+        if (object == xnu::ipc::null_name || object == xnu::ipc::dead_name) return object;
+        return state.mach_namespaces.copyout_at_name(child.pid, object, send_right, preferred)
+            .value_or(xnu::ipc::null_name);
+    };
+    child.host_port = copy_special(2U, initial_host_self_name);
+    child.bootstrap_port = copy_special(4U, parent.bootstrap_port);
     for (const auto special :
-        { child.host_port, child.clock_port, child.calendar_clock_port,
+        { child.clock_port, child.calendar_clock_port,
             child.io_master_port, child.io_registry_options_port }) {
         if (!install_kernel_send_port(state, child, special)) {
             return false;

@@ -219,9 +219,6 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                 mig_message_id(
                     xnu::mig::mach_port::Routine::mach_port_insert_right) ||
             *message_id ==
-                mig_message_id(
-                    xnu::mig::task::Routine::task_set_special_port) ||
-            *message_id ==
                 mig_message_id(xnu::mig::task::Routine::semaphore_destroy)) &&
         registers[3] >= 36) {
         // mach_port_deallocate / mach_port_insert_right / semaphore_destroy
@@ -384,123 +381,6 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                         disposition);
                 }
             }
-        } else if (*message_id ==
-                   mig_message_id(
-                       xnu::mig::task::Routine::task_set_special_port)) {
-            // task_set_special_port operates on the task named by the
-            // destination port, which is commonly a newly forked child,
-            // not on launchd's own task.
-            const auto& special_arguments =
-                xnu::mig::task::task_set_special_port_arguments;
-            const auto which = memory_
-                                   .read32(message_address +
-                                           special_arguments[1].request_offset)
-                                   .value_or(0);
-            const auto port_name =
-                memory_
-                    .read32(
-                        message_address + special_arguments[2].request_offset)
-                    .value_or(0);
-            const auto descriptor_word =
-                memory_
-                    .read32(message_address +
-                            special_arguments[2].request_offset +
-                            2U * sizeof(std::uint32_t))
-                    .value_or(0);
-            const auto disposition =
-                (descriptor_word >>
-                    darwin::mig_wire::descriptor_disposition_shift) &
-                0xffU;
-            const auto transferred_right = right_for_disposition(disposition);
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto task_object = resolve_name_with_right(*shared_state_,
-                process_.pid, *remote_port, xnu::ipc::Right::Send);
-            const auto target = target_task_for_port(
-                *shared_state_, process_.pid, *remote_port);
-            const auto port =
-                port_name == xnu::ipc::null_name
-                    ? std::optional<std::uint32_t> { 0 }
-                : transferred_right
-                    ? resolve_name_with_right(*shared_state_, process_.pid,
-                          port_name, *transferred_right)
-                    : std::nullopt;
-            if (!task_object || !target) {
-                kernel_result = 4; // KERN_INVALID_ARGUMENT
-            } else if (!port || (port_name != xnu::ipc::null_name &&
-                                    (!transferred_right ||
-                                        *transferred_right !=
-                                            xnu::ipc::Right::Send))) {
-                kernel_result = 20; // KERN_INVALID_CAPABILITY
-            } else {
-                const auto previous =
-                    shared_state_->task_special_ports.find(*task_object);
-                const auto previous_port =
-                    previous == shared_state_->task_special_ports.end()
-                        ? std::optional<std::uint32_t> { }
-                        : [&]() -> std::optional<std::uint32_t> {
-                    const auto slot = previous->second.find(which);
-                    return slot == previous->second.end()
-                               ? std::optional<std::uint32_t> { }
-                               : std::optional { slot->second };
-                }();
-                bool consumed = true;
-                if (disposition == 17U || disposition == 18U) {
-                    consumed = consume_moved_right_locked(*shared_state_,
-                        process_.pid, port_name, *transferred_right, true);
-                }
-                if (!consumed) {
-                    kernel_result = 17; // KERN_INVALID_RIGHT
-                } else {
-                    if (*port != 0U &&
-                        (!previous_port || *previous_port != *port)) {
-                        // task_set_special_port takes a kernel-owned Send
-                        // reference. For MOVE_SEND the guest reference was
-                        // consumed above; for COPY_SEND it remains in the
-                        // caller's ipc_space.
-                        retain_kernel_send_right_locked(*shared_state_, *port);
-                    }
-                    if (*port == 0U) {
-                        if (previous !=
-                            shared_state_->task_special_ports.end()) {
-                            previous->second.erase(which);
-                            if (previous->second.empty())
-                                shared_state_->task_special_ports.erase(
-                                    previous);
-                        }
-                    } else {
-                        shared_state_->task_special_ports[*task_object][which] =
-                            *port;
-                    }
-                    if (previous_port && *previous_port != *port) {
-                        release_kernel_send_right_locked(
-                            *shared_state_, *previous_port);
-                    }
-                }
-            }
-            const auto owner =
-                task_object
-                    ? shared_state_->mach_port_objects.lookup(*task_object)
-                    : std::nullopt;
-            output_.write(
-                "[mach] task_set_special_port caller=" +
-                std::to_string(process_.pid) +
-                " task=" + std::to_string(task_object.value_or(0)) +
-                " owner=" + std::to_string(owner ? owner->receive_owner : 0U) +
-                " which=" + std::to_string(which) +
-                " port=" + std::to_string(port.value_or(0)) + "\n");
-            const auto own_task_object = shared_state_->mach_namespaces.resolve(
-                process_.pid, process_.task_port);
-            if (kernel_result == 0 && task_object == own_task_object &&
-                which == 4) {
-                const auto still_local =
-                    port && *port != 0
-                        ? resolve_name_with_right(*shared_state_, process_.pid,
-                              port_name, xnu::ipc::Right::Send)
-                        : std::optional<std::uint32_t> { };
-                process_.bootstrap_port = still_local && *still_local == *port
-                                              ? port_name
-                                              : xnu::ipc::null_name;
-            }
         }
         const std::array<std::uint32_t, 9> reply {
             18,
@@ -524,24 +404,10 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
         registers[0] = 0;
         return true;
     }
-    if ((*message_id ==
-                mig_message_id(xnu::mig::task::Routine::task_get_special_port) ||
-            *message_id ==
-                mig_message_id(xnu::mig::task::Routine::semaphore_create)) &&
+    if (*message_id == mig_message_id(xnu::mig::task::Routine::semaphore_create) &&
         registers[3] >= 40) {
-        // task_get_special_port and semaphore_create return a port.
-        const auto which =
-            *message_id ==
-                    mig_message_id(
-                        xnu::mig::task::Routine::task_get_special_port)
-                ? memory_.read32(
-                      message_address +
-                      xnu::mig::task::task_get_special_port_arguments[1]
-                          .request_offset)
-                : std::optional<std::uint32_t> { };
         std::uint32_t port = 0;
         bool port_already_copied_out = false;
-        bool update_process_bootstrap = false;
         if (*message_id ==
             mig_message_id(xnu::mig::task::Routine::semaphore_create)) {
             const auto policy =
@@ -593,48 +459,6 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                     }
                 }
             }
-        } else if (which) {
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto resolved_task_object =
-                resolve_name_with_right(*shared_state_, process_.pid,
-                    *remote_port, xnu::ipc::Right::Send);
-            const auto task_object =
-                resolved_task_object && target_task_for_port(*shared_state_,
-                                            process_.pid, *remote_port)
-                    ? *resolved_task_object
-                    : 0U;
-            const auto own_task_object = shared_state_->mach_namespaces.resolve(
-                process_.pid, process_.task_port);
-            update_process_bootstrap = *which == 4 && task_object != 0U &&
-                                       own_task_object &&
-                                       task_object == *own_task_object;
-            if (const auto task =
-                    task_object != 0U
-                        ? shared_state_->task_special_ports.find(task_object)
-                        : shared_state_->task_special_ports.end();
-                task != shared_state_->task_special_ports.end()) {
-                if (const auto special = task->second.find(*which);
-                    special != task->second.end()) {
-                    if (shared_state_->mach_port_objects.contains(
-                            special->second)) {
-                        port = special->second;
-                    } else {
-                        // A task may have exited after installing a raw
-                        // special-port metadata entry. Never copy out a
-                        // capability for that dead object; remove the stale
-                        // slot while the Mach lock is held.
-                        task->second.erase(special);
-                        if (task->second.empty())
-                            shared_state_->task_special_ports.erase(task);
-                    }
-                }
-            }
-            if (*which == 4) {
-                output_.write("[mach] task_get_special_port pid=" +
-                              std::to_string(process_.pid) +
-                              " task=" + std::to_string(task_object) +
-                              " port=" + std::to_string(port) + "\n");
-            }
         }
         if (port != 0 && !port_already_copied_out) {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -642,9 +466,6 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                        .copyout(process_.pid, port,
                            xnu::ipc::type_mask(xnu::ipc::Right::Send))
                        .value_or(0);
-        }
-        if (update_process_bootstrap && port != 0) {
-            process_.bootstrap_port = port;
         }
         const std::array<std::uint32_t, 10> reply {
             0x80000012U, // complex + MOVE_SEND_ONCE

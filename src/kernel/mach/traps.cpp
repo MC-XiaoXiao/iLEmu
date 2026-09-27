@@ -142,15 +142,17 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
         dispatch_mach_thread_self_trap(cpu);
         return;
     case 28: // task_self_trap
-        registers[0] = process_.task_port;
-        return;
     case 29: { // host_self_trap
         std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto name = shared_state_->mach_namespaces.copyout_at_name(
-            process_.pid, mach_task_identity::initial_host_self_name,
-            xnu::ipc::type_mask(xnu::ipc::Right::Send), process_.host_port);
-        process_.host_port = name.value_or(xnu::ipc::null_name);
-        registers[0] = process_.host_port;
+        const auto task = mach_task_identity::control_port_locked(*shared_state_, process_);
+        const auto object = mach_task_identity::special_port_locked(
+            *shared_state_, task, trap == 28 ? 1U : 2U);
+        if (object == xnu::ipc::null_name) registers[0] = xnu::ipc::null_name;
+        else if (!shared_state_->mach_port_objects.contains(object))
+            registers[0] = xnu::ipc::dead_name;
+        else
+            registers[0] = shared_state_->mach_namespaces.copyout(process_.pid, object,
+                xnu::ipc::type_mask(xnu::ipc::Right::Send)).value_or(0U);
         return;
     }
     case 44: { // task_name_for_pid(target_task, pid, task_name_out)
@@ -179,26 +181,11 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
                     (target_process->second.uid == process_.effective_uid &&
                         target_process->second.effective_uid ==
                             process_.effective_uid))) {
-                auto task_name_port =
-                    std::find_if(shared_state_->task_name_port_pids.begin(),
-                        shared_state_->task_name_port_pids.end(),
-                        [requested_pid](const auto& entry) {
-                            return entry.second == requested_pid;
-                        });
-                if (task_name_port ==
-                    shared_state_->task_name_port_pids.end()) {
-                    const auto object = shared_state_->allocate_mach_object();
-                    if (shared_state_->mach_port_objects.create(object)) {
-                        task_name_port = shared_state_->task_name_port_pids
-                                             .emplace(object, requested_pid)
-                                             .first;
-                    }
-                }
-                if (task_name_port !=
-                    shared_state_->task_name_port_pids.end()) {
+                const auto object = mach_task_identity::name_port_locked(*shared_state_, requested_pid);
+                if (object != xnu::ipc::null_name) {
                     result_port =
                         shared_state_->mach_namespaces
-                            .copyout(process_.pid, task_name_port->first,
+                            .copyout(process_.pid, object,
                                 xnu::ipc::type_mask(
                                     xnu::ipc::Right::Send))
                             .value_or(0);

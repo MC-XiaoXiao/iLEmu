@@ -237,12 +237,19 @@ enum class DarwinThreadTimeshareAbi : std::uint8_t {
 
 enum class DarwinThreadPriorityFloor : std::uint8_t { Unrestricted, Throttle };
 
+// XNU 792 ledger slots; 1228 adds name/security/automount; 1504 drops
+// automount; 2050 drops ledgers/GSSD; 2782 adds debug control.
+enum class DarwinTaskSpecialPortsAbi : std::uint8_t {
+    Ledger, SecurityLedgerAutomount, SecurityLedger, Security, SecurityDebug,
+};
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
         DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors
     };
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
+    DarwinTaskSpecialPortsAbi task_special_ports { DarwinTaskSpecialPortsAbi::Ledger };
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {

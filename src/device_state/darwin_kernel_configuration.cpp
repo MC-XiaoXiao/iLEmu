@@ -20,6 +20,7 @@ namespace {
         .abi_epoch = DarwinAbiEpoch::IphoneOs2,
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ReverseCompactDescriptors,
+        .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedgerAutomount,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidSizedQueries,
         .activation_hardware_model_policy =
             ActivationHardwareModelPolicy::DevelopmentBoard,
@@ -30,6 +31,7 @@ namespace {
         .abi_epoch = DarwinAbiEpoch::Darwin11,
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+        .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
         .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi =
@@ -67,6 +69,7 @@ namespace {
         auto abi = darwin11_wide_vm_high_vectors_abi;
         abi.abi_epoch = DarwinAbiEpoch::Darwin13;
         abi.task_suspension = DarwinTaskSuspensionAbi::ProtectedPidHold;
+        abi.task_special_ports = DarwinTaskSpecialPortsAbi::Security;
         abi.sandbox_abi = DarwinSandboxAbi::Wide64Arguments;
         abi.mach_port_context = DarwinMachVmAddressWidth::Wide64;
         abi.memory_status_priority = DarwinMemoryStatusPriorityAbi::SignedPriority;
@@ -81,6 +84,7 @@ namespace {
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
         .task_suspension = DarwinTaskSuspensionAbi::ResumePortTokens,
+        .task_special_ports = DarwinTaskSpecialPortsAbi::Security,
         .thread_timeshare = DarwinThreadTimeshareAbi::CanonicalBoolean,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
@@ -116,6 +120,7 @@ namespace {
     // Older expanded-region callers retain their original stack and queues.
     constexpr DarwinAbi darwin14_fine_priority_abi = [] {
         auto abi = darwin14_expanded_shared_region_abi;
+        abi.task_special_ports = DarwinTaskSpecialPortsAbi::SecurityDebug;
         abi.pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues;
         abi.sysctl_by_name_abi = DarwinSysctlByNameAbi::NamedSysctlAt274;
@@ -160,6 +165,7 @@ namespace {
             .darwin_release = "10.0.0d3",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::IphoneOs3,
+                .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidSizedQueries,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
@@ -173,6 +179,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
@@ -194,6 +201,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
@@ -215,6 +223,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1TsdBase,
                 .apple80211_ioctl =
@@ -237,6 +246,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin11,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi =

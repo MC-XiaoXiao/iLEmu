@@ -581,17 +581,17 @@ namespace mach_support {
                 ++task;
             }
         }
-        // A task special-port table stores raw global objects rather than
-        // task-local names. Remove both entries owned by this task object and
-        // references from surviving tasks when the backing ipc_port dies.
-        for (auto special = state.task_special_ports.begin();
-            special != state.task_special_ports.end();) {
-            std::erase_if(special->second,
-                [object](const auto& entry) { return entry.second == object; });
-            if (special->first == object || special->second.empty()) {
-                special = state.task_special_ports.erase(special);
-            } else {
-                ++special;
+        // Surviving slots retain dead ipc_port identities. copy_send returns
+        // DEAD while write-once slots still reject replacing that pointer.
+        // Destroying the owning task releases every kernel-held send.
+        if (const auto task = state.task_special_ports.find(object);
+            task != state.task_special_ports.end()) {
+            auto held = std::move(task->second);
+            state.task_special_ports.erase(task);
+            for (const auto& [which, port] : held) {
+                static_cast<void>(which);
+                if (port != xnu::ipc::null_name && port != xnu::ipc::dead_name)
+                    release_kernel_send_right_locked(state, port);
             }
         }
         if (auto task = state.task_exception_actions.find(object);

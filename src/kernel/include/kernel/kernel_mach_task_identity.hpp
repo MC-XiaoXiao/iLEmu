@@ -32,6 +32,14 @@ namespace mach_task_identity {
     inline constexpr std::uint32_t initial_io_master_name = 0x703U;
     inline constexpr std::uint32_t initial_io_registry_options_name = 0x713U;
 
+    // Call with mach_mutex held. Control identity is independent of TASK_KERNEL_PORT.
+    [[nodiscard]] std::uint32_t control_port_locked(
+        const KernelSharedState& state, const ProcessContext& process);
+    [[nodiscard]] std::uint32_t special_port_locked(
+        const KernelSharedState& state, std::uint32_t task, std::uint32_t which);
+    [[nodiscard]] std::uint32_t name_port_locked(
+        KernelSharedState& state, std::uint32_t pid);
+
     // Installs the task-local names for PID 1 while allocating distinct global
     // ipc_port objects for its task, thread, and bootstrap/job ports.
     [[nodiscard]] bool initialize_root(
