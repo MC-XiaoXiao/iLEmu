@@ -10,9 +10,12 @@
 
 #include "kernel/mach_descriptor_transport.hpp"
 
+#include "kernel/darwin_abi.hpp"
+
 #include "mach/mig_wire_abi.hpp"
 
-#include <limits>
+#include <algorithm>
+#include <utility>
 
 namespace ilemu::mach_transport {
 namespace {
@@ -30,7 +33,7 @@ namespace {
         return result;
     }
 
-    std::optional<DescriptorKind> descriptor_kind(std::uint32_t metadata)
+    DescriptorKind descriptor_kind(std::uint32_t metadata)
     {
         switch (metadata >> darwin::mig_wire::descriptor_type_shift) {
         case darwin::mig_wire::port_descriptor_type:
@@ -41,7 +44,7 @@ namespace {
         case darwin::mig_wire::ool_ports_descriptor_type:
             return DescriptorKind::OutOfLinePorts;
         default:
-            return std::nullopt;
+            return DescriptorKind::Unknown;
         }
     }
 
@@ -57,45 +60,65 @@ std::uint32_t Descriptor::disposition() const
     return (metadata >> darwin::mig_wire::descriptor_disposition_shift) & 0xffU;
 }
 
+namespace {
+
+    CopyinDescriptorTable read_descriptors(
+        std::span<const std::byte> message, bool copyin)
+    {
+        using namespace darwin::mig_wire;
+        if (message.size() < message_header_size)
+            return { { }, darwin::mach_message::send_message_too_small };
+        const auto bits = read_word(message, header_bits_offset);
+        if ((bits & message_complex_bit) == 0)
+            return { };
+        if (message.size() < complex_descriptor_base) {
+            // Legacy ipc_kmsg_get supplies a zero trailer/count after a
+            // header-only complex message (XNU 792 through 2782).
+            if (copyin && message.size() == message_header_size)
+                return { };
+            return { { }, darwin::mach_message::send_message_too_small };
+        }
+
+        const auto count = read_word(message, complex_descriptor_count_offset);
+        const auto available =
+            (message.size() - complex_descriptor_base) / descriptor_size;
+        CopyinDescriptorTable result;
+        result.descriptors.reserve(std::min<std::size_t>(count, available));
+        for (std::uint32_t index = 0; index < count; ++index) {
+            // Bounds and copy options are checked together, so an earlier
+            // invalid copy option wins over a later truncated descriptor.
+            if (index >= available)
+                return { { }, darwin::mach_message::send_message_too_small };
+            const auto offset = descriptor_offset(index);
+            const auto metadata = read_word(message, descriptor_metadata_offset(index));
+            const auto kind = descriptor_kind(metadata);
+            if ((!copyin && kind == DescriptorKind::Unknown) ||
+                (copyin && kind == DescriptorKind::OutOfLineMemory &&
+                    ((metadata >> descriptor_copy_shift) & 0xffU) > 1U)) {
+                return { { }, darwin::mach_message::send_invalid_type };
+            }
+            result.descriptors.push_back(Descriptor { kind, offset,
+                read_word(message, offset), read_word(message, offset + word_size),
+                metadata });
+        }
+        return result;
+    }
+
+} // namespace
+
+CopyinDescriptorTable preflight_copyin_descriptors(
+    std::span<const std::byte> message)
+{
+    return read_descriptors(message, true);
+}
+
 std::optional<std::vector<Descriptor>> parse_descriptors(
     std::span<const std::byte> message)
 {
-    if (message.size() < darwin::mig_wire::message_header_size)
+    auto result = read_descriptors(message, false);
+    if (result.error != 0U)
         return std::nullopt;
-    const auto bits = read_word(message, darwin::mig_wire::header_bits_offset);
-    if ((bits & darwin::mig_wire::message_complex_bit) == 0)
-        return std::vector<Descriptor> { };
-    if (message.size() < darwin::mig_wire::complex_descriptor_base)
-        return std::nullopt;
-
-    const auto count =
-        read_word(message, darwin::mig_wire::complex_descriptor_count_offset);
-    if (count > (std::numeric_limits<std::size_t>::max() -
-                    darwin::mig_wire::complex_descriptor_base) /
-                    darwin::mig_wire::descriptor_size) {
-        return std::nullopt;
-    }
-    const auto descriptor_end =
-        static_cast<std::size_t>(darwin::mig_wire::complex_descriptor_base) +
-        static_cast<std::size_t>(count) * darwin::mig_wire::descriptor_size;
-    if (descriptor_end > message.size())
-        return std::nullopt;
-
-    std::vector<Descriptor> descriptors;
-    descriptors.reserve(count);
-    for (std::uint32_t index = 0; index < count; ++index) {
-        const auto offset = darwin::mig_wire::descriptor_offset(index);
-        const auto metadata = read_word(
-            message, darwin::mig_wire::descriptor_metadata_offset(index));
-        const auto kind = descriptor_kind(metadata);
-        if (!kind)
-            return std::nullopt;
-        descriptors.push_back(
-            Descriptor { *kind, offset, read_word(message, offset),
-                read_word(message, offset + darwin::mig_wire::word_size),
-                metadata });
-    }
-    return descriptors;
+    return std::move(result.descriptors);
 }
 
 } // namespace ilemu::mach_transport

@@ -22,6 +22,7 @@ enum class DescriptorKind : std::uint8_t {
     Port,
     OutOfLineMemory,
     OutOfLinePorts,
+    Unknown,
 };
 
 struct Descriptor {
@@ -34,6 +35,17 @@ struct Descriptor {
     [[nodiscard]] bool deallocate() const;
     [[nodiscard]] std::uint32_t disposition() const;
 };
+
+struct CopyinDescriptorTable {
+    std::vector<Descriptor> descriptors;
+    std::uint32_t error { };
+};
+
+// Preflight the legacy 32-bit send layout in physical descriptor order.
+// Unknown types survive preflight and fail when body copyin reaches them.
+// Apply error only after atomic header copyin; preflight has no side effects.
+[[nodiscard]] CopyinDescriptorTable preflight_copyin_descriptors(
+    std::span<const std::byte> message);
 
 // Parses the natural-aligned 32-bit descriptor table used by Darwin 8. An
 // empty vector is a valid simple message; nullopt denotes malformed or unknown

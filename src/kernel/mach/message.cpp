@@ -605,7 +605,8 @@ void CompatibilityKernel::dispatch_mach_message(
                         static_cast<char>(character));
                 }
             }
-            const auto descriptors = mach_transport::parse_descriptors(*bytes);
+            const auto descriptor_table = mach_transport::preflight_copyin_descriptors(*bytes);
+            const auto& descriptors = descriptor_table.descriptors;
             std::unique_lock mach_lock { shared_state_->mach_mutex };
             const auto destination_disposition = *bits & 0xffU;
             const auto destination_right =
@@ -973,21 +974,9 @@ void CompatibilityKernel::dispatch_mach_message(
                     mach_transport::CopyinCleanup cleanup { *shared_state_,
                         queued, destination_right == xnu::ipc::Right::SendOnce
                                      ? destination_object : std::nullopt };
-                    if (!descriptors) {
-                        registers[0] = darwin::mach_message::send_invalid_type;
+                    if (descriptor_table.error != 0U) {
+                        registers[0] = descriptor_table.error;
                         return;
-                    }
-                    // Native body preflight validates copy options before
-                    // consuming any descriptor, but after atomic header copyin.
-                    for (const auto& descriptor : *descriptors) {
-                        const auto copy = (descriptor.metadata >>
-                            darwin::mig_wire::descriptor_copy_shift) & 0xffU;
-                        if (descriptor.kind ==
-                                mach_transport::DescriptorKind::OutOfLineMemory &&
-                            copy > 1U) {
-                            registers[0] = darwin::mach_message::send_invalid_type;
-                            return;
-                        }
                     }
                     const mach_transport::OolCopyin ool_copyin { memory_ };
                     const auto copy_port = [&](std::uint32_t name,
@@ -1029,9 +1018,13 @@ void CompatibilityKernel::dispatch_mach_message(
                     };
                     const auto reverse = shared_state_->darwin_abi.mach_descriptor_copyin ==
                         DarwinMachDescriptorCopyinAbi::ReverseCompactDescriptors;
-                    for (std::size_t index = 0; index < descriptors->size(); ++index) {
-                        const auto& descriptor = (*descriptors)[
-                            reverse ? descriptors->size() - 1U - index : index];
+                    for (std::size_t index = 0; index < descriptors.size(); ++index) {
+                        const auto& descriptor = descriptors[
+                            reverse ? descriptors.size() - 1U - index : index];
+                        if (descriptor.kind == mach_transport::DescriptorKind::Unknown) {
+                            registers[0] = darwin::mach_message::send_invalid_type;
+                            return;
+                        }
                         bool copied = true;
                         if (descriptor.kind == mach_transport::DescriptorKind::Port) {
                             copied = copy_port(descriptor.address_or_name,
