@@ -38,6 +38,7 @@
 
 #include "host/service_ports.hpp"
 #include "port/notifications.hpp"
+#include "port/lifecycle.hpp"
 #include "port/queries.hpp"
 #include "task/enumeration.hpp"
 #include "task/special_ports.hpp"
@@ -245,6 +246,8 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
         kernel_service_handled = true;
         const auto destination = port_mig::Queries::handles(message_id)
             ? port_mig::Queries::dispatch_locked(*shared_state_, remote_object, queued)
+            : port_mig::Lifecycle::handles(message_id)
+            ? port_mig::Lifecycle::dispatch_locked(*shared_state_, remote_object, queued)
             : port_mig::Notifications::handles(message_id)
             ? port_mig::Notifications::dispatch_locked(*shared_state_, remote_object, queued)
             : task_mig::Enumeration::handles(message_id)

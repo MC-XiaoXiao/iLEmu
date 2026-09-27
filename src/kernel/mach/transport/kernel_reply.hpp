@@ -19,13 +19,19 @@
 #include <vector>
 
 namespace ilemu::mach_ipc {
-// Validate an uncontended fixed task RPC before dispatching in-kernel.
-// The service either queues its reply or uses the shared direct copyout.
-template <typename Dispatch>
-bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
+struct TaskRpcDestination {
+    std::uint32_t task_object;
+    std::uint32_t reply_object;
+};
+
+// Keep the capability checks independent of request storage. Fixed scalar
+// services can copy in on the stack and allocate only if a reply must queue.
+// The caller holds mach_mutex through copyin, dispatch and reply delivery.
+inline std::optional<TaskRpcDestination> validate_task_rpc_locked(
+    AddressSpace& memory, KernelSharedState& state,
     const ProcessContext& process, std::span<const std::uint32_t> registers,
     std::uint32_t bits, std::uint32_t reply_name, std::uint32_t request_size,
-    std::uint32_t minimum_reply_size, Dispatch&& dispatch, bool complex = false)
+    std::uint32_t minimum_reply_size, bool complex = false)
 {
     using namespace mach_support;
     constexpr auto send_receive = darwin::mach_message::option_send |
@@ -40,20 +46,35 @@ bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
         (registers[1] & send_receive) != send_receive ||
         (registers[1] & ~options) != 0U || registers[2] != request_size ||
         registers[3] < minimum_reply_size || registers[4] != reply_name)
-        return false;
+        return std::nullopt;
     const auto target = memory.read32(registers[0] + 8U);
     const auto object = target ? resolve_name_with_right(state, process.pid,
                                      *target, xnu::ipc::Right::Send)
                                : std::nullopt;
     if (!object || !state.task_port_pids.contains(*object))
-        return false;
+        return std::nullopt;
     const auto reply = resolve_name_with_right(
         state, process.pid, reply_name, xnu::ipc::Right::Receive);
     if (!reply || !state.mach_port_objects.contains(*reply) ||
         state.mach_port_set_links_by_member.contains(*reply))
-        return false;
+        return std::nullopt;
     const auto queue = state.mach_queues.find(*reply);
     if (queue == state.mach_queues.end() || !queue->second.empty())
+        return std::nullopt;
+    return TaskRpcDestination { *object, *reply };
+}
+
+// Validate an uncontended fixed task RPC before dispatching in-kernel.
+// The service either queues its reply or uses the shared direct copyout.
+template <typename Dispatch>
+bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
+    const ProcessContext& process, std::span<const std::uint32_t> registers,
+    std::uint32_t bits, std::uint32_t reply_name, std::uint32_t request_size,
+    std::uint32_t minimum_reply_size, Dispatch&& dispatch, bool complex = false)
+{
+    const auto destination = validate_task_rpc_locked(memory, state, process,
+        registers, bits, reply_name, request_size, minimum_reply_size, complex);
+    if (!destination)
         return false;
     KernelSharedState::MachMessage request;
     request.bytes.resize(request_size);
@@ -61,9 +82,9 @@ bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
         return false;
     // COPY_SEND does not consume a task uref; MAKE_SEND_ONCE is created
     // directly in transit under mach_mutex, as in ipc_kobject_server.
-    request.reply_object = reply;
+    request.reply_object = destination->reply_object;
     request.reply_right = xnu::ipc::Right::SendOnce;
-    return dispatch(*object, request).has_value();
+    return dispatch(destination->task_object, request).has_value();
 }
 
 // Direct handoff of an uncontended COPY_SEND/MAKE_SEND_ONCE RPC.

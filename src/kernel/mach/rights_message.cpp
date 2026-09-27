@@ -214,63 +214,13 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
     }
     if ((*message_id ==
                 mig_message_id(
-                    xnu::mig::mach_port::Routine::mach_port_deallocate) ||
-            *message_id ==
-                mig_message_id(
                     xnu::mig::mach_port::Routine::mach_port_insert_right) ||
             *message_id ==
                 mig_message_id(xnu::mig::task::Routine::semaphore_destroy)) &&
         registers[3] >= 36) {
-        // mach_port_deallocate / mach_port_insert_right / semaphore_destroy
+        // mach_port_insert_right / semaphore_destroy
         std::uint32_t kernel_result = 0;
         if (*message_id ==
-            mig_message_id(
-                xnu::mig::mach_port::Routine::mach_port_deallocate)) {
-            const auto name = memory_
-                                  .read32(message_address +
-                                          xnu::mig::mach_port::
-                                              mach_port_deallocate_arguments[1]
-                                                  .request_offset)
-                                  .value_or(0);
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto task = target_task_for_port(
-                *shared_state_, process_.pid, *remote_port);
-            if (!task) {
-                kernel_result = 4; // KERN_INVALID_ARGUMENT
-            } else if (name == xnu::ipc::null_name ||
-                       name == xnu::ipc::dead_name) {
-                kernel_result = 0;
-            } else {
-                const auto entry =
-                    shared_state_->mach_namespaces.lookup(*task, name);
-                if (!entry) {
-                    kernel_result = 15; // KERN_INVALID_NAME
-                } else {
-                    const auto has = [&](xnu::ipc::Right right) {
-                        return (entry->type & xnu::ipc::type_mask(right)) !=
-                               0;
-                    };
-                    const auto right = has(xnu::ipc::Right::Send)
-                                           ? xnu::ipc::Right::Send
-                                       : has(xnu::ipc::Right::SendOnce)
-                                           ? xnu::ipc::Right::SendOnce
-                                       : has(xnu::ipc::Right::DeadName)
-                                           ? xnu::ipc::Right::DeadName
-                                           : xnu::ipc::Right::Receive;
-                    if (right == xnu::ipc::Right::Receive) {
-                        kernel_result = 17;
-                    } else {
-                        kernel_result = modify_port_references_locked(
-                            *shared_state_, *task, name, right, -1);
-                    }
-                }
-                if (kernel_result == 18 || kernel_result == 19) {
-                    // ipc_right_dealloc reports a wrong kind of right for
-                    // this interface, not a delta-validation error.
-                    kernel_result = 17; // KERN_INVALID_RIGHT
-                }
-            }
-        } else if (*message_id ==
                    mig_message_id(
                        xnu::mig::task::Routine::semaphore_destroy)) {
             constexpr std::uint32_t semaphore_destroy_request_size =

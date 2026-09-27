@@ -38,6 +38,7 @@
 
 #include "host/service_ports.hpp"
 #include "port/notifications.hpp"
+#include "port/lifecycle.hpp"
 #include "port/queries.hpp"
 #include "task/enumeration.hpp"
 #include "task/special_ports.hpp"
@@ -205,6 +206,21 @@ void CompatibilityKernel::dispatch_mach_message(
     const bool thread_policy_request = thread_mig::Policy::handles(*message_id);
     const bool port_query_request = port_mig::Queries::handles(*message_id);
     const bool port_notification_request = port_mig::Notifications::handles(*message_id);
+    const bool port_lifecycle_request = port_mig::Lifecycle::handles(*message_id);
+    if (port_lifecycle_request && pending_mach_receives_.empty()) {
+        std::optional<port_mig::Lifecycle::SynchronousReply> reply;
+        {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            reply = port_mig::Lifecycle::try_synchronous_locked(memory_,
+                *shared_state_, process_, registers, *bits, *local_port,
+                receive_address.value_or(message_address));
+        }
+        if (reply) {
+            if (reply->received_status) registers[0] = *reply->received_status;
+            else begin_mach_receive(cpu, receive_address);
+            return;
+        }
+    }
     if (port_notification_request && pending_mach_receives_.empty()) {
         std::optional<port_mig::Notifications::SynchronousReply> reply;
         {
@@ -228,7 +244,7 @@ void CompatibilityKernel::dispatch_mach_message(
     }
     if (!separate_receive && !clock_service_request && !host_service_request &&
         !task_service_request && !thread_policy_request && !port_query_request &&
-        !port_notification_request) {
+        !port_notification_request && !port_lifecycle_request) {
         const auto is_bootstrap_port = [&] {
             std::lock_guard lock { shared_state_->mach_mutex };
             const auto task = mach_task_identity::control_port_locked(*shared_state_, process_);
@@ -624,7 +640,7 @@ void CompatibilityKernel::dispatch_mach_message(
                     ? kernel_clock::Server::identify(*destination_object, *message_id)
                     : std::nullopt;
             const auto kernel_service = destination_port &&
-                destination_port->kernel_owned && (host_service_request || task_service_request || thread_policy_request || port_query_request || port_notification_request);
+                destination_port->kernel_owned && (host_service_request || task_service_request || thread_policy_request || port_query_request || port_notification_request || port_lifecycle_request);
             if (destination_port && destination_port->kernel_owned &&
                 !clock_service && !kernel_service) {
                 if (separate_receive) {

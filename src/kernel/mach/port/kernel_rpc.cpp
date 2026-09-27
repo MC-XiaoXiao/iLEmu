@@ -14,6 +14,7 @@
 
 #include "../support.hpp"
 #include "guarded.hpp"
+#include "lifecycle.hpp"
 
 #include <mutex>
 
@@ -50,29 +51,15 @@ bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
     if (trap == 16U) { // _kernelrpc_mach_port_allocate_trap
         const auto right = registers[1];
         const auto output_address = registers[2];
-        if (right != 1U && right != 3U && right != 4U) {
-            registers[0] = darwin::mach::invalid_value;
+        const auto allocated = port_mig::Lifecycle::allocate_locked(
+            *shared_state_, *target, right);
+        if (allocated.error != 0U) {
+            registers[0] = allocated.error;
             return true;
         }
-
-        const auto object = shared_state_->allocate_mach_object();
-        const auto name = shared_state_->mach_namespaces.allocate(
-            *target, object, 1U << (right + 16U));
-        if (!name) {
-            registers[0] = darwin::mach::no_space;
-            return true;
-        }
-        if (right == 1U) {
+        if (!memory_.write32(output_address, allocated.name)) {
             static_cast<void>(
-                shared_state_->mach_port_objects.create(object, *target));
-            shared_state_->mach_queues.try_emplace(object);
-        } else if (right == 3U) {
-            static_cast<void>(
-                shared_state_->create_mach_port_set_locked(object));
-        }
-        if (!memory_.write32(output_address, *name)) {
-            static_cast<void>(
-                destroy_port_name_locked(*shared_state_, *target, *name));
+                destroy_port_name_locked(*shared_state_, *target, allocated.name));
             registers[0] = darwin::mach::invalid_address;
             return true;
         }
@@ -121,33 +108,8 @@ bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
         return true;
     }
 
-    // _kernelrpc_mach_port_deallocate_trap. mach_port_deallocate releases a
-    // send, send-once, or dead-name user reference; it must not consume the
-    // receive right when a composite name has no send reference.
-    const auto name = registers[1];
-    if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name) {
-        registers[0] = darwin::mach::success;
-        return true;
-    }
-    const auto entry = shared_state_->mach_namespaces.lookup(*target, name);
-    if (!entry) {
-        registers[0] = darwin::mach::invalid_name;
-        return true;
-    }
-    const auto has = [&](xnu::ipc::Right right) {
-        return (entry->type & xnu::ipc::type_mask(right)) != 0;
-    };
-    const auto right = has(xnu::ipc::Right::Send)
-                           ? xnu::ipc::Right::Send
-                       : has(xnu::ipc::Right::SendOnce)
-                           ? xnu::ipc::Right::SendOnce
-                       : has(xnu::ipc::Right::DeadName)
-                           ? xnu::ipc::Right::DeadName
-                           : xnu::ipc::Right::Receive;
-    registers[0] = right == xnu::ipc::Right::Receive
-                       ? darwin::mach::invalid_right
-                       : modify_port_references_locked(
-                             *shared_state_, *target, name, right, -1);
+    registers[0] = port_mig::Lifecycle::deallocate_locked(
+        *shared_state_, *target, registers[1]);
     return true;
 }
 
