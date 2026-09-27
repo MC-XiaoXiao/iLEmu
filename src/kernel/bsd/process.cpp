@@ -999,8 +999,11 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         }
 
         if (process_runnable_handler_) {
-            for (const auto pid : target_processes)
+            for (const auto pid : target_processes) {
                 process_runnable_handler_(pid, resume);
+                if (!resume)
+                    cpu.request_guest_preemption();
+            }
         }
         output_.write(
             std::string { resume ? "[process] pid-resume" :
