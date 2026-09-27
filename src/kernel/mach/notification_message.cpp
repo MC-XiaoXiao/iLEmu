@@ -1,286 +1,235 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
-//
-// Handle Mach port notification registration and reply metadata.
-//
-// Apple public ABI/behavior references (guest profiles may differ):
-// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/mach_port.defs
 
-#include "mach/bootstrap_mig_ids.hpp"
-#include "kernel/darwin_abi.hpp"
-#include "kernel/darwin_kqueue_abi.hpp"
-#include "network/darwin_network_abi.hpp"
-#include "kernel/darwin_resource_abi.hpp"
-#include "network/darwin_route_socket.hpp"
-#include "kernel/kernel.hpp"
-#include "kernel/kernel_clock.hpp"
-#include "kernel/kernel_iokit.hpp"
-#include "kernel/kernel_mach_ipc.hpp"
-#include "kernel/kernel_network.hpp"
-#include "kernel/mach_clock_abi.hpp"
-#include "mach/mach_host_mig_ids.hpp"
-#include "mach/mach_port_mig_ids.hpp"
-#include "kernel/mach_scheduler_abi.hpp"
-#include "kernel/mach_thread_policy_abi.hpp"
-#include "mach/mig_wire_abi.hpp"
-#include "mach/task_mig_ids.hpp"
-#include "mach/thread_act_mig_ids.hpp"
-#include "mach/vm_map_mig_ids.hpp"
-#include "mach/xnu_mig_adapter.hpp"
+#include "port/notifications.hpp"
+#include "transport/kernel_reply.hpp"
+#include "transport/port_copyout.hpp"
 
-#include <algorithm>
-#include <array>
-#include <bit>
-#include <cstddef>
-#include <cstdint>
-#include <fstream>
-#include <iterator>
-#include <limits>
-#include <span>
-#include <string_view>
-#include <utility>
-#include <vector>
-
-#include "support.hpp"
-
-namespace ilemu {
-
+namespace ilemu::port_mig {
 using namespace mach_support;
 
-bool CompatibilityKernel::dispatch_mach_notification_message(
-    Cpu& cpu, const MachMessageRequest& request)
+std::optional<Notifications::SynchronousReply> Notifications::try_synchronous_locked(AddressSpace& memory,
+    KernelSharedState& state, const ProcessContext& process,
+    std::span<const std::uint32_t> registers, std::uint32_t bits,
+    std::uint32_t reply_name, std::uint32_t receive_address)
 {
-    auto& registers = cpu.registers();
-    const auto message_address = request.address;
-    const std::optional<std::uint32_t> bits { request.bits };
-    const std::optional<std::uint32_t> remote_port { request.remote_port };
-    const std::optional<std::uint32_t> local_port { request.local_port };
-    const std::optional<std::uint32_t> message_id { request.identifier };
-    if (*message_id == mig_message_id(xnu::mig::mach_port::Routine::
-                               mach_port_request_notification) &&
-        registers[3] >= 40) {
-        // mach_port_request_notification(task, name, id, sync, notify).
-        // Darwin 8 MIG places the notify descriptor before NDR/scalars.
-        std::uint32_t result = 0;
-        std::uint32_t previous_name = 0;
-        if (registers[2] < 60) {
-            result = 4; // KERN_INVALID_ARGUMENT
-        } else {
-            const auto& notification_arguments = xnu::mig::mach_port::
-                mach_port_request_notification_arguments;
-            const auto notify_name =
-                memory_
-                    .read32(message_address +
-                            notification_arguments[4].request_offset)
-                    .value_or(0);
-            const auto descriptor_word =
-                memory_
-                    .read32(message_address +
-                            notification_arguments[4].request_offset +
-                            2U * sizeof(std::uint32_t))
-                    .value_or(0);
-            const auto name =
-                memory_
-                    .read32(message_address +
-                            notification_arguments[1].request_offset)
-                    .value_or(0);
-            const auto notification =
-                memory_
-                    .read32(message_address +
-                            notification_arguments[2].request_offset)
-                    .value_or(0);
-            const auto sync =
-                memory_
-                    .read32(message_address +
-                            notification_arguments[3].request_offset)
-                    .value_or(0);
-            const auto disposition =
-                (descriptor_word >>
-                    darwin::mig_wire::descriptor_disposition_shift) &
-                0xffU;
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto target = target_task_for_port(
-                *shared_state_, process_.pid, *remote_port);
-            const auto entry =
-                target ? shared_state_->mach_namespaces.lookup(*target, name)
-                       : std::nullopt;
-            const auto receive_type =
-                xnu::ipc::type_mask(xnu::ipc::Right::Receive);
-            const auto dead_name_types =
-                receive_type |
-                xnu::ipc::type_mask(xnu::ipc::Right::Send) |
-                xnu::ipc::type_mask(xnu::ipc::Right::SendOnce) |
-                xnu::ipc::type_mask(xnu::ipc::Right::DeadName);
-            if (!target) {
-                result = 4;
-            } else if (notification != mach_notify_port_destroyed &&
-                       notification != mach_notify_no_senders &&
-                       notification != mach_notify_dead_name &&
-                       notification != mach_notify_send_possible) {
-                result = 18; // KERN_INVALID_VALUE
-            } else if (!entry) {
-                result = 15; // KERN_INVALID_NAME
-            } else if ((notification == mach_notify_port_destroyed ||
-                           notification == mach_notify_no_senders) &&
-                       (entry->type & receive_type) == 0) {
-                result = 17; // KERN_INVALID_RIGHT
-            } else if ((notification == mach_notify_dead_name ||
-                           notification == mach_notify_send_possible) &&
-                       (entry->type & dead_name_types) == 0) {
-                result = 17;
-            } else if (notification == mach_notify_port_destroyed &&
-                       sync != 0) {
-                result = 18;
+    std::optional<SynchronousReply> reply;
+    mach_ipc::try_task_rpc_locked(memory, state, process, registers,
+        bits, reply_name, 60U, 48U,
+        [&](std::uint32_t object, KernelSharedState::MachMessage& request)
+            -> std::optional<std::uint32_t> {
+            if (read_little_word(request.bytes, 16U) != 0U ||
+                read_little_word(request.bytes, 24U) != 1U)
+                return std::nullopt;
+            const auto descriptor = read_little_word(request.bytes, 36U);
+            const auto name = read_little_word(request.bytes, 28U);
+            if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name) {
+                if (descriptor != (18U << 16U) && descriptor != (21U << 16U))
+                    return std::nullopt;
             } else {
-                std::uint32_t notify_object = 0;
-                if (notify_name != 0) {
-                    const auto right = right_for_disposition(disposition);
-                    const auto source_right =
-                        source_right_for_disposition(disposition);
-                    const auto object =
-                        source_right
-                            ? resolve_name_with_right(*shared_state_,
-                                  process_.pid, notify_name, *source_right)
-                            : std::nullopt;
-                    if (!right || *right != xnu::ipc::Right::SendOnce ||
-                        !object) {
-                        result = 20; // KERN_INVALID_CAPABILITY
-                    } else {
-                        notify_object = *object;
-                    }
-                }
-                if (result == 0) {
-                    const auto dead_type =
-                        xnu::ipc::type_mask(xnu::ipc::Right::DeadName);
-                    if (notification == mach_notify_dead_name ||
-                        notification == mach_notify_send_possible) {
-                        const auto key = std::pair { *target, name };
-                        if (const auto previous = shared_state_
-                                ->mach_dead_name_notifications.find(key);
-                            previous !=
-                            shared_state_->mach_dead_name_notifications.end()) {
-                            if (previous->second.notify_object != 0) {
-                                previous_name =
-                                    shared_state_->mach_namespaces
-                                        .copyout(process_.pid,
-                                            previous->second.notify_object,
-                                            xnu::ipc::type_mask(
-                                                xnu::ipc::Right::SendOnce))
-                                        .value_or(0);
-                            }
-                            shared_state_->mach_dead_name_notifications.erase(
-                                previous);
-                        }
-                        if ((entry->type & dead_type) != 0) {
-                            if ((sync == 0 && notification == mach_notify_dead_name) ||
-                                notify_object == 0) {
-                                result = 4; // KERN_INVALID_ARGUMENT
-                            } else {
-                                static_cast<void>(
-                                    shared_state_->mach_namespaces.install(
-                                        *target, name, entry->object,
-                                        dead_type));
-                                enqueue_dead_name_notification_locked(
-                                    *shared_state_, notify_object, name);
-                            }
-                        } else if (notify_object != 0) {
-                            shared_state_->mach_dead_name_notifications.emplace(
-                                key,
-                                KernelSharedState::
-                                    MachDeadNameNotificationRequest {
-                                        entry->object, notify_object, sync,
-                                        notification == mach_notify_send_possible,
-                                        sync != 0U });
-                            if (notification == mach_notify_send_possible &&
-                                sync != 0U) {
-                                shared_state_->mach_send_possible_armed_destinations.insert(entry->object);
-                                shared_state_->notify_send_possible_locked(entry->object);
-                            }
-                        }
-                    } else {
-                        const auto key =
-                            std::pair { entry->object, notification };
-                        if (const auto previous =
-                                shared_state_->mach_notifications.find(key);
-                            previous !=
-                            shared_state_->mach_notifications.end()) {
-                            if (previous->second.notify_object != 0) {
-                                previous_name =
-                                    shared_state_->mach_namespaces
-                                        .copyout(process_.pid,
-                                            previous->second.notify_object,
-                                            xnu::ipc::type_mask(
-                                                xnu::ipc::Right::SendOnce))
-                                        .value_or(0);
-                            }
-                            shared_state_->mach_notifications.erase(previous);
-                        }
-                        if (notify_object != 0) {
-                            shared_state_->mach_notifications.emplace(key,
-                                KernelSharedState::MachNotificationRequest {
-                                    notify_object, sync });
-                            if (notification == mach_notify_no_senders) {
-                                static_cast<void>(
-                                    enqueue_no_senders_notification_locked(
-                                        *shared_state_, entry->object));
-                            }
-                        }
-                    }
-                    if (result == 0 && disposition == 18U && notify_name != 0) {
-                        static_cast<void>(consume_moved_right_locked(
-                            *shared_state_, process_.pid, notify_name,
-                            xnu::ipc::Right::SendOnce, true));
-                    }
+                if (descriptor != (21U << 16U))
+                    return std::nullopt;
+                const auto notify = resolve_name_with_right(
+                    state, process.pid, name, xnu::ipc::Right::Receive);
+                if (!notify || !state.mach_port_objects.contains(*notify))
+                    return std::nullopt;
+                // MAKE_SEND_ONCE creates a token in transit without changing
+                // sender urefs. The shared service retains or destroys it.
+                request.port_transfers.push_back({ 28U, name, std::nullopt,
+                    *notify, xnu::ipc::Right::SendOnce, 21U });
+            }
+            const auto result = evaluate_locked(state, object, request);
+            const auto receive = *request.reply_object;
+            const auto queue = state.mach_queues.find(receive);
+            const bool cleanup_to_reply = result.error != 0U &&
+                std::any_of(request.port_transfers.begin(),
+                    request.port_transfers.end(), [&](const auto& port) {
+                        return port.object == receive;
+                    });
+            // Immediate notification delivery and error cleanup may precede
+            // the RPC reply. Only bypass receive when neither can intervene.
+            if (!cleanup_to_reply && queue != state.mach_queues.end() &&
+                queue->second.empty() &&
+                memory.accessible(receive_address, 48U, MemoryPermission::Write)) {
+                std::optional<std::uint32_t> previous { result.previous };
+                if (result.error == 0U && result.previous != 0U)
+                    previous = mach_transport::PortCopyout { state, process.pid }(
+                        result.previous, xnu::ipc::Right::SendOnce);
+                if (previous) {
+                    const auto identifier = read_little_word(request.bytes, 20U);
+                    const std::array<std::uint32_t, 4> payload {
+                        result.error == 0U ? 1U : 0U,
+                        result.error == 0U ? *previous : 1U,
+                        result.error, 18U << 16U };
+                    request.reply_object.reset();
+                    request.reply_right.reset();
+                    discard_mach_message_rights_locked(state, request);
+                    const auto status = mach_ipc::copyout_kernel_reply_locked(
+                        memory, state, receive_address, reply_name, receive,
+                        identifier,
+                        std::span { payload }.first(result.error == 0U ? 4U : 3U),
+                        result.error == 0U);
+                    reply = SynchronousReply { status };
+                    return status;
                 }
             }
-        }
-        if (result != 0) {
-            const std::array<std::uint32_t, 9> reply {
-                18,
-                36,
-                *local_port,
-                0,
-                0,
-                *message_id + 100,
-                0x00000000U,
-                0x00000001U,
-                result,
-            };
-            for (std::size_t index = 0; index < reply.size(); ++index) {
-                if (!memory_.write32(message_address +
-                                         static_cast<std::uint32_t>(index * 4U),
-                        reply[index])) {
-                    registers[0] = 0x10004008U;
-                    return true;
-                }
-            }
-        } else {
-            const std::array<std::uint32_t, 10> reply {
-                0x80000012U,
-                40,
-                *local_port,
-                0,
-                0,
-                *message_id + 100,
-                1,
-                previous_name,
-                0,
-                0x00120000U, // MOVE_SEND_ONCE port descriptor
-            };
-            for (std::size_t index = 0; index < reply.size(); ++index) {
-                if (!memory_.write32(message_address +
-                                         static_cast<std::uint32_t>(index * 4U),
-                        reply[index])) {
-                    registers[0] = 0x10004008U;
-                    return true;
-                }
-            }
-        }
-        registers[0] = 0;
-        return true;
-    }
-    return false;
+            const auto destination = reply_locked(state, request, result);
+            if (destination)
+                reply = SynchronousReply { };
+            return destination;
+        }, true);
+    return reply;
 }
 
-} // namespace ilemu
+std::optional<std::uint32_t> Notifications::dispatch_locked(
+    KernelSharedState& state, std::uint32_t object,
+    KernelSharedState::MachMessage& request)
+{
+    return reply_locked(state, request, evaluate_locked(state, object, request));
+}
+
+Notifications::Result Notifications::evaluate_locked(KernelSharedState& state,
+    std::uint32_t object, KernelSharedState::MachMessage& request)
+{
+    Result result { darwin::mig::bad_arguments, 0U };
+    if (request.bytes.size() == 60U &&
+        (read_little_word(request.bytes, 0U) &
+            darwin::mig_wire::message_complex_bit) != 0U &&
+        read_little_word(request.bytes, 24U) == 1U) {
+        const auto descriptor = read_little_word(request.bytes, 36U);
+        if ((descriptor >> 24U) != 0U ||
+            darwin::mig_wire::received_port_disposition(
+                (descriptor >> 16U) & 0xffU) != 18U) {
+            result.error = darwin::mig::type_error;
+        } else {
+            auto notify = read_little_word(request.bytes, 28U);
+            for (const auto& transfer : request.port_transfers) {
+                if (transfer.descriptor_offset == 28U)
+                    notify = transfer.object;
+            }
+            result = register_locked(state, object,
+                read_little_word(request.bytes, 48U),
+                read_little_word(request.bytes, 52U),
+                read_little_word(request.bytes, 56U), notify);
+            if (result.error == 0U) {
+                // The request now owns (or has delivered) this send-once
+                // token. Failed calls leave it for ordinary IPC destruction.
+                std::erase_if(request.port_transfers, [](const auto& port) {
+                    return port.descriptor_offset == 28U;
+                });
+            }
+        }
+    }
+    return result;
+}
+
+std::optional<std::uint32_t> Notifications::reply_locked(KernelSharedState& state,
+    KernelSharedState::MachMessage& request, Result result)
+{
+    const auto identifier = read_little_word(request.bytes, 20U);
+    if (result.error != 0U) {
+        const std::array<std::uint32_t, 3> payload { 0U, 1U, result.error };
+        return mach_ipc::enqueue_kernel_reply_locked(
+            state, request, identifier, payload);
+    }
+    auto previous = result.previous;
+    if (previous != 0U && !state.mach_port_objects.contains(previous))
+        previous = xnu::ipc::dead_name;
+    const std::array<std::uint32_t, 4> payload {
+        1U, previous, 0U, 18U << 16U };
+    const std::array<KernelSharedState::MachMessage::PortTransfer, 1> ports {
+        { { 28U, 0U, std::nullopt, previous, xnu::ipc::Right::SendOnce, 18U } }
+    };
+    return mach_ipc::enqueue_kernel_reply_locked(state, request, identifier,
+        payload, std::span { ports }.first(
+            previous != 0U && previous != xnu::ipc::dead_name ? 1U : 0U),
+        { }, true);
+}
+Notifications::Result Notifications::register_locked(KernelSharedState& state,
+    std::uint32_t object, std::uint32_t name, std::uint32_t kind,
+    std::uint32_t sync, std::uint32_t notify)
+{
+    // mach_port_request_notification: validation precedes request replacement.
+    const auto target = state.task_port_pids.find(object);
+    if (target == state.task_port_pids.end())
+        return { darwin::mach::invalid_task };
+    const auto task = target->second;
+    const auto process = state.processes.find(task);
+    if (process == state.processes.end() || process->second.exited ||
+        !state.mach_namespaces.contains_task(task))
+        return { darwin::mach::invalid_task };
+    if (notify == xnu::ipc::dead_name)
+        return { 20U }; // KERN_INVALID_CAPABILITY
+    const bool modern = state.darwin_abi.mach_port_requests ==
+                        DarwinMachPortRequestAbi::SendPossibleRequests;
+    const bool send_possible = kind == mach_notify_send_possible;
+    const bool name_request = kind == mach_notify_dead_name || send_possible;
+    if ((!name_request && kind != mach_notify_port_destroyed &&
+            kind != mach_notify_no_senders) || (send_possible && !modern))
+        return { 18U }; // KERN_INVALID_VALUE
+    if (kind == mach_notify_port_destroyed && sync != 0U)
+        return { 18U };
+    if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name)
+        return { name_request ? darwin::mach::invalid_argument :
+                                darwin::mach::invalid_right };
+    const auto entry = state.mach_namespaces.lookup(task, name);
+    if (!entry)
+        return { darwin::mach::invalid_name };
+    const auto receive = xnu::ipc::type_mask(xnu::ipc::Right::Receive);
+    if (!name_request) {
+        if ((entry->type & receive) == 0U)
+            return { darwin::mach::invalid_right };
+        const auto key = std::pair { entry->object, kind };
+        Result result;
+        if (const auto old = state.mach_notifications.find(key);
+            old != state.mach_notifications.end()) {
+            result.previous = old->second.notify_object;
+            state.mach_notifications.erase(old);
+        }
+        if (notify != 0U) {
+            state.mach_notifications.emplace(key,
+                KernelSharedState::MachNotificationRequest { notify, sync });
+            if (kind == mach_notify_no_senders)
+                static_cast<void>(enqueue_no_senders_notification_locked(
+                    state, entry->object));
+        }
+        return result;
+    }
+    const auto key = std::pair { task, name };
+    const auto old = state.mach_dead_name_notifications.find(key);
+    // XNU1699 checks empty cancellation before the entry type; XNU792 does not.
+    if (modern && notify == 0U && old == state.mach_dead_name_notifications.end())
+        return { };
+    const auto port_rights = receive |
+        xnu::ipc::type_mask(xnu::ipc::Right::Send) |
+        xnu::ipc::type_mask(xnu::ipc::Right::SendOnce);
+    if ((entry->type & port_rights) == 0U) {
+        if ((entry->type & xnu::ipc::type_mask(xnu::ipc::Right::DeadName)) == 0U)
+            return { darwin::mach::invalid_right };
+        if ((!send_possible && sync == 0U) || notify == 0U)
+            return { darwin::mach::invalid_argument };
+        // The supported XNU792–2782 contracts reject an overflowing uref.
+        if (!state.mach_namespaces.modify_references(
+                task, name, xnu::ipc::Right::DeadName, 1))
+            return { 19U }; // KERN_UREFS_OVERFLOW
+        enqueue_dead_name_notification_locked(state, notify, name);
+        return { };
+    }
+    Result result;
+    if (old != state.mach_dead_name_notifications.end()) {
+        result.previous = old->second.notify_object;
+        state.mach_dead_name_notifications.erase(old);
+    }
+    if (notify != 0U) {
+        state.mach_dead_name_notifications.emplace(key,
+            KernelSharedState::MachDeadNameNotificationRequest {
+                entry->object, notify, sync, send_possible, sync != 0U });
+        if (send_possible && sync != 0U) {
+            state.mach_send_possible_armed_destinations.insert(entry->object);
+            state.notify_send_possible_locked(entry->object);
+        }
+    }
+    return result;
+}
+} // namespace ilemu::port_mig

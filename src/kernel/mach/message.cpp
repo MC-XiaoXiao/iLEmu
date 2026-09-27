@@ -37,6 +37,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "port/notifications.hpp"
 #include "port/queries.hpp"
 #include "task/enumeration.hpp"
 #include "task/special_ports.hpp"
@@ -203,13 +204,31 @@ void CompatibilityKernel::dispatch_mach_message(
                                       task_mig::SpecialPorts::handles(*message_id);
     const bool thread_policy_request = thread_mig::Policy::handles(*message_id);
     const bool port_query_request = port_mig::Queries::handles(*message_id);
+    const bool port_notification_request = port_mig::Notifications::handles(*message_id);
+    if (port_notification_request && pending_mach_receives_.empty()) {
+        std::optional<port_mig::Notifications::SynchronousReply> reply;
+        {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            reply = port_mig::Notifications::try_synchronous_locked(
+                memory_, *shared_state_, process_, registers, *bits, *local_port,
+                receive_address.value_or(message_address));
+        }
+        if (reply) {
+            if (reply->received_status)
+                registers[0] = *reply->received_status;
+            else
+                begin_mach_receive(cpu, receive_address);
+            return;
+        }
+    }
     if (!separate_receive && port_query_request && pending_mach_receives_.empty()) {
         const MachMessageRequest request { message_address, *bits, *remote_port,
             *local_port, *message_id };
         if (dispatch_mach_port_query_message(cpu, request)) return;
     }
     if (!separate_receive && !clock_service_request && !host_service_request &&
-        !task_service_request && !thread_policy_request && !port_query_request) {
+        !task_service_request && !thread_policy_request && !port_query_request &&
+        !port_notification_request) {
         const auto is_bootstrap_port = [&] {
             std::lock_guard lock { shared_state_->mach_mutex };
             const auto task = mach_task_identity::control_port_locked(*shared_state_, process_);
@@ -230,8 +249,7 @@ void CompatibilityKernel::dispatch_mach_message(
             dispatch_mach_thread_lifecycle_message(cpu, request) ||
             dispatch_mach_thread_state_message(cpu, request) ||
             dispatch_mach_task_vm_message(cpu, request) ||
-            dispatch_mach_rights_message(cpu, request) ||
-            dispatch_mach_notification_message(cpu, request)) {
+            dispatch_mach_rights_message(cpu, request)) {
             return;
         }
         const auto* vproc_log_contract =
@@ -606,7 +624,7 @@ void CompatibilityKernel::dispatch_mach_message(
                     ? kernel_clock::Server::identify(*destination_object, *message_id)
                     : std::nullopt;
             const auto kernel_service = destination_port &&
-                destination_port->kernel_owned && (host_service_request || task_service_request || thread_policy_request || port_query_request);
+                destination_port->kernel_owned && (host_service_request || task_service_request || thread_policy_request || port_query_request || port_notification_request);
             if (destination_port && destination_port->kernel_owned &&
                 !clock_service && !kernel_service) {
                 if (separate_receive) {

@@ -243,8 +243,9 @@ enum class DarwinTaskSpecialPortsAbi : std::uint8_t {
     Ledger, SecurityLedgerAutomount, SecurityLedger, Security, SecurityDebug,
 };
 
-// XNU 1699 exports send-possible request state through mach_port_names.
-enum class DarwinMachPortNamesAbi : std::uint8_t { DeadNameRequests, SendPossibleRequests };
+// XNU 1699 adds send-possible requests, exposes their state in port names,
+// and permits empty cancellation before checking the entry right type.
+enum class DarwinMachPortRequestAbi : std::uint8_t { DeadNameRequests, SendPossibleRequests };
 
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
@@ -253,7 +254,7 @@ struct DarwinAbi {
     };
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
     DarwinTaskSpecialPortsAbi task_special_ports { DarwinTaskSpecialPortsAbi::Ledger };
-    DarwinMachPortNamesAbi mach_port_names { DarwinMachPortNamesAbi::DeadNameRequests };
+    DarwinMachPortRequestAbi mach_port_requests { DarwinMachPortRequestAbi::DeadNameRequests };
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {

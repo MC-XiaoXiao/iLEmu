@@ -25,7 +25,7 @@ template <typename Dispatch>
 bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
     const ProcessContext& process, std::span<const std::uint32_t> registers,
     std::uint32_t bits, std::uint32_t reply_name, std::uint32_t request_size,
-    std::uint32_t minimum_reply_size, Dispatch&& dispatch)
+    std::uint32_t minimum_reply_size, Dispatch&& dispatch, bool complex = false)
 {
     using namespace mach_support;
     constexpr auto send_receive = darwin::mach_message::option_send |
@@ -35,7 +35,8 @@ bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
                              darwin::mach_message::option_receive_timeout |
                              darwin::mach_message::option_receive_large;
     if (bits != (darwin::mig_wire::disposition_copy_send |
-                    (darwin::mig_wire::disposition_make_send_once << 8U)) ||
+                    (darwin::mig_wire::disposition_make_send_once << 8U) |
+                    (complex ? darwin::mig_wire::message_complex_bit : 0U)) ||
         (registers[1] & send_receive) != send_receive ||
         (registers[1] & ~options) != 0U || registers[2] != request_size ||
         registers[3] < minimum_reply_size || registers[4] != reply_name)

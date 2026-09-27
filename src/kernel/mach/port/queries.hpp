@@ -157,8 +157,8 @@ private:
         // Native mach_port_type masks SPREQUEST bits for old CF callers;
         // mach_port_names exposes the complete request state since XNU1699.
         if (enumerate &&
-            state.darwin_abi.mach_port_names ==
-                DarwinMachPortNamesAbi::SendPossibleRequests &&
+            state.darwin_abi.mach_port_requests ==
+                DarwinMachPortRequestAbi::SendPossibleRequests &&
             request->second.send_possible) {
             type |= 0x40000000U;
             if (!request->second.armed)
