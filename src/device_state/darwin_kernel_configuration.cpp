@@ -65,6 +65,7 @@ namespace {
     constexpr DarwinAbi darwin13_wide_vm_high_commpage_abi = [] {
         auto abi = darwin11_wide_vm_high_vectors_abi;
         abi.abi_epoch = DarwinAbiEpoch::Darwin13;
+        abi.task_suspension = DarwinTaskSuspensionAbi::ProtectedPidHold;
         abi.sandbox_abi = DarwinSandboxAbi::Wide64Arguments;
         abi.mach_port_context = DarwinMachVmAddressWidth::Wide64;
         abi.memory_status_priority = DarwinMemoryStatusPriorityAbi::SignedPriority;
@@ -78,6 +79,7 @@ namespace {
         .abi_epoch = DarwinAbiEpoch::Later,
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+        .task_suspension = DarwinTaskSuspensionAbi::ResumePortTokens,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,

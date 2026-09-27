@@ -37,6 +37,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "task/lifecycle.hpp"
 #include "transport/port_copyin.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/copyin_cleanup.hpp"
@@ -168,7 +169,8 @@ void CompatibilityKernel::dispatch_mach_message(
             }
         }
     }
-    if (!separate_receive && !clock_service_request && !host_service_request) {
+    const bool task_service_request = task_mig::Lifecycle::handles(*message_id);
+    if (!separate_receive && !clock_service_request && !host_service_request && !task_service_request) {
         const MachMessageRequest request { message_address, *bits, *remote_port,
             *local_port, *message_id };
         if (dispatch_mach_host_message(cpu, request) ||
@@ -558,10 +560,10 @@ void CompatibilityKernel::dispatch_mach_message(
                 destination_object
                     ? kernel_clock::Server::identify(*destination_object, *message_id)
                     : std::nullopt;
-            const auto host_service = destination_port &&
-                destination_port->kernel_owned && host_service_request;
+            const auto kernel_service = destination_port &&
+                destination_port->kernel_owned && (host_service_request || task_service_request);
             if (destination_port && destination_port->kernel_owned &&
-                !clock_service && !host_service) {
+                !clock_service && !kernel_service) {
                 if (separate_receive) {
                     registers[0] = darwin::mach_message::receive_invalid_data;
                     return;
@@ -999,7 +1001,7 @@ void CompatibilityKernel::dispatch_mach_message(
                     // Simple copyin cannot change the destination under this lock.
                     const auto send_destination = simple_copy_send ? destination_port :
                         shared_state_->mach_port_objects.lookup(remote_object);
-                    if (send_destination && !host_service && !clock_service &&
+                    if (send_destination && !kernel_service && !clock_service &&
                         *destination_right != xnu::ipc::Right::SendOnce &&
                         shared_state_->mach_message_count_locked(remote_object) >=
                             send_destination->queue_limit) {
@@ -1025,7 +1027,7 @@ void CompatibilityKernel::dispatch_mach_message(
                         return;
                     }
                     post_mach_send(cpu, std::move(queued), caller_header_size,
-                        host_service, receive_address, mach_lock);
+                        kernel_service, receive_address, mach_lock);
                     return;
                 }
             }

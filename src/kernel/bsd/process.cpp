@@ -17,6 +17,7 @@
 
 #include "foundation/application_path.hpp"
 #include "kernel/darwin_abi.hpp"
+#include "../mach/task/suspension.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
@@ -967,44 +968,36 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::pid_resume: {
         const auto target_pid = static_cast<std::int32_t>(registers[0]);
         const auto resume = number == darwin::syscall::pid_resume;
-        std::vector<std::uint32_t> target_processes;
+        std::uint32_t result = darwin::mach::success;
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             if (target_pid == -1) {
                 for (auto& [pid, record] : shared_state_->processes) {
-                    if (record.exited || (resume && !record.pid_suspended) ||
-                        (!resume && record.pid_suspended)) {
+                    if (record.exited || resume != record.pid_suspended)
                         continue;
-                    }
-                    record.pid_suspended = !resume;
-                    target_processes.push_back(pid);
+                    static_cast<void>(task_mig::Suspension::change_locked(
+                        *shared_state_, process_.pid, pid, resume, true));
                 }
             } else if (target_pid <= 0) {
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return;
             } else {
-                const auto iterator = shared_state_->processes.find(
-                    static_cast<std::uint32_t>(target_pid));
-                if (iterator == shared_state_->processes.end() ||
-                    iterator->second.exited) {
+                const auto found = shared_state_->processes.find(static_cast<std::uint32_t>(target_pid));
+                if (found == shared_state_->processes.end() || found->second.exited) {
                     bsd_error(cpu, darwin::error::no_such_process);
                     return;
                 }
-                if (resume == iterator->second.pid_suspended) {
-                    iterator->second.pid_suspended = !resume;
-                    target_processes.push_back(
-                        static_cast<std::uint32_t>(target_pid));
-                }
+                result = task_mig::Suspension::change_locked(*shared_state_, process_.pid,
+                    static_cast<std::uint32_t>(target_pid), resume, true);
             }
         }
-
-        if (process_runnable_handler_) {
-            for (const auto pid : target_processes) {
-                process_runnable_handler_(pid, resume);
-                if (!resume)
-                    cpu.request_guest_preemption();
-            }
+        if (result != darwin::mach::success) {
+            bsd_error(cpu, result == darwin::mach::invalid_argument ?
+                bsd_support::invalid_argument : darwin::error::operation_not_permitted);
+            return;
         }
+        if (!resume || (scheduler_preemption_query_ && scheduler_preemption_query_(cpu.processor_id())))
+            cpu.request_guest_preemption();
         output_.write(
             std::string { resume ? "[process] pid-resume" :
                                       "[process] pid-suspend" } +

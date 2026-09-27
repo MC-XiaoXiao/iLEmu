@@ -144,6 +144,10 @@ bool CompatibilityKernel::dispatch_mach_task_info_message(
         static_cast<std::uint32_t>(word_count),
     };
     std::vector<std::uint32_t> info(word_count);
+    if ((*flavor == darwin::mach::task_info::basic_32_flavor ||
+            *flavor == darwin::mach::task_info::basic_64_flavor) &&
+        target_record != shared_state_->processes.end())
+        info[0] = target_record->second.task_user_stop_count;
     if (*flavor == darwin::mach::task_info::basic_32_flavor &&
         *target_pid == process_.pid) {
         info[1] = static_cast<std::uint32_t>(

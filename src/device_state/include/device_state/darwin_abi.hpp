@@ -224,11 +224,18 @@ enum class DarwinMachDescriptorCopyinAbi : std::uint8_t {
     ForwardExpandedDescriptors,
 };
 
+// XNU 1699 shares pid/task counts; 2050 protects a pid hold; 2422 adds
+// hidden resume-port send rights whose no-senders notification releases holds.
+enum class DarwinTaskSuspensionAbi : std::uint8_t {
+    SharedUserCount, ProtectedPidHold, ResumePortTokens,
+};
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
         DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors
     };
+    DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers
     };

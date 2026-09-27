@@ -224,6 +224,7 @@ public:
     }
     void set_process_runnable_handler(ProcessRunnableHandler handler)
     {
+        shared_state_->task_runnable_handler = handler;
         process_runnable_handler_ = std::move(handler);
     }
     void set_process_sockets_shutdown_handler(ProcessSocketsShutdownHandler handler)
@@ -769,7 +770,7 @@ private:
     };
     void begin_mach_receive(Cpu& cpu, std::optional<std::uint32_t> receive_address);
     void post_mach_send(Cpu& cpu, KernelSharedState::MachMessage&& message,
-        std::uint32_t caller_header_size, bool host_service,
+        std::uint32_t caller_header_size, bool kernel_service,
         std::optional<std::uint32_t> receive_address, std::unique_lock<std::mutex>& mach_lock,
         bool scheduler_completion = false);
     bool complete_pending_mach_send(Cpu& cpu);

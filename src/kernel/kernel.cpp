@@ -2897,6 +2897,9 @@ void CompatibilityKernel::inherit_process_state(
     child_record.termination_signal = 0;
     child_record.exited = false;
     child_record.pid_suspended = false;
+    child_record.task_user_stop_count = 0;
+    child_record.task_legacy_stop_count = 0;
+    child_record.task_resume_port = 0;
     child_record.signal_stopped = false;
     child_record.incarnation = shared_state_->next_process_incarnation++;
     child_record.parent_incarnation =

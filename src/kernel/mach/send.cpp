@@ -37,6 +37,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "task/lifecycle.hpp"
 #include "transport/copyin_cleanup.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/port_copyin.hpp"
@@ -106,7 +107,7 @@ void CompatibilityKernel::begin_mach_receive(
 }
 void CompatibilityKernel::post_mach_send(Cpu& cpu,
     KernelSharedState::MachMessage&& queued, std::uint32_t caller_header_size,
-    bool host_service, std::optional<std::uint32_t> receive_address,
+    bool kernel_service, std::optional<std::uint32_t> receive_address,
     std::unique_lock<std::mutex>& mach_lock, bool scheduler_completion)
 {
     auto& registers = cpu.registers();
@@ -134,6 +135,7 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     std::optional<std::size_t> local_pending_receiver;
     std::string bootstrap_service_name;
     bool kernel_service_handled = false;
+    bool task_suspended = false;
     const auto graphics_event_type =
         graphics_services_input::event_type(*bytes);
     std::optional<std::uint32_t> routed_reply_object;
@@ -234,10 +236,12 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     queued.sender_uid = process_.effective_uid;
     queued.sender_gid = process_.effective_gid;
     routed_reply_object = reply_object;
-    if (host_service) {
+    if (kernel_service) {
         kernel_service_handled = true;
-        const auto destination = host_mig::ServicePorts::dispatch_locked(
-            *shared_state_, remote_object, queued);
+        const auto destination = task_mig::Lifecycle::handles(message_id)
+            ? task_mig::Lifecycle::dispatch_locked(*shared_state_, process_.pid,
+                  remote_object, queued, task_suspended)
+            : host_mig::ServicePorts::dispatch_locked(*shared_state_, remote_object, queued);
         remote_object = destination.value_or(0U);
     } else if (clock_service) {
         kernel_service_handled = true;
@@ -350,6 +354,11 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     } else {
         registers[0] = 0;
     }
+    // A synchronous receive clears the CPU wait halt. Install the task AST
+    // afterwards so self suspension cannot return to guest instructions.
+    if (task_suspended || (kernel_service_handled && scheduler_preemption_query_ &&
+            scheduler_preemption_query_(cpu.processor_id())))
+        cpu.request_guest_preemption();
     return;
 }
 

@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -663,6 +664,9 @@ struct KernelSharedState {
         bool importance_donor { };
         std::uint32_t dyld_all_image_info_address { };
         std::uint32_t dyld_all_image_info_size { };
+        std::uint32_t task_user_stop_count { };
+        std::uint32_t task_legacy_stop_count { };
+        std::uint32_t task_resume_port { };
     };
     struct ProcessKeventState {
         std::uint64_t exec_generation { };
@@ -1312,6 +1316,8 @@ struct KernelSharedState {
     // caller's task-local Mach name. Keep task identity separate from generic
     // receive ownership so pid_for_task cannot mistake a service for a task.
     std::map<std::uint32_t, std::uint32_t> task_port_pids;
+    std::map<std::uint32_t, std::uint32_t> task_resume_port_pids;
+    std::function<void(std::uint32_t, bool)> task_runnable_handler;
     // XNU exposes itk_nself as a distinct, read-only task-name capability.
     // Keeping it separate prevents task_name_for_pid from accidentally
     // granting task-control MIG operations through an identity-only port.

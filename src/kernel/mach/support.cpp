@@ -9,6 +9,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/ipc/ipc_right.c
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/ipc_tt.c
 
+#include "task/suspension.hpp"
 #include "mach/bootstrap_mig_ids.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
@@ -383,6 +384,8 @@ namespace mach_support {
     bool enqueue_no_senders_notification_locked(
         KernelSharedState& state, std::uint32_t object)
     {
+        if (!state.task_resume_port_pids.empty())
+            task_mig::Suspension::no_senders_locked(state, object);
         const auto key = std::pair { object, mach_notify_no_senders };
         const auto request = state.mach_notifications.find(key);
         const auto port_object = state.mach_port_objects.lookup(object);
@@ -722,6 +725,12 @@ namespace mach_support {
         KernelSharedState& state, std::uint32_t pid)
     {
         std::vector<std::uint32_t> objects;
+        if (const auto task = state.processes.find(pid); task != state.processes.end() &&
+            task->second.task_resume_port != 0) {
+            objects.push_back(task->second.task_resume_port);
+            state.task_resume_port_pids.erase(task->second.task_resume_port);
+            task->second.task_resume_port = 0;
+        }
         for (const auto& [object, owner] : state.task_port_pids) {
             if (owner == pid)
                 objects.push_back(object);
