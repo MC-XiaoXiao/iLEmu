@@ -312,12 +312,15 @@ XnuThreadWakeResult XnuScheduler::wake_thread(XnuThreadId thread)
     if (iterator == threads_.end())
         return { };
     auto& record = iterator->second;
-    if (record.info.state == XnuThreadState::Running) {
+    if (record.execution_pending) {
+        if (record.suspend_count != 0)
+            record.resume_runnable = true;
         if (record.wake_pending)
             return XnuThreadWakeResult { true, false };
         record.wake_pending = true;
-        performance_counters().record_scheduler_wakeup(true, true);
-        return XnuThreadWakeResult { true, true };
+        const auto preempt = record.suspend_count == 0;
+        performance_counters().record_scheduler_wakeup(true, preempt);
+        return XnuThreadWakeResult { true, preempt };
     }
     // A queued runnable thread already has a scheduler-visible wake. The
     // caller still records/finishes its Mach event, but need not repeat the
@@ -579,6 +582,7 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
         if (record.info.depressed)
             restore_depression(*preferred, record);
         transition_state(*preferred, record, XnuThreadState::Running);
+        record.execution_pending = true;
         record.info.last_processor = processor;
         if (record.info.timeshare &&
             (record.info.remaining_timeslices == 0 ||
@@ -608,6 +612,7 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
     if (record.info.depressed)
         restore_depression(thread, record);
     transition_state(thread, record, XnuThreadState::Running);
+    record.execution_pending = true;
     record.info.last_processor = processor;
     if (record.info.timeshare &&
         (record.info.remaining_timeslices == 0 ||
@@ -699,12 +704,12 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
     PerformanceLatencyScope latency { PerfLatencyKind::SchedulerSliceCompletion,
         performance_counters().cpu_source_diagnostics_enabled() };
     const auto iterator = threads_.find(thread);
-    if (iterator == threads_.end() ||
-        iterator->second.info.state != XnuThreadState::Running) {
+    if (iterator == threads_.end() || !iterator->second.execution_pending) {
         return false;
     }
 
     auto& record = iterator->second;
+    record.execution_pending = false;
     if (record.priority_usage_shift && record.info.timeshare) {
         record.info.scheduling_usage =
             saturating_add(record.info.scheduling_usage, consumed_ticks);
@@ -727,13 +732,21 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
         advance_scheduler_time(consumed_ticks);
     }
 
-    if (completion == XnuSliceCompletion::Terminate) {
-        transition_state(thread, record, XnuThreadState::Waiting);
-        if (record.info.timeshare) {
-            --active_timeshare_count_;
+    if (completion == XnuSliceCompletion::Terminate)
+        return remove_thread(thread);
+
+    if (record.info.state != XnuThreadState::Running) {
+        // A suspension (possibly already resumed) changed state while this
+        // slice was in flight. Preserve the hold or existing queue entry;
+        // only a completed guest wait may remove its runnable continuation.
+        if (completion == XnuSliceCompletion::Block && !record.wake_pending) {
+            block(thread);
+            record.info.remaining_timeslices = 0;
+            record.info.timeslice_processor.reset();
+        } else if (record.wake_pending) {
+            make_runnable(thread);
         }
-        unindex_thread(thread);
-        threads_.erase(iterator);
+        record.wake_pending = false;
         return true;
     }
     if (completion == XnuSliceCompletion::Block) {

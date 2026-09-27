@@ -316,6 +316,9 @@ private:
     struct ThreadRecord {
         XnuThreadSchedulingInfo info;
         bool queued { };
+        // A hold can change visible state before the dispatched slice returns.
+        // Its execution must still be accounted exactly once.
+        bool execution_pending { };
         std::int32_t queued_priority { };
         std::uint64_t enqueue_sequence { };
         std::chrono::steady_clock::time_point enqueued_at;

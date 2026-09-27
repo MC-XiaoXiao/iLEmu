@@ -60,6 +60,10 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
     if ((suspends || resumes) && target && thread_runnable_handler_ &&
         thread_runnable_handler_(target->first, target->second, resumes)) {
         kernel_result = darwin::mach::success;
+        // Self suspension installs an AST; remote suspension waits for the
+        // target to stop. End this dispatch round before either caller returns.
+        if (suspends)
+            cpu.request_guest_preemption();
         if (resumes && scheduler_preemption_query_ &&
             scheduler_preemption_query_(cpu.processor_id())) {
             // A resume can make a higher-priority thread runnable while the
