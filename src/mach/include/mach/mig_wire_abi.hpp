@@ -34,6 +34,7 @@ inline constexpr std::uint32_t descriptor_type_shift = 24;
 inline constexpr std::uint32_t port_descriptor_type = 0;
 inline constexpr std::uint32_t ool_descriptor_type = 1;
 inline constexpr std::uint32_t ool_ports_descriptor_type = 2;
+inline constexpr std::uint32_t ool_volatile_descriptor_type = 3;
 inline constexpr std::uint32_t ndr_record_size = 8;
 inline constexpr std::uint32_t return_code_size = 4;
 inline constexpr std::uint32_t word_size = 4;

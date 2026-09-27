@@ -185,6 +185,9 @@ namespace mach_message {
     inline constexpr std::uint32_t send_invalid_reply = 0x1000'0009U;
     inline constexpr std::uint32_t send_invalid_right = 0x1000'000AU;
     inline constexpr std::uint32_t send_invalid_data = 0x1000'0002U;
+    inline constexpr std::uint32_t send_invalid_memory = 0x1000'000CU;
+    inline constexpr std::uint32_t send_invalid_type = 0x1000'000FU;
+    inline constexpr std::uint32_t send_too_large = 0x1000'000EU;
     inline constexpr std::uint32_t send_message_too_small = 0x1000'0008U;
     inline constexpr std::uint32_t send_no_buffer = 0x1000'000DU;
     inline constexpr std::uint32_t send_invalid_destination = 0x1000'0003U;

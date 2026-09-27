@@ -36,6 +36,7 @@ namespace {
         case darwin::mig_wire::port_descriptor_type:
             return DescriptorKind::Port;
         case darwin::mig_wire::ool_descriptor_type:
+        case darwin::mig_wire::ool_volatile_descriptor_type:
             return DescriptorKind::OutOfLineMemory;
         case darwin::mig_wire::ool_ports_descriptor_type:
             return DescriptorKind::OutOfLinePorts;

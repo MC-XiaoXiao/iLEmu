@@ -38,6 +38,7 @@
 
 #include "host/service_ports.hpp"
 #include "transport/port_copyin.hpp"
+#include "transport/ool_copyin.hpp"
 #include "transport/copyin_cleanup.hpp"
 #include <algorithm>
 #include <array>
@@ -563,10 +564,6 @@ void CompatibilityKernel::dispatch_mach_message(
         std::optional<std::uint32_t> routed_reply_object;
         std::optional<std::string> service_source_create_path;
         std::optional<std::uint32_t> transferred_receive;
-        std::vector<KernelSharedState::MachMessage::OolPayload> ool_payloads;
-        std::vector<KernelSharedState::MachMessage::OolPortArray>
-            ool_port_arrays;
-        std::vector<std::pair<std::uint32_t, std::uint32_t>> ool_deallocations;
         if (bytes && mach_ipc::normalize_send_header(*bytes, registers[2])) {
             graphics_event_type = graphics_services_input::event_type(*bytes);
             const auto bootstrap_lookup =
@@ -609,76 +606,6 @@ void CompatibilityKernel::dispatch_mach_message(
                 }
             }
             const auto descriptors = mach_transport::parse_descriptors(*bytes);
-            if (!descriptors) {
-                registers[0] = 0x1000000eU;
-                return;
-            }
-            for (const auto& descriptor : *descriptors) {
-                if (descriptor.kind ==
-                    mach_transport::DescriptorKind::OutOfLineMemory) {
-                    const auto size = descriptor.count_or_size;
-                    if (size > maximum_ool_payload ||
-                        (size != 0 && descriptor.address_or_name == 0)) {
-                        registers[0] = 0x1000000eU;
-                        return;
-                    }
-                    auto payload =
-                        size == 0
-                            ? std::optional<std::vector<std::byte>> { std::
-                                      vector<std::byte> { } }
-                            : memory_.read_bytes(
-                                  descriptor.address_or_name, size);
-                    if (!payload) {
-                        registers[0] = 0x1000000eU;
-                        return;
-                    }
-                    ool_payloads.push_back(
-                        KernelSharedState::MachMessage::OolPayload {
-                            descriptor.offset, std::move(*payload) });
-                    if (descriptor.deallocate() && size != 0) {
-                        ool_deallocations.emplace_back(
-                            descriptor.address_or_name, size);
-                    }
-                } else if (descriptor.kind ==
-                           mach_transport::DescriptorKind::OutOfLinePorts) {
-                    if (descriptor.count_or_size >
-                        maximum_message_io / darwin::mig_wire::word_size) {
-                        registers[0] = 0x1000000eU;
-                        return;
-                    }
-                    const auto byte_size =
-                        descriptor.count_or_size * darwin::mig_wire::word_size;
-                    if ((byte_size != 0 && descriptor.address_or_name == 0) ||
-                        (byte_size != 0 &&
-                            !memory_.read_bytes(
-                                descriptor.address_or_name, byte_size))) {
-                        registers[0] = 0x1000000eU;
-                        return;
-                    }
-                    KernelSharedState::MachMessage::OolPortArray array {
-                        descriptor.offset, descriptor.count_or_size, { } };
-                    for (std::uint32_t element = 0;
-                        element < descriptor.count_or_size; ++element) {
-                        if (memory_.read32(descriptor.address_or_name +
-                                element * darwin::mig_wire::word_size) ==
-                            xnu::ipc::dead_name) {
-                            array.dead_elements.push_back(element);
-                        }
-                    }
-                    ool_port_arrays.push_back(std::move(array));
-                    if (descriptor.deallocate() && byte_size != 0) {
-                        ool_deallocations.emplace_back(
-                            descriptor.address_or_name, byte_size);
-                    }
-                }
-            }
-            for (const auto& payload : ool_payloads) {
-                service_source_create_path =
-                    celestial_volume_protocol::decode_source_create_path(
-                        *message_id, payload.bytes);
-                if (service_source_create_path)
-                    break;
-            }
             std::unique_lock mach_lock { shared_state_->mach_mutex };
             const auto destination_disposition = *bits & 0xffU;
             const auto destination_right =
@@ -820,6 +747,8 @@ void CompatibilityKernel::dispatch_mach_message(
                 std::uint32_t voucher_disposition = 0;
                 KernelSharedState::MachMessage queued;
                 auto& port_transfers = queued.port_transfers;
+                auto& ool_payloads = queued.ool_payloads;
+                auto& ool_port_arrays = queued.ool_port_arrays;
                 std::vector<KernelSharedState::MachMessage::PortTransfer>
                     dead_transfers;
                 const mach_transport::PortCopyin copyin {
@@ -1044,12 +973,33 @@ void CompatibilityKernel::dispatch_mach_message(
                     mach_transport::CopyinCleanup cleanup { *shared_state_,
                         queued, destination_right == xnu::ipc::Right::SendOnce
                                      ? destination_object : std::nullopt };
+                    if (!descriptors) {
+                        registers[0] = darwin::mach_message::send_invalid_type;
+                        return;
+                    }
+                    // Native body preflight validates copy options before
+                    // consuming any descriptor, but after atomic header copyin.
+                    for (const auto& descriptor : *descriptors) {
+                        const auto copy = (descriptor.metadata >>
+                            darwin::mig_wire::descriptor_copy_shift) & 0xffU;
+                        if (descriptor.kind ==
+                                mach_transport::DescriptorKind::OutOfLineMemory &&
+                            copy > 1U) {
+                            registers[0] = darwin::mach_message::send_invalid_type;
+                            return;
+                        }
+                    }
+                    const mach_transport::OolCopyin ool_copyin { memory_ };
                     const auto copy_port = [&](std::uint32_t name,
                                                const auto& descriptor,
                                                std::optional<std::uint32_t> element) {
-                        if (name == xnu::ipc::null_name ||
-                            name == xnu::ipc::dead_name)
+                        if (name == xnu::ipc::null_name)
                             return true;
+                        if (name == xnu::ipc::dead_name) {
+                            if (element)
+                                ool_port_arrays.back().dead_elements.push_back(*element);
+                            return true;
+                        }
                         const auto transfer = copyin.capture(name,
                             descriptor.disposition(), descriptor.offset, element);
                         if (!transfer)
@@ -1061,12 +1011,7 @@ void CompatibilityKernel::dispatch_mach_message(
                                     darwin::mach::success)
                                 return false;
                             if (element) {
-                                for (auto& array : ool_port_arrays) {
-                                    if (array.descriptor_offset == descriptor.offset) {
-                                        array.dead_elements.push_back(*element);
-                                        break;
-                                    }
-                                }
+                                ool_port_arrays.back().dead_elements.push_back(*element);
                             } else {
                                 write_little_word(*bytes, descriptor.offset,
                                     xnu::ipc::dead_name);
@@ -1091,17 +1036,28 @@ void CompatibilityKernel::dispatch_mach_message(
                         if (descriptor.kind == mach_transport::DescriptorKind::Port) {
                             copied = copy_port(descriptor.address_or_name,
                                 descriptor, std::nullopt);
-                        } else if (descriptor.kind ==
-                                   mach_transport::DescriptorKind::OutOfLinePorts) {
-                            for (std::uint32_t element = 0;
-                                element < descriptor.count_or_size; ++element) {
-                                const auto name = memory_.read32(
-                                    descriptor.address_or_name +
-                                    element * darwin::mig_wire::word_size).value_or(0);
-                                if (!copy_port(name, descriptor, element)) {
-                                    cleanup.failed_array(descriptor.offset);
-                                    copied = false;
-                                    break;
+                        } else {
+                            auto region = ool_copyin.capture(descriptor);
+                            if (region.error != 0U) {
+                                registers[0] = region.error;
+                                return;
+                            }
+                            if (descriptor.kind ==
+                                mach_transport::DescriptorKind::OutOfLineMemory) {
+                                ool_payloads.push_back({
+                                    descriptor.offset, std::move(region.bytes) });
+                            } else {
+                                ool_port_arrays.push_back({ descriptor.offset,
+                                    descriptor.count_or_size, { } });
+                                for (std::uint32_t element = 0;
+                                    element < descriptor.count_or_size; ++element) {
+                                    const auto name = read_little_word(region.bytes,
+                                        element * darwin::mig_wire::word_size);
+                                    if (!copy_port(name, descriptor, element)) {
+                                        cleanup.failed_array(descriptor.offset);
+                                        copied = false;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -1109,6 +1065,16 @@ void CompatibilityKernel::dispatch_mach_message(
                             registers[0] = darwin::mach_message::send_invalid_right;
                             return;
                         }
+                    }
+                    // Keep payload consumers in physical descriptor order.
+                    if (reverse)
+                        std::reverse(ool_payloads.begin(), ool_payloads.end());
+                    for (const auto& payload : ool_payloads) {
+                        service_source_create_path =
+                            celestial_volume_protocol::decode_source_create_path(
+                                *message_id, payload.bytes);
+                        if (service_source_create_path)
+                            break;
                     }
                     cleanup.commit();
                     if (bootstrap_lookup && !bootstrap_service_name.empty() &&
@@ -1178,8 +1144,6 @@ void CompatibilityKernel::dispatch_mach_message(
                     }
                     queued.sender_uid = process_.effective_uid;
                     queued.sender_gid = process_.effective_gid;
-                    queued.ool_payloads = std::move(ool_payloads);
-                    queued.ool_port_arrays = std::move(ool_port_arrays);
                     routed_reply_object = reply_object;
                     if (host_service) {
                         kernel_service_handled = true;
@@ -1271,9 +1235,6 @@ void CompatibilityKernel::dispatch_mach_message(
                         "[audio] category-volume category=" + update->category +
                         " value=" + std::to_string(update->value) + "\n");
                 }
-            }
-            for (const auto& [address, size] : ool_deallocations) {
-                static_cast<void>(memory_.unmap(address, size));
             }
             if (transferred_receive) {
                 output_.write("[mach] move-receive in-transit port=" +
