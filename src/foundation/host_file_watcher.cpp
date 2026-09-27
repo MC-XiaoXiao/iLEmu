@@ -393,7 +393,9 @@ void HostFileWatcher::poll()
 #if defined(__linux__)
     if (notification_descriptor_ < 0)
         return;
-    std::array<std::byte, 64U * 1024U> buffer { };
+    // read initializes the returned prefix; parsing never visits the tail.
+    // Avoid clearing 64 KiB on every poll, including the usual EAGAIN path.
+    std::array<std::byte, 64U * 1024U> buffer;
     for (;;) {
         const auto received =
             ::read(notification_descriptor_, buffer.data(), buffer.size());
