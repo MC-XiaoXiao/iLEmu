@@ -56,6 +56,12 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
         (*right != xnu::ipc::Right::Send &&
             *right != xnu::ipc::Right::SendOnce) ||
         !state.mach_port_objects.contains(*destination)) {
+        // A produced send-once token must be destroyed even when the caller
+        // supplied no usable reply port (ipc_kobject_server destroys reply).
+        for (const auto& port : ports) {
+            if (port.right == xnu::ipc::Right::SendOnce)
+                enqueue_send_once_notification_locked(state, port.object);
+        }
         discard_mach_message_rights_locked(state, request);
         return std::nullopt;
     }
@@ -76,8 +82,10 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     for (const auto& port : ports) {
         // Newly produced Send rights become message-held only after a live
         // reply destination exists; receiver copyout installs the user refs.
-        assert(port.right == xnu::ipc::Right::Send);
-        ++state.mach_inflight_send_rights[port.object];
+        assert(port.right == xnu::ipc::Right::Send ||
+               port.right == xnu::ipc::Right::SendOnce);
+        if (port.right == xnu::ipc::Right::Send)
+            ++state.mach_inflight_send_rights[port.object];
     }
     reply.destination = *destination;
     if (*right == xnu::ipc::Right::Send)

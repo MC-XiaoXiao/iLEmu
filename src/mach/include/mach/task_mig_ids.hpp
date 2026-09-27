@@ -56,6 +56,8 @@ enum class Routine : std::uint32_t {
     task_assign_default = 3430U,
     task_get_assignment = 3431U,
     task_set_policy = 3432U,
+    task_suspend2 = 3436U,
+    task_resume2 = 3437U,
 };
 
 inline constexpr std::array<ArgumentInfo, 4> task_create_arguments{{
@@ -256,13 +258,23 @@ inline constexpr std::array<ArgumentInfo, 6> task_set_policy_arguments{{
     {"change", "boolean_t", "", ArgumentDirection::In, WireType::Scalar, 4U, 0U, 0U, 4294967295U, 4294967295U, 4294967295U, 4294967295U},
 }};
 
+// XNU 2782 and 4903 task.defs: explicit move-send-once suspension tokens.
+inline constexpr std::array<ArgumentInfo, 2> task_suspend2_arguments{{
+    {"target_task", "task_t", "", ArgumentDirection::In, WireType::Port, 4U, 0U, 0U, 8U, 4294967295U, 4294967295U, 4294967295U},
+    {"suspend_token", "task_suspension_token_t", "", ArgumentDirection::Out, WireType::Port, 4U, 0U, 0U, 4294967295U, 28U, 4294967295U, 4294967295U},
+}};
+
+inline constexpr std::array<ArgumentInfo, 1> task_resume2_arguments{{
+    {"suspend_token", "task_suspension_token_t", "", ArgumentDirection::In, WireType::Port, 4U, 0U, 0U, 8U, 4294967295U, 4294967295U, 4294967295U},
+}};
+
 struct Descriptor {
     Routine routine;
     std::string_view name;
     std::span<const ArgumentInfo> arguments;
 };
 
-inline constexpr std::array<Descriptor, 32> routines{{
+inline constexpr std::array<Descriptor, 34> routines{{
     {Routine::task_create, "task_create", std::span<const ArgumentInfo>{task_create_arguments}},
     {Routine::task_terminate, "task_terminate", std::span<const ArgumentInfo>{task_terminate_arguments}},
     {Routine::task_threads, "task_threads", std::span<const ArgumentInfo>{task_threads_arguments}},
@@ -295,6 +307,8 @@ inline constexpr std::array<Descriptor, 32> routines{{
     {Routine::task_assign_default, "task_assign_default", std::span<const ArgumentInfo>{task_assign_default_arguments}},
     {Routine::task_get_assignment, "task_get_assignment", std::span<const ArgumentInfo>{task_get_assignment_arguments}},
     {Routine::task_set_policy, "task_set_policy", std::span<const ArgumentInfo>{task_set_policy_arguments}},
+    {Routine::task_suspend2, "task_suspend2", std::span<const ArgumentInfo>{task_suspend2_arguments}},
+    {Routine::task_resume2, "task_resume2", std::span<const ArgumentInfo>{task_resume2_arguments}},
 }};
 
 constexpr std::uint32_t id(Routine routine) {

@@ -16,8 +16,10 @@ namespace ilemu::task_mig {
 // SIGSTOP and individual thread suspensions remain independent.
 class Suspension {
 public:
+    enum class Hold { Legacy, Pid, Token };
+
     static std::uint32_t change_locked(KernelSharedState& state,
-        std::uint32_t caller, std::uint32_t pid, bool resume, bool pid_call = false)
+        std::uint32_t caller, std::uint32_t pid, bool resume, Hold hold = Hold::Legacy)
     {
         const auto found = state.processes.find(pid);
         if (found == state.processes.end())
@@ -26,18 +28,24 @@ public:
         if (task.exited)
             return darwin::mach::failure;
         const auto abi = state.darwin_abi.task_suspension;
+        const bool pid_call = hold == Hold::Pid;
         const bool protected_pid = abi != DarwinTaskSuspensionAbi::SharedUserCount;
-        const bool token = !pid_call && abi == DarwinTaskSuspensionAbi::ResumePortTokens;
+        const bool token = hold == Hold::Legacy &&
+            abi == DarwinTaskSuspensionAbi::ResumePortTokens;
         if (!resume) {
             if ((pid_call && protected_pid && task.pid_suspended) ||
                 task.task_user_stop_count == std::numeric_limits<std::uint32_t>::max())
                 return darwin::mach::failure;
-            if (token && !prepare_token_locked(state, task, pid))
+            if ((token || hold == Hold::Token) &&
+                !prepare_token_locked(state, task, pid))
                 return darwin::mach::resource_shortage;
             if (pid_call)
                 task.pid_suspended = true;
-            if (token)
+            if (token) {
                 ++task.task_legacy_stop_count;
+                static_cast<void>(state.mach_port_objects.increment_make_send_count(
+                    task.task_resume_port));
+            }
             if (task.task_user_stop_count++ == 0 && state.task_runnable_handler)
                 state.task_runnable_handler(pid, false);
             if (token && !state.mach_namespaces.copyout(caller, task.task_resume_port,
@@ -48,6 +56,15 @@ public:
             return darwin::mach::success;
         }
         return resume_locked(state, caller, pid, task, pid_call, protected_pid, token);
+    }
+
+    static std::uint32_t resume_token_locked(
+        KernelSharedState& state, std::uint32_t object)
+    {
+        const auto owner = state.task_resume_port_pids.find(object);
+        return owner == state.task_resume_port_pids.end()
+            ? darwin::mach::invalid_argument
+            : change_locked(state, 0, owner->second, true, Hold::Token);
     }
 
     static void no_senders_locked(KernelSharedState& state, std::uint32_t object)
@@ -79,7 +96,6 @@ private:
             task.task_resume_port = object;
             state.task_resume_port_pids.emplace(object, pid);
         }
-        static_cast<void>(state.mach_port_objects.increment_make_send_count(task.task_resume_port));
         return true;
     }
 

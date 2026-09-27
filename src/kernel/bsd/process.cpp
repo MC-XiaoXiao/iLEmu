@@ -976,7 +976,8 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
                     if (record.exited || resume != record.pid_suspended)
                         continue;
                     static_cast<void>(task_mig::Suspension::change_locked(
-                        *shared_state_, process_.pid, pid, resume, true));
+                        *shared_state_, process_.pid, pid, resume,
+                        task_mig::Suspension::Hold::Pid));
                 }
             } else if (target_pid <= 0) {
                 bsd_error(cpu, bsd_support::invalid_argument);
@@ -988,7 +989,8 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
                     return;
                 }
                 result = task_mig::Suspension::change_locked(*shared_state_, process_.pid,
-                    static_cast<std::uint32_t>(target_pid), resume, true);
+                    static_cast<std::uint32_t>(target_pid), resume,
+                    task_mig::Suspension::Hold::Pid);
             }
         }
         if (result != darwin::mach::success) {

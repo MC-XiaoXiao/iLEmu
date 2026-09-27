@@ -464,6 +464,12 @@ namespace mach_support {
     void enqueue_send_once_notification_locked(
         KernelSharedState& state, std::uint32_t object)
     {
+        // IKOT_TASK_RESUME consumes an abandoned suspension token in-kernel.
+        if (state.task_resume_port_pids.contains(object)) {
+            static_cast<void>(
+                task_mig::Suspension::resume_token_locked(state, object));
+            return;
+        }
         if (!state.mach_port_objects.contains(object)) {
             return;
         }
