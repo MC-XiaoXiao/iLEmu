@@ -11,6 +11,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/syscall_sw.c
 
 #include "kernel/kernel.hpp"
+#include "kernel/task_syscall_counters.hpp"
 #include "bsd/security/extensions.hpp"
 #include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
@@ -224,6 +225,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             configuration = resolve_darwin_configuration(rootfs_);
         return std::make_shared<KernelSharedState>(configuration->abi);
     }() }
+    , task_syscalls_ { std::make_shared<TaskSyscallCounters>() }
 {
     memory_.set_file_generation_registry(
         shared_state_->guest_file_generation_registry);
@@ -459,6 +461,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             DisplayOrientation::Portrait, { }, 0U };
     shared_state_->processes[process_.pid].memory_status =
         darwin::memorystatus::initial_state(shared_state_->darwin_abi.memory_status_priority);
+    shared_state_->processes[process_.pid].syscall_counters = task_syscalls_;
     install_commpage();
 }
 
@@ -2890,6 +2893,7 @@ void CompatibilityKernel::inherit_process_state(
     child_record.gid = process_.gid;
     child_record.effective_gid = process_.effective_gid;
     child_record.nice_value = process_.nice_value;
+    child_record.syscall_counters = task_syscalls_;
     child_record.importance_donor = false;
     child_record.memory_status = darwin::memorystatus::initial_state(
         shared_state_->darwin_abi.memory_status_priority);
@@ -2947,10 +2951,15 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
     } else {
         const auto number = static_cast<std::int32_t>(cpu.registers()[12]);
         if (number < 0) {
+            // ARM mach_absolute_time bypasses the ordinary trap entry counter.
+            if (number != -3)
+                task_syscalls_->record_mach();
             dispatch_mach(cpu,
                 static_cast<std::uint32_t>(
                     -static_cast<std::int64_t>(number)));
         } else {
+            // Count the outer entry only; syscall(0) redispatches internally.
+            task_syscalls_->record_unix();
             dispatch_bsd(cpu, static_cast<std::uint32_t>(number));
         }
     }

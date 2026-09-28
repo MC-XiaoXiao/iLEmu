@@ -1034,6 +1034,7 @@ private:
     std::shared_ptr<KernelSharedState> shared_state_ {
         std::make_shared<KernelSharedState>()
     };
+    std::shared_ptr<TaskSyscallCounters> task_syscalls_;
     ThreadCreateHandler thread_create_handler_;
     ThreadTerminateHandler thread_terminate_handler_;
     ThreadStateQuery thread_state_query_;

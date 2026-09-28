@@ -82,6 +82,7 @@ class HostFileMappingPreparer;
 class HostSocket;
 class KeyStore;
 class SurfaceTransportLease;
+class TaskSyscallCounters;
 namespace bsd::sandbox { class Extensions; }
 
 struct ProcessContext {
@@ -670,6 +671,7 @@ struct KernelSharedState {
         std::uint32_t task_user_stop_count { };
         std::uint32_t task_legacy_stop_count { };
         std::uint32_t task_resume_port { };
+        std::shared_ptr<TaskSyscallCounters> syscall_counters;
     };
     struct ProcessKeventState {
         std::uint64_t exec_generation { };

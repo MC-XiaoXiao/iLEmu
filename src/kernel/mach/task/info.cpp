@@ -6,6 +6,7 @@
 // XNU 792--4903 osfmk/kern/task.c and osfmk/mach/task_info.h.
 #include "information.hpp"
 #include "cpu_time.hpp"
+#include "kernel/task_syscall_counters.hpp"
 #include "../transport/kernel_reply.hpp"
 #include "kernel/mach_task_info_abi.hpp"
 
@@ -89,6 +90,12 @@ Information::Result Information::evaluate_locked(AddressSpace& memory,
             info[2] = static_cast<std::uint32_t>(flavor == basic_32_peak_flavor
                 ? statistics->maximum_resident_bytes : statistics->resident_bytes);
             info[7] = timeshare_policy;
+        }
+    } else if (flavor == events_flavor) {
+        if (const auto& counters = process->second.syscall_counters) {
+            const auto calls = counters->snapshot();
+            info[5] = calls.mach;
+            info[6] = calls.unix_calls;
         }
     } else if (flavor == dyld_info_flavor) {
         // The address may legitimately be zero before dyld publishes it.
