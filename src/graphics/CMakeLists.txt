@@ -22,6 +22,7 @@ add_library(ilemu_graphics STATIC
     gles_program_interface_profile.cpp
     gles_filter_profile.cpp
     gles_program_state.cpp
+    gles_program_renderer.cpp
     presentation_tracker.cpp
     scanout_composition.cpp
     surface_store.cpp)

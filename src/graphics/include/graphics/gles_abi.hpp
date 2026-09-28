@@ -54,6 +54,7 @@ inline constexpr std::uint32_t client_active_texture = 0x84e1U;
 inline constexpr std::uint32_t maximum_texture_units = 0x84e2U;
 inline constexpr std::uint32_t maximum_texture_image_units = 0x8872U;
 inline constexpr std::size_t texture_unit_count = 4;
+inline constexpr std::size_t programmable_texture_unit_count = 8;
 inline constexpr std::uint32_t fragment_shader = 0x8b30U;
 inline constexpr std::uint32_t vertex_shader = 0x8b31U;
 inline constexpr std::uint32_t delete_status = 0x8b80U;
@@ -63,6 +64,8 @@ inline constexpr std::uint32_t validate_status = 0x8b83U;
 inline constexpr std::uint32_t info_log_length = 0x8b84U;
 inline constexpr std::uint32_t attached_shaders = 0x8b85U;
 inline constexpr std::uint32_t active_uniforms = 0x8b86U;
+inline constexpr std::uint32_t active_uniform_max_length = 0x8b87U;
+inline constexpr std::uint32_t active_attribute_max_length = 0x8b8aU;
 inline constexpr std::uint32_t active_attributes = 0x8b89U;
 inline constexpr std::uint32_t shader_source_length = 0x8b88U;
 inline constexpr std::uint32_t shader_type = 0x8b4fU;
@@ -99,6 +102,7 @@ inline constexpr std::uint32_t unsigned_short_5_5_5_1 = 0x8034U;
 inline constexpr std::uint32_t unsigned_short_5_6_5 = 0x8363U;
 
 inline constexpr std::uint32_t static_draw = 0x88e4U;
+inline constexpr std::uint32_t stream_draw = 0x88e0U;
 inline constexpr std::uint32_t dynamic_draw = 0x88e8U;
 
 inline constexpr std::uint32_t points = 0x0000U;

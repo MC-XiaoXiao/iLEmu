@@ -7,6 +7,9 @@
 #include "host/native_gles.hpp"
 
 #include "graphics/gles_renderer.hpp"
+#if defined(ILEMU_HAS_HOST_GLES)
+#include "egl_program_renderer.hpp"
+#endif
 
 #if defined(ILEMU_HAS_VULKAN)
 #include "vulkan_gles_renderer.hpp"
@@ -16,6 +19,9 @@ namespace ilemu {
 
 void register_native_gles_renderer()
 {
+#if defined(ILEMU_HAS_HOST_GLES)
+    configure_gles_program_renderer_factory(create_egl_program_renderer);
+#endif
 #if defined(ILEMU_HAS_VULKAN)
     configure_gles_accelerated_factory(create_vulkan_gles_renderer);
 #else

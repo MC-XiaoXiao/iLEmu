@@ -216,6 +216,8 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
     add("_glCheckFramebufferStatus", check_framebuffer_status);
     add("_glCheckFramebufferStatusOES", check_framebuffer_status);
     const auto delete_framebuffers = [this](UserlandHleCall& call) {
+        if (!flush_program_draws(call))
+            return;
         auto* context = current_context(call);
         const auto count = static_cast<std::int32_t>(call.argument(0));
         const auto input = call.argument(1);
@@ -299,6 +301,8 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
     add("_glBindRenderbuffer", bind_renderbuffer);
     add("_glBindRenderbufferOES", bind_renderbuffer);
     const auto renderbuffer_storage = [this](UserlandHleCall& call) {
+        if (!flush_program_draws(call))
+            return;
         auto* context = current_context(call);
         const auto width = call.argument(2);
         const auto height = call.argument(3);
@@ -416,6 +420,8 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
     add("_glGetRenderbufferParameteriv", get_renderbuffer_parameter);
     add("_glGetRenderbufferParameterivOES", get_renderbuffer_parameter);
     const auto delete_renderbuffers = [this](UserlandHleCall& call) {
+        if (!flush_program_draws(call))
+            return;
         auto* context = current_context(call);
         const auto count = static_cast<std::int32_t>(call.argument(0));
         const auto input = call.argument(1);

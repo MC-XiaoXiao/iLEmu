@@ -33,6 +33,7 @@ enum class GlesFragmentOperation : std::uint32_t {
 // indexed color varyings and fragment outputs. Select from shader declarations,
 // independently of the process, device or firmware that supplied the program.
 struct GlesProgramInterfaceProfile {
+    bool requires_glsl_execution { };
     GlesFilterProfile filter;
     bool transparent_output { };
     bool framebuffer_fetch { };

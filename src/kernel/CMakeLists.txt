@@ -65,7 +65,9 @@ add_library(ilemu_kernel_graphics STATIC
     graphics/opengles_dispatch_hle.cpp
     graphics/core_animation_software_hle.cpp
     graphics/opengles_programmable.cpp
+    graphics/opengles_program_draw.cpp
     graphics/opengles_framebuffers.cpp
+    graphics/opengles_program_queries.cpp
     graphics/mbx_connect_hle.cpp)
 add_library(iLEmu::kernel_graphics ALIAS ilemu_kernel_graphics)
 ilemu_configure_module(ilemu_kernel_graphics)

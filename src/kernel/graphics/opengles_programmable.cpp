@@ -8,6 +8,7 @@
 #include "kernel/opengles_hle.hpp"
 
 #include "foundation/address_space.hpp"
+#include "foundation/output.hpp"
 #include "foundation/userland_hle.hpp"
 
 #include <algorithm>
@@ -29,15 +30,6 @@ namespace {
         "/OpenGLES.framework/OpenGLES"
     };
     constexpr std::size_t maximum_shader_strings = 64U;
-
-    bool write_empty_log(UserlandHleCall& call, std::uint32_t capacity,
-        std::uint32_t length, std::uint32_t output)
-    {
-        if (length != 0U && !call.memory().write32(length, 0U))
-            return false;
-        return capacity == 0U || output == 0U ||
-               call.memory().write8(output, 0U);
-    }
 
     std::optional<std::vector<float>> read_floats(
         UserlandHleCall& call, std::uint32_t address, std::size_t count)
@@ -447,6 +439,24 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
         shader->source = std::move(source);
         shader->compiled = false;
     });
+    add("_glDepthFunc", [this](UserlandHleCall& call) {
+        auto* context = current_context(call);
+        const auto function = call.argument(0);
+        if (!context)
+            set_gl_error(call, gles_abi::invalid_operation);
+        else if (function < 0x0200U || function > 0x0207U)
+            set_gl_error(call, gles_abi::invalid_enum);
+        else
+            context->depth_function = function;
+    });
+    add("_glClearDepthf", [this](UserlandHleCall& call) {
+        auto* context = current_context(call);
+        if (!context)
+            set_gl_error(call, gles_abi::invalid_operation);
+        else
+            context->depth_clear =
+                std::clamp(std::bit_cast<float>(call.argument(0)), 0.0F, 1.0F);
+    });
     add("_glCompileShader", [this](UserlandHleCall& call) {
         auto* shader = programs_.shader(call.argument(0));
         if (shader == nullptr) {
@@ -486,6 +496,42 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
             return;
         }
         static_cast<void>(programs_.link(call.argument(0)));
+        auto* program = programs_.program(call.argument(0));
+        program->native_execution = false;
+        program->info_log.clear();
+        if (!program->linked ||
+            !program->interface_profile.requires_glsl_execution)
+            return;
+        if (!program_renderer_) {
+            program_renderer_ =
+                create_gles_program_renderer(&program->info_log);
+            if (program_renderer_)
+                call.output().marker("[gles] GLSL executor=" +
+                                     std::string { program_renderer_->name() });
+        }
+        if (!program_renderer_) {
+            program->linked = false;
+            call.output().marker(
+                "[gles] GLSL executor unavailable: " + program->info_log);
+            return;
+        }
+        auto linked = program_renderer_->link(call.argument(0),
+            programs_.shader_source(call.argument(0), gles_abi::vertex_shader),
+            programs_.shader_source(
+                call.argument(0), gles_abi::fragment_shader),
+            program->attributes);
+        program->linked = linked.linked;
+        program->info_log = std::move(linked.log);
+        program->native_execution = linked.linked;
+        if (linked.linked) {
+            program->attributes = std::move(linked.attributes);
+            program->active_attributes = std::move(linked.active_attributes);
+            program->active_uniforms = std::move(linked.active_uniforms);
+            program->uniform_locations.clear();
+            program->uniforms.clear();
+        } else
+            call.output().marker(
+                "[gles] GLSL link failed: " + program->info_log);
     });
     add("_glUseProgram", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
@@ -511,6 +557,8 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
                 context.current_program = 0U;
         }
         programs_.delete_program(name);
+        if (program_renderer_)
+            program_renderer_->erase(name);
     });
     add("_glGetUniformLocation", [this](UserlandHleCall& call) {
         const auto name = call.string_argument(1, 256U);
@@ -727,88 +775,6 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
         set_matrix_uniform(call, 16U);
     });
 
-    add("_glGetShaderiv", [this](UserlandHleCall& call) {
-        const auto* shader = programs_.shader(call.argument(0));
-        const auto output = call.argument(2);
-        if (shader == nullptr || output == 0U) {
-            set_gl_error(call, gles_abi::invalid_value);
-            return;
-        }
-        std::uint32_t value { };
-        switch (call.argument(1)) {
-        case gles_abi::shader_type:
-            value = shader->type;
-            break;
-        case gles_abi::compile_status:
-            value = shader->compiled ? 1U : 0U;
-            break;
-        case gles_abi::delete_status:
-            value = shader->delete_pending ? 1U : 0U;
-            break;
-        case gles_abi::info_log_length:
-            value = 1U;
-            break;
-        case gles_abi::shader_source_length:
-            value = static_cast<std::uint32_t>(shader->source.size() + 1U);
-            break;
-        default:
-            set_gl_error(call, gles_abi::invalid_enum);
-            return;
-        }
-        if (!call.memory().write32(output, value))
-            set_gl_error(call, gles_abi::invalid_value);
-    });
-    add("_glGetProgramiv", [this](UserlandHleCall& call) {
-        const auto* program = programs_.program(call.argument(0));
-        const auto output = call.argument(2);
-        if (program == nullptr || output == 0U) {
-            set_gl_error(call, gles_abi::invalid_value);
-            return;
-        }
-        std::uint32_t value { };
-        switch (call.argument(1)) {
-        case gles_abi::link_status:
-        case gles_abi::validate_status:
-            value = program->linked ? 1U : 0U;
-            break;
-        case gles_abi::delete_status:
-            value = program->delete_pending ? 1U : 0U;
-            break;
-        case gles_abi::info_log_length:
-            value = 1U;
-            break;
-        case gles_abi::attached_shaders:
-            value = static_cast<std::uint32_t>(program->shaders.size());
-            break;
-        case gles_abi::active_uniforms:
-            value = static_cast<std::uint32_t>(program->uniforms.size());
-            break;
-        case gles_abi::active_attributes:
-            value = static_cast<std::uint32_t>(program->attributes.size());
-            break;
-        default:
-            set_gl_error(call, gles_abi::invalid_enum);
-            return;
-        }
-        if (!call.memory().write32(output, value))
-            set_gl_error(call, gles_abi::invalid_value);
-    });
-    const auto get_info_log = [this](UserlandHleCall& call) {
-        const auto exists =
-            call.symbol() == "_glGetShaderInfoLog"
-                ? programs_.shader(call.argument(0)) != nullptr
-                : programs_.program(call.argument(0)) != nullptr;
-        if (!exists) {
-            set_gl_error(call, gles_abi::invalid_value);
-            return;
-        }
-        if (!write_empty_log(
-                call, call.argument(1), call.argument(2), call.argument(3))) {
-            set_gl_error(call, gles_abi::invalid_value);
-        }
-    };
-    add("_glGetShaderInfoLog", get_info_log);
-    add("_glGetProgramInfoLog", get_info_log);
     add("_glValidateProgram", [this](UserlandHleCall& call) {
         if (programs_.program(call.argument(0)) == nullptr)
             set_gl_error(call, gles_abi::invalid_value);

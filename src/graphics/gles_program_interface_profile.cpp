@@ -40,6 +40,22 @@ namespace {
     {
         std::vector<std::string_view> result;
         for (std::size_t offset = 0; offset < source.size();) {
+            if (source.substr(offset).starts_with("//") ||
+                source[offset] == '#') {
+                auto end = source.find('\n', offset);
+                while (end != std::string_view::npos && end > offset &&
+                       source[end - 1U] == '\\')
+                    end = source.find('\n', end + 1U);
+                offset =
+                    end == std::string_view::npos ? source.size() : end + 1U;
+                continue;
+            }
+            if (source.substr(offset).starts_with("/*")) {
+                const auto end = source.find("*/", offset + 2U);
+                offset =
+                    end == std::string_view::npos ? source.size() : end + 2U;
+                continue;
+            }
             if (identifier_character(source[offset])) {
                 const auto begin = offset++;
                 while (offset < source.size() &&
@@ -208,7 +224,8 @@ namespace {
             R"(\s*\4\s*\)\s*\*\s*\(\s*\4\s*\*\s*\4\s*\)\s*;\s*return\s+\3\s*\*\s*\(\s*1(?:\.0*)?\s*-)"
             R"(\s*\2\.a\s*\)\s*\+\s*\2\s*;\s*\})");
         std::smatch luminance_match;
-        if (std::regex_search(fragment, luminance_match, luminance_source_over)) {
+        if (std::regex_search(
+                fragment, luminance_match, luminance_source_over)) {
             const auto function = luminance_match[1].str();
             const std::array call { std::string_view { function },
                 std::string_view { "(" }, source, std::string_view { "," },
@@ -221,34 +238,28 @@ namespace {
 
         for (const auto& assignment : assignments) {
             const auto result = assignment.name;
-            const auto screen = std::to_array<std::string_view>({
-                destination, "*", "(", "1", ".", "-", source, ".", "a", ")",
-                "+", source, "*", "(", "1", ".", "-", destination,
-                ".", "a", ")", "+", destination, "*", source
-            });
+            const auto screen = std::to_array<std::string_view>(
+                { destination, "*", "(", "1", ".", "-", source, ".", "a", ")",
+                    "+", source, "*", "(", "1", ".", "-", destination, ".", "a",
+                    ")", "+", destination, "*", source });
             if (contains_sequence(tokens, assignment.expression_begin,
                     assignment.expression_end, screen))
                 return GlesFragmentOperation::Screen;
-            const auto linear_light = std::to_array<std::string_view>({
-                result, ".", "rgb", "+", "=", destination, ".", "rgb",
-                "*", source, ".", "a", "-", destination, ".", "a",
-                "*", "(", source, ".", "a", "-", "2", ".", "*",
-                source, ".", "rgb", ")"
-            });
-            const auto alpha_product = std::to_array<std::string_view>({
-                result, ".", "a", "+", "=", destination, ".", "a",
-                "*", source, ".", "a"
-            });
-            const auto darken_base = std::to_array<std::string_view>({
-                destination, "*", "(", "1", ".", "-", source, ".", "a", ")",
-                "+", source, "*", "(", "1", ".", "-", destination,
-                ".", "a", ")"
-            });
-            const auto darken_rgb = std::to_array<std::string_view>({
-                result, ".", "rgb", "+", "=", "min", "(", destination,
-                ".", "rgb", "*", source, ".", "a", ",", source, ".",
-                "rgb", "*", destination, ".", "a", ")"
-            });
+            const auto linear_light = std::to_array<std::string_view>({ result,
+                ".", "rgb", "+", "=", destination, ".", "rgb", "*", source, ".",
+                "a", "-", destination, ".", "a", "*", "(", source, ".", "a",
+                "-", "2", ".", "*", source, ".", "rgb", ")" });
+            const auto alpha_product =
+                std::to_array<std::string_view>({ result, ".", "a", "+", "=",
+                    destination, ".", "a", "*", source, ".", "a" });
+            const auto darken_base =
+                std::to_array<std::string_view>({ destination, "*", "(", "1",
+                    ".", "-", source, ".", "a", ")", "+", source, "*", "(", "1",
+                    ".", "-", destination, ".", "a", ")" });
+            const auto darken_rgb =
+                std::to_array<std::string_view>({ result, ".", "rgb", "+", "=",
+                    "min", "(", destination, ".", "rgb", "*", source, ".", "a",
+                    ",", source, ".", "rgb", "*", destination, ".", "a", ")" });
             if (contains_sequence(tokens, assignment.expression_begin,
                     assignment.expression_end, darken_base) &&
                 contains_sequence(tokens, darken_rgb) &&
@@ -257,14 +268,12 @@ namespace {
             }
             const auto overlay_expression =
                 std::string { result } + ".rgb += mix(2.*" +
-                std::string { destination } + ".rgb*" +
-                std::string { source } + ".rgb, 2.*(" +
-                std::string { source } + ".rgb*" +
+                std::string { destination } + ".rgb*" + std::string { source } +
+                ".rgb, 2.*(" + std::string { source } + ".rgb*" +
                 std::string { destination } + ".a + " +
                 std::string { destination } + ".rgb*(" +
-                std::string { source } + ".a - " +
-                std::string { source } + ".rgb)) - " +
-                std::string { source } + ".a*" +
+                std::string { source } + ".a - " + std::string { source } +
+                ".rgb)) - " + std::string { source } + ".a*" +
                 std::string { destination } + ".a, step(.5*" +
                 std::string { destination } + ".a, " +
                 std::string { destination } + ".rgb))";
@@ -318,13 +327,13 @@ namespace {
                 contains_sequence(tokens, minimum)) {
                 return GlesFragmentOperation::ColorDodge;
             }
-            const auto burn_expression = std::string { result } +
-                ".rgb += step(.005, " + std::string { source } +
-                ".rgb) * (" + std::string { destination } + ".a*" +
-                std::string { source } + ".a - " + std::string { source } +
-                ".a*" + std::string { source } + ".a*(" +
-                std::string { destination } + ".a - " +
-                std::string { destination } + ".rgb)/max(" +
+            const auto burn_expression =
+                std::string { result } + ".rgb += step(.005, " +
+                std::string { source } + ".rgb) * (" +
+                std::string { destination } + ".a*" + std::string { source } +
+                ".a - " + std::string { source } + ".a*" +
+                std::string { source } + ".a*(" + std::string { destination } +
+                ".a - " + std::string { destination } + ".rgb)/max(" +
                 std::string { source } + ".rgb, .005))";
             const auto burn_rgb = tokenize(burn_expression);
             if (contains_sequence(tokens, assignment.expression_begin,
@@ -490,13 +499,14 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
     // its transparent output even when the vertex color is opaque. Restrict
     // the contract to a complete main body, so later writes cannot invalidate
     // the constant expression.
-    const auto uncommented = std::regex_replace(std::string { fragment },
-        std::regex(R"(/\*[\s\S]*?\*/|//[^\n]*)"), "");
+    const auto uncommented = std::regex_replace(
+        std::string { fragment }, std::regex(R"(/\*[\s\S]*?\*/|//[^\n]*)"), "");
     const std::regex transparent_main(
         R"(void\s+main\s*\(\s*(?:void)?\s*\)\s*\{\s*(?:(?:lowp|mediump|highp)\s+)?vec4\s+(\w+)\s*=)"
         R"(\s*vec4\s*\(\s*0(?:\.0*)?\s*\)\s*;\s*(?:gl_FragColor|gl_FragData\s*\[\s*0\s*\])\s*=\s*(?:\w+)"
         R"(\s*\*\s*\1|\1\s*\*\s*\w+|\1)\s*;\s*\})");
-    result.transparent_output = std::regex_search(uncommented, transparent_main);
+    result.transparent_output =
+        std::regex_search(uncommented, transparent_main);
     const auto vertex_tokens = tokenize(vertex);
     const auto fragment_tokens = tokenize(fragment);
     const auto vertex_declarations = declarations(vertex_tokens);
@@ -505,6 +515,26 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
     if (const auto position =
             find_position_attribute(vertex_tokens, attributes)) {
         result.position_attribute = *position;
+    } else if (std::find(attributes.begin(), attributes.end(),
+                   "vertex_position") == attributes.end()) {
+        result.requires_glsl_execution = true;
+    }
+    // The compositor adapter executes its vertex_matrix contract. Other
+    // position expressions need a real GLSL compiler, including intermediate
+    // positions and caller-defined projection uniforms.
+    const auto uniforms = names(vertex_declarations, "uniform");
+    for (std::size_t index = 0; index + 2U < vertex_tokens.size(); ++index) {
+        if (vertex_tokens[index] != "gl_Position" ||
+            vertex_tokens[index + 1U] != "=")
+            continue;
+        for (auto cursor = index + 2U;
+            cursor < vertex_tokens.size() && vertex_tokens[cursor] != ";";
+            ++cursor) {
+            if (vertex_tokens[cursor] != "vertex_matrix" &&
+                std::find(uniforms.begin(), uniforms.end(),
+                    vertex_tokens[cursor]) != uniforms.end())
+                result.requires_glsl_execution = true;
+        }
     }
 
     if (vertex.find("vertex_color0") != std::string_view::npos) {
@@ -565,8 +595,9 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
             input.rectangle = sampler_rect != samplers_rect.end();
             if (const auto sampled = projective_sample_result(
                     fragment_tokens, sampler, varying)) {
-                result.fragment_operation = classify_fragment_operation(
-                    fragment_tokens, result.color_varying, *sampled, uncommented);
+                result.fragment_operation =
+                    classify_fragment_operation(fragment_tokens,
+                        result.color_varying, *sampled, uncommented);
             }
             break;
         }

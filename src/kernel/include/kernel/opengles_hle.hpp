@@ -22,6 +22,7 @@
 #include "graphics/display.hpp"
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_math.hpp"
+#include "graphics/gles_program_renderer.hpp"
 #include "graphics/gles_program_state.hpp"
 #include "graphics/gles_rasterizer.hpp"
 #include "graphics/gles_renderer.hpp"
@@ -115,7 +116,7 @@ private:
             bool texture_2d_enabled { };
             bool texture_rectangle_enabled { };
         };
-        std::array<TextureUnitState, gles_abi::texture_unit_count>
+        std::array<TextureUnitState, gles_abi::programmable_texture_unit_count>
             texture_units;
         OpenGlesGuestCapabilitySet guest_capabilities {
             OpenGlesGuestCapabilitySet::MbxLiteLegacy
@@ -145,6 +146,9 @@ private:
         std::uint32_t front_face { gles_abi::counter_clockwise };
         std::uint32_t stencil_mask { 0xffffffffU };
         bool depth_mask { true };
+        std::uint32_t depth_function { 0x0201U };
+        float depth_clear { 1.0F };
+        std::uint64_t depth_generation { };
         std::uint32_t matrix_mode { gles_abi::modelview };
         GlesMatrix modelview_matrix;
         GlesMatrix projection_matrix;
@@ -221,6 +225,12 @@ private:
         SurfaceState* display_surface { };
     };
 
+    struct PendingProgramTarget {
+        RenderTargetBinding binding;
+        DisplayFrame frame;
+    };
+    [[nodiscard]] bool flush_program_draws(UserlandHleCall& call);
+
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
     [[nodiscard]] ContextState* current_context(UserlandHleCall& call);
     [[nodiscard]] ContextState* eagl_context(UserlandHleCall& call);
@@ -251,8 +261,8 @@ private:
         ContextState& context, std::uint32_t name, std::uint32_t width,
         std::uint32_t height, std::uint32_t internal_format);
     [[nodiscard]] bool attach_eagl_window_surface(UserlandHleCall& call,
-        ContextState& context, std::uint32_t renderbuffer,
-        std::uint32_t window, std::uint32_t surface);
+        ContextState& context, std::uint32_t renderbuffer, std::uint32_t window,
+        std::uint32_t surface);
     [[nodiscard]] std::optional<RenderTargetBinding> resolve_render_target(
         UserlandHleCall& call, ContextState& context);
     [[nodiscard]] GlesRenderTargetKey render_target_key(
@@ -266,12 +276,19 @@ private:
         UserlandHleCall& call, const RenderTargetBinding& binding);
     [[nodiscard]] bool commit_render_target(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayFrame frame);
-    [[nodiscard]] bool publish_display_surface(
-        UserlandHleCall& call, const std::shared_ptr<HostSurface>& surface,
+    [[nodiscard]] bool publish_display_surface(UserlandHleCall& call,
+        const std::shared_ptr<HostSurface>& surface,
         std::optional<DisplayViewport> drawable_viewport = std::nullopt);
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
+    [[nodiscard]] bool append_program_vertex(UserlandHleCall& call,
+        const ContextState& context, std::uint32_t index,
+        GlesProgramDraw& draw) const;
+    void execute_program_draw(UserlandHleCall& call,
+        const RenderTargetBinding& binding, DisplayFrame frame,
+        const GlesProgramDraw& draw, std::uint32_t mode,
+        const GlesRasterState& state);
     void read_pixels(UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     void register_eagl(UserlandHleRegistry& registry);
@@ -279,6 +296,7 @@ private:
     void register_gles(UserlandHleRegistry& registry);
     void register_framebuffers(UserlandHleRegistry& registry);
     void register_programmable_gles(UserlandHleRegistry& registry);
+    void register_program_queries(UserlandHleRegistry& registry);
     void unsupported(UserlandHleCall& call);
 
     std::map<std::size_t, ThreadState> threads_;
@@ -293,6 +311,8 @@ private:
     ScanoutComposition scanout_composition_;
     GlesResourceStore resources_;
     GlesProgramState programs_;
+    std::unique_ptr<GlesProgramRenderer> program_renderer_;
+    std::optional<PendingProgramTarget> pending_program_target_;
     std::uint32_t next_context_ { 0x00010001U };
     std::uint32_t next_surface_ { 0x00020001U };
     std::uint32_t egl_error_ { 0x3000U };

@@ -40,13 +40,23 @@ public:
         std::optional<std::int32_t> integer;
     };
 
+    struct ActiveVariable {
+        std::string name;
+        std::uint32_t type { };
+        std::uint32_t size { 1U };
+    };
+
     struct Program {
         std::vector<std::uint32_t> shaders;
         std::map<std::string, std::uint32_t, std::less<>> attributes;
         std::map<std::string, std::int32_t, std::less<>> uniform_locations;
         std::map<std::int32_t, Uniform> uniforms;
         GlesProgramInterfaceProfile interface_profile;
+        std::vector<ActiveVariable> active_attributes;
+        std::vector<ActiveVariable> active_uniforms;
         bool linked { };
+        bool native_execution { };
+        std::string info_log;
         bool delete_pending { };
     };
 
