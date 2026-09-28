@@ -32,7 +32,10 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     const auto name = read_little_word(bytes, 32U);
     const auto flavor = read_little_word(bytes, 36U);
     const auto value = read_little_word(bytes, 44U);
-    if (get ? flavor < 1U || flavor > 3U : flavor != 1U && flavor != 3U && flavor != 4U)
+    const bool receiver_flags = state.darwin_abi.mach_port_status ==
+        DarwinMachPortStatusAbi::ImportanceAndGuards;
+    if (get ? flavor < 1U || flavor > 3U :
+        flavor != 1U && flavor != 3U && !(flavor == 4U && receiver_flags))
         return { darwin::mach::invalid_argument };
     const auto required = flavor == 1U || flavor == 3U ? 1U : get ? 10U : 0U;
     if (count < required)
@@ -86,7 +89,7 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     result.words[7] = port->queue_limit;
     result.words[8] = static_cast<std::uint32_t>(state.mach_message_count_locked(entry->object));
     result.words[9] = port->send_once_rights;
-    // Importance flags retain their existing empty state.
+    result.words[13] = receiver_flags ? port->status_flags() : 0U;
     result.words[10] = port_has_send_rights_locked(state, entry->object) ? 1U : 0U;
     result.words[11] = state.mach_notifications.contains(
         { entry->object, mach_notify_port_destroyed }) ? 1U : 0U;

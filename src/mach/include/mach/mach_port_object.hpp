@@ -50,11 +50,25 @@ struct PortObject {
     // Receive rights prepared for transfer do not attribute queued-message
     // importance to their temporary holder.
     bool temporary_owner { };
+    // ip_impdonation belongs to the port, not the current receive owner.
+    // TEMPOWNER enables it; receive-right copyout only clears tempowner.
+    bool importance_receiver { };
     std::optional<std::uint64_t> guard { };
     bool strict_guard { };
     // ipc_port.ip_destination: one edge while the receive right is in a
     // message (including a blocked sender), zero while owned or in limbo.
     PortObjectId transit_destination { };
+
+    [[nodiscard]] std::uint32_t status_flags() const
+    {
+        constexpr std::uint32_t temporary_owner_flag = 0x01U;
+        constexpr std::uint32_t guarded_flag = 0x02U;
+        constexpr std::uint32_t strict_guard_flag = 0x04U;
+        constexpr std::uint32_t importance_donation_flag = 0x08U;
+        return (importance_receiver ? importance_donation_flag |
+                    (temporary_owner ? temporary_owner_flag : 0U) : 0U) |
+               (guard ? guarded_flag | (strict_guard ? strict_guard_flag : 0U) : 0U);
+    }
 };
 
 class PortObjectTable {
@@ -107,6 +121,7 @@ public:
         if (found == objects_.end() || found->second.kernel_owned)
             return false;
         found->second.temporary_owner = true;
+        found->second.importance_receiver = true;
         return true;
     }
 
