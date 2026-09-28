@@ -4,7 +4,8 @@
 //
 // Priority bitmap/FIFO and deadline run queues. As in XNU run_queue_enqueue
 // and run_queue_dequeue, a registered thread owns its queue storage; dispatch
-// moves existing nodes without allocating. Policy and CPU accounting live
+// uses Dynarmic's existing mcl intrusive list without allocating or parking
+// nodes in an intermediate list. Policy and CPU accounting live
 // in xnu_scheduler.cpp.
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/osfmk/kern/sched_prim.c
 
@@ -17,9 +18,9 @@
 
 namespace ilemu {
 
-void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position)
+void XnuScheduler::enqueue(ThreadRecord& record, QueuePosition position)
 {
-    auto& record = threads_.at(thread);
+    const auto thread = record.id;
     if (record.queued)
         return;
     const auto priority = record.info.scheduled_priority;
@@ -41,10 +42,10 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position)
             run_queue.realtime_order.insert(std::move(record.realtime_node));
         }
         record.realtime_queue_key = realtime_key;
-        queue.splice(queue.end(), parked_nodes_, record.queue_position);
+        queue.push_back(&record);
     } else {
-        queue.splice(position == QueuePosition::Front ? queue.begin() : queue.end(),
-            parked_nodes_, record.queue_position);
+        queue.insert(position == QueuePosition::Front ? queue.begin() : queue.end(),
+            &record);
     }
     record.queued = true;
     record.queued_priority = priority;
@@ -56,6 +57,7 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position)
     }
     ++runnable_count_;
     ++run_queue.count;
+    ++run_queue.counts[static_cast<std::size_t>(priority)];
     run_queue.bitmap[static_cast<std::size_t>(priority) / 32U] |=
         std::uint32_t { 1 } << (static_cast<std::uint32_t>(priority) % 32U);
     run_queue.high_queue = std::max(run_queue.high_queue, priority);
@@ -66,14 +68,12 @@ std::optional<XnuScheduler::QueueCandidate> XnuScheduler::candidate_for_queue(
 {
     if (run_queue.count == 0)
         return std::nullopt;
-    const auto thread = peek_highest(run_queue);
-    const auto iterator = threads_.find(thread);
-    if (iterator == threads_.end() || !iterator->second.queued ||
-        iterator->second.queued_priority != run_queue.high_queue ||
-        iterator->second.queued_processor.has_value() != local) {
+    const auto& record = peek_highest(run_queue);
+    const auto thread = record.id;
+    if (!record.queued || record.queued_priority != run_queue.high_queue ||
+        record.queued_processor.has_value() != local) {
         throw std::logic_error { "XNU run queue candidate is inconsistent" };
     }
-    const auto& record = iterator->second;
     return QueueCandidate { thread, record.info.scheduled_priority,
         record.info.realtime_deadline, record.enqueue_sequence,
         record.info.realtime, record.front_continuation, local };
@@ -131,7 +131,15 @@ const XnuScheduler::RunQueue* XnuScheduler::selected_run_queue(
     return &processor_set_run_queue_;
 }
 
-XnuThreadId XnuScheduler::peek_highest(const RunQueue& run_queue) const
+XnuScheduler::ThreadRecord& XnuScheduler::peek_highest(RunQueue& run_queue)
+{
+    // The shared lookup only observes state; this overload is used by dispatch
+    // on the owning mutable scheduler to avoid looking up the selected ID again.
+    return const_cast<ThreadRecord&>(std::as_const(*this).peek_highest(run_queue));
+}
+
+const XnuScheduler::ThreadRecord& XnuScheduler::peek_highest(
+    const RunQueue& run_queue) const
 {
     if (run_queue.count == 0 ||
         run_queue.high_queue < xnu::scheduler::minimum_priority) {
@@ -152,7 +160,7 @@ XnuThreadId XnuScheduler::peek_highest(const RunQueue& run_queue) const
                 "XNU realtime queue index is inconsistent"
             };
         }
-        return thread;
+        return iterator->second;
     }
     const auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
     if (queue.empty()) {
@@ -167,7 +175,7 @@ std::optional<XnuThreadId> XnuScheduler::peek_next_for_processor(
     const auto* selected_queue = selected_run_queue(processor);
     if (selected_queue == nullptr)
         return std::nullopt;
-    return peek_highest(*selected_queue);
+    return peek_highest(*selected_queue).id;
 }
 
 void XnuScheduler::remove_from_queue(XnuThreadId, ThreadRecord& record)
@@ -179,7 +187,7 @@ void XnuScheduler::remove_from_queue(XnuThreadId, ThreadRecord& record)
                           ? processor_run_queues_.at(*record.queued_processor)
                           : processor_set_run_queue_;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
-    parked_nodes_.splice(parked_nodes_.end(), queue, record.queue_position);
+    queue.erase(record);
     if (record.realtime_queue_key) {
         record.realtime_node =
             run_queue.realtime_order.extract(*record.realtime_queue_key);
@@ -189,6 +197,7 @@ void XnuScheduler::remove_from_queue(XnuThreadId, ThreadRecord& record)
     record.queued_processor.reset();
     --runnable_count_;
     --run_queue.count;
+    --run_queue.counts[static_cast<std::size_t>(priority)];
     if (queue.empty()) {
         run_queue.bitmap[static_cast<std::size_t>(priority) / 32U] &=
             ~(std::uint32_t { 1 }

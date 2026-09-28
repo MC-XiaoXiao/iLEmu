@@ -19,7 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <list>
+#include <mcl/container/intrusive_list.hpp>
 #include <optional>
 #include <set>
 #include <unordered_map>
@@ -198,6 +198,12 @@ public:
             xnu::scheduler::default_guest_ticks_per_second,
         std::int32_t minimum_user_priority = xnu::scheduler::minimum_priority);
 
+    // Intrusive queue sentinels and accounting pointers require stable owners.
+    XnuScheduler(const XnuScheduler&) = delete;
+    XnuScheduler& operator=(const XnuScheduler&) = delete;
+    XnuScheduler(XnuScheduler&&) = delete;
+    XnuScheduler& operator=(XnuScheduler&&) = delete;
+
     void set_dispatch_diagnostics(bool enabled);
 
     bool register_thread(XnuThreadId thread,
@@ -312,7 +318,8 @@ public:
     }
 
 private:
-    using ReadyQueue = std::list<XnuThreadId>;
+    struct ThreadRecord;
+    using ReadyQueue = mcl::intrusive_list<ThreadRecord>;
     struct RealtimeQueueKey {
         std::uint64_t deadline;
         std::uint64_t enqueue_sequence;
@@ -325,6 +332,7 @@ private:
 
     struct RunQueue {
         std::array<ReadyQueue, xnu::scheduler::run_queue_count> queues;
+        std::array<std::size_t, xnu::scheduler::run_queue_count> counts { };
         // Realtime queues are ordered by deadline. The list remains the
         // removal index for all priorities; this side index avoids a linear
         // deadline insertion/search on the scheduler hot path.
@@ -346,9 +354,7 @@ private:
     };
 
     static constexpr std::size_t no_usage_index = static_cast<std::size_t>(-1);
-    struct ThreadRecord {
-        XnuThreadId id;
-        std::size_t usage_index { no_usage_index };
+    struct ThreadRecord : mcl::intrusive_list_node<ThreadRecord> {
         XnuThreadSchedulingInfo info;
         std::int32_t importance { };
         XnuRealtimePolicy realtime_policy;
@@ -363,10 +369,6 @@ private:
         // A partially used quantum stays at the queue head. Preserve that
         // continuation priority when local and global queues are compared.
         bool front_continuation { };
-        // One list node is owned for the entire registered thread lifetime.
-        // Dispatch moves it between the ready queue and parked_nodes_.
-        ReadyQueue::iterator queue_position;
-        RealtimeQueue::node_type realtime_node;
         std::optional<RealtimeQueueKey> realtime_queue_key;
         std::optional<std::uint32_t> priority_usage_shift;
         std::optional<std::size_t> queued_processor;
@@ -379,6 +381,11 @@ private:
         std::int32_t failsafe_saved_base_priority { };
         bool failsafe_saved_timeshare { };
         bool failsafe_saved_realtime { };
+        // Keep scheduling state together; identity and reusable storage also
+        // serve the run queue and compact periodic-accounting index.
+        XnuThreadId id;
+        std::size_t usage_index { no_usage_index };
+        RealtimeQueue::node_type realtime_node;
     };
 
     enum class QueuePosition { Front, Back };
@@ -390,7 +397,7 @@ private:
     [[nodiscard]] static bool is_runnable_state(XnuThreadState state);
     void transition_state(XnuThreadId thread, ThreadRecord& record,
         XnuThreadState state);
-    void enqueue(XnuThreadId thread, QueuePosition position);
+    void enqueue(ThreadRecord& record, QueuePosition position);
     void remove_from_queue(XnuThreadId thread, ThreadRecord& record);
     void index_depression(XnuThreadId thread, const ThreadRecord& record);
     void unindex_depression(XnuThreadId thread, const ThreadRecord& record);
@@ -404,7 +411,8 @@ private:
     [[nodiscard]] RunQueue* selected_run_queue(std::size_t processor);
     [[nodiscard]] const RunQueue* selected_run_queue(
         std::size_t processor) const;
-    [[nodiscard]] XnuThreadId peek_highest(const RunQueue& run_queue) const;
+    [[nodiscard]] ThreadRecord& peek_highest(RunQueue& run_queue);
+    [[nodiscard]] const ThreadRecord& peek_highest(const RunQueue& run_queue) const;
     [[nodiscard]] std::optional<XnuThreadId> peek_next_for_processor(
         std::size_t processor) const;
     static void refresh_high_queue(RunQueue& run_queue);
@@ -422,7 +430,6 @@ private:
     void release_failsafe(XnuThreadId thread, ThreadRecord& record);
     [[nodiscard]] std::uint32_t timeshare_quanta() const;
 
-    ReadyQueue parked_nodes_;
     RunQueue processor_set_run_queue_;
     std::vector<RunQueue> processor_run_queues_;
     std::unordered_map<XnuThreadId, ThreadRecord, XnuThreadIdHash> threads_;

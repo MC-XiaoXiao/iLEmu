@@ -16,4 +16,4 @@ add_library(ilemu_mach STATIC
 add_library(iLEmu::mach ALIAS ilemu_mach)
 ilemu_configure_module(ilemu_mach)
 target_link_libraries(ilemu_mach PUBLIC
-    iLEmu::foundation iLEmu::xnu_adapter)
+    iLEmu::foundation iLEmu::xnu_adapter merry::mcl)
