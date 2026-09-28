@@ -321,12 +321,14 @@ private:
         auto operator<=>(const RealtimeQueueKey&) const = default;
     };
 
+    using RealtimeQueue = std::set<RealtimeQueueKey>;
+
     struct RunQueue {
         std::array<ReadyQueue, xnu::scheduler::run_queue_count> queues;
         // Realtime queues are ordered by deadline. The list remains the
         // removal index for all priorities; this side index avoids a linear
         // deadline insertion/search on the scheduler hot path.
-        std::set<RealtimeQueueKey> realtime_order;
+        RealtimeQueue realtime_order;
         std::array<std::uint32_t, xnu::scheduler::run_queue_count / 32>
             bitmap { };
         std::int32_t high_queue { -1 };
@@ -358,7 +360,10 @@ private:
         // A partially used quantum stays at the queue head. Preserve that
         // continuation priority when local and global queues are compared.
         bool front_continuation { };
-        std::optional<ReadyQueue::iterator> queue_position;
+        // One list node is owned for the entire registered thread lifetime.
+        // Dispatch moves it between the ready queue and parked_nodes_.
+        ReadyQueue::iterator queue_position;
+        RealtimeQueue::node_type realtime_node;
         std::optional<RealtimeQueueKey> realtime_queue_key;
         std::optional<std::uint32_t> priority_usage_shift;
         std::optional<std::size_t> queued_processor;
@@ -400,7 +405,6 @@ private:
     [[nodiscard]] std::optional<XnuThreadId> peek_next_for_processor(
         std::size_t processor) const;
     static void refresh_high_queue(RunQueue& run_queue);
-    [[nodiscard]] XnuThreadId pop_highest(RunQueue& run_queue);
     void advance_scheduler_time(std::uint64_t consumed_ticks);
     void age_priorities(std::uint64_t elapsed_ticks);
     void expire_depressions();
@@ -413,6 +417,7 @@ private:
     void release_failsafe(XnuThreadId thread, ThreadRecord& record);
     [[nodiscard]] std::uint32_t timeshare_quanta() const;
 
+    ReadyQueue parked_nodes_;
     RunQueue processor_set_run_queue_;
     std::vector<RunQueue> processor_run_queues_;
     std::unordered_map<XnuThreadId, ThreadRecord, XnuThreadIdHash> threads_;
