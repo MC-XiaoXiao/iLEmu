@@ -10,6 +10,7 @@
 
 #include "port/rights.hpp"
 #include "port/attributes.hpp"
+#include "port/membership.hpp"
 #include "../clock/server.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
@@ -303,6 +304,21 @@ void CompatibilityKernel::dispatch_mach_message(
             return;
         }
     }
+    const bool port_membership_request = port_mig::Membership::handles(*message_id);
+    if (port_membership_request && pending_mach_receives_.empty()) {
+        std::optional<port_mig::Membership::SynchronousReply> reply;
+        {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            reply = port_mig::Membership::try_synchronous_locked(memory_,
+                *shared_state_, process_, registers, *bits, *local_port,
+                receive_address.value_or(message_address));
+        }
+        if (reply) {
+            if (reply->received_status) registers[0] = *reply->received_status;
+            else begin_mach_receive(cpu, receive_address);
+            return;
+        }
+    }
     // Every optimized RPC above requires an exact voucher-free header. Keep
     // voucher preflight off those hot paths, but before the legacy providers
     // and before ordinary IPC commits any destination or reply rights.
@@ -324,7 +340,8 @@ void CompatibilityKernel::dispatch_mach_message(
     }
     if (!separate_receive && !clock_service_request && !host_service_request && !host_information_request &&
         !task_service_request && !thread_policy_request && !port_query_request &&
-        !port_notification_request && !port_lifecycle_request && !port_rights_request && !port_attributes_request) {
+        !port_notification_request && !port_lifecycle_request && !port_rights_request &&
+        !port_attributes_request && !port_membership_request) {
         const auto is_bootstrap_port = [&] {
             std::lock_guard lock { shared_state_->mach_mutex };
             const auto task = mach_task_identity::control_port_locked(*shared_state_, process_);
@@ -338,7 +355,6 @@ void CompatibilityKernel::dispatch_mach_message(
             dispatch_mach_host_special_port_message(cpu, request) ||
             dispatch_mach_voucher_message(cpu, request) ||
             dispatch_mach_processor_message(cpu, request) ||
-            dispatch_mach_port_message(cpu, request) ||
             dispatch_mach_port_context_message(cpu, request) ||
             dispatch_mach_task_info_message(cpu, request) ||
             dispatch_mach_exception_ports_message(cpu, request) ||

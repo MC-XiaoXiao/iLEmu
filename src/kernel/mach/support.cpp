@@ -1298,6 +1298,14 @@ namespace mach_support {
         constexpr std::uint32_t already_in_set = 11U;
         constexpr std::uint32_t not_in_set = 12U;
         PortMembershipResult result;
+        // Reserved NULL/DEAD names are rejected before namespace lookup.
+        // MOVE alone permits a NULL set, meaning detach from every set.
+        if (member_name == xnu::ipc::null_name || member_name == xnu::ipc::dead_name ||
+            set_name == xnu::ipc::dead_name ||
+            (set_name == xnu::ipc::null_name && operation != PortMembershipOperation::Move)) {
+            result.result = darwin::mach::invalid_right;
+            return result;
+        }
         const auto member =
             state.mach_namespaces.lookup(target_task, member_name);
         const auto set = set_name != xnu::ipc::null_name
@@ -1329,14 +1337,11 @@ namespace mach_support {
 
         if (result.result == darwin::mach::success) {
             if (operation == PortMembershipOperation::Move) {
-                const auto removed =
-                    state.remove_mach_port_set_member_from_all_locked(
-                        member->object);
+                static_cast<void>(state.remove_mach_port_set_member_from_all_locked(
+                    member->object));
                 if (set) {
                     static_cast<void>(state.insert_mach_port_set_member_locked(
                         set->object, member->object));
-                } else if (!removed) {
-                    result.result = not_in_set;
                 }
             } else if (operation == PortMembershipOperation::Insert) {
                 if (!state.insert_mach_port_set_member_locked(

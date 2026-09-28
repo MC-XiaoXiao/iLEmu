@@ -4,15 +4,6 @@
 
 #include "port/lifecycle.hpp"
 #include "transport/kernel_reply.hpp"
-#include <kernel/kernel.hpp>
-
-namespace ilemu {
-bool CompatibilityKernel::dispatch_mach_port_message(
-    Cpu& cpu, const MachMessageRequest& request)
-{
-    return dispatch_mach_port_membership_message(cpu, request);
-}
-} // namespace ilemu
 
 namespace ilemu::port_mig {
 using namespace mach_support;
