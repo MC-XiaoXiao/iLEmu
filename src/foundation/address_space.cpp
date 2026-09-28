@@ -560,6 +560,7 @@ void AddressSpace::unmap_range_locked(
     auto page = pages_->lower_bound(address);
     while (page != pages_->end() && page->first < end) {
         uncache_page_locked(page->first);
+        resident_pages_.current -= page->second.backing ? 1U : 0U;
         page = pages_->erase(page);
     }
     for (std::uint64_t base = address; base < end; base += page_size) {
@@ -631,6 +632,7 @@ void AddressSpace::clear()
     vm_map_.clear();
     translation_profile_map_.clear();
     pages_ = std::make_shared<PageMap>();
+    resident_pages_ = { };
     file_mappings_.clear();
     for (auto& chunk : page_lookup_)
         chunk.reset();
@@ -979,6 +981,7 @@ void AddressSpace::share_pages_locked(std::uint32_t address, std::uint64_t end,
         auto& page = ensure_page_locked(static_cast<std::uint32_t>(base));
         if (!page.backing) {
             page.backing = std::make_shared<GuestPageBacking>();
+            record_resident_page_locked();
         } else if (page.file_cached ||
                    (page.copy_on_write_possible && !page.shared_writable &&
                        !page.backing.unique())) {
@@ -1051,7 +1054,8 @@ bool AddressSpace::map_page_backings(std::uint32_t address, std::uint32_t size,
         auto [page, inserted] = pages_->emplace(base,
             Page { backings[index], 0, false, shared_writable,
                 file_writeback_capable, file_writeback, !shared_writable });
-        static_cast<void>(inserted);
+        if (inserted)
+            record_resident_page_locked();
         if (shared_writable && tracks_write_locked(base, page_size)) {
             if (page->second.backing->enable_shared_write_tracking())
                 ++tracking_transitions;
@@ -1248,6 +1252,8 @@ void AddressSpace::fault_file_page_locked(std::uint32_t address, Page& page,
     // Only publish fully initialized resident bytes to the ordinary read and
     // JIT fast paths. Shared mappings reuse the same clustered page-in path.
     backing->materialize();
+    if (!page.backing)
+        record_resident_page_locked();
     page.backing = std::move(backing);
     page.file_cached = !shared;
     page.copy_on_write_possible = !shared;
@@ -1600,6 +1606,7 @@ GuestPageBacking& AddressSpace::writable_backing_locked(
         !page.backing || page.file_cached || page.copy_on_write_possible;
     if (!page.backing) {
         page.backing = std::make_shared<GuestPageBacking>();
+        record_resident_page_locked();
     } else {
         if (page.file_cached ||
             (page.copy_on_write_possible && !page.shared_writable &&
@@ -2373,13 +2380,21 @@ std::size_t AddressSpace::mapped_page_count() const
     return vm_map_.page_count(page_size);
 }
 
-std::size_t AddressSpace::resident_page_count() const
+void AddressSpace::record_resident_page_locked()
+{
+    ++resident_pages_.current;
+    resident_pages_.maximum = std::max(resident_pages_.maximum, resident_pages_.current);
+}
+
+AddressSpace::ResidentPageStatistics AddressSpace::resident_page_statistics() const
 {
     auto lock = read_lock();
-    return static_cast<std::size_t>(
-        std::count_if(pages_->begin(), pages_->end(), [](const auto& entry) {
-            return static_cast<bool>(entry.second.backing);
-        }));
+    return resident_pages_;
+}
+
+std::size_t AddressSpace::resident_page_count() const
+{
+    return resident_page_statistics().current;
 }
 
 std::size_t AddressSpace::shared_page_count() const
@@ -2476,6 +2491,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
         }
     }
     result->pages_ = pages_;
+    result->resident_pages_.current = resident_pages_.current;
     result->file_mappings_ = file_mappings_;
     result->rebuild_page_lookup_locked();
     result->page_permissions_ = page_permissions_;
@@ -2508,6 +2524,9 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
         result->invalidate_mapping_leases_locked(region.address, region.end);
         result->unmap_range_locked(region.address, region.end, false);
     }
+    // Fork starts a new pmap lifetime, excluding VM_INHERIT_NONE pages and
+    // the parent's historical high-water mark.
+    result->resident_pages_.maximum = result->resident_pages_.current;
     return result;
 }
 

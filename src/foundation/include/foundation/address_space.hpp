@@ -358,6 +358,11 @@ public:
     [[nodiscard]] std::size_t mapped_page_count() const;
     // Demand-zero mappings do not become resident until their first write.
     [[nodiscard]] std::size_t resident_page_count() const;
+    struct ResidentPageStatistics {
+        std::size_t current { };
+        std::size_t maximum { };
+    };
+    [[nodiscard]] ResidentPageStatistics resident_page_statistics() const;
     // Resident backings shared by fork clones or the immutable file cache.
     [[nodiscard]] std::size_t shared_page_count() const;
     [[nodiscard]] std::size_t cached_file_mapping_count() const;
@@ -479,7 +484,7 @@ private:
     void clear_jit_page_table_locked();
     [[nodiscard]] static std::byte read_byte_locked(
         const Page* page, std::uint32_t offset);
-    [[nodiscard]] static GuestPageBacking& writable_backing_locked(
+    [[nodiscard]] GuestPageBacking& writable_backing_locked(
         Page& page, bool* jit_eligibility_changed = nullptr);
     [[nodiscard]] bool reservation_invalidation_required_locked(
         const Page& page) const noexcept;
@@ -517,6 +522,10 @@ private:
     bool parallel_access_ { true };
     VmMap vm_map_;
     VmMap translation_profile_map_;
+    // Guarded by the memory gate; count mapped backings, including aliases.
+    // COW replacement does not change residency. Never update per load/store.
+    ResidentPageStatistics resident_pages_;
+    void record_resident_page_locked();
     std::shared_ptr<PageMap> pages_ { std::make_shared<PageMap>() };
     // File-backed vm_map entries remain range metadata until a guest access
     // faults an individual page into pages_. This mirrors XNU's vnode pager and
