@@ -9,6 +9,26 @@
 #include "support.hpp"
 
 namespace ilemu {
+namespace mach_support {
+void enqueue_send_possible_notification_locked(KernelSharedState& state,
+    std::uint32_t notify, std::uint32_t name)
+{
+    if (!state.mach_port_objects.contains(notify) ||
+        state.mach_ports_being_removed.contains(notify))
+        return;
+    KernelSharedState::MachMessage message;
+    message.bytes.resize(36U);
+    write_little_word(message.bytes, 0U, 18U);
+    write_little_word(message.bytes, 4U, 36U);
+    write_little_word(message.bytes, 8U, notify);
+    write_little_word(message.bytes, 20U, mach_notify_send_possible);
+    write_little_word(message.bytes, 28U, 1U);
+    write_little_word(message.bytes, 32U, name);
+    message.destination = notify;
+    message.destination_send_once_object = notify;
+    state.enqueue_mach_message_locked(notify, std::move(message));
+}
+} // namespace mach_support
 
 void KernelSharedState::notify_send_possible_locked(std::uint32_t destination)
 {
@@ -20,7 +40,7 @@ void KernelSharedState::notify_send_possible_locked(std::uint32_t destination)
     const bool has_capacity = port->kernel_owned || mach_message_count_locked(destination) < port->queue_limit;
     for (auto it = mach_dead_name_notifications.begin();
          it != mach_dead_name_notifications.end();) {
-        const auto& request = it->second;
+        auto& request = it->second;
         if (request.target_object != destination || !request.send_possible ||
             !request.armed) {
             ++it;
@@ -36,22 +56,13 @@ void KernelSharedState::notify_send_possible_locked(std::uint32_t destination)
         }
         const auto notify = request.notify_object;
         const auto name = it->first.second;
-        it = mach_dead_name_notifications.erase(it);
-        if (!mach_port_objects.contains(notify) ||
-            mach_ports_being_removed.contains(notify))
-            continue;
-        MachMessage message;
-        message.bytes.resize(36U);
-        mach_support::write_little_word(message.bytes, 0U, 18U);
-        mach_support::write_little_word(message.bytes, 4U, 36U);
-        mach_support::write_little_word(message.bytes, 8U, notify);
-        mach_support::write_little_word(message.bytes, 20U,
-            mach_support::mach_notify_send_possible);
-        mach_support::write_little_word(message.bytes, 28U, 1U);
-        mach_support::write_little_word(message.bytes, 32U, name);
-        message.destination = notify;
-        message.destination_send_once_object = notify;
-        enqueue_mach_message_locked(notify, std::move(message));
+        // ipc_port_spnotify claims the token but leaves the slot in use
+        // until cancellation, replacement, name deletion or port teardown.
+        request.notify_object = 0U;
+        request.send_possible = false;
+        request.armed = false;
+        ++it;
+        mach_support::enqueue_send_possible_notification_locked(*this, notify, name);
     }
 }
 

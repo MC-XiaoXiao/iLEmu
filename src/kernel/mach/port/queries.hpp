@@ -151,7 +151,8 @@ private:
     {
         const auto request =
             state.mach_dead_name_notifications.find({ task, name });
-        if (request == state.mach_dead_name_notifications.end())
+        if (request == state.mach_dead_name_notifications.end() ||
+            request->second.notify_object == xnu::ipc::null_name)
             return 0U;
         std::uint32_t type = 0x80000000U; // MACH_PORT_TYPE_DNREQUEST
         // Native mach_port_type masks SPREQUEST bits for old CF callers;

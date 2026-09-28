@@ -217,12 +217,29 @@ Notifications::Result Notifications::register_locked(KernelSharedState& state,
         enqueue_dead_name_notification_locked(state, notify, name);
         return { };
     }
+    const auto port = state.mach_port_objects.lookup(entry->object);
+    auto* table = state.mach_port_objects.request_table(entry->object);
+    if (!port || !table)
+        return { darwin::mach::invalid_right };
+    const bool immediate = send_possible && sync != 0U &&
+        ((entry->type & xnu::ipc::type_mask(xnu::ipc::Right::SendOnce)) != 0U ||
+            port->kernel_owned ||
+            state.mach_message_count_locked(entry->object) < port->queue_limit);
+    const bool needs_slot = notify != 0U && !immediate;
     Result result;
     if (old != state.mach_dead_name_notifications.end()) {
         result.previous = old->second.notify_object;
         state.mach_dead_name_notifications.erase(old);
+        if (!needs_slot)
+            table->release();
+    } else if (needs_slot) {
+        const auto allocated = table->allocate();
+        if (allocated != xnu::ipc::PortRequestTable::Result::Success)
+            return { static_cast<std::uint32_t>(allocated) };
     }
-    if (notify != 0U) {
+    if (notify != 0U && immediate) {
+        enqueue_send_possible_notification_locked(state, notify, name);
+    } else if (needs_slot) {
         state.mach_dead_name_notifications.emplace(key,
             KernelSharedState::MachDeadNameNotificationRequest {
                 entry->object, notify, sync, send_possible, sync != 0U });

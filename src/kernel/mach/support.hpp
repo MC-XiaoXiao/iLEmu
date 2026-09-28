@@ -110,6 +110,8 @@ namespace mach_support {
         const KernelSharedState& state, std::uint32_t object);
     [[nodiscard]] bool enqueue_no_senders_notification_locked(
         KernelSharedState& state, std::uint32_t object);
+    void enqueue_send_possible_notification_locked(KernelSharedState& state,
+        std::uint32_t notify_object, std::uint32_t name);
     void enqueue_dead_name_notification_locked(KernelSharedState& state,
         std::uint32_t notify_object, std::uint32_t dead_name);
     void enqueue_port_deleted_notification_locked(KernelSharedState& state,

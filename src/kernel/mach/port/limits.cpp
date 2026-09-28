@@ -32,18 +32,21 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     const auto name = read_little_word(bytes, 32U);
     const auto flavor = read_little_word(bytes, 36U);
     const auto value = read_little_word(bytes, 44U);
-    if (get ? flavor != 1U && flavor != 2U : flavor != 1U && flavor != 4U)
+    if (get ? flavor < 1U || flavor > 3U : flavor != 1U && flavor != 3U && flavor != 4U)
         return { darwin::mach::invalid_argument };
-    const auto required = flavor == 1U ? 1U : get ? 10U : 0U;
+    const auto required = flavor == 1U || flavor == 3U ? 1U : get ? 10U : 0U;
     if (count < required)
         return { darwin::mach::failure };
     if (!get && flavor == 1U && value > xnu::ipc::maximum_queue_limit)
         return { darwin::mach::invalid_value };
     Result result;
     if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name) {
-        if (!get || flavor != 1U)
+        if (!get || flavor == 2U)
             return { darwin::mach::invalid_right };
-        result.count = 4U; // LIMITS on NULL/DEAD succeeds with output count0.
+        // DNREQUESTS writes zero but preserves the server-clamped in/out
+        // count; LIMITS explicitly resets that count. Zero unused output.
+        result.words[3] = flavor == 3U ? std::min(count, maximum_count) : 0U;
+        result.count = 4U + result.words[3];
         return result;
     }
     const auto entry = state.mach_namespaces.lookup(task, name);
@@ -55,6 +58,9 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     if (!port)
         return { darwin::mach::invalid_right };
     if (!get) {
+        if (flavor == 3U)
+            return { static_cast<std::uint32_t>(
+                state.mach_port_objects.request_table(entry->object)->grow(value)) };
         if (flavor == 4U) {
             if (!state.mach_port_objects.set_temporary_owner(entry->object))
                 return { darwin::mach::invalid_argument };
@@ -68,8 +74,8 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     }
     result.words[3] = required;
     result.count = 4U + required;
-    if (flavor == 1U) {
-        result.words[4] = port->queue_limit;
+    if (flavor == 1U || flavor == 3U) {
+        result.words[4] = flavor == 1U ? port->queue_limit : port->requests.capacity();
         return result;
     }
     const auto links = state.mach_port_set_links_by_member.find(entry->object);
@@ -113,7 +119,11 @@ std::optional<Attributes::SynchronousReply> Attributes::try_synchronous_locked(
     const auto identifier = memory.read32(registers[0] + 20U).value_or(0U);
     const auto flavor = memory.read32(registers[0] + 36U).value_or(0U);
     const auto capacity = identifier == id(Routine::mach_port_get_attributes)
-        ? (flavor == 2U ? 88U : 52U) : 44U;
+        ? (flavor == 2U ? 88U : flavor == 3U ?
+            48U + 4U * std::min(memory.read32(registers[0] + 40U).value_or(0U),
+                state.darwin_abi.mach_port_attribute_array ==
+                    DarwinMachPortAttributeArray::ExtendedStatus17 ? 17U : 10U) : 52U)
+        : 44U;
     const auto destination = mach_ipc::validate_task_rpc_locked(memory, state,
         process, registers, bits, reply_name, size, capacity);
     if (!destination)
@@ -130,7 +140,7 @@ std::optional<Attributes::SynchronousReply> Attributes::try_synchronous_locked(
     const auto output_size = 32U + static_cast<std::uint32_t>(result.payload().size_bytes());
     if (queue != state.mach_queues.end() && queue->second.empty() &&
         memory.accessible(receive_address, output_size, MemoryPermission::Write)) {
-        return SynchronousReply { mach_ipc::copyout_kernel_reply_locked<14>(
+        return SynchronousReply { mach_ipc::copyout_kernel_reply_locked<21>(
             memory, state, receive_address, reply_name, destination->reply_object,
             identifier, result.payload()) };
     }

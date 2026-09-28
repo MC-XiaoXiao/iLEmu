@@ -30,8 +30,8 @@ public:
 
 private:
     struct Result {
-        // NDR, return code, count, then up to ten status words.
-        std::array<std::uint32_t, 14> words { 0U, 1U };
+        // NDR, return code, count, then the largest native info array.
+        std::array<std::uint32_t, 21> words { 0U, 1U };
         std::size_t count { 3U };
         Result() = default;
         Result(std::uint32_t error) { words[2] = error; }

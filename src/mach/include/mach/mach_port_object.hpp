@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <mach/mach_port_request_table.hpp>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +44,7 @@ struct PortObject {
     std::uint32_t make_send_count { };
     // ip_sorights counts tokens, including kernel/message-held rights.
     std::uint32_t send_once_rights { };
+    PortRequestTable requests { };
     std::uint32_t sequence_number { };
     std::uint32_t queue_limit { default_queue_limit };
     // Receive rights prepared for transfer do not attribute queued-message
@@ -70,6 +72,13 @@ public:
     [[nodiscard]] bool contains(PortObjectId object) const
     {
         return objects_.contains(object);
+    }
+
+    // Hold mach_mutex while changing native request-table occupancy.
+    [[nodiscard]] PortRequestTable* request_table(PortObjectId object)
+    {
+        const auto found = objects_.find(object);
+        return found == objects_.end() ? nullptr : &found->second.requests;
     }
 
     [[nodiscard]] std::optional<PortObject> lookup(PortObjectId object) const

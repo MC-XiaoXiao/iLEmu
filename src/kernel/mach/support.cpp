@@ -966,6 +966,8 @@ namespace mach_support {
         const auto request = state.mach_dead_name_notifications.find(key);
         if (request == state.mach_dead_name_notifications.end())
             return;
+        if (auto* table = state.mach_port_objects.request_table(request->second.target_object))
+            table->release();
         if (request->second.notify_object != xnu::ipc::null_name) {
             enqueue_port_deleted_notification_locked(
                 state, request->second.notify_object, name);
@@ -1060,11 +1062,14 @@ namespace mach_support {
             }
             const auto task = request->first.first;
             const auto name = request->first.second;
-            // XNU adds one dead-name uref for every generated notification.
-            static_cast<void>(state.mach_namespaces.modify_references(
-                task, name, xnu::ipc::Right::DeadName, 1));
-            enqueue_dead_name_notification_locked(
-                state, request->second.notify_object, name);
+            // A delivered send-possible request keeps a slot but no notify
+            // right. Only an actual dead-name notification gains a uref.
+            if (request->second.notify_object != xnu::ipc::null_name) {
+                static_cast<void>(state.mach_namespaces.modify_references(
+                    task, name, xnu::ipc::Right::DeadName, 1));
+                enqueue_dead_name_notification_locked(
+                    state, request->second.notify_object, name);
+            }
             request = state.mach_dead_name_notifications.erase(request);
         }
     }
