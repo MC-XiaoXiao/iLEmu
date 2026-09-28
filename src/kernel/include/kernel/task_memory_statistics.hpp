@@ -10,6 +10,7 @@ namespace ilemu {
 struct TaskMemoryStatistics {
     std::uint64_t virtual_bytes;
     std::uint64_t resident_bytes;
+    std::uint64_t maximum_resident_bytes;
 };
 using TaskMemoryStatisticsQuery =
     std::function<std::optional<TaskMemoryStatistics>(std::uint32_t)>;

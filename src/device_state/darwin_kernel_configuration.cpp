@@ -20,6 +20,7 @@ namespace {
         .abi_epoch = DarwinAbiEpoch::IphoneOs2,
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ReverseCompactDescriptors,
+        .task_information = DarwinTaskInformationAbi::ResidentPeak,
         .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedgerAutomount,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidSizedQueries,
         .activation_hardware_model_policy =
@@ -31,6 +32,7 @@ namespace {
         .abi_epoch = DarwinAbiEpoch::Darwin11,
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+        .task_information = DarwinTaskInformationAbi::DyldWithFormat,
         .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
         .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
         .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
@@ -70,6 +72,7 @@ namespace {
         auto abi = darwin11_wide_vm_high_vectors_abi;
         abi.abi_epoch = DarwinAbiEpoch::Darwin13;
         abi.task_suspension = DarwinTaskSuspensionAbi::ProtectedPidHold;
+        abi.task_information = DarwinTaskInformationAbi::UnifiedBasic;
         abi.task_special_ports = DarwinTaskSpecialPortsAbi::Security;
         abi.sandbox_abi = DarwinSandboxAbi::Wide64Arguments;
         abi.mach_port_context = DarwinMachVmAddressWidth::Wide64;
@@ -85,6 +88,7 @@ namespace {
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
         .task_suspension = DarwinTaskSuspensionAbi::ResumePortTokens,
+        .task_information = DarwinTaskInformationAbi::UnifiedBasic,
         .task_special_ports = DarwinTaskSpecialPortsAbi::Security,
         .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
         .mach_port_attribute_array = DarwinMachPortAttributeArray::ExtendedStatus17,
@@ -171,6 +175,7 @@ namespace {
             .darwin_release = "10.0.0d3",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::IphoneOs3,
+                .task_information = DarwinTaskInformationAbi::DyldAddressPair,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidSizedQueries,
                 .activation_hardware_model_policy =
@@ -185,6 +190,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .task_information = DarwinTaskInformationAbi::DyldAddressPair,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
@@ -207,6 +213,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .task_information = DarwinTaskInformationAbi::DyldAddressPair,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
@@ -229,6 +236,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .task_information = DarwinTaskInformationAbi::DyldAddressPair,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1TsdBase,
@@ -252,6 +260,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin11,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .task_information = DarwinTaskInformationAbi::DyldWithFormat,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
                 .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,

@@ -17,7 +17,8 @@ public:
     {
         using namespace darwin::mach::task_info;
         return flavor == absolute_time_flavor || flavor == thread_times_flavor ||
-               flavor == basic_32_flavor || flavor == basic_64_flavor;
+               flavor == basic_32_flavor || flavor == basic_64_flavor ||
+               flavor == basic_32_peak_flavor || flavor == mach_basic_flavor;
     }
     static void write(std::uint32_t flavor, const XnuTaskStatistics& stats,
         std::span<std::uint32_t> words)
@@ -33,7 +34,8 @@ public:
                 return;
             const auto us = live ? stats.live_user_microseconds
                 : scale(stats.terminated_user_ticks, 1'000'000, stats.ticks_per_second);
-            const auto offset = live ? 0U : 3U;
+            const auto offset = live ? 0U :
+                flavor == darwin::mach::task_info::mach_basic_flavor ? 6U : 3U;
             words[offset] = static_cast<std::uint32_t>(us / 1'000'000);
             words[offset + 1] = static_cast<std::uint32_t>(us % 1'000'000);
         }

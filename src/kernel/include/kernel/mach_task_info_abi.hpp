@@ -34,6 +34,12 @@ inline constexpr std::uint32_t basic_64_flavor = 5;
 // that variant is not requested by the firmware profiles supported here.
 inline constexpr std::size_t basic_64_word_count = 8;
 
+inline constexpr std::uint32_t basic_32_peak_flavor = 6;
+inline constexpr std::size_t basic_32_peak_word_count = 8;
+
+inline constexpr std::uint32_t mach_basic_flavor = 20;
+inline constexpr std::size_t mach_basic_word_count = 12;
+
 inline constexpr std::uint32_t dyld_info_flavor = 17;
 inline constexpr std::size_t dyld_info_word_count = 5;
 

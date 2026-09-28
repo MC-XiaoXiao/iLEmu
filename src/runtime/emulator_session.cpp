@@ -1991,9 +1991,11 @@ void EmulatorSession::run()
                 const auto* target = runtime_index.find(pid);
                 if (!target)
                     return std::nullopt;
+                const auto resident = target->memory->resident_page_statistics();
                 return TaskMemoryStatistics {
                     static_cast<std::uint64_t>(target->memory->mapped_page_count()) * AddressSpace::page_size,
-                    static_cast<std::uint64_t>(target->memory->resident_page_count()) * AddressSpace::page_size };
+                    static_cast<std::uint64_t>(resident.current) * AddressSpace::page_size,
+                    static_cast<std::uint64_t>(resident.maximum) * AddressSpace::page_size };
             });
         runtime.kernel->set_task_memory_region_query(
             [&runtime_index](std::uint32_t pid, std::uint32_t address)

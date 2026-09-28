@@ -260,12 +260,19 @@ enum class DarwinMachMessageHeaderAbi : std::uint8_t {
     CheckedPortBytes, MaskedPortBytes, MaskedPortFields
 };
 
+// Successive task_info contracts: XNU 792 basic, 1228 resident peak,
+// 1456/1504 dyld address pair, 1699 dyld format, 2050 unified basic info.
+enum class DarwinTaskInformationAbi : std::uint8_t {
+    Basic, ResidentPeak, DyldAddressPair, DyldWithFormat, UnifiedBasic,
+};
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
         DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors
     };
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
+    DarwinTaskInformationAbi task_information { DarwinTaskInformationAbi::Basic };
     DarwinTaskSpecialPortsAbi task_special_ports { DarwinTaskSpecialPortsAbi::Ledger };
     DarwinMachPortRequestAbi mach_port_requests { DarwinMachPortRequestAbi::DeadNameRequests };
     DarwinMachPortAttributeArray mach_port_attribute_array { DarwinMachPortAttributeArray::ReceiveStatus10 };
