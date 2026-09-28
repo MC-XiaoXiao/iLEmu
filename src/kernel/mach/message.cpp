@@ -966,16 +966,23 @@ void CompatibilityKernel::dispatch_mach_message(
                     !consume_moved_right_locked(*shared_state_, process_.pid,
                         *remote_port, *destination_right, true)) {
                     routable = false;
-                } else if (routable && destination_move_disposition == 17U &&
-                           destination_right &&
+                } else if (routable && destination_right &&
                            *destination_right == xnu::ipc::Right::Send) {
-                    // MOVE_SEND removes the sender's last ipc_entry reference,
-                    // but the queued destination still owns that Send right
-                    // until delivery or discard. Keep it out of
-                    // no-senders/reclaimer decisions.
+                    // COPY/MAKE also create a message-held send right. The
+                    // sender can release its namespace entry before receive.
                     destination_send_object = destination_object;
                 }
                 if (routable) {
+                    // The destination participates in atomic header copyin
+                    // just like the reply. Old received-type aliases already
+                    // own their right and must not manufacture another token.
+                    if (!destination_uses_received_type) {
+                        if (destination_move_disposition == 20U)
+                            static_cast<void>(shared_state_->mach_port_objects
+                                .increment_make_send_count(remote_object));
+                        else if (destination_move_disposition == 21U)
+                            shared_state_->mach_port_objects.make_send_once(remote_object);
+                    }
                     const auto retain_inflight = [&](std::uint32_t object,
                                                      xnu::ipc::Right right,
                                                      std::uint32_t

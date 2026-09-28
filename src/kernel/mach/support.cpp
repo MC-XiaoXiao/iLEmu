@@ -1078,13 +1078,16 @@ namespace mach_support {
         KernelSharedState& state, std::uint32_t object)
     {
         const auto inflight = state.mach_inflight_send_rights.find(object);
-        if (inflight == state.mach_inflight_send_rights.end())
+        if (inflight == state.mach_inflight_send_rights.end() || inflight->second == 0U)
             return;
-        if (inflight->second > 1) {
-            --inflight->second;
-        } else {
+        if (--inflight->second != 0U)
+            return;
+        // A live port reuses its zero-count slot on the next send. All
+        // capability checks test the count, not map membership. Port teardown
+        // removes idle slots; a dead port's final in-flight release does so
+        // here. This avoids one allocator round trip per COPY/MAKE message.
+        if (!state.mach_port_objects.contains(object))
             state.mach_inflight_send_rights.erase(inflight);
-        }
         static_cast<void>(
             enqueue_no_senders_notification_locked(state, object));
         release_unreferenced_fileport_locked(state, object);
