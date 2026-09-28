@@ -56,7 +56,8 @@ namespace {
 
 } // namespace
 
-bool normalize_send_header(std::vector<std::byte>& bytes, std::size_t send_size)
+bool normalize_send_header(std::vector<std::byte>& bytes, std::size_t send_size,
+    std::uint32_t copied_header_bits)
 {
     if (bytes.size() < darwin::mig_wire::message_header_size ||
         send_size < darwin::mig_wire::message_header_size ||
@@ -64,6 +65,7 @@ bool normalize_send_header(std::vector<std::byte>& bytes, std::size_t send_size)
         send_size > std::numeric_limits<std::uint32_t>::max()) {
         return false;
     }
+    write_word(bytes, darwin::mig_wire::header_bits_offset, copied_header_bits);
     write_word(bytes, darwin::mig_wire::header_size_offset,
         static_cast<std::uint32_t>(send_size));
     return true;

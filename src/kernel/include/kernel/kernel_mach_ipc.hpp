@@ -27,7 +27,8 @@ struct ReceivedMessage {
 // Mirrors ipc_kmsg_get_from_user(): the trap's send_size is trusted over the
 // uninitialized msgh_size word produced by several old firmware MIG stubs.
 [[nodiscard]] bool normalize_send_header(
-    std::vector<std::byte>& bytes, std::size_t send_size);
+    std::vector<std::byte>& bytes, std::size_t send_size,
+    std::uint32_t copied_header_bits);
 
 // Resolves kernel-originated pointers to storage embedded in the receiver's
 // Mach message buffer. Old IOKit notifications use this for callback payloads

@@ -47,6 +47,7 @@
 #include "task/lifecycle.hpp"
 #include "thread/policy.hpp"
 #include "transport/port_copyin.hpp"
+#include "transport/user_header.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/copyin_cleanup.hpp"
 #include "transport/pseudo_copyout.hpp"
@@ -115,7 +116,7 @@ void CompatibilityKernel::dispatch_mach_message(
         begin_mach_receive(cpu, receive_address);
         return;
     }
-    const auto bits =
+    auto bits =
         memory_.read32(message_address + darwin::mig_wire::header_bits_offset);
     const auto remote_port = memory_.read32(
         message_address + darwin::mig_wire::header_remote_port_offset);
@@ -128,6 +129,20 @@ void CompatibilityKernel::dispatch_mach_message(
     if (!bits || !remote_port || !local_port || !message_id) {
         registers[0] = 0x1000000eU; // MACH_SEND_INVALID_MEMORY
         return;
+    }
+    if (wants_send) {
+        bits = mach_transport::UserHeader::copyin_bits(
+            *bits, *local_port, shared_state_->darwin_abi.mach_message_header);
+        if (!bits) {
+            // ipc_kmsg_get copies the entire message before checking its
+            // header. Preserve that error order without adding a second
+            // memory-range lookup to successful optimized RPCs.
+            registers[0] = memory_.accessible(
+                message_address, registers[2], MemoryPermission::Read)
+                ? darwin::mach_message::send_invalid_header
+                : darwin::mach_message::send_invalid_data;
+            return;
+        }
     }
     // Synthetic MIG providers currently encode their reply in the request
     // buffer. A distinct overwrite target must use queued IPC, never silently
@@ -608,26 +623,13 @@ void CompatibilityKernel::dispatch_mach_message(
             registers[0] = darwin::mach_message::send_invalid_data;
             return;
         }
-        // ipc_kmsg_copyin_header permits only Send/SendOnce dispositions in
-        // header slots. Receive rights may move in body descriptors, never
-        // in the reply slot; reject before capturing or consuming any rights.
-        const auto sends_right = [](std::uint32_t disposition) {
-            return disposition >= 17U && disposition <= 21U;
-        };
-        const auto header_reply_disposition = (*bits >> 8U) & 0xffU;
-        if (!sends_right(*bits & 0xffU) ||
-            (header_reply_disposition == 0U ? *local_port != xnu::ipc::null_name
-                                     : !sends_right(header_reply_disposition))) {
-            registers[0] = darwin::mach_message::send_invalid_header;
-            return;
-        }
         std::uint32_t remote_object = 0;
         const auto caller_header_size =
             memory_
                 .read32(message_address + darwin::mig_wire::header_size_offset)
                 .value_or(0);
         bool routable = false;
-        if (bytes && mach_ipc::normalize_send_header(*bytes, registers[2])) {
+        if (bytes && mach_ipc::normalize_send_header(*bytes, registers[2], *bits)) {
             const auto descriptor_table = mach_transport::preflight_copyin_descriptors(*bytes);
             const auto& descriptors = descriptor_table.descriptors;
             std::unique_lock mach_lock { shared_state_->mach_mutex };

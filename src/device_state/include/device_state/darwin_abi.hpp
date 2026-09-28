@@ -254,6 +254,12 @@ enum class DarwinMachPortAttributeArray : std::uint8_t { ReceiveStatus10, Extend
 // importance/guard state and the temporary receive-owner attribute.
 enum class DarwinMachPortStatusAbi : std::uint8_t { ReservedFlags, ImportanceAndGuards };
 
+// ipc_kmsg_copyin rejects non-user bits through XNU2050;2422 masks
+// them, and2782 narrows each disposition to5 bits and adds vouchers.
+enum class DarwinMachMessageHeaderAbi : std::uint8_t {
+    CheckedPortBytes, MaskedPortBytes, MaskedPortFields
+};
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -264,6 +270,7 @@ struct DarwinAbi {
     DarwinMachPortRequestAbi mach_port_requests { DarwinMachPortRequestAbi::DeadNameRequests };
     DarwinMachPortAttributeArray mach_port_attribute_array { DarwinMachPortAttributeArray::ReceiveStatus10 };
     DarwinMachPortStatusAbi mach_port_status { DarwinMachPortStatusAbi::ReservedFlags };
+    DarwinMachMessageHeaderAbi mach_message_header { DarwinMachMessageHeaderAbi::CheckedPortBytes };
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {
