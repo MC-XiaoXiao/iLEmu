@@ -144,6 +144,8 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
         for (const auto& port : ports) {
             if (port.right == xnu::ipc::Right::SendOnce)
                 enqueue_send_once_notification_locked(state, port.object);
+            else if (port.right == xnu::ipc::Right::Receive)
+                terminate_receive_object_locked(state, port.object);
         }
         discard_mach_message_rights_locked(state, request);
         return std::nullopt;
@@ -172,7 +174,8 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
         // Newly produced Send rights become message-held only after a live
         // reply destination exists; receiver copyout installs the user refs.
         assert(port.right == xnu::ipc::Right::Send ||
-               port.right == xnu::ipc::Right::SendOnce);
+               port.right == xnu::ipc::Right::SendOnce ||
+               port.right == xnu::ipc::Right::Receive);
         if (port.right == xnu::ipc::Right::Send)
             ++state.mach_inflight_send_rights[port.object];
     }

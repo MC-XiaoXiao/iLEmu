@@ -9,6 +9,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/ipc/ipc_right.c
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/ipc_tt.c
 
+#include "port/rights.hpp"
 #include "task/suspension.hpp"
 #include "mach/bootstrap_mig_ids.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -961,6 +962,8 @@ namespace mach_support {
                     task, name, xnu::ipc::type_mask(right))) {
                 return false;
             }
+            if (!state.mach_namespaces.contains(task, name))
+                cancel_dead_name_notification_locked(state, task, name);
             // A standalone port has no set topology to invalidate, but its
             // old blocked receiver must still observe MACH_RCV_PORT_CHANGED.
             state.note_mach_queue_topology_change_locked();
@@ -1252,75 +1255,8 @@ namespace mach_support {
         std::uint32_t target_name, std::uint32_t source_name,
         std::uint32_t disposition)
     {
-        const auto right = right_for_disposition(disposition);
-        const auto source_right = source_right_for_disposition(disposition);
-        const auto source_object =
-            source_right ? resolve_name_with_right(
-                               state, caller, source_name, *source_right)
-                         : std::nullopt;
-        const auto existing =
-            state.mach_namespaces.lookup(target_task, target_name);
-        const auto existing_name = source_object
-                                       ? state.mach_namespaces.name_for(
-                                             target_task, *source_object)
-                                       : std::nullopt;
-        if (!right || !source_right || !source_object ||
-            target_name == xnu::ipc::null_name ||
-            target_name == xnu::ipc::dead_name) {
-            return darwin::mach::invalid_value;
-        }
-        if (existing &&
-            (existing->object != *source_object ||
-                *right == xnu::ipc::Right::SendOnce)) {
-            return darwin::mach::name_exists;
-        }
-        if (existing_name && *existing_name != target_name &&
-            *right != xnu::ipc::Right::SendOnce) {
-            return darwin::mach::right_exists;
-        }
-
-        const auto moved = disposition == 16U || disposition == 17U ||
-                           disposition == 18U;
-        if (!moved && existing && *right == xnu::ipc::Right::Send &&
-            existing->user_references[static_cast<std::size_t>(
-                xnu::ipc::Right::Send)] >=
-                xnu::ipc::maximum_send_user_references) {
-            return darwin::mach::user_references_overflow;
-        }
-
-        auto consumed = true;
-        if (moved) {
-            consumed = consume_moved_right_locked(
-                state, caller, source_name, *source_right, true);
-            if (!consumed)
-                return darwin::mach::invalid_right;
-        }
-        const auto installed = state.mach_namespaces.install(target_task,
-            target_name, *source_object, xnu::ipc::type_mask(*right));
-        if (!installed) {
-            if (moved && consumed) {
-                static_cast<void>(state.mach_namespaces.install(caller,
-                    source_name, *source_object,
-                    xnu::ipc::type_mask(*source_right)));
-            }
-            if (moved && consumed &&
-                *source_right == xnu::ipc::Right::Receive) {
-                static_cast<void>(state.mach_port_objects.set_receive_owner(
-                    *source_object, caller));
-            }
-            return darwin::mach::invalid_right;
-        }
-
-        if (disposition == darwin::mig_wire::disposition_make_send) {
-            static_cast<void>(
-                state.mach_port_objects.increment_make_send_count(
-                    *source_object));
-        }
-        if (*right == xnu::ipc::Right::Receive) {
-            static_cast<void>(state.mach_port_objects.set_receive_owner(
-                *source_object, target_task));
-        }
-        return darwin::mach::success;
+        return port_mig::Rights::insert_locked(
+            state, caller, target_task, target_name, source_name, disposition);
     }
 
     PortMembershipResult modify_port_membership_locked(KernelSharedState& state,

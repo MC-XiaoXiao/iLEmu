@@ -50,10 +50,12 @@ namespace {
                 continue;
             if ((entry.type & mask) == 0) {
                 entry.user_references[index] = std::max(1U, references);
-            } else if ((mask & reference_counted_types) != 0 && copyout &&
-                       entry.user_references[index] <
-                           std::numeric_limits<std::uint32_t>::max()) {
-                ++entry.user_references[index];
+            } else if ((mask & reference_counted_types) != 0 && copyout) {
+                // ipc_right_copyout(overflow=TRUE) leaves urefs pegged.
+                const auto maximum = right == Right::Send
+                    ? maximum_send_user_references : maximum_user_references;
+                if (entry.user_references[index] < maximum)
+                    ++entry.user_references[index];
             } else {
                 entry.user_references[index] =
                     std::max(entry.user_references[index], references);
@@ -172,10 +174,16 @@ std::optional<MachName> MachNamespaceTable::copyout(
         return allocate(task, object, type);
     if (const auto names = indexed_names(space, object);
         names && !names->empty()) {
-        const auto name = names->front();
-        add_types(space.entries.at(name), type, 1, true);
-        space.names_by_object.at(object).rights |= type;
-        return name;
+        for (const auto name : *names) {
+            auto& entry = space.entries.at(name);
+            // ipc_right_reverse never coalesces an ordinary capability into
+            // a send-once alias. Its token must retain an independent name.
+            if ((entry.type & type_mask(Right::SendOnce)) != 0U)
+                continue;
+            add_types(entry, type, 1, true);
+            space.names_by_object.at(object).rights |= type;
+            return name;
+        }
     }
     return allocate(task, object, type);
 }
@@ -195,10 +203,16 @@ std::optional<MachName> MachNamespaceTable::copyout_at_name(
     }
     if (const auto names = indexed_names(space, object);
         names && !names->empty()) {
-        const auto name = names->front();
-        add_types(space.entries.at(name), type, 1, true);
-        space.names_by_object.at(object).rights |= type;
-        return name;
+        for (const auto name : *names) {
+            auto& entry = space.entries.at(name);
+            // ipc_right_reverse never coalesces an ordinary capability into
+            // a send-once alias. Its token must retain an independent name.
+            if ((entry.type & type_mask(Right::SendOnce)) != 0U)
+                continue;
+            add_types(entry, type, 1, true);
+            space.names_by_object.at(object).rights |= type;
+            return name;
+        }
     }
     if (object == null_name || type == 0 || !valid_name(preferred_name) ||
         space.entries.contains(preferred_name)) {

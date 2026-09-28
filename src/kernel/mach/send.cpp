@@ -8,6 +8,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/ipc/mach_msg.c
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/ipc/ipc_mqueue.c
 
+#include "port/rights.hpp"
 #include "../clock/server.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
@@ -246,6 +247,8 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
         kernel_service_handled = true;
         const auto destination = port_mig::Queries::handles(message_id)
             ? port_mig::Queries::dispatch_locked(*shared_state_, remote_object, queued)
+            : port_mig::Rights::handles(message_id)
+            ? port_mig::Rights::dispatch_locked(*shared_state_, remote_object, queued)
             : port_mig::Lifecycle::handles(message_id)
             ? port_mig::Lifecycle::dispatch_locked(*shared_state_, remote_object, queued)
             : port_mig::Notifications::handles(message_id)
