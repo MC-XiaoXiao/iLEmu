@@ -74,6 +74,7 @@ namespace {
         abi.task_suspension = DarwinTaskSuspensionAbi::ProtectedPidHold;
         abi.task_information = DarwinTaskInformationAbi::UnifiedBasic;
         abi.task_special_ports = DarwinTaskSpecialPortsAbi::Security;
+        abi.mach_port_ownership = DarwinMachPortOwnershipAbi::TemporaryReceiver;
         abi.sandbox_abi = DarwinSandboxAbi::Wide64Arguments;
         abi.mach_port_context = DarwinMachVmAddressWidth::Wide64;
         abi.memory_status_priority = DarwinMemoryStatusPriorityAbi::SignedPriority;
@@ -92,6 +93,7 @@ namespace {
         .task_special_ports = DarwinTaskSpecialPortsAbi::Security,
         .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
         .mach_port_attribute_array = DarwinMachPortAttributeArray::ExtendedStatus17,
+        .mach_port_ownership = DarwinMachPortOwnershipAbi::TemporaryReceiver,
         .mach_port_status = DarwinMachPortStatusAbi::ImportanceAndGuards,
         .mach_message_header = DarwinMachMessageHeaderAbi::MaskedPortBytes,
         .thread_timeshare = DarwinThreadTimeshareAbi::CanonicalBoolean,

@@ -34,8 +34,10 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     const auto value = read_little_word(bytes, 44U);
     const bool receiver_flags = state.darwin_abi.mach_port_status ==
         DarwinMachPortStatusAbi::ImportanceAndGuards;
+    const bool temporary_owner = state.darwin_abi.mach_port_ownership ==
+        DarwinMachPortOwnershipAbi::TemporaryReceiver;
     if (get ? flavor < 1U || flavor > 3U :
-        flavor != 1U && flavor != 3U && !(flavor == 4U && receiver_flags))
+        flavor != 1U && flavor != 3U && !(flavor == 4U && temporary_owner))
         return { darwin::mach::invalid_argument };
     const auto required = flavor == 1U || flavor == 3U ? 1U : get ? 10U : 0U;
     if (count < required)

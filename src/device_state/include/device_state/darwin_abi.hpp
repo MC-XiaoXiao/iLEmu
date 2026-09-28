@@ -250,8 +250,11 @@ enum class DarwinMachPortRequestAbi : std::uint8_t { DeadNameRequests, SendPossi
 // XNU792--2050 use10 inline attribute words;2422--4903 expand to17.
 enum class DarwinMachPortAttributeArray : std::uint8_t { ReceiveStatus10, ExtendedStatus17 };
 
-// XNU792--2050 reserve mps_flags and reject TEMPOWNER;2422 adds
-// importance/guard state and the temporary receive-owner attribute.
+// Receive-status flags and temporary ownership have separate ABI boundaries:
+// native XNU2107 XPC uses TEMPOWNER before the guarded-port status layout.
+enum class DarwinMachPortOwnershipAbi : std::uint8_t { FixedReceiver, TemporaryReceiver };
+
+// XNU792--2050 reserve mps_flags;2422 adds importance/guard state.
 enum class DarwinMachPortStatusAbi : std::uint8_t { ReservedFlags, ImportanceAndGuards };
 
 // ipc_kmsg_copyin rejects non-user bits through XNU2050;2422 masks
@@ -276,6 +279,7 @@ struct DarwinAbi {
     DarwinTaskSpecialPortsAbi task_special_ports { DarwinTaskSpecialPortsAbi::Ledger };
     DarwinMachPortRequestAbi mach_port_requests { DarwinMachPortRequestAbi::DeadNameRequests };
     DarwinMachPortAttributeArray mach_port_attribute_array { DarwinMachPortAttributeArray::ReceiveStatus10 };
+    DarwinMachPortOwnershipAbi mach_port_ownership { DarwinMachPortOwnershipAbi::FixedReceiver };
     DarwinMachPortStatusAbi mach_port_status { DarwinMachPortStatusAbi::ReservedFlags };
     DarwinMachMessageHeaderAbi mach_message_header { DarwinMachMessageHeaderAbi::CheckedPortBytes };
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
