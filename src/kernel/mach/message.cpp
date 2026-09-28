@@ -997,6 +997,7 @@ void CompatibilityKernel::dispatch_mach_message(
                         return;
                     }
                     const mach_transport::OolCopyin ool_copyin { memory_ };
+                    bool circular = false;
                     const auto copy_port = [&](std::uint32_t name,
                                                const auto& descriptor,
                                                std::optional<std::uint32_t> element) {
@@ -1030,6 +1031,10 @@ void CompatibilityKernel::dispatch_mach_message(
                         retain_inflight(transfer->object, transfer->right,
                             transfer->disposition);
                         port_transfers.push_back(*transfer);
+                        if (transfer->right == xnu::ipc::Right::Receive &&
+                            shared_state_->mach_port_objects.check_circularity(
+                                transfer->object, remote_object))
+                            circular = true;
                         return true;
                     };
                     const auto reverse = shared_state_->darwin_abi.mach_descriptor_copyin ==
@@ -1078,6 +1083,19 @@ void CompatibilityKernel::dispatch_mach_message(
                     // Keep payload consumers in physical descriptor order.
                     if (reverse)
                         std::reverse(ool_payloads.begin(), ool_payloads.end());
+                    // Complete body copyin first: a later bad descriptor still
+                    // wins over circularity. ipc_kmsg_send then destroys the
+                    // circular message successfully, before queue admission or
+                    // send timeout, and proceeds with any requested receive.
+                    if (circular) {
+                        cleanup.discard();
+                        mach_lock.unlock();
+                        if (wants_receive)
+                            begin_mach_receive(cpu, receive_address);
+                        else
+                            registers[0] = darwin::mach::success;
+                        return;
+                    }
                     // Simple COPY_SEND cannot change the queue during copyin.
                     if (!simple_copy_send && immediate_send_timeout()) {
                         cleanup.commit();

@@ -47,6 +47,9 @@ struct PortObject {
     bool temporary_owner { };
     std::optional<std::uint64_t> guard { };
     bool strict_guard { };
+    // ipc_port.ip_destination: one edge while the receive right is in a
+    // message (including a blocked sender), zero while owned or in limbo.
+    PortObjectId transit_destination { };
 };
 
 class PortObjectTable {
@@ -80,6 +83,7 @@ public:
         if (found == objects_.end())
             return false;
         found->second.receive_owner = receive_owner;
+        found->second.transit_destination = 0;
         if (receive_owner != 0)
             found->second.temporary_owner = false;
         return true;
@@ -101,11 +105,36 @@ public:
             return false;
         auto& port = found->second;
         port.receive_owner = 0;
+        port.transit_destination = 0;
         port.make_send_count = 0;
         port.sequence_number = 0;
         port.guard.reset();
         port.strict_guard = false;
         return true;
+    }
+
+    // Caller serializes the entire chain with mach_mutex. Match
+    // ipc_port_check_circularity: leave a cyclic right in limbo; otherwise
+    // link it to the message destination. Existing chains are acyclic, so
+    // this needs no visited set or scan of unrelated queues/namespaces.
+    [[nodiscard]] bool check_circularity(
+        PortObjectId object, PortObjectId destination)
+    {
+        const auto source = objects_.find(object);
+        if (source == objects_.end())
+            return false;
+        auto base = destination;
+        for (;;) {
+            if (base == object)
+                return true;
+            const auto found = objects_.find(base);
+            if (found == objects_.end() || found->second.receive_owner != 0 ||
+                found->second.transit_destination == 0)
+                break;
+            base = found->second.transit_destination;
+        }
+        source->second.transit_destination = destination;
+        return false;
     }
 
     [[nodiscard]] bool set_make_send_count(

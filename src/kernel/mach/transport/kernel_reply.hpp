@@ -185,6 +185,20 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     request.reply_object.reset();
     request.reply_right.reset();
     discard_mach_message_rights_locked(state, request);
+    bool circular = false;
+    for (const auto& port : ports) {
+        if (port.right == xnu::ipc::Right::Receive &&
+            state.mach_port_objects.check_circularity(port.object, *destination))
+            circular = true;
+    }
+    if (circular) {
+        // Destruction consumes the reply destination before its body, just
+        // like ipc_kmsg_send for a circular kernel-produced message.
+        if (*right == xnu::ipc::Right::SendOnce)
+            enqueue_send_once_notification_locked(state, *destination);
+        discard_mach_message_rights_locked(state, reply);
+        return std::nullopt;
+    }
     state.enqueue_mach_message_locked(*destination, std::move(reply));
     return destination;
 }

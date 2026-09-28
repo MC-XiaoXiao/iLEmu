@@ -20,10 +20,12 @@ public:
     }
     CopyinCleanup(const CopyinCleanup&) = delete;
     CopyinCleanup& operator=(const CopyinCleanup&) = delete;
-    ~CopyinCleanup()
+    ~CopyinCleanup() { discard(); }
+    void discard()
     {
         if (committed_)
             return;
+        committed_ = true;
         // ipc_kmsg_copyin_ool_ports_descriptor destroys a failed array's
         // prefix before ipc_kmsg_clean_partial cleans the header and body.
         if (failed_array_) {

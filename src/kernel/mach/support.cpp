@@ -488,7 +488,16 @@ namespace mach_support {
     bool enqueue_port_destroyed_notification_locked(KernelSharedState& state,
         std::uint32_t notify_object, std::uint32_t receive_object)
     {
-        if (!state.mach_port_objects.contains(notify_object)) {
+        // Object metadata survives while remove_port_object_locked drains its
+        // queue, but a dying backup is already inactive in native ipc_port.
+        // Never rescue a receive right into the queue being discarded.
+        if (!state.mach_port_objects.contains(notify_object) ||
+            state.mach_ports_being_removed.contains(notify_object)) {
+            return false;
+        }
+        if (state.mach_port_objects.check_circularity(
+                receive_object, notify_object)) {
+            enqueue_send_once_notification_locked(state, notify_object);
             return false;
         }
         KernelSharedState::MachMessage message;
@@ -1011,21 +1020,18 @@ namespace mach_support {
             state.mach_notifications.find(destroyed_key);
         if (destroyed_request != state.mach_notifications.end() &&
             destroyed_request->second.notify_object != xnu::ipc::null_name) {
-            if (enqueue_port_destroyed_notification_locked(
-                    state, destroyed_request->second.notify_object, object)) {
-                state.mach_notifications.erase(destroyed_request);
-                // The port remains active without a receiver until the
-                // MOVE_RECEIVE descriptor is copied out by the notification
-                // receiver.
-                state.mach_port_contexts.erase(object);
-                static_cast<void>(
-                    state.mach_port_objects.clear_receiver(object));
-                return;
-            }
-            // A dead notification endpoint cannot consume the receive right.
-            // Drop the request and continue with ordinary ipc_right_terminate
-            // semantics.
+            const auto notify = destroyed_request->second.notify_object;
+            // Consume the backup before attempting delivery: a circular
+            // notification destroys its receive right instead of retrying the
+            // same backup. Clear the old transit edge before linking the new
+            // notification (ipc_port_destroy puts the right in limbo).
             state.mach_notifications.erase(destroyed_request);
+            state.mach_port_contexts.erase(object);
+            static_cast<void>(state.mach_port_objects.clear_receiver(object));
+            if (enqueue_port_destroyed_notification_locked(state, notify, object))
+                return;
+            // Dead or circular notification destinations cannot consume the
+            // receive right. Continue ordinary ipc_right_terminate semantics.
         }
         state.mach_notifications.erase(destroyed_key);
 
