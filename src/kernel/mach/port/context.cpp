@@ -2,138 +2,97 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Handle guest Mach port context reads and updates.
-//
-// Apple public ABI/behavior references (guest profiles may differ):
-// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/mach_port.defs
-// https://github.com/apple-oss-distributions/xnu/blob/xnu-1228.15.4/osfmk/mach/mach_port.defs
-
-#include "kernel/kernel.hpp"
-
-#include "kernel/darwin_abi.hpp"
-#include "mach/mig_wire_abi.hpp"
-
-#include "../support.hpp"
+// Native mach_port_{get,set}_context MIG transport and object-owned context.
+// References: XNU1504--4903 osfmk/ipc/mach_port.c, mach_port.defs.
+#include "context.hpp"
+#include "../transport/kernel_reply.hpp"
 #include "../vm/wire_format.hpp"
 
-#include <cstddef>
-#include <cstdint>
-#include <mutex>
-#include <optional>
-#include <vector>
+namespace ilemu::port_mig {
+using namespace mach_support;
 
-namespace ilemu {
-namespace {
-
-    // Context accessors extend the base mach_port subsystem used for the
-    // adapter table. MIG represents the context as mach_vm_address_t, even
-    // when the public ARM32 wrapper exposes a natural-sized context pointer.
-    constexpr std::uint32_t mach_port_get_context_identifier = 3228U;
-    constexpr std::uint32_t mach_port_set_context_identifier = 3229U;
-    constexpr std::uint32_t get_request_size = 36U;
-    constexpr std::uint32_t simple_reply_size = 36U;
-    constexpr std::uint32_t name_offset = 32U;
-    constexpr std::uint32_t context_offset = 36U;
-
-} // namespace
-
-bool CompatibilityKernel::dispatch_mach_port_context_message(
-    Cpu& cpu, const MachMessageRequest& request)
+Context::Result Context::evaluate_locked(KernelSharedState& state,
+    std::uint32_t object, std::span<const std::byte> bytes)
 {
-    const auto is_get = request.identifier == mach_port_get_context_identifier;
-    if (!is_get && request.identifier != mach_port_set_context_identifier)
-        return false;
-
-    auto& registers = cpu.registers();
-    const auto wire = mach_vm_support::MachVmWireFormat::for_interface(
-        true, shared_state_->darwin_abi.mach_port_context);
-    const auto set_request_size = context_offset + wire.address_size();
-    const auto get_success_reply_size = simple_reply_size + wire.address_size();
-    const auto required_request_size =
-        is_get ? get_request_size : set_request_size;
-    const auto required_reply_size =
-        is_get ? get_success_reply_size : simple_reply_size;
-    if (registers[2] < required_request_size ||
-        registers[3] < required_reply_size) {
-        registers[0] = darwin::mach_message::receive_invalid_data;
-        return true;
-    }
-    const auto name = memory_.read32(request.address + name_offset);
-    const auto supplied_context =
-        is_get ? std::optional<std::uint64_t> { 0U }
-               : wire.read_address(memory_, request.address + context_offset);
-    if (!name || !supplied_context) {
-        registers[0] = darwin::mach_message::receive_invalid_data;
-        return true;
-    }
-
-    auto result = darwin::mach::success;
-    std::uint64_t returned_context = 0U;
-    {
-        std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto target = mach_support::target_task_for_port(
-            *shared_state_, process_.pid, request.remote_port);
-        const auto entry =
-            target ? shared_state_->mach_namespaces.lookup(*target, *name)
-                   : std::nullopt;
-        if (!target) {
-            result = darwin::mach::invalid_task;
-        } else if (!entry) {
-            result = darwin::mach::invalid_name;
-        } else if ((entry->type & xnu::ipc::type_mask(
-                                      xnu::ipc::Right::Receive)) == 0U) {
-            result = darwin::mach::invalid_right;
-        } else if (is_get) {
-            const auto port = shared_state_->mach_port_objects.lookup(entry->object);
-            const auto context =
-                shared_state_->mach_port_contexts.find(entry->object);
-            if (context != shared_state_->mach_port_contexts.end() &&
-                (!port || !port->strict_guard)) {
-                returned_context = context->second;
-            }
-        } else {
-            const auto port = shared_state_->mach_port_objects.lookup(entry->object);
-            if (port && port->strict_guard) {
-                result = darwin::mach::invalid_argument;
-            } else {
-                shared_state_->mach_port_contexts[entry->object] = *supplied_context;
-                if (port && port->guard)
-                    static_cast<void>(shared_state_->mach_port_objects.set_guard(
-                        entry->object, *supplied_context));
-            }
+    const bool get = read_little_word(bytes, 20U) == get_identifier;
+    const auto width = mach_vm_support::MachVmWireFormat::for_interface(
+        true, state.darwin_abi.mach_port_context).address_size();
+    if (bytes.size() != (get ? 36U : 36U + width) ||
+        (read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit) != 0U)
+        return Result { darwin::mig::bad_arguments };
+    const auto target = state.task_port_pids.find(object);
+    if (target == state.task_port_pids.end())
+        return Result { darwin::mach::invalid_task };
+    const auto process = state.processes.find(target->second);
+    if (process == state.processes.end() || process->second.exited ||
+        !state.mach_namespaces.contains_task(target->second))
+        return Result { darwin::mach::invalid_task };
+    const auto name = read_little_word(bytes, 32U);
+    if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name)
+        return Result { darwin::mach::invalid_right };
+    const auto entry = state.mach_namespaces.lookup(target->second, name);
+    if (!entry)
+        return Result { darwin::mach::invalid_name };
+    if ((entry->type & xnu::ipc::type_mask(xnu::ipc::Right::Receive)) == 0U)
+        return Result { darwin::mach::invalid_right };
+    const auto port = state.mach_port_objects.lookup(entry->object);
+    if (!port)
+        return Result { darwin::mach::invalid_right };
+    if (get) {
+        Result result;
+        result.count += width / 4U;
+        const auto context = state.mach_port_contexts.find(entry->object);
+        if (!port->strict_guard && context != state.mach_port_contexts.end()) {
+            result.words[3] = static_cast<std::uint32_t>(context->second);
+            if (width == 8U)
+                result.words[4] = static_cast<std::uint32_t>(context->second >> 32U);
         }
+        return result;
     }
-
-    std::vector<std::uint32_t> reply {
-            darwin::mig_wire::message_bits(
-                darwin::mig_wire::disposition_move_send_once),
-            is_get && result == darwin::mach::success ? get_success_reply_size
-                                                      : simple_reply_size,
-            request.local_port,
-            0U,
-            0U,
-            request.identifier + 100U,
-            0U,
-            1U,
-            result,
-        };
-    if (is_get && result == darwin::mach::success)
-        wire.append_address(reply, returned_context);
-    const auto reply_word_count =
-        (is_get && result == darwin::mach::success ? get_success_reply_size
-                                                   : simple_reply_size) /
-        sizeof(std::uint32_t);
-    for (std::size_t index = 0; index < reply_word_count; ++index) {
-        if (!memory_.write32(
-                request.address +
-                    static_cast<std::uint32_t>(index * sizeof(std::uint32_t)),
-                reply[index])) {
-            registers[0] = darwin::mach_message::receive_invalid_data;
-            return true;
-        }
-    }
-    registers[0] = darwin::mach::success;
-    return true;
+    if (port->strict_guard)
+        return Result { darwin::mach::invalid_argument };
+    const auto context = static_cast<std::uint64_t>(read_little_word(bytes, 36U)) |
+        (width == 8U ? static_cast<std::uint64_t>(read_little_word(bytes, 40U)) << 32U : 0U);
+    state.mach_port_contexts[entry->object] = context;
+    if (port->guard)
+        static_cast<void>(state.mach_port_objects.set_guard(entry->object, context));
+    return Result { };
 }
 
-} // namespace ilemu
+std::optional<std::uint32_t> Context::dispatch_locked(
+    KernelSharedState& state, std::uint32_t object,
+    KernelSharedState::MachMessage& request)
+{
+    const auto result = evaluate_locked(state, object, request.bytes);
+    return mach_ipc::enqueue_kernel_reply_locked(state, request,
+        read_little_word(request.bytes, 20U), result.payload());
+}
+
+std::optional<std::uint32_t> Context::try_synchronous_locked(
+    AddressSpace& memory, KernelSharedState& state,
+    const ProcessContext& process, std::span<const std::uint32_t> registers,
+    std::uint32_t bits, std::uint32_t reply_name, std::uint32_t receive_address)
+{
+    const auto identifier = memory.read32(registers[0] + 20U).value_or(0U);
+    const bool get = identifier == get_identifier;
+    const auto width = mach_vm_support::MachVmWireFormat::for_interface(
+        true, state.darwin_abi.mach_port_context).address_size();
+    const auto request_size = get ? 36U : 36U + width;
+    const auto reply_capacity = get ? 44U + width : 44U;
+    const auto destination = mach_ipc::validate_task_rpc_locked(memory, state,
+        process, registers, bits, reply_name, request_size, reply_capacity);
+    if (!destination ||
+        !memory.accessible(receive_address, reply_capacity, MemoryPermission::Write))
+        return std::nullopt;
+    std::array<std::byte, 44> storage;
+    const auto bytes = std::span { storage }.first(request_size);
+    if (!memory.copy_out(registers[0], bytes) || read_little_word(bytes, 16U) != 0U)
+        return std::nullopt;
+    // No state changes precede the last fallback check. Non-default headers,
+    // trailers, small/read-only output or queued replies use normal IPC.
+    state.mach_port_objects.make_send_once(destination->reply_object);
+    const auto result = evaluate_locked(state, destination->task_object, bytes);
+    return mach_ipc::copyout_kernel_reply_locked<5>(memory, state, receive_address,
+        reply_name, destination->reply_object, identifier, result.payload());
+}
+} // namespace ilemu::port_mig
