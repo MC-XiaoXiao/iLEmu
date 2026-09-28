@@ -83,6 +83,8 @@ private:
             std::uint32_t color_texture_target { };
             std::uint32_t color_texture { };
             std::uint32_t color_renderbuffer { };
+            std::uint32_t depth_renderbuffer { };
+            std::uint32_t stencil_renderbuffer { };
         };
         struct RenderbufferState {
             std::uint32_t width { };
@@ -275,6 +277,7 @@ private:
     void register_eagl(UserlandHleRegistry& registry);
     void register_egl(UserlandHleRegistry& registry);
     void register_gles(UserlandHleRegistry& registry);
+    void register_framebuffers(UserlandHleRegistry& registry);
     void register_programmable_gles(UserlandHleRegistry& registry);
     void unsupported(UserlandHleCall& call);
 
@@ -292,8 +295,6 @@ private:
     GlesProgramState programs_;
     std::uint32_t next_context_ { 0x00010001U };
     std::uint32_t next_surface_ { 0x00020001U };
-    std::uint32_t next_framebuffer_ { 1U };
-    std::uint32_t next_renderbuffer_ { 1U };
     std::uint32_t egl_error_ { 0x3000U };
     std::uint64_t frame_count_ { };
     std::size_t unsupported_trace_count_ { };
