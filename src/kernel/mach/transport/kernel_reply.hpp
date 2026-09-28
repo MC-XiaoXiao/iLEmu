@@ -89,14 +89,15 @@ bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
 
 // Direct handoff of an uncontended COPY_SEND/MAKE_SEND_ONCE RPC.
 // The caller validates the rights, empty receive queue and default trailer.
+template <std::size_t MaximumPayloadWords = 11U>
 inline std::uint32_t copyout_kernel_reply_locked(AddressSpace& memory,
     KernelSharedState& state, std::uint32_t address, std::uint32_t receive_name,
     std::uint32_t receive_object, std::uint32_t identifier,
     std::span<const std::uint32_t> payload, bool complex = false,
     std::span<const KernelSharedState::MachMessage::OolPayload> buffers = { })
 {
-    assert(payload.size() <= 11U);
-    std::array<std::uint32_t, 19> words { };
+    assert(payload.size() <= MaximumPayloadWords);
+    std::array<std::uint32_t, MaximumPayloadWords + 8U> words { };
     const auto size = 24U + static_cast<std::uint32_t>(payload.size_bytes());
     words[0] =
         (18U << 8U) | (complex ? darwin::mig_wire::message_complex_bit : 0U);

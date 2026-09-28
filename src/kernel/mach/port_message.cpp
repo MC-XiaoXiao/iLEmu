@@ -10,8 +10,7 @@ namespace ilemu {
 bool CompatibilityKernel::dispatch_mach_port_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    return dispatch_mach_port_limit_message(cpu, request) ||
-           dispatch_mach_port_membership_message(cpu, request);
+    return dispatch_mach_port_membership_message(cpu, request);
 }
 } // namespace ilemu
 

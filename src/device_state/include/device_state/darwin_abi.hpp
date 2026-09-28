@@ -247,6 +247,9 @@ enum class DarwinTaskSpecialPortsAbi : std::uint8_t {
 // and permits empty cancellation before checking the entry right type.
 enum class DarwinMachPortRequestAbi : std::uint8_t { DeadNameRequests, SendPossibleRequests };
 
+// XNU792--2050 use10 inline attribute words;2422--4903 expand to17.
+enum class DarwinMachPortAttributeArray : std::uint8_t { ReceiveStatus10, ExtendedStatus17 };
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -255,6 +258,7 @@ struct DarwinAbi {
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
     DarwinTaskSpecialPortsAbi task_special_ports { DarwinTaskSpecialPortsAbi::Ledger };
     DarwinMachPortRequestAbi mach_port_requests { DarwinMachPortRequestAbi::DeadNameRequests };
+    DarwinMachPortAttributeArray mach_port_attribute_array { DarwinMachPortAttributeArray::ReceiveStatus10 };
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {

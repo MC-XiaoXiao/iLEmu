@@ -9,6 +9,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/ipc/ipc_mqueue.c
 
 #include "port/rights.hpp"
+#include "port/attributes.hpp"
 #include "../clock/server.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
@@ -251,6 +252,8 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
             ? port_mig::Rights::dispatch_locked(*shared_state_, remote_object, queued)
             : port_mig::Lifecycle::handles(message_id)
             ? port_mig::Lifecycle::dispatch_locked(*shared_state_, remote_object, queued)
+            : port_mig::Attributes::handles(message_id)
+            ? port_mig::Attributes::dispatch_locked(*shared_state_, remote_object, queued)
             : port_mig::Notifications::handles(message_id)
             ? port_mig::Notifications::dispatch_locked(*shared_state_, remote_object, queued)
             : task_mig::Enumeration::handles(message_id)

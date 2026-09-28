@@ -87,6 +87,7 @@ namespace {
         .task_suspension = DarwinTaskSuspensionAbi::ResumePortTokens,
         .task_special_ports = DarwinTaskSpecialPortsAbi::Security,
         .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
+        .mach_port_attribute_array = DarwinMachPortAttributeArray::ExtendedStatus17,
         .thread_timeshare = DarwinThreadTimeshareAbi::CanonicalBoolean,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
