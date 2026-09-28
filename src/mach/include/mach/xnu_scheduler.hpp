@@ -345,7 +345,10 @@ private:
         bool local { };
     };
 
+    static constexpr std::size_t no_usage_index = static_cast<std::size_t>(-1);
     struct ThreadRecord {
+        XnuThreadId id;
+        std::size_t usage_index { no_usage_index };
         XnuThreadSchedulingInfo info;
         std::int32_t importance { };
         XnuRealtimePolicy realtime_policy;
@@ -407,6 +410,8 @@ private:
     static void refresh_high_queue(RunQueue& run_queue);
     void advance_scheduler_time(std::uint64_t consumed_ticks);
     void age_priorities(std::uint64_t elapsed_ticks);
+    void track_usage(ThreadRecord& record);
+    void untrack_usage(ThreadRecord& record);
     void expire_depressions();
     void restore_depression(XnuThreadId thread, ThreadRecord& record);
     void recompute_priority(XnuThreadId thread, ThreadRecord& record);
@@ -431,6 +436,9 @@ private:
     std::unordered_map<std::uint32_t, std::size_t> process_runnable_counts_;
     std::set<std::pair<std::uint64_t, XnuThreadId>> depression_order_;
     std::set<std::pair<std::uint64_t, XnuThreadId>> failsafe_order_;
+    // Only records with nonzero decaying usage need periodic housekeeping.
+    // unordered_map rehashing preserves the addresses of its elements.
+    std::vector<ThreadRecord*> usage_records_;
     std::size_t runnable_count_ { };
     std::size_t waiting_count_ { };
     std::size_t active_timeshare_count_ { };
