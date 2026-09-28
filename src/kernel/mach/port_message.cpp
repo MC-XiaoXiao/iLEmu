@@ -29,6 +29,7 @@ bool Lifecycle::handles(std::uint32_t identifier)
     case Routine::mach_port_deallocate:
     case Routine::mach_port_mod_refs:
     case Routine::mach_port_set_mscount:
+    case Routine::mach_port_set_seqno:
         return true;
     default:
         return false;
@@ -136,6 +137,7 @@ Lifecycle::Result Lifecycle::evaluate_locked(KernelSharedState& state,
         return { modify_port_references_locked(state, task, name,
             static_cast<xnu::ipc::Right>(value),
             static_cast<std::int32_t>(read_little_word(bytes, 40U))) };
+    case Routine::mach_port_set_seqno:
     case Routine::mach_port_set_mscount: {
         if (!valid(name))
             return { darwin::mach::invalid_right };
@@ -144,8 +146,12 @@ Lifecycle::Result Lifecycle::evaluate_locked(KernelSharedState& state,
             return { darwin::mach::invalid_name };
         if ((entry->type & xnu::ipc::type_mask(xnu::ipc::Right::Receive)) == 0U)
             return { darwin::mach::invalid_right };
-        static_cast<void>(
-            state.mach_port_objects.set_make_send_count(entry->object, value));
+        if (routine == Routine::mach_port_set_seqno)
+            static_cast<void>(
+                state.mach_port_objects.set_sequence_number(entry->object, value));
+        else
+            static_cast<void>(
+                state.mach_port_objects.set_make_send_count(entry->object, value));
         return { };
     }
     case Routine::mach_port_rename: {

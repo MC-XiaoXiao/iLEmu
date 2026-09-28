@@ -600,6 +600,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                                           attribute_arguments[1].request_offset)
                                   .value_or(0);
             std::uint32_t port_set = 0;
+            std::uint32_t sequence_number = 0;
             std::uint32_t mscount = 0;
             std::uint32_t msgcount = 0;
             bool has_send_rights = false;
@@ -651,6 +652,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                             shared_state_->mach_port_objects.lookup(
                                 entry->object)) {
                         mscount = object->make_send_count;
+                        sequence_number = object->sequence_number;
                     }
                     // Include rights held by messages and kernel services as
                     // well as task namespaces, just like no-senders delivery.
@@ -681,7 +683,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                 result,
                 10, // port_info_outCnt
                 port_set, // mps_pset
-                0, // mps_seqno
+                sequence_number, // mps_seqno
                 mscount, // mps_mscount
                 5, // mps_qlimit
                 msgcount, // mps_msgcount

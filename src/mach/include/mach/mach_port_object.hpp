@@ -176,6 +176,18 @@ public:
         return found->second.sequence_number;
     }
 
+    // ipc_mqueue_set_seqno changes the next receive sequence, including
+    // messages already queued. The caller holds mach_mutex.
+    [[nodiscard]] bool set_sequence_number(
+        PortObjectId object, std::uint32_t sequence)
+    {
+        const auto found = objects_.find(object);
+        if (found == objects_.end())
+            return false;
+        found->second.sequence_number = sequence;
+        return true;
+    }
+
     [[nodiscard]] bool increment_sequence_number(PortObjectId object)
     {
         const auto found = objects_.find(object);
