@@ -279,7 +279,14 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
             ? host_mig::Information::dispatch_locked(memory_, *shared_state_,
                   virtual_processor_count_, device_model_.memory.usable_ram_bytes,
                   remote_object, queued)
-            : host_mig::ServicePorts::dispatch_locked(*shared_state_, remote_object, queued);
+            : host_mig::ServicePorts::handles(message_id)
+            ? host_mig::ServicePorts::dispatch_locked(*shared_state_, remote_object, queued)
+            : [&] {
+                  trace_unknown(cpu, "MIG routine", message_id);
+                  return mach_ipc::enqueue_kernel_reply_locked(*shared_state_,
+                      queued, message_id,
+                      std::array { 0U, 1U, darwin::mig::bad_id });
+              }();
         remote_object = destination.value_or(0U);
     } else if (clock_service) {
         kernel_service_handled = true;

@@ -714,57 +714,10 @@ void CompatibilityKernel::dispatch_mach_message(
                 destination_object
                     ? kernel_clock::Server::identify(*destination_object, *message_id)
                     : std::nullopt;
+            // Unknown kernel routines still consume the request through
+            // ipc_kobject_server and queue a native MIG_BAD_ID reply.
             const auto kernel_service = destination_port &&
-                destination_port->kernel_owned && (host_service_request || host_information_request || task_service_request || thread_policy_request || port_query_request || port_notification_request || port_lifecycle_request || port_rights_request || port_attributes_request);
-            if (destination_port && destination_port->kernel_owned &&
-                !clock_service && !kernel_service) {
-                if (separate_receive) {
-                    registers[0] = darwin::mach_message::receive_invalid_data;
-                    return;
-                }
-                // ipc_kobject_server initializes a generic mig_reply_error_t
-                // before looking up the routine. A valid kernel object with no
-                // matching demux entry therefore returns MIG_BAD_ID; it is
-                // neither an invalid Mach destination nor a message for a
-                // user-space server.
-                mach_lock.unlock();
-                trace_unknown(cpu, "MIG routine", *message_id);
-                if (*local_port == xnu::ipc::null_name) {
-                    if (wants_receive) {
-                        begin_mach_receive(cpu, receive_address);
-                    } else {
-                        registers[0] = darwin::mach::success;
-                    }
-                    return;
-                }
-                constexpr auto reply_size =
-                    darwin::mig_wire::simple_reply_payload_base;
-                if (registers[3] < reply_size) {
-                    registers[0] = darwin::mach_message::receive_invalid_data;
-                    return;
-                }
-                const auto reply_disposition =
-                    darwin::mig_wire::received_port_disposition(
-                        (*bits >> 8U) & 0xffU);
-                const std::array<std::uint32_t,
-                    reply_size / sizeof(std::uint32_t)>
-                    reply {
-                        darwin::mig_wire::message_bits(reply_disposition),
-                        reply_size,
-                        *local_port,
-                        0U,
-                        0U,
-                        *message_id + 100U,
-                        0U,
-                        1U,
-                        darwin::mig::bad_id,
-                    };
-                registers[0] =
-                    write_message_words(memory_, message_address, reply)
-                        ? darwin::mach::success
-                        : darwin::mach_message::receive_invalid_data;
-                return;
-            }
+                destination_port->kernel_owned && !clock_service;
             // A task-local send name resolves to one global ipc_port
             // object. Port-set membership is retained separately because
             // a receive right may be temporarily in transit.
