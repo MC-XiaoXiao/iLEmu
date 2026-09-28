@@ -337,7 +337,7 @@ void CompatibilityKernel::dispatch_mach_message(
         const std::lock_guard lock { shared_state_->mach_mutex };
         const auto result = task_mig::Information::try_synchronous_locked(memory_,
             *shared_state_, process_, registers, *bits, *local_port,
-            receive_address.value_or(message_address), task_memory_statistics_query_);
+            receive_address.value_or(message_address), task_memory_statistics_query_, task_statistics_query_);
         if (result) {
             registers[0] = *result;
             return;

@@ -6,6 +6,7 @@
 #include <kernel/kernel_shared_state.hpp>
 #include <kernel/task_memory_statistics.hpp>
 #include <mach/task_mig_ids.hpp>
+#include <mach/xnu_task_statistics.hpp>
 #include <array>
 
 namespace ilemu::task_mig {
@@ -16,12 +17,14 @@ public:
     static bool handles(std::uint32_t id) { return id == identifier; }
     static std::optional<std::uint32_t> dispatch_locked(AddressSpace& memory,
         KernelSharedState& state, std::uint32_t caller, std::uint32_t object,
-        KernelSharedState::MachMessage& request, const TaskMemoryStatisticsQuery& query);
+        KernelSharedState::MachMessage& request, const TaskMemoryStatisticsQuery& query,
+        const TaskStatisticsQuery& time_query);
     static std::optional<std::uint32_t> try_synchronous_locked(AddressSpace& memory,
         KernelSharedState& state, const ProcessContext& process,
         std::span<const std::uint32_t> registers, std::uint32_t bits,
         std::uint32_t reply_name, std::uint32_t receive_address,
-        const TaskMemoryStatisticsQuery& query);
+        const TaskMemoryStatisticsQuery& query,
+        const TaskStatisticsQuery& time_query);
 private:
     struct Result {
         std::array<std::uint32_t, 12> words { 0U, 1U };
@@ -33,6 +36,7 @@ private:
     static std::size_t word_count(std::uint32_t flavor, std::uint32_t capacity);
     static Result evaluate_locked(AddressSpace& memory, KernelSharedState& state,
         std::uint32_t caller, std::uint32_t object, std::span<const std::byte> bytes,
-        const TaskMemoryStatisticsQuery& query);
+        const TaskMemoryStatisticsQuery& query,
+        const TaskStatisticsQuery& time_query);
 };
 } // namespace ilemu::task_mig

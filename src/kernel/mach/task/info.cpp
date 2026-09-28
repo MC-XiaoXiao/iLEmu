@@ -5,6 +5,7 @@
 // Native task_info MIG transport. ARM flavors 4/5 share the narrow layout;
 // XNU 792--4903 osfmk/kern/task.c and osfmk/mach/task_info.h.
 #include "information.hpp"
+#include "cpu_time.hpp"
 #include "../transport/kernel_reply.hpp"
 #include "kernel/mach_task_info_abi.hpp"
 
@@ -27,7 +28,7 @@ std::size_t Information::word_count(std::uint32_t flavor, std::uint32_t capacity
 
 Information::Result Information::evaluate_locked(AddressSpace& memory,
     KernelSharedState& state, std::uint32_t caller, std::uint32_t object,
-    std::span<const std::byte> bytes, const TaskMemoryStatisticsQuery& query)
+    std::span<const std::byte> bytes, const TaskMemoryStatisticsQuery& query, const TaskStatisticsQuery& time_query)
 {
     if (bytes.size() != 40U ||
         (read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit) != 0U)
@@ -69,14 +70,20 @@ Information::Result Information::evaluate_locked(AddressSpace& memory,
         info[0] = process->second.dyld_all_image_info_address;
         info[2] = process->second.dyld_all_image_info_size;
     }
+    if (CpuTime::handles(flavor)) {
+        const auto statistics = time_query ? time_query(pid,
+            flavor == absolute_time_flavor || flavor == thread_times_flavor) : std::nullopt;
+        if (statistics)
+            CpuTime::write(flavor, *statistics, info);
+    }
     return result;
 }
 
 std::optional<std::uint32_t> Information::dispatch_locked(AddressSpace& memory,
     KernelSharedState& state, std::uint32_t caller, std::uint32_t object,
-    KernelSharedState::MachMessage& request, const TaskMemoryStatisticsQuery& query)
+    KernelSharedState::MachMessage& request, const TaskMemoryStatisticsQuery& query, const TaskStatisticsQuery& time_query)
 {
-    const auto result = evaluate_locked(memory, state, caller, object, request.bytes, query);
+    const auto result = evaluate_locked(memory, state, caller, object, request.bytes, query, time_query);
     return mach_ipc::enqueue_kernel_reply_locked(state, request, identifier, result.payload());
 }
 
@@ -84,7 +91,7 @@ std::optional<std::uint32_t> Information::try_synchronous_locked(AddressSpace& m
     KernelSharedState& state, const ProcessContext& process,
     std::span<const std::uint32_t> registers, std::uint32_t bits,
     std::uint32_t reply_name, std::uint32_t receive_address,
-    const TaskMemoryStatisticsQuery& query)
+    const TaskMemoryStatisticsQuery& query, const TaskStatisticsQuery& time_query)
 {
     const auto destination = mach_ipc::validate_task_rpc_locked(memory, state,
         process, registers, bits, reply_name, 40U, 44U);
@@ -101,7 +108,7 @@ std::optional<std::uint32_t> Information::try_synchronous_locked(AddressSpace& m
         return std::nullopt;
     state.mach_port_objects.make_send_once(destination->reply_object);
     const auto result = evaluate_locked(memory, state, process.pid,
-        destination->task_object, bytes, query);
+        destination->task_object, bytes, query, time_query);
     return mach_ipc::copyout_kernel_reply_locked<12>(memory, state, receive_address,
         reply_name, destination->reply_object, identifier, result.payload());
 }

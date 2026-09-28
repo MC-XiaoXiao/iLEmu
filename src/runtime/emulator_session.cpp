@@ -1450,6 +1450,16 @@ void EmulatorSession::run()
     // dispatch. Track the uncommitted suffix without per-slice allocation.
     std::span<const PreparedGuestSlice> pending_kernel_entries;
     std::optional<std::pair<XnuThreadId, std::uint64_t>> active_thread_accounting;
+    const XnuScheduler::PendingThreadTicksQuery pending_thread_ticks =
+        [&pending_kernel_entries, &active_thread_accounting](XnuThreadId thread) {
+            if (active_thread_accounting && active_thread_accounting->first == thread)
+                return active_thread_accounting->second;
+            for (const auto& entry : pending_kernel_entries) {
+                if (entry.scheduled.thread == thread)
+                    return entry.execution.result.ticks_consumed;
+            }
+            return std::uint64_t { 0 };
+        };
     std::function<void(Runtime&)> configure_runtime;
     configure_runtime = [&](Runtime& runtime) {
         auto* runtime_ptr = &runtime;
@@ -1553,13 +1563,15 @@ void EmulatorSession::run()
             });
         runtime.kernel->set_thread_terminate_handler(
             [runtime_ptr, &scheduler, &guest_execution_policy,
-                &guest_parallelism_policy](
+                &guest_parallelism_policy, &pending_thread_ticks](
                 std::uint32_t pid, std::size_t processor) {
                 if (pid != runtime_ptr->kernel->process().pid ||
                     processor >= runtime_ptr->allocated.size() ||
                     !runtime_ptr->allocated[processor] ||
                     !scheduler.remove_thread(XnuThreadId {
-                        pid, static_cast<std::uint32_t>(processor) })) {
+                        pid, static_cast<std::uint32_t>(processor) },
+                        pending_thread_ticks(XnuThreadId { pid,
+                            static_cast<std::uint32_t>(processor) }))) {
                     return false;
                 }
                 runtime_ptr->kernel->clear_thread_io_policy(processor);
@@ -1664,23 +1676,15 @@ void EmulatorSession::run()
                 const auto info = scheduler.info(XnuThreadId { pid, slot });
                 return info ? std::optional { info->state } : std::nullopt;
             });
+        runtime.kernel->set_task_statistics_query(
+            [&scheduler, &pending_thread_ticks](std::uint32_t pid, bool include_live) {
+                return scheduler.task_statistics(pid, include_live, pending_thread_ticks);
+            });
         runtime.kernel->set_thread_statistics_query(
-            [&runtime_index, &scheduler, &pending_kernel_entries,
-                &active_thread_accounting](std::uint32_t pid, std::uint32_t slot) {
+            [&runtime_index, &scheduler, &pending_thread_ticks](
+                std::uint32_t pid, std::uint32_t slot) {
                 const XnuThreadId thread { pid, slot };
-                std::uint64_t pending_ticks = 0;
-                if (active_thread_accounting &&
-                    active_thread_accounting->first == thread) {
-                    pending_ticks = active_thread_accounting->second;
-                } else {
-                    for (const auto& entry : pending_kernel_entries) {
-                        if (entry.scheduled.thread == thread) {
-                            pending_ticks = entry.execution.result.ticks_consumed;
-                            break;
-                        }
-                    }
-                }
-                auto result = scheduler.statistics(thread, pending_ticks);
+                auto result = scheduler.statistics(thread, pending_thread_ticks(thread));
                 if (result) {
                     if (auto* target = runtime_index.find(pid))
                         result->uninterruptible =
@@ -4011,9 +4015,11 @@ void EmulatorSession::run()
                     runtime.activate_image_epoch(image_epoch);
                     static_cast<void>(scheduler.complete_slice(
                         scheduled->thread, result.ticks_consumed,
-                        XnuSliceCompletion::Terminate,
+                        XnuSliceCompletion::Block,
                         XnuTimeAccounting::Deferred));
-                    scheduler.remove_process(runtime.kernel->process().pid);
+                    static_cast<void>(scheduler.replace_process_threads(
+                        scheduled->thread, runtime.kernel->process().thread_base_priority,
+                        pending_thread_ticks));
                     guest_execution_policy.forget_process(
                         runtime.kernel->process().pid);
                     guest_parallelism_policy.forget_process(
@@ -4021,10 +4027,6 @@ void EmulatorSession::run()
                     std::fill(runtime.allocated.begin(),
                         runtime.allocated.end(), false);
                     runtime.allocated[pending.processor] = true;
-                    static_cast<void>(scheduler.register_thread(
-                        XnuThreadId { runtime.kernel->process().pid,
-                            static_cast<std::uint32_t>(pending.processor) },
-                        runtime.kernel->process().thread_base_priority));
                     scheduler_completed = true;
                 } catch (const std::exception& error) {
                     output.line("[process] exec failed pid=" +

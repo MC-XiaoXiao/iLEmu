@@ -91,6 +91,7 @@ bool XnuScheduler::register_thread(
     record.info.remaining_quantum = quantum_ticks_;
     record.info.scheduler_stamp = scheduler_tick_;
     process_threads_[thread.process].insert(thread);
+    terminated_user_ticks_.try_emplace(thread.process, 0);
     if (runnable) {
         transition_state(thread, record, XnuThreadState::Runnable);
         ++active_timeshare_count_;
@@ -103,7 +104,7 @@ bool XnuScheduler::register_thread(
     return true;
 }
 
-bool XnuScheduler::remove_thread(XnuThreadId thread)
+bool XnuScheduler::remove_thread(XnuThreadId thread, std::uint64_t pending_ticks)
 {
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end())
@@ -116,6 +117,9 @@ bool XnuScheduler::remove_thread(XnuThreadId thread)
             --active_timeshare_count_;
         }
     }
+    auto& retired = terminated_user_ticks_[thread.process];
+    retired = saturating_add(retired,
+        saturating_add(iterator->second.user_ticks, pending_ticks));
     remove_from_queue(thread, iterator->second);
     unindex_thread(thread);
     threads_.erase(iterator);
@@ -125,15 +129,38 @@ bool XnuScheduler::remove_thread(XnuThreadId thread)
 std::size_t XnuScheduler::remove_process(std::uint32_t process)
 {
     const auto process_iterator = process_threads_.find(process);
-    if (process_iterator == process_threads_.end())
+    if (process_iterator == process_threads_.end()) {
+        terminated_user_ticks_.erase(process);
         return 0;
+    }
     const std::vector<XnuThreadId> process_threads {
         process_iterator->second.begin(), process_iterator->second.end()
     };
     for (const auto thread : process_threads) {
         static_cast<void>(remove_thread(thread));
     }
+    terminated_user_ticks_.erase(process);
     return process_threads.size();
+}
+
+bool XnuScheduler::replace_process_threads(
+    XnuThreadId survivor, std::int32_t base_priority,
+    const PendingThreadTicksQuery& pending_ticks)
+{
+    const auto current = threads_.find(survivor);
+    if (current == threads_.end())
+        return false;
+    // exec retains its caller's CPU history and retires the other threads.
+    const auto user_ticks = current->second.user_ticks;
+    current->second.user_ticks = 0;
+    const auto& owned = process_threads_.at(survivor.process);
+    const std::vector<XnuThreadId> previous { owned.begin(), owned.end() };
+    for (const auto thread : previous)
+        static_cast<void>(remove_thread(thread,
+            thread != survivor && pending_ticks ? pending_ticks(thread) : 0));
+    static_cast<void>(register_thread(survivor, base_priority));
+    threads_.at(survivor).user_ticks = user_ticks;
+    return true;
 }
 
 std::size_t XnuScheduler::process_runnable_count(std::uint32_t process) const
@@ -948,6 +975,35 @@ std::optional<XnuThreadStatistics> XnuScheduler::statistics(
         record.info.failsafe ? record.failsafe_saved_realtime : record.info.realtime };
     result.scheduling.cpu_usage =
         saturating_add(result.scheduling.cpu_usage, pending_ticks);
+    return result;
+}
+
+std::optional<XnuTaskStatistics> XnuScheduler::task_statistics(
+    std::uint32_t process, bool include_live,
+    const PendingThreadTicksQuery& pending_ticks) const
+{
+    const auto retired = terminated_user_ticks_.find(process);
+    if (retired == terminated_user_ticks_.end())
+        return std::nullopt;
+    XnuTaskStatistics result { retired->second, 0, 0, guest_ticks_per_second_ };
+    if (!include_live)
+        return result;
+    const auto owned = process_threads_.find(process);
+    if (owned != process_threads_.end()) {
+        for (const auto thread : owned->second) {
+            const auto ticks = saturating_add(threads_.at(thread).user_ticks,
+                pending_ticks ? pending_ticks(thread) : 0);
+            result.live_user_ticks = saturating_add(result.live_user_ticks, ticks);
+            // XNU THREAD_TIMES adds each thread's truncated microtime.
+            const auto microseconds = static_cast<std::uint64_t>(
+                std::min<__uint128_t>(
+                    static_cast<__uint128_t>(ticks / guest_ticks_per_second_) * 1'000'000 +
+                        (ticks % guest_ticks_per_second_) * 1'000'000 / guest_ticks_per_second_,
+                    std::numeric_limits<std::uint64_t>::max()));
+            result.live_user_microseconds =
+                saturating_add(result.live_user_microseconds, microseconds);
+        }
+    }
     return result;
 }
 

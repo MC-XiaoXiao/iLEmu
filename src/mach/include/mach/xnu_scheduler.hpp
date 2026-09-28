@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include "mach/xnu_task_statistics.hpp"
 #include <array>
 #include <chrono>
 #include <compare>
@@ -202,7 +203,9 @@ public:
     bool register_thread(XnuThreadId thread,
         std::int32_t base_priority = xnu::scheduler::default_base_priority,
         bool runnable = true);
-    bool remove_thread(XnuThreadId thread);
+    bool remove_thread(XnuThreadId thread, std::uint64_t pending_ticks = 0);
+    bool replace_process_threads(XnuThreadId survivor, std::int32_t base_priority,
+        const std::function<std::uint64_t(XnuThreadId)>& pending_ticks = {});
     std::size_t remove_process(std::uint32_t process);
 
     bool make_runnable(XnuThreadId thread);
@@ -270,6 +273,10 @@ public:
         XnuThreadId thread) const;
     [[nodiscard]] std::optional<XnuThreadStatistics> statistics(
         XnuThreadId thread, std::uint64_t pending_ticks = 0) const;
+    using PendingThreadTicksQuery = std::function<std::uint64_t(XnuThreadId)>;
+    [[nodiscard]] std::optional<XnuTaskStatistics> task_statistics(
+        std::uint32_t process, bool include_live,
+        const PendingThreadTicksQuery& pending_ticks = {}) const;
     [[nodiscard]] std::size_t thread_count() const { return threads_.size(); }
     [[nodiscard]] std::size_t processor_count() const
     {
@@ -412,6 +419,7 @@ private:
     std::unordered_map<std::uint32_t,
         std::unordered_set<XnuThreadId, XnuThreadIdHash>>
         process_threads_;
+    std::unordered_map<std::uint32_t, std::uint64_t> terminated_user_ticks_;
     // Runnable/Running membership is a scheduler state-machine invariant.
     // Keep its per-task projection beside the run queues so host cooperation
     // and JIT policy observations do not rescan every thread on each turn.

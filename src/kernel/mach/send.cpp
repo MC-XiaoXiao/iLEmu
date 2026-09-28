@@ -274,7 +274,7 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
             ? port_mig::Notifications::dispatch_locked(*shared_state_, remote_object, queued)
             : task_mig::Information::handles(message_id)
             ? task_mig::Information::dispatch_locked(memory_, *shared_state_, process_.pid,
-                  remote_object, queued, task_memory_statistics_query_)
+                  remote_object, queued, task_memory_statistics_query_, task_statistics_query_)
             : task_mig::Enumeration::handles(message_id)
             ? task_mig::Enumeration::dispatch_locked(*shared_state_, remote_object, queued)
             : task_mig::SpecialPorts::handles(message_id)

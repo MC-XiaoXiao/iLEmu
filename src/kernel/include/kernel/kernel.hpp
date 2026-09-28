@@ -241,6 +241,10 @@ public:
     {
         thread_scheduling_state_query_ = std::move(query);
     }
+    void set_task_statistics_query(TaskStatisticsQuery query)
+    {
+        task_statistics_query_ = std::move(query);
+    }
     void set_thread_statistics_query(ThreadStatisticsQuery query)
     {
         thread_statistics_query_ = std::move(query);
@@ -1042,6 +1046,7 @@ private:
     ThreadWakeHandler thread_wake_handler_;
     ThreadSchedulingStateQuery thread_scheduling_state_query_;
     ThreadStatisticsQuery thread_statistics_query_;
+    TaskStatisticsQuery task_statistics_query_;
     MachMessageWakeHandler mach_message_wake_handler_;
     ForkHandler fork_handler_;
     SpawnCreateHandler spawn_create_handler_;
