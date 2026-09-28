@@ -24,6 +24,8 @@ public:
     [[nodiscard]] static std::optional<GuestEaglWindow> open(
         UserlandHleCall& call, std::uint32_t address);
 
+    void release(UserlandHleCall& call,
+        std::function<void(UserlandHleCall&)> completion) const;
     void configure(UserlandHleCall& call, StorageCompletion completion) const;
     void present(UserlandHleCall& call, PresentCompletion completion) const;
 

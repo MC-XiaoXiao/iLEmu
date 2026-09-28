@@ -4,9 +4,12 @@
 
 #include "foundation/address_space.hpp"
 #include "foundation/userland_hle.hpp"
+#include "guest_eagl_window.hpp"
 #include "kernel/opengles_hle.hpp"
 
 #include <limits>
+#include <memory>
+#include <vector>
 
 namespace ilemu {
 namespace {
@@ -17,6 +20,31 @@ namespace {
     constexpr std::uint32_t gl_renderbuffer_height = 0x8d43;
     constexpr std::uint32_t gl_renderbuffer_internal_format = 0x8d44;
     constexpr std::uint32_t gl_renderbuffer_color_format = 0x8e10;
+    class DrawableWindowRelease
+        : public std::enable_shared_from_this<DrawableWindowRelease> {
+    public:
+        explicit DrawableWindowRelease(std::vector<GuestEaglWindow> windows)
+            : windows_ { std::move(windows) }
+        {
+        }
+
+        void run(UserlandHleCall& call)
+        {
+            if (next_ == windows_.size()) {
+                call.set_return(0U);
+                return;
+            }
+            const auto window = windows_[next_++];
+            window.release(
+                call, [self = shared_from_this()](
+                          UserlandHleCall& released) { self->run(released); });
+        }
+
+    private:
+        std::vector<GuestEaglWindow> windows_;
+        std::size_t next_ { };
+    };
+
     template <typename Objects>
     std::uint32_t available_name(const Objects& objects)
     {
@@ -433,6 +461,7 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_value);
             return;
         }
+        std::vector<GuestEaglWindow> windows;
         for (std::int32_t index = 0; index < count; ++index) {
             const auto name = call.memory().read32(
                 input + static_cast<std::uint32_t>(index) * 4U);
@@ -456,12 +485,20 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
                     framebuffer.color_texture_target = 0U;
                 }
             }
+            if (const auto window = GuestEaglWindow::open(
+                    call, renderbuffer->second.native_window))
+                windows.push_back(*window);
             if (context->bound_renderbuffer == *name)
                 context->bound_renderbuffer = 0U;
             if (renderbuffer->second.color_texture != 0U)
                 resources_.erase_texture(renderbuffer->second.color_texture);
             context->renderbuffers.erase(renderbuffer);
         }
+        // QuartzCore owns the drawable allocation. Release its outstanding
+        // surface before a deleted name is reused for a new drawable.
+        if (!windows.empty())
+            std::make_shared<DrawableWindowRelease>(std::move(windows))
+                ->run(call);
     };
     add("_glDeleteRenderbuffers", delete_renderbuffers);
     add("_glDeleteRenderbuffersOES", delete_renderbuffers);
