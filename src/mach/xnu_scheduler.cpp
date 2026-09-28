@@ -30,10 +30,25 @@ namespace {
         return left + right;
     }
 
-    std::uint64_t decay_once(std::uint64_t usage)
+    std::uint64_t decay_usage(std::uint64_t usage, std::uint64_t ticks)
     {
-        // sched_decay_shifts[1] in XNU priority.c: 1/2 + 1/8 = 5/8.
-        return (usage >> 1U) + (usage >> 3U);
+        // XNU priority.c sched_decay_shifts, shared by 792.24.17,
+        // 4903.241.1 and 12377.121.6. Catch up a missed interval once using
+        // the native fixed-point approximation, rather than repeatedly
+        // rounding a single-tick decay. A normal tick remains 5/8.
+        struct DecayShift { unsigned first; int second; };
+        static constexpr std::array<DecayShift,
+            xnu::scheduler::scheduling_usage_decay_ticks> shifts {{
+            {1,1}, {1,3}, {1,-3}, {2,-7}, {3,5}, {3,-5}, {4,-8}, {5,7},
+            {5,-7}, {6,-10}, {7,10}, {7,-9}, {8,-11}, {9,12}, {9,-11}, {10,-13},
+            {11,14}, {11,-13}, {12,-15}, {13,17}, {13,-15}, {14,-17}, {15,19}, {16,18},
+            {16,-19}, {17,22}, {18,20}, {18,-20}, {19,26}, {20,22}, {20,-22}, {21,-27}
+        }};
+        if (ticks >= shifts.size())
+            return 0;
+        const auto [first, second] = shifts[static_cast<std::size_t>(ticks)];
+        return second > 0 ? (usage >> first) + (usage >> second)
+                          : (usage >> first) - (usage >> -second);
     }
 
 } // namespace
@@ -817,8 +832,6 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
     }
     record.info.cpu_usage =
         saturating_add(record.info.cpu_usage, consumed_ticks);
-    if (consumed_ticks != 0)
-        track_usage(record);
     record.user_ticks = saturating_add(record.user_ticks, consumed_ticks);
     record.info.remaining_quantum -=
         std::min(record.info.remaining_quantum, consumed_ticks);
@@ -1182,16 +1195,9 @@ void XnuScheduler::age_priorities(std::uint64_t elapsed_ticks)
     for (std::size_t index = 0; index < usage_records_.size();) {
         auto& record = *usage_records_[index];
         record.priority_usage_shift = processor_set_shift;
-        if (elapsed_ticks >= xnu::scheduler::scheduling_usage_decay_ticks) {
-            record.info.scheduling_usage = 0;
-            record.info.cpu_usage = 0;
-        } else {
-            for (std::uint64_t tick = 0; tick < elapsed_ticks; ++tick) {
-                record.info.scheduling_usage =
-                    decay_once(record.info.scheduling_usage);
-                record.info.cpu_usage = decay_once(record.info.cpu_usage);
-            }
-        }
+        record.info.scheduling_usage =
+            decay_usage(record.info.scheduling_usage, elapsed_ticks);
+        record.info.cpu_usage = decay_usage(record.info.cpu_usage, elapsed_ticks);
         record.info.scheduler_stamp = scheduler_tick_;
         recompute_priority(record.id, record);
         if (!record.execution_pending && record.info.cpu_usage == 0 &&
