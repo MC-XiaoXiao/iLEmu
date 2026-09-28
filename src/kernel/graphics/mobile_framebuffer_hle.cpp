@@ -83,31 +83,32 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
             std::move(symbol), std::move(handler));
     };
     register_device_functions(registry);
-    // NotifyFunc begins by calling this firmware routine before it examines or
-    // dispatches the notification. Observe that boundary, then immediately run
-    // the original routine. The VSync/IONotificationPort entry points, callback
-    // dispatch, coalescing, arguments, and object lifetime remain firmware
-    // code.
-    add("_IOMobileFramebufferGetNotifyMessageCount",
-        [this](UserlandHleCall& call) {
-            const auto callback_processor =
-                static_cast<std::uint32_t>(call.cpu().processor_id());
-            std::optional<std::uint64_t> callback_sequence;
-            if (shared_state_) {
-                std::lock_guard lock { shared_state_->mach_mutex };
-                // This records the processor and consumes the host-only pending
-                // watermark at the real firmware callback boundary, after Mach
-                // delivery and before the original routine resumes. Guest
-                // callback semantics are unchanged.
-                callback_sequence =
-                    shared_state_->observe_display_vsync_callback_locked(
-                    call.process_id(), call.argument(0), callback_processor);
-            }
-            performance_counters().record_vsync_callback(call.process_id(),
-                call.argument(0), callback_sequence.value_or(0),
-                callback_processor);
-            call.resume_original_persistently();
-        });
+    // Observe the firmware callback before it coalesces received notifications.
+    // Some implementations expose the count query; others keep it inside the
+    // native C callback. Both retain firmware dispatch and object lifetime.
+    const auto observe_callback = [this](UserlandHleCall& call) {
+        const auto callback_processor =
+            static_cast<std::uint32_t>(call.cpu().processor_id());
+        std::optional<std::uint64_t> callback_sequence;
+        if (shared_state_) {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            // This records the processor and consumes the host-only pending
+            // watermark at the real firmware callback boundary, after Mach
+            // delivery and before the original routine resumes. Guest
+            // callback semantics are unchanged.
+            callback_sequence =
+                shared_state_->observe_display_vsync_callback_locked(
+                call.process_id(), call.argument(0), callback_processor);
+        }
+        performance_counters().record_vsync_callback(call.process_id(),
+            call.argument(0), callback_sequence.value_or(0),
+            callback_processor);
+        call.resume_original_persistently();
+    };
+    add("_IOMobileFramebufferGetNotifyMessageCount", observe_callback);
+    registry.register_function(std::string { framebuffer_image },
+        "_IOMobileFramebufferVsyncNotifyFunc", observe_callback,
+        UserlandHleRegistry::SymbolLookup::ImageAndCacheLocals);
     // GetLayerDefaultSurface intentionally remains firmware code. It calls
     // IOConnectCallScalarMethod(selector 3) and then CoreSurfaceBufferLookup,
     // preserving the real CFRuntime wrapper around our client-buffer HLE.
