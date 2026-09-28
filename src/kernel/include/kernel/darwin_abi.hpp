@@ -179,6 +179,7 @@ namespace mach_message {
     inline constexpr std::uint32_t option_send_notify = 0x0000'0080U;
     inline constexpr std::uint32_t option_receive_large = 0x0000'0004U;
     inline constexpr std::uint32_t option_receive_timeout = 0x0000'0100U;
+    inline constexpr std::uint32_t option_receive_voucher = 0x0000'0800U;
     inline constexpr std::uint32_t type_copy_send = 19U;
     inline constexpr std::uint32_t type_make_send = 20U;
     inline constexpr std::uint32_t type_make_send_once = 21U;
@@ -189,6 +190,7 @@ namespace mach_message {
     inline constexpr std::uint32_t send_invalid_header = 0x1000'0010U;
     inline constexpr std::uint32_t send_invalid_reply = 0x1000'0009U;
     inline constexpr std::uint32_t send_invalid_right = 0x1000'000AU;
+    inline constexpr std::uint32_t send_invalid_voucher = 0x1000'0005U;
     inline constexpr std::uint32_t send_invalid_data = 0x1000'0002U;
     inline constexpr std::uint32_t send_invalid_memory = 0x1000'000CU;
     inline constexpr std::uint32_t send_invalid_type = 0x1000'000FU;

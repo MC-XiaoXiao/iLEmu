@@ -39,6 +39,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "host/information.hpp"
 #include "port/notifications.hpp"
 #include "port/lifecycle.hpp"
 #include "port/queries.hpp"
@@ -48,6 +49,7 @@
 #include "thread/policy.hpp"
 #include "transport/port_copyin.hpp"
 #include "transport/user_header.hpp"
+#include "transport/voucher_header.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/copyin_cleanup.hpp"
 #include "transport/pseudo_copyout.hpp"
@@ -289,7 +291,38 @@ void CompatibilityKernel::dispatch_mach_message(
             *local_port, *message_id };
         if (dispatch_mach_port_query_message(cpu, request)) return;
     }
-    if (!separate_receive && !clock_service_request && !host_service_request &&
+    const auto host_information_request = host_mig::Information::handles(*message_id);
+    if (wants_send && host_information_request && pending_mach_receives_.empty()) {
+        const std::lock_guard lock { shared_state_->mach_mutex };
+        const auto result = host_mig::Information::try_synchronous_locked(
+            memory_, *shared_state_, process_, virtual_processor_count_,
+            device_model_.memory.usable_ram_bytes, registers, *bits, *local_port,
+            receive_address.value_or(message_address));
+        if (result) {
+            registers[0] = *result;
+            return;
+        }
+    }
+    // Every optimized RPC above requires an exact voucher-free header. Keep
+    // voucher preflight off those hot paths, but before the legacy providers
+    // and before ordinary IPC commits any destination or reply rights.
+    if (wants_send && (*bits & 0x001f0000U) != 0U) {
+        const auto voucher_name = memory_.read32(
+            message_address + darwin::mig_wire::header_voucher_offset);
+        std::uint32_t error = darwin::mach_message::send_invalid_data;
+        if (voucher_name) {
+            const std::lock_guard lock { shared_state_->mach_mutex };
+            error = mach_transport::VoucherHeader::validate_locked(*shared_state_,
+                process_.pid, *remote_port, *local_port, *bits, *voucher_name).error;
+        }
+        if (error != 0U) {
+            registers[0] = memory_.accessible(
+                message_address, registers[2], MemoryPermission::Read)
+                ? error : darwin::mach_message::send_invalid_data;
+            return;
+        }
+    }
+    if (!separate_receive && !clock_service_request && !host_service_request && !host_information_request &&
         !task_service_request && !thread_policy_request && !port_query_request &&
         !port_notification_request && !port_lifecycle_request && !port_rights_request && !port_attributes_request) {
         const auto is_bootstrap_port = [&] {
@@ -633,6 +666,14 @@ void CompatibilityKernel::dispatch_mach_message(
             const auto descriptor_table = mach_transport::preflight_copyin_descriptors(*bytes);
             const auto& descriptors = descriptor_table.descriptors;
             std::unique_lock mach_lock { shared_state_->mach_mutex };
+            const auto voucher_name =
+                read_little_word(*bytes, darwin::mig_wire::header_voucher_offset);
+            const auto voucher = mach_transport::VoucherHeader::validate_locked(
+                *shared_state_, process_.pid, *remote_port, *local_port, *bits, voucher_name);
+            if (voucher.error != 0U) {
+                registers[0] = voucher.error;
+                return;
+            }
             const auto destination_disposition = *bits & 0xffU;
             const auto destination_right =
                 right_for_disposition(destination_disposition);
@@ -674,7 +715,7 @@ void CompatibilityKernel::dispatch_mach_message(
                     ? kernel_clock::Server::identify(*destination_object, *message_id)
                     : std::nullopt;
             const auto kernel_service = destination_port &&
-                destination_port->kernel_owned && (host_service_request || task_service_request || thread_policy_request || port_query_request || port_notification_request || port_lifecycle_request || port_rights_request || port_attributes_request);
+                destination_port->kernel_owned && (host_service_request || host_information_request || task_service_request || thread_policy_request || port_query_request || port_notification_request || port_lifecycle_request || port_rights_request || port_attributes_request);
             if (destination_port && destination_port->kernel_owned &&
                 !clock_service && !kernel_service) {
                 if (separate_receive) {
@@ -816,25 +857,14 @@ void CompatibilityKernel::dispatch_mach_message(
                     }
                 }
 
-                const auto voucher_name =
-                    memory_
-                        .read32(message_address +
-                                darwin::mig_wire::header_voucher_offset)
-                        .value_or(0);
-                voucher_disposition = (*bits >> 16U) & 0xffU;
-                if (voucher_name != xnu::ipc::null_name &&
-                    voucher_name != xnu::ipc::dead_name &&
-                    voucher_disposition != 0U) {
-                    if (const auto transfer =
-                            copyin.capture(voucher_name, voucher_disposition, 0);
-                        transfer &&
-                        transfer->right != xnu::ipc::Right::DeadName) {
-                        voucher_object = transfer->object;
-                        voucher_right = transfer->right;
-                    } else {
-                        registers[0] = darwin::mach_message::send_invalid_right;
-                        return;
-                    }
+                voucher_disposition = (*bits >> 16U) & 0x1fU;
+                if (voucher.object) {
+                    voucher_object = voucher.object;
+                    voucher_right = xnu::ipc::Right::Send;
+                } else if (voucher_disposition != 0U) {
+                    // Native copyin canonicalizes a NULL voucher to MOVE_SEND.
+                    write_little_word(*bytes, darwin::mig_wire::header_bits_offset,
+                        (*bits & ~0x001f0000U) | (17U << 16U));
                 }
 
                 // Destination and reply copyin is atomic. Body rights are

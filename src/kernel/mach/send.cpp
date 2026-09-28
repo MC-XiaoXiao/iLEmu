@@ -39,6 +39,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "host/information.hpp"
 #include "port/notifications.hpp"
 #include "port/lifecycle.hpp"
 #include "port/queries.hpp"
@@ -274,6 +275,10 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
             : thread_mig::Policy::handles(message_id)
             ? thread_mig::Policy::dispatch_locked(*shared_state_, remote_object, queued,
                   thread_policy_handler_, legacy_thread_policy_handler_, thread_statistics_query_)
+            : host_mig::Information::handles(message_id)
+            ? host_mig::Information::dispatch_locked(memory_, *shared_state_,
+                  virtual_processor_count_, device_model_.memory.usable_ram_bytes,
+                  remote_object, queued)
             : host_mig::ServicePorts::dispatch_locked(*shared_state_, remote_object, queued);
         remote_object = destination.value_or(0U);
     } else if (clock_service) {

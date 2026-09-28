@@ -442,7 +442,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         return std::nullopt;
     }
 
-    const auto& pending_message = queue->second.front();
+    auto& pending_message = queue->second.front();
     if (selected_port_set) {
         // XNU's prepost linkage is a FIFO. Keep the selected member at the
         // tail while the message is being copied out so the next receive on
@@ -629,18 +629,22 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         }
     }
     if (pending_message.voucher_object && pending_message.voucher_right) {
-        const auto voucher_name = copyout_received_right(
-            *pending_message.voucher_object, *pending_message.voucher_right);
-        if (!voucher_name) {
-            outcome.status = darwin::mach_message::receive_invalid_data;
-            return outcome;
+        if ((receive.options & darwin::mach_message::option_receive_voucher) != 0U) {
+            const auto voucher_name = copyout_received_right(
+                *pending_message.voucher_object, *pending_message.voucher_right);
+            if (!voucher_name) {
+                outcome.status = darwin::mach_message::receive_invalid_data;
+                return outcome;
+            }
+            write_little_word(received->bytes,
+                darwin::mig_wire::header_voucher_offset, *voucher_name);
         }
-        write_little_word(received->bytes,
-            darwin::mig_wire::header_voucher_offset, *voucher_name);
-        if (*pending_message.voucher_right == xnu::ipc::Right::Send) {
-            release_inflight_send_right_locked(*shared_state_,
-                *pending_message.voucher_object);
-        }
+        // The receiver either owns the send right now or explicitly declined
+        // it. In both cases the message relinquishes its voucher reference.
+        release_inflight_send_right_locked(*shared_state_,
+            *pending_message.voucher_object);
+        pending_message.voucher_object.reset();
+        pending_message.voucher_right.reset();
     }
 
     // Bootstrap lookup bookkeeping belongs to the launchd reply, not the

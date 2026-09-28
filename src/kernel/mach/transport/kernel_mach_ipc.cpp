@@ -7,6 +7,7 @@
 // Apple public ABI/behavior references (guest profiles may differ):
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/message.h
 
+#include "kernel/darwin_abi.hpp"
 #include "kernel/kernel_mach_ipc.hpp"
 #include "mach/mig_wire_abi.hpp"
 
@@ -114,7 +115,12 @@ std::optional<ReceivedMessage> prepare_received_message(
         read_word(result.bytes, darwin::mig_wire::header_bits_offset);
     const auto remote_disposition = send_bits & 0xffU;
     const auto local_disposition = (send_bits >> 8U) & 0xffU;
-    const auto voucher_disposition = (send_bits >> 16U) & 0xffU;
+    auto voucher_disposition = (send_bits >> 16U) & 0xffU;
+    if (voucher_disposition != 0U &&
+        (receive_options & darwin::mach_message::option_receive_voucher) == 0U) {
+        voucher_disposition = 0U;
+        write_word(result.bytes, darwin::mig_wire::header_voucher_offset, 0U);
+    }
     result.caller_header_size =
         read_word(result.bytes, darwin::mig_wire::header_size_offset);
     const auto reply_port =
