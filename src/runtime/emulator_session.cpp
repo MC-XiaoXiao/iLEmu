@@ -1982,6 +1982,15 @@ void EmulatorSession::run()
                 }
                 return error;
             });
+        runtime.kernel->set_task_memory_statistics_query(
+            [&runtime_index](std::uint32_t pid) -> std::optional<TaskMemoryStatistics> {
+                const auto* target = runtime_index.find(pid);
+                if (!target)
+                    return std::nullopt;
+                return TaskMemoryStatistics {
+                    static_cast<std::uint64_t>(target->memory->mapped_page_count()) * AddressSpace::page_size,
+                    static_cast<std::uint64_t>(target->memory->resident_page_count()) * AddressSpace::page_size };
+            });
         runtime.kernel->set_task_memory_region_query(
             [&runtime_index](std::uint32_t pid, std::uint32_t address)
                 -> std::optional<AddressSpace::MappingRegion> {

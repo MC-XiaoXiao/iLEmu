@@ -46,6 +46,7 @@
 #include "port/lifecycle.hpp"
 #include "port/queries.hpp"
 #include "task/enumeration.hpp"
+#include "task/information.hpp"
 #include "task/special_ports.hpp"
 #include "task/lifecycle.hpp"
 #include "thread/policy.hpp"
@@ -271,6 +272,9 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
             ? port_mig::Attributes::dispatch_locked(*shared_state_, remote_object, queued)
             : port_mig::Notifications::handles(message_id)
             ? port_mig::Notifications::dispatch_locked(*shared_state_, remote_object, queued)
+            : task_mig::Information::handles(message_id)
+            ? task_mig::Information::dispatch_locked(memory_, *shared_state_, process_.pid,
+                  remote_object, queued, task_memory_statistics_query_)
             : task_mig::Enumeration::handles(message_id)
             ? task_mig::Enumeration::dispatch_locked(*shared_state_, remote_object, queued)
             : task_mig::SpecialPorts::handles(message_id)

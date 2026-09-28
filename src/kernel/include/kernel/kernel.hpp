@@ -6,6 +6,7 @@
 // and IPC services.
 
 #pragma once
+#include "kernel/task_memory_statistics.hpp"
 
 #include "kernel/darwin_file_guard.hpp"
 #include <array>
@@ -308,6 +309,10 @@ public:
     void set_signal_delivery_handler(SignalDeliveryHandler handler)
     {
         signal_delivery_handler_ = std::move(handler);
+    }
+    void set_task_memory_statistics_query(TaskMemoryStatisticsQuery query)
+    {
+        task_memory_statistics_query_ = std::move(query);
     }
     void set_task_memory_region_query(TaskMemoryRegionQuery query)
     {
@@ -1050,6 +1055,7 @@ private:
     TaskPriorityHandler task_priority_handler_;
     SchedulerPreemptionQuery scheduler_preemption_query_;
     SignalDeliveryHandler signal_delivery_handler_;
+    TaskMemoryStatisticsQuery task_memory_statistics_query_;
     TaskMemoryRegionQuery task_memory_region_query_;
     TaskMemoryShareQuery task_memory_share_query_;
     std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
