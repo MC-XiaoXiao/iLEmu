@@ -38,6 +38,8 @@ namespace {
         message.destination = alarm.reply_object;
         if (send)
             message.destination_send_object = alarm.reply_object;
+        else
+            message.destination_send_once_object = alarm.reply_object;
         state.enqueue_mach_message_locked(
             alarm.reply_object, std::move(message));
     }
@@ -147,6 +149,8 @@ std::optional<std::uint32_t> kernel_clock::Server::try_alarm_synchronous_locked(
         return std::nullopt;
     // COPY_SEND/MAKE_SEND_ONCE have no lasting namespace mutations. Both
     // receive rights belong to this task; the caller excludes waiting peers.
+    state.mach_port_objects.make_send_once(*reply);
+    state.mach_port_objects.make_send_once(*alarm_port);
     schedule_alarm_locked(state,
         KernelSharedState::ClockAlarm { read_little_word(bytes, 48U),
             *alarm_port, xnu::ipc::Right::SendOnce },

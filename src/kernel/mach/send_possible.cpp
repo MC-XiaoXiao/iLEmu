@@ -50,6 +50,7 @@ void KernelSharedState::notify_send_possible_locked(std::uint32_t destination)
         mach_support::write_little_word(message.bytes, 28U, 1U);
         mach_support::write_little_word(message.bytes, 32U, name);
         message.destination = notify;
+        message.destination_send_once_object = notify;
         enqueue_mach_message_locked(notify, std::move(message));
     }
 }

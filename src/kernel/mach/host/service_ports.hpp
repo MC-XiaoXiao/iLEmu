@@ -78,6 +78,7 @@ public:
         const auto identifier = read_little_word(bytes, 20U);
         if (result.error != 0U) {
             const std::array<std::uint32_t, 3> payload { 0U, 1U, result.error };
+            state.mach_port_objects.make_send_once(*reply);
             return mach_ipc::copyout_kernel_reply_locked(memory, state,
                 receive_address, reply_name, *reply, identifier, payload);
         }
@@ -85,6 +86,7 @@ public:
             result.object, xnu::ipc::type_mask(xnu::ipc::Right::Send));
         if (!name)
             return std::nullopt;
+        state.mach_port_objects.make_send_once(*reply);
         const auto payload = port_payload(*name);
         return mach_ipc::copyout_kernel_reply_locked(memory, state,
             receive_address, reply_name, *reply, identifier, payload, true);

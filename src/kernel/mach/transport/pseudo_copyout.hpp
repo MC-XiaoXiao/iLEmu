@@ -51,6 +51,7 @@ public:
         write_little_word(bytes, darwin::mig_wire::header_remote_port_offset,
             right(destination, destination_right, message.destination_send_object.has_value()));
         message.destination_send_object.reset();
+        message.destination_send_once_object.reset();
         if (message.reply_object && message.reply_right) {
             write_little_word(bytes, darwin::mig_wire::header_local_port_offset,
                 right(*message.reply_object, *message.reply_right));

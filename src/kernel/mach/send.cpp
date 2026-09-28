@@ -244,6 +244,14 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     queued.sender_uid = process_.effective_uid;
     queued.sender_gid = process_.effective_gid;
     routed_reply_object = reply_object;
+    // ipc_kobject_server consumes the request destination, including invalid
+    // routines. Its reply token remains live until the reply is received.
+    if ((kernel_service || clock_service) &&
+        queued.destination_send_once_object) {
+        shared_state_->mach_port_objects.release_send_once(
+            *queued.destination_send_once_object);
+        queued.destination_send_once_object.reset();
+    }
     if (kernel_service) {
         kernel_service_handled = true;
         const auto destination = port_mig::Queries::handles(message_id)

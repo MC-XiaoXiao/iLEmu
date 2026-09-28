@@ -79,8 +79,8 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     result.words[6] = port->make_send_count;
     result.words[7] = port->queue_limit;
     result.words[8] = static_cast<std::uint32_t>(state.mach_message_count_locked(entry->object));
-    // Send-once accounting and importance flags retain their existing empty
-    // state until their full ownership lifetimes are modeled.
+    result.words[9] = port->send_once_rights;
+    // Importance flags retain their existing empty state.
     result.words[10] = port_has_send_rights_locked(state, entry->object) ? 1U : 0U;
     result.words[11] = state.mach_notifications.contains(
         { entry->object, mach_notify_port_destroyed }) ? 1U : 0U;
@@ -122,6 +122,7 @@ std::optional<Attributes::SynchronousReply> Attributes::try_synchronous_locked(
     const auto bytes = std::span { storage }.first(size);
     if (!memory.copy_out(registers[0], bytes) || read_little_word(bytes, 16U) != 0U)
         return std::nullopt;
+    state.mach_port_objects.make_send_once(destination->reply_object);
     const auto result = evaluate_locked(state, destination->task_object, bytes);
     // Raising a limit may wake blocked senders or produce SEND_POSSIBLE on
     // this reply port. Preserve their order by falling back to its queue.

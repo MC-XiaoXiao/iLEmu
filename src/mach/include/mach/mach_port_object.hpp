@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -40,6 +41,8 @@ struct PortObject {
     // are kernel objects serviced by the in-kernel MIG demux.
     bool kernel_owned { };
     std::uint32_t make_send_count { };
+    // ip_sorights counts tokens, including kernel/message-held rights.
+    std::uint32_t send_once_rights { };
     std::uint32_t sequence_number { };
     std::uint32_t queue_limit { default_queue_limit };
     // Receive rights prepared for transfer do not attribute queued-message
@@ -165,6 +168,23 @@ public:
             return false;
         ++found->second.make_send_count;
         return true;
+    }
+
+    // Hold mach_mutex. MAKE creates one token; MOVE and namespace copyout
+    // preserve it. Only destination consumption releases it. Dead ports no
+    // longer have observable status and their tokens may finish cleanup later.
+    void make_send_once(PortObjectId object)
+    {
+        if (const auto found = objects_.find(object); found != objects_.end())
+            ++found->second.send_once_rights;
+    }
+
+    void release_send_once(PortObjectId object)
+    {
+        if (const auto found = objects_.find(object); found != objects_.end()) {
+            assert(found->second.send_once_rights != 0U);
+            --found->second.send_once_rights;
+        }
     }
 
     [[nodiscard]] std::optional<std::uint32_t> sequence_number(

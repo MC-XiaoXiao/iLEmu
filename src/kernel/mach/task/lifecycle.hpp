@@ -58,6 +58,7 @@ public:
         }
         suspended = !resume && result == darwin::mach::success;
         if (token != 0) {
+            state.mach_port_objects.make_send_once(token);
             const std::array<std::uint32_t, 4> payload { 1U, token, 0U, 18U << 16U };
             const std::array<KernelSharedState::MachMessage::PortTransfer, 1> ports { {
                 { .descriptor_offset = 28U, .sender_name = 0U,

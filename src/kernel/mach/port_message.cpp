@@ -220,6 +220,7 @@ std::optional<Lifecycle::SynchronousReply> Lifecycle::try_synchronous_locked(
     if (!memory.copy_out(registers[0], bytes) ||
         read_little_word(bytes, 16U) != 0U)
         return std::nullopt;
+    state.mach_port_objects.make_send_once(destination->reply_object);
     const auto result = evaluate_locked(state, destination->task_object, bytes);
     // Mutation can destroy or rename the reply right, or enqueue a
     // notification ahead of the reply. Preserve ordinary receive then.

@@ -36,6 +36,7 @@ std::optional<Notifications::SynchronousReply> Notifications::try_synchronous_lo
                     return std::nullopt;
                 // MAKE_SEND_ONCE creates a token in transit without changing
                 // sender urefs. The shared service retains or destroys it.
+                state.mach_port_objects.make_send_once(*notify);
                 request.port_transfers.push_back({ 28U, name, std::nullopt,
                     *notify, xnu::ipc::Right::SendOnce, 21U });
             }

@@ -575,6 +575,9 @@ struct KernelSharedState {
         // after copyin, but the queued message still keeps the destination port
         // alive until receive/discard. Record that hold explicitly.
         std::optional<std::uint32_t> destination_send_object;
+        // An actual send-once destination token, distinct from synthetic wire
+        // headers. Transfer to SEND_ONCE on discard; consume at receive.
+        std::optional<std::uint32_t> destination_send_once_object;
         std::vector<PortTransfer> port_transfers;
         std::vector<ReceivePointerFixup> receive_pointer_fixups;
     };

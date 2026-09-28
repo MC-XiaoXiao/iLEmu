@@ -416,6 +416,7 @@ namespace mach_support {
         write_little_word(message.bytes, 28, 1); // little-endian NDR
         write_little_word(message.bytes, 32, port_object->make_send_count);
         message.destination = request->second.notify_object;
+        message.destination_send_once_object = message.destination;
         const auto destination = message.destination;
         state.enqueue_mach_message_locked(destination, std::move(message));
         state.mach_notifications.erase(request);
@@ -439,6 +440,7 @@ namespace mach_support {
         write_little_word(message.bytes, 28, 1);
         write_little_word(message.bytes, 32, dead_name);
         message.destination = notify_object;
+        message.destination_send_once_object = notify_object;
         state.enqueue_mach_message_locked(notify_object, std::move(message));
     }
 
@@ -459,6 +461,7 @@ namespace mach_support {
         write_little_word(message.bytes, 28, 1);
         write_little_word(message.bytes, 32, deleted_name);
         message.destination = notify_object;
+        message.destination_send_once_object = notify_object;
         state.enqueue_mach_message_locked(notify_object, std::move(message));
     }
 
@@ -467,6 +470,7 @@ namespace mach_support {
     {
         // IKOT_TASK_RESUME consumes an abandoned suspension token in-kernel.
         if (state.task_resume_port_pids.contains(object)) {
+            state.mach_port_objects.release_send_once(object);
             static_cast<void>(
                 task_mig::Suspension::resume_token_locked(state, object));
             return;
@@ -482,6 +486,7 @@ namespace mach_support {
         write_little_word(message.bytes, 8, object);
         write_little_word(message.bytes, 20, mach_notify_send_once);
         message.destination = object;
+        message.destination_send_once_object = object;
         state.enqueue_mach_message_locked(object, std::move(message));
     }
 
@@ -511,6 +516,7 @@ namespace mach_support {
         write_little_word(message.bytes, 28, receive_object);
         write_little_word(message.bytes, 36, 0x00100000U); // MOVE_RECEIVE
         message.destination = notify_object;
+        message.destination_send_once_object = notify_object;
         // Keep the transferred receive right in the semantic sidecar as well as
         // in the wire descriptor.  Queue discard must terminate this right
         // instead of losing it when the notification endpoint disappears.
@@ -545,6 +551,15 @@ namespace mach_support {
         static_cast<void>(
             state.remove_mach_port_set_member_from_all_locked(object));
         static_cast<void>(state.erase_mach_port_set_locked(object));
+        // ipc_port_destroy transfers an unfulfilled no-senders request into
+        // SEND_ONCE before discarding queued messages and notifying dead names.
+        const auto no_senders = state.mach_notifications.find(
+            { object, mach_notify_no_senders });
+        if (no_senders != state.mach_notifications.end()) {
+            const auto notify = no_senders->second.notify_object;
+            state.mach_notifications.erase(no_senders);
+            enqueue_send_once_notification_locked(state, notify);
+        }
         if (auto queue = state.mach_queues.find(object);
             queue != state.mach_queues.end()) {
             auto discarded = std::move(queue->second);
@@ -1036,6 +1051,7 @@ namespace mach_support {
         state.mach_notifications.erase(destroyed_key);
 
         static_cast<void>(state.mach_namespaces.mark_object_dead(object));
+        remove_port_object_locked(state, object);
         for (auto request = state.mach_dead_name_notifications.begin();
             request != state.mach_dead_name_notifications.end();) {
             if (request->second.target_object != object) {
@@ -1051,7 +1067,6 @@ namespace mach_support {
                 state, request->second.notify_object, name);
             request = state.mach_dead_name_notifications.erase(request);
         }
-        remove_port_object_locked(state, object);
     }
 
     void release_inflight_send_right_locked(
@@ -1121,6 +1136,9 @@ namespace mach_support {
                 break;
             }
         };
+        if (message.destination_send_once_object)
+            enqueue_send_once_notification_locked(
+                state, *message.destination_send_once_object);
         if (message.reply_object && message.reply_right) {
             discard(*message.reply_object, *message.reply_right);
         }

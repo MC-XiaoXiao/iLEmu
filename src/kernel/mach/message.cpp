@@ -983,6 +983,8 @@ void CompatibilityKernel::dispatch_mach_message(
                         if (right == xnu::ipc::Right::Send) {
                             ++shared_state_->mach_inflight_send_rights[object];
                         }
+                        if (disposition == 21U) // MAKE_SEND_ONCE
+                            shared_state_->mach_port_objects.make_send_once(object);
                         if (disposition == 20U) { // MAKE_SEND
                             static_cast<void>(shared_state_->mach_port_objects
                                     .increment_make_send_count(object));
@@ -1005,6 +1007,8 @@ void CompatibilityKernel::dispatch_mach_message(
                     queued.voucher_object = voucher_object;
                     queued.voucher_right = voucher_right;
                     queued.destination_send_object = destination_send_object;
+                    if (destination_right == xnu::ipc::Right::SendOnce)
+                        queued.destination_send_once_object = destination_object;
                     mach_transport::CopyinCleanup cleanup { *shared_state_,
                         queued, destination_right == xnu::ipc::Right::SendOnce
                                      ? destination_object : std::nullopt };

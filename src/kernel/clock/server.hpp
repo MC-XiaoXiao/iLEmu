@@ -121,6 +121,7 @@ public:
         const auto bytes = std::span { request }.first(registers[2]);
         if (!memory.copy_out(registers[0], bytes))
             return darwin::mach_message::send_invalid_data;
+        state.mach_port_objects.make_send_once(*reply);
         const auto payload = evaluate(state, clock, bytes);
         return mach_ipc::copyout_kernel_reply_locked(memory, state,
             receive_address, reply_name, *reply, read_little_word(bytes, 20U),

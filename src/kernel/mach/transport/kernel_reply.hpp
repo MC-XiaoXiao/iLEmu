@@ -84,7 +84,13 @@ bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
     // directly in transit under mach_mutex, as in ipc_kobject_server.
     request.reply_object = destination->reply_object;
     request.reply_right = xnu::ipc::Right::SendOnce;
-    return dispatch(destination->task_object, request).has_value();
+    state.mach_port_objects.make_send_once(destination->reply_object);
+    const auto handled = dispatch(destination->task_object, request).has_value();
+    // A rejected fast path has not committed copyin. Roll back the transient
+    // header token; ordinary IPC will copy in the original request.
+    if (!handled && request.reply_object)
+        state.mach_port_objects.release_send_once(destination->reply_object);
+    return handled;
 }
 
 // Direct handoff of an uncontended COPY_SEND/MAKE_SEND_ONCE RPC.
@@ -97,6 +103,7 @@ inline std::uint32_t copyout_kernel_reply_locked(AddressSpace& memory,
     std::span<const KernelSharedState::MachMessage::OolPayload> buffers = { })
 {
     assert(payload.size() <= MaximumPayloadWords);
+    state.mach_port_objects.release_send_once(receive_object);
     std::array<std::uint32_t, MaximumPayloadWords + 8U> words { };
     const auto size = 24U + static_cast<std::uint32_t>(payload.size_bytes());
     words[0] =
@@ -183,6 +190,8 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     reply.destination = *destination;
     if (*right == xnu::ipc::Right::Send)
         reply.destination_send_object = destination;
+    else
+        reply.destination_send_once_object = destination;
     request.reply_object.reset();
     request.reply_right.reset();
     discard_mach_message_rights_locked(state, request);
@@ -195,8 +204,6 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     if (circular) {
         // Destruction consumes the reply destination before its body, just
         // like ipc_kmsg_send for a circular kernel-produced message.
-        if (*right == xnu::ipc::Right::SendOnce)
-            enqueue_send_once_notification_locked(state, *destination);
         discard_mach_message_rights_locked(state, reply);
         return std::nullopt;
     }

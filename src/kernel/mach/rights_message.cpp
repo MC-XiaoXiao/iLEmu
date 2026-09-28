@@ -287,6 +287,8 @@ Rights::Copyin Rights::copyin_locked(KernelSharedState& state,
         }
         if (token->right == xnu::ipc::Right::Send)
             ++state.mach_inflight_send_rights[token->object];
+        if (disposition == darwin::mig_wire::disposition_make_send_once)
+            state.mach_port_objects.make_send_once(token->object);
         if (disposition == darwin::mig_wire::disposition_make_send)
             static_cast<void>(
                 state.mach_port_objects.increment_make_send_count(token->object));
@@ -469,6 +471,7 @@ std::optional<Rights::SynchronousReply> Rights::try_synchronous_locked(
                          !mach_transport::PortCopyin { state, process.pid }.capture(
                              name, disposition, 28U)))
         return std::nullopt;
+    state.mach_port_objects.make_send_once(destination->reply_object);
     const auto copied = inserting ? Copyin { }
         : name == xnu::ipc::null_name || name == xnu::ipc::dead_name
             ? Copyin { darwin::mach::invalid_right, { } }

@@ -42,6 +42,7 @@ public:
         if (destination_send_once_) {
             mach_support::enqueue_send_once_notification_locked(
                 state_, *destination_send_once_);
+            message_.destination_send_once_object.reset();
         }
         if (message_.destination_send_object) {
             mach_support::release_inflight_send_right_locked(

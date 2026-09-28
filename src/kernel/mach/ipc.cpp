@@ -476,6 +476,11 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
         shared_state_->note_mach_message_dequeued_locked(queued_port);
+        if (discarded.destination_send_once_object) {
+            shared_state_->mach_port_objects.release_send_once(
+                *discarded.destination_send_once_object);
+            discarded.destination_send_once_object.reset();
+        }
         discard_mach_message_rights_locked(*shared_state_, discarded);
         outcome.status = 0x10004008U; // MACH_RCV_INVALID_DATA
         return outcome;
@@ -511,6 +516,11 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             auto discarded = std::move(queue->second.front());
             queue->second.pop_front();
             shared_state_->note_mach_message_dequeued_locked(queued_port);
+            if (discarded.destination_send_once_object) {
+                shared_state_->mach_port_objects.release_send_once(
+                    *discarded.destination_send_once_object);
+                discarded.destination_send_once_object.reset();
+            }
             discard_mach_message_rights_locked(*shared_state_, discarded);
             outcome.status = darwin::mach_message::receive_too_large;
         }
@@ -531,6 +541,11 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
         shared_state_->note_mach_message_dequeued_locked(queued_port);
+        if (discarded.destination_send_once_object) {
+            shared_state_->mach_port_objects.release_send_once(
+                *discarded.destination_send_once_object);
+            discarded.destination_send_once_object.reset();
+        }
         discard_mach_message_rights_locked(*shared_state_, discarded);
     };
     const auto fail_receive = [&](std::uint32_t error) {
@@ -846,6 +861,11 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
         shared_state_->note_mach_message_dequeued_locked(queued_port);
+        if (discarded.destination_send_once_object) {
+            shared_state_->mach_port_objects.release_send_once(
+                *discarded.destination_send_once_object);
+            discarded.destination_send_once_object.reset();
+        }
         discard_mach_message_rights_locked(*shared_state_, discarded);
         outcome.status = 0x10004008U; // MACH_RCV_INVALID_DATA
         return outcome;
@@ -860,6 +880,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
     const auto delivered_touch_phase = pending_message.graphics_touch_phase;
     const auto delivered_destination_send_object =
         pending_message.destination_send_object;
+    const auto delivered_destination_send_once_object =
+        pending_message.destination_send_once_object;
     const auto delivered_vsync_connection =
         pending_message.display_vsync_connection_object;
     const auto delivered_vsync_generation =
@@ -882,6 +904,9 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
     }
     queue->second.pop_front();
     shared_state_->note_mach_message_dequeued_locked(queued_port);
+    if (delivered_destination_send_once_object)
+        shared_state_->mach_port_objects.release_send_once(
+            *delivered_destination_send_once_object);
     if (delivered_destination_send_object) {
         release_inflight_send_right_locked(
             *shared_state_, *delivered_destination_send_object);
