@@ -17,7 +17,9 @@
 
 namespace ilemu::xnu_reference {
 
-enum class BsdSlot : std::uint8_t { UnknownRelease, Call, Enosys, Nosys };
+// FirmwareStub: the reference tag only reserves the slot, but that release's
+// firmware libsystem has a stub for it, so the iOS kernel has the call.
+enum class BsdSlot : std::uint8_t { UnknownRelease, Call, Enosys, FirmwareStub, Nosys };
 
 namespace detail {
     struct Release {
@@ -25,6 +27,7 @@ namespace detail {
         std::string_view tags;
         std::span<const std::uint16_t> calls;
         std::span<const std::uint16_t> enosys;
+        std::span<const std::uint16_t> firmware;
     };
     inline constexpr std::array<std::uint16_t, 253> calls_9_0_0d1 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 18, 20, 23, 24, 25, 26,
@@ -45,6 +48,11 @@ namespace detail {
         353, 354, 355, 356, 357, 358, 359, 362, 363, 364,
     };
     inline constexpr std::array<std::uint16_t, 0> enosys_9_0_0d1 {
+    };
+    // firmware stubs from 3A109a
+    inline constexpr std::array<std::uint16_t, 17> firmware_9_0_0d1 {
+        126, 127, 169, 301, 302, 303, 304, 305, 306, 307, 308, 309, 312, 321, 338,
+        339, 340,
     };
     inline constexpr std::array<std::uint16_t, 330> calls_9_3_1 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 18, 20, 23, 24, 25, 26,
@@ -72,6 +80,10 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 2> enosys_9_3_1 {
         299, 300,
     };
+    // firmware stubs from 5A347
+    inline constexpr std::array<std::uint16_t, 2> firmware_9_3_1 {
+        148, 149,
+    };
     inline constexpr std::array<std::uint16_t, 330> calls_9_4_1 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 18, 20, 23, 24, 25, 26,
         27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 44, 46, 47, 48,
@@ -97,6 +109,8 @@ namespace detail {
     };
     inline constexpr std::array<std::uint16_t, 2> enosys_9_4_1 {
         299, 300,
+    };
+    inline constexpr std::array<std::uint16_t, 0> firmware_9_4_1 {
     };
     inline constexpr std::array<std::uint16_t, 338> calls_10_0_0d3 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
@@ -124,6 +138,10 @@ namespace detail {
     };
     inline constexpr std::array<std::uint16_t, 0> enosys_10_0_0d3 {
     };
+    // firmware stubs from 7A341
+    inline constexpr std::array<std::uint16_t, 5> firmware_10_0_0d3 {
+        148, 149, 224, 312, 321,
+    };
     inline constexpr std::array<std::uint16_t, 338> calls_10_3_1 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
         28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 44, 46, 47, 48, 49,
@@ -149,6 +167,8 @@ namespace detail {
         424, 425, 426, 427, 428, 429,
     };
     inline constexpr std::array<std::uint16_t, 0> enosys_10_3_1 {
+    };
+    inline constexpr std::array<std::uint16_t, 0> firmware_10_3_1 {
     };
     inline constexpr std::array<std::uint16_t, 338> calls_10_4_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
@@ -176,6 +196,8 @@ namespace detail {
     };
     inline constexpr std::array<std::uint16_t, 0> enosys_10_4_0 {
     };
+    inline constexpr std::array<std::uint16_t, 0> firmware_10_4_0 {
+    };
     inline constexpr std::array<std::uint16_t, 347> calls_11_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
         28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 44, 46, 47, 48, 49,
@@ -202,6 +224,10 @@ namespace detail {
     };
     inline constexpr std::array<std::uint16_t, 0> enosys_11_0_0 {
     };
+    // firmware stubs from 9B206
+    inline constexpr std::array<std::uint16_t, 3> firmware_11_0_0 {
+        148, 149, 373,
+    };
     inline constexpr std::array<std::uint16_t, 347> calls_13_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
         28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 46, 47, 48, 49, 50,
@@ -227,6 +253,10 @@ namespace detail {
         424, 425, 426, 427, 428, 429, 430, 431, 432, 433, 434, 435, 436, 438, 439,
     };
     inline constexpr std::array<std::uint16_t, 0> enosys_13_0_0 {
+    };
+    // firmware stubs from 10A403, 10A405
+    inline constexpr std::array<std::uint16_t, 5> firmware_13_0_0 {
+        148, 149, 440, 441, 442,
     };
     inline constexpr std::array<std::uint16_t, 387> calls_14_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
@@ -258,6 +288,10 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 7> enosys_14_0_0 {
         8, 11, 17, 19, 21, 22, 462,
     };
+    // firmware stubs from 11A465, 11D257, 12A365
+    inline constexpr std::array<std::uint16_t, 4> firmware_14_0_0 {
+        148, 149, 435, 436,
+    };
     inline constexpr std::array<std::uint16_t, 391> calls_15_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
         28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 46, 47, 48, 49, 50,
@@ -288,17 +322,19 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 16> enosys_15_0_0 {
         8, 11, 17, 19, 21, 22, 275, 276, 391, 392, 393, 462, 495, 496, 497, 498,
     };
+    inline constexpr std::array<std::uint16_t, 0> firmware_15_0_0 {
+    };
     inline constexpr std::array<Release, 10> releases { {
-        Release { "9.0.0d1", "xnu-792.24.17", calls_9_0_0d1, enosys_9_0_0d1 },
-        Release { "9.3.1", "xnu-1228.15.4", calls_9_3_1, enosys_9_3_1 },
-        Release { "9.4.1", "xnu-1228.15.4", calls_9_4_1, enosys_9_4_1 },
-        Release { "10.0.0d3", "xnu-1456.1.26", calls_10_0_0d3, enosys_10_0_0d3 },
-        Release { "10.3.1", "xnu-1504.3.12", calls_10_3_1, enosys_10_3_1 },
-        Release { "10.4.0", "xnu-1504.3.12", calls_10_4_0, enosys_10_4_0 },
-        Release { "11.0.0", "xnu-1699.22.73", calls_11_0_0, enosys_11_0_0 },
-        Release { "13.0.0", "xnu-2050.48.11", calls_13_0_0, enosys_13_0_0 },
-        Release { "14.0.0", "xnu-2422.115.4,xnu-2782.40.9", calls_14_0_0, enosys_14_0_0 },
-        Release { "15.0.0", "xnu-3248.60.10", calls_15_0_0, enosys_15_0_0 },
+        Release { "9.0.0d1", "xnu-792.24.17", calls_9_0_0d1, enosys_9_0_0d1, firmware_9_0_0d1 },
+        Release { "9.3.1", "xnu-1228.15.4", calls_9_3_1, enosys_9_3_1, firmware_9_3_1 },
+        Release { "9.4.1", "xnu-1228.15.4", calls_9_4_1, enosys_9_4_1, firmware_9_4_1 },
+        Release { "10.0.0d3", "xnu-1456.1.26", calls_10_0_0d3, enosys_10_0_0d3, firmware_10_0_0d3 },
+        Release { "10.3.1", "xnu-1504.3.12", calls_10_3_1, enosys_10_3_1, firmware_10_3_1 },
+        Release { "10.4.0", "xnu-1504.3.12", calls_10_4_0, enosys_10_4_0, firmware_10_4_0 },
+        Release { "11.0.0", "xnu-1699.22.73", calls_11_0_0, enosys_11_0_0, firmware_11_0_0 },
+        Release { "13.0.0", "xnu-2050.48.11", calls_13_0_0, enosys_13_0_0, firmware_13_0_0 },
+        Release { "14.0.0", "xnu-2422.115.4,xnu-2782.40.9", calls_14_0_0, enosys_14_0_0, firmware_14_0_0 },
+        Release { "15.0.0", "xnu-3248.60.10", calls_15_0_0, enosys_15_0_0, firmware_15_0_0 },
     } };
 } // namespace detail
 
@@ -313,6 +349,8 @@ namespace detail {
             return BsdSlot::Call;
         if (std::binary_search(release.enosys.begin(), release.enosys.end(), number))
             return BsdSlot::Enosys;
+        if (std::binary_search(release.firmware.begin(), release.firmware.end(), number))
+            return BsdSlot::FirmwareStub;
         return BsdSlot::Nosys;
     }
     return BsdSlot::UnknownRelease;
@@ -323,7 +361,8 @@ namespace detail {
     std::string_view darwin_release, std::uint32_t number)
 {
     const auto slot = bsd_slot(darwin_release, number);
-    return slot == BsdSlot::Call || slot == BsdSlot::Enosys;
+    return slot == BsdSlot::Call || slot == BsdSlot::Enosys ||
+        slot == BsdSlot::FirmwareStub;
 }
 
 } // namespace ilemu::xnu_reference

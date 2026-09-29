@@ -107,6 +107,27 @@ namespace {
         }
     }
 
+    // BSD number being dispatched on this host thread (after nocancel
+    // canonicalization), so dispatch_bsd_nosys can apply the reference rule
+    // at every call site, including contract-gated branches.
+    constexpr std::uint32_t no_bsd_number = UINT32_MAX;
+    thread_local std::uint32_t active_bsd_number = no_bsd_number;
+
+    class ActiveBsdNumber {
+    public:
+        explicit ActiveBsdNumber(std::uint32_t number)
+            : previous_ { active_bsd_number }
+        {
+            active_bsd_number = number;
+        }
+        ~ActiveBsdNumber() { active_bsd_number = previous_; }
+        ActiveBsdNumber(const ActiveBsdNumber&) = delete;
+        ActiveBsdNumber& operator=(const ActiveBsdNumber&) = delete;
+
+    private:
+        std::uint32_t previous_;
+    };
+
 } // namespace
 
 void CompatibilityKernel::dispatch_bsd_nosys(Cpu& cpu, bool send_sigsys)
@@ -117,6 +138,15 @@ void CompatibilityKernel::dispatch_bsd_nosys(Cpu& cpu, bool send_sigsys)
     // r0 or the carry bit visible to the guest.
     bsd_error(cpu, bsd_support::not_implemented);
     if (!send_sigsys)
+        return;
+    // XNU raises SIGSYS only from nosys(). A slot the reference kernel
+    // implements, answers with enosys(), or that the release's firmware
+    // libsystem stubs is deferred: ENOSYS without SIGSYS, so an unimplemented
+    // or contract-gated call cannot kill the process.
+    if (active_bsd_number != no_bsd_number &&
+        xnu_reference::bsd_slot_defined(
+            shared_state_->darwin_kernel_identity.operating_system_release,
+            active_bsd_number))
         return;
     static_cast<void>(deliver_signal(darwin::signal::bad_system_call));
     if (process_.exited)
@@ -129,6 +159,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         dispatch_bsd(cpu, *canonical);
         return;
     }
+    const ActiveBsdNumber active { number };
     if (dispatch_bsd_pthread(cpu, number))
         return;
     if (shared_state_->bsd_dispatch_table.dispatch(*this, cpu, number))
@@ -566,15 +597,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         output_.marker("[process] unsupported-bsd pid=" + std::to_string(process_.pid) +
             " number=" + std::to_string(number));
         trace_unknown(cpu, "BSD syscall", number);
-        // XNU raises SIGSYS only from nosys(). A slot the reference kernel
-        // implements (or answers with enosys()) is deferred here: ENOSYS
-        // without SIGSYS, so an unimplemented call cannot kill the process.
         dispatch_bsd_nosys(cpu,
-            shared_state_->darwin_abi.capabilities.send_sigsys &&
-                !xnu_reference::bsd_slot_defined(
-                    shared_state_->darwin_kernel_identity
-                        .operating_system_release,
-                    number));
+            shared_state_->darwin_abi.capabilities.send_sigsys);
         return;
     }
 }
