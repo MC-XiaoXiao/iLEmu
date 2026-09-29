@@ -49,11 +49,17 @@ namespace {
     void write_portable_pixmap(std::ostream& output, const DisplayFrame& frame)
     {
         output << "P6\n" << frame.width << ' ' << frame.height << "\n255\n";
-        for (const auto pixel : frame.pixels) {
-            const char rgb[] { static_cast<char>((pixel >> 16U) & 0xffU),
-                static_cast<char>((pixel >> 8U) & 0xffU),
-                static_cast<char>(pixel & 0xffU) };
-            output.write(rgb, sizeof(rgb));
+        std::vector<char> row(static_cast<std::size_t>(frame.width) * 3U);
+        for (std::uint32_t y = 0; y < frame.height; ++y) {
+            const auto offset = static_cast<std::size_t>(y) * frame.width;
+            for (std::uint32_t x = 0; x < frame.width; ++x) {
+                const auto pixel = frame.pixels[offset + x];
+                const auto target = static_cast<std::size_t>(x) * 3U;
+                row[target] = static_cast<char>((pixel >> 16U) & 0xffU);
+                row[target + 1U] = static_cast<char>((pixel >> 8U) & 0xffU);
+                row[target + 2U] = static_cast<char>(pixel & 0xffU);
+            }
+            output.write(row.data(), static_cast<std::streamsize>(row.size()));
         }
     }
 
