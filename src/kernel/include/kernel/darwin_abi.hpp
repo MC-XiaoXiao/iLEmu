@@ -223,6 +223,7 @@ namespace arm_fast_trap {
 } // namespace arm_fast_trap
 
 namespace syscall {
+    inline constexpr std::uint32_t filesystem_path_from_id = 427;
     inline constexpr std::uint32_t path_configuration = 191;
     inline constexpr std::uint32_t read = 3;
     inline constexpr std::uint32_t write = 4;

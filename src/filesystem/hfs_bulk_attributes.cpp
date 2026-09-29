@@ -74,7 +74,7 @@ bool MetadataProvider::valid_bulk_request(const AttributeRequest& request)
            !(request.file & ~attribute::file_supported_mask);
 }
 
-std::vector<std::byte> MetadataProvider::pack_bulk_attributes(
+std::vector<std::byte> MetadataProvider::pack_returned_attributes(
     const Metadata& metadata, const AttributeRequest& request,
     std::string_view guest_path, bool pack_invalid, std::uint32_t error)
 {

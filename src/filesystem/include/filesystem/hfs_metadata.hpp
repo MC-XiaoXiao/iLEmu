@@ -15,15 +15,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace ilemu::hfs {
 
 inline constexpr std::string_view resource_sidecar_suffix { ".ilemu-rsrc" };
 inline constexpr std::uint32_t allocation_block_size = 4096;
+inline constexpr std::uint32_t filesystem_identifier = 1;
 
 namespace attribute {
     inline constexpr std::uint32_t common_name = 0x00000001U;
@@ -71,9 +74,10 @@ namespace attribute {
     inline constexpr std::uint32_t volume_mounted_device = 0x00008000U;
     inline constexpr std::uint32_t volume_encodings_used = 0x00010000U;
     inline constexpr std::uint32_t volume_capabilities = 0x00020000U;
+    inline constexpr std::uint32_t volume_uuid = 0x00040000U;
     inline constexpr std::uint32_t volume_attributes = 0x40000000U;
     inline constexpr std::uint32_t volume_info = 0x80000000U;
-    inline constexpr std::uint32_t volume_valid_mask = 0xc003ffffU;
+    inline constexpr std::uint32_t volume_valid_mask = 0xc007ffffU;
 
     inline constexpr std::uint32_t directory_link_count = 0x00000001U;
     inline constexpr std::uint32_t directory_entry_count = 0x00000002U;
@@ -172,11 +176,15 @@ struct VolumeMetadata {
     std::uint32_t next_catalog_id { 2'929 };
     std::uint32_t mount_flags { 0x00005001U }; // RDONLY|LOCAL|ROOTFS
     std::uint64_t encodings_used { 1 };
+    std::array<std::byte, 16> uuid { };
 };
 
 class MetadataProvider {
 public:
     explicit MetadataProvider(std::filesystem::path root);
+
+    [[nodiscard]] std::optional<std::filesystem::path> path_for_catalog_id(
+        std::uint64_t object_id) const;
 
     [[nodiscard]] std::optional<Metadata> query(
         const std::filesystem::path& path, bool follow_symlink,
@@ -188,7 +196,7 @@ public:
         const Metadata& metadata, const AttributeRequest& request,
         std::string_view guest_path = {});
     [[nodiscard]] static bool valid_bulk_request(const AttributeRequest& request);
-    [[nodiscard]] static std::vector<std::byte> pack_bulk_attributes(
+    [[nodiscard]] static std::vector<std::byte> pack_returned_attributes(
         const Metadata& metadata, const AttributeRequest& request,
         std::string_view guest_path, bool pack_invalid, std::uint32_t error = 0);
     [[nodiscard]] static std::vector<std::byte> pack_volume_attributes(
@@ -208,6 +216,8 @@ public:
 
 private:
     std::filesystem::path root_;
+    mutable std::mutex catalog_mutex_;
+    mutable std::unordered_map<std::uint32_t, std::filesystem::path> catalog_paths_;
 };
 
 } // namespace ilemu::hfs

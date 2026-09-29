@@ -189,7 +189,7 @@ void CompatibilityKernel::dispatch_bsd_directory_attributes(Cpu& cpu)
             (std::filesystem::path { "/" } / path.lexically_relative(rootfs_))
                 .lexically_normal()
                 .generic_string();
-        auto record = hfs::MetadataProvider::pack_bulk_attributes(
+        auto record = hfs::MetadataProvider::pack_returned_attributes(
             *metadata, request, guest_path, pack_invalid);
         const auto remaining = buffer_size - copied;
         if (record.size() > remaining)

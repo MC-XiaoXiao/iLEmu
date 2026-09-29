@@ -33,7 +33,7 @@ namespace {
     constexpr std::uint32_t hfs_root_parent_id = 1;
     constexpr std::uint32_t first_user_catalog_id = 16;
     constexpr std::uint32_t hfs_vnode_tag = 16;
-    constexpr std::uint32_t hfs_device = 1;
+    constexpr std::uint32_t hfs_device = filesystem_identifier;
     constexpr std::uint32_t hfs_block_size = allocation_block_size;
 
     std::optional<std::vector<std::byte>> read_xattr(
@@ -315,6 +315,8 @@ namespace {
         }
         if (mask & volume_capabilities)
             size += 32;
+        if (mask & volume_uuid)
+            size += 16;
         if (mask & volume_attributes)
             size += 40;
         return size;
@@ -461,7 +463,12 @@ std::optional<Metadata> MetadataProvider::query(
 bool MetadataProvider::valid_request(const AttributeRequest& request)
 {
     using namespace attribute;
-    if ((request.common & ~common_supported_mask) != 0 || request.fork != 0) {
+    // RETURNED_ATTRS permits recognized attributes without backend data.
+    // The shared optional-attribute encoder omits them, or reserves zeroed
+    // slots under FSOPT_PACK_INVAL_ATTRS, and clears their returned bits.
+    if (((request.common & common_returned_attributes) == 0 &&
+            (request.common & ~common_supported_mask) != 0) ||
+        request.fork != 0) {
         return false;
     }
     if (request.volume != 0) {
@@ -765,10 +772,17 @@ std::vector<std::byte> MetadataProvider::pack_volume_attributes(
     if (mask & volume_capabilities) {
         // Mirrors xnu hfs_attrlist.c for an HFSX, non-journal-active
         // volume.  HFS+ advertises journal capability even when inactive.
-        constexpr std::array<std::uint32_t, 8> capabilities { 0x00000f0fU,
-            0x000003dfU, 0, 0, 0x00000fffU, 0x000003ffU, 0, 0 };
+        constexpr std::uint32_t path_from_id = 0x00004000U;
+        constexpr std::array<std::uint32_t, 8> capabilities {
+            0x00000f0fU | path_from_id, 0x000003dfU, 0, 0,
+            0x00000fffU | path_from_id, 0x000003ffU, 0, 0 };
         for (const auto value : capabilities)
             word(value);
+    }
+    if (mask & volume_uuid) {
+        std::copy(volume.uuid.begin(), volume.uuid.end(),
+            result.begin() + static_cast<std::ptrdiff_t>(cursor));
+        cursor += volume.uuid.size();
     }
     if (mask & volume_attributes) {
         constexpr std::array<std::uint32_t, 5> attributes { 0x003f'ffffU,

@@ -24,6 +24,8 @@ class VolumeLayout {
 public:
     VolumeLayout(std::filesystem::path rootfs, std::uint64_t storage_bytes);
 
+    [[nodiscard]] static std::filesystem::path backing_image(
+        const std::filesystem::path& rootfs, bool system_partition);
     [[nodiscard]] const VolumeMetadata& for_guest_path(
         std::string_view path) const;
     [[nodiscard]] const VolumeMetadata& for_mounted_device(

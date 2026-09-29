@@ -8,6 +8,7 @@
 #include "filesystem/hfs_volume_layout.hpp"
 
 #include <algorithm>
+#include <openssl/evp.h>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -23,6 +24,32 @@ namespace {
     constexpr std::uint32_t mount_no_devices = 0x00000010U;
     constexpr std::uint32_t mount_local = 0x00001000U;
     constexpr std::uint32_t mount_rootfs = 0x00004000U;
+
+    std::array<std::byte, 16> volume_uuid(const std::filesystem::path& image)
+    {
+        std::array<std::byte, 16> result { };
+        std::array<unsigned char, 112> header { };
+        std::ifstream input { image, std::ios::binary };
+        input.seekg(1024);
+        if (!input.read(reinterpret_cast<char*>(header.data()), header.size()) ||
+            header[0] != 'H' || (header[1] != 'X' && header[1] != '+'))
+            return result;
+        // XNU hfs_getvoluuid: UUIDv3 in the HFS namespace, using the eight
+        // on-disk FinderInfo identifier bytes (not endian-swapped integers).
+        std::array<unsigned char, 24> name {
+            0xb3, 0xe2, 0x0f, 0x39, 0xf2, 0x92, 0x11, 0xd6,
+            0x97, 0xa4, 0x00, 0x30, 0x65, 0x43, 0xec, 0xac
+        };
+        std::copy_n(header.begin() + 104, 8, name.begin() + 16);
+        unsigned int size = 0;
+        if (EVP_Digest(name.data(), name.size(),
+                reinterpret_cast<unsigned char*>(result.data()), &size,
+                EVP_md5(), nullptr) != 1 || size != result.size())
+            return { };
+        result[6] = (result[6] & std::byte { 0x0f }) | std::byte { 0x30 };
+        result[8] = (result[8] & std::byte { 0x3f }) | std::byte { 0x80 };
+        return result;
+    }
 
     struct DataUsage {
         std::uint64_t bytes { };
@@ -173,6 +200,20 @@ VolumeLayout::VolumeLayout(
             data_volume(std::move(source), std::move(mount_point), options,
                 rootfs, storage_bytes, volumes_.front().total_blocks));
     }
+    for (auto& volume : volumes_)
+        volume.uuid = volume_uuid(backing_image(rootfs, volume.mount_point == "/"));
+}
+
+std::filesystem::path VolumeLayout::backing_image(
+    const std::filesystem::path& rootfs, bool system_partition)
+{
+    const auto directory = rootfs.parent_path() / "firmware";
+    auto path = directory / (system_partition ? "system.hfsx.img" : "data.hfsx.img");
+    std::error_code error;
+    if (std::filesystem::is_regular_file(path, error))
+        return path;
+    // Preserve the original single-image extraction layout.
+    return directory / "iphoneos-1.0-hfsx.img";
 }
 
 const VolumeMetadata& VolumeLayout::for_guest_path(std::string_view path) const

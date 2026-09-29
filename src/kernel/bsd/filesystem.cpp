@@ -173,6 +173,45 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::invalid_argument);
         return;
     }
+    case darwin::syscall::filesystem_path_from_id: {
+        // XNU fsgetpath: fsid_t followed by an unaligned syscall uint64_t
+        // object ID; the return count includes the terminating NUL.
+        const auto fsid = memory_.read32(registers[2]);
+        const auto fsid_type = memory_.read32(registers[2] + 4U);
+        if (!fsid || !fsid_type) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        if (registers[1] > 4096U) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        if (*fsid != hfs::filesystem_identifier) {
+            bsd_error(cpu, 45U); // ENOTSUP: no matching mounted filesystem
+            return;
+        }
+        const auto object_id = static_cast<std::uint64_t>(registers[3]) |
+            (static_cast<std::uint64_t>(registers[4]) << 32U);
+        const auto host = hfs_metadata_.path_for_catalog_id(object_id);
+        if (!host) {
+            bsd_error(cpu, 2U);
+            return;
+        }
+        const auto relative = host->lexically_relative(rootfs_);
+        const auto path = (*host == rootfs_ ? std::filesystem::path { "/" }
+                          : std::filesystem::path { "/" } / relative).generic_string();
+        if (path.size() + 1U > registers[1]) {
+            bsd_error(cpu, 28U); // ENOSPC, as build_path reports
+            return;
+        }
+        if (!memory_.copy_in(registers[0], std::as_bytes(
+                std::span { path.c_str(), path.size() + 1U }))) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        bsd_success(cpu, static_cast<std::uint32_t>(path.size() + 1U));
+        return;
+    }
     case 9: { // link
         const auto source_path = memory_.read_c_string(registers[0]);
         const auto destination_path = memory_.read_c_string(registers[1]);
@@ -442,19 +481,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         if (*path == "/dev/disk0s1" || *path == "/dev/disk0s2" ||
             *path == "/dev/rdisk0s1" || *path == "/dev/rdisk0s2") {
             const auto system_partition = path->ends_with("s1");
-            auto backing = rootfs_.parent_path() / "firmware" /
-                (system_partition ? "system.hfsx.img" : "data.hfsx.img");
+            const auto backing =
+                hfs::VolumeLayout::backing_image(rootfs_, system_partition);
             std::error_code backing_error;
             if (!std::filesystem::is_regular_file(backing, backing_error)) {
-                // Preserve the original image layout used by early firmware
-                // extractions while allowing later devices to provide
-                // separate system and data partition images.
-                backing = rootfs_.parent_path() / "firmware" /
-                    "iphoneos-1.0-hfsx.img";
-                if (!std::filesystem::is_regular_file(backing, backing_error)) {
-                    bsd_error(cpu, 2);
-                    return;
-                }
+                bsd_error(cpu, 2);
+                return;
             }
             const auto fd = allocate_file_descriptor();
             if (!fd) {
@@ -1458,6 +1490,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
+        constexpr std::uint32_t fsopt_common_extended = 0x00000020U;
+        constexpr std::uint32_t common_repurposed_attributes = 0x00180000U;
+        if (request.volume == 0 &&
+            (request.common & common_repurposed_attributes) != 0U &&
+            (registers[4] & fsopt_common_extended) == 0U) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
         constexpr std::uint32_t fsopt_nofollow = 0x00000001U;
         constexpr std::uint32_t fsopt_report_full_size = 0x00000004U;
         constexpr std::uint32_t fsopt_pack_invalid_attributes = 0x00000008U;
@@ -1478,14 +1518,20 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
-        auto result =
-            request.volume != 0
-                ? hfs::MetadataProvider::pack_volume_attributes(
-                      *metadata, volume, request)
-                : hfs::MetadataProvider::pack_attributes(*metadata, request,
-                      (std::filesystem::path { "/" } /
-                          host_path.lexically_relative(rootfs_))
-                          .lexically_normal().generic_string());
+        const auto guest_path =
+            (std::filesystem::path { "/" } / host_path.lexically_relative(rootfs_))
+                .lexically_normal().generic_string();
+        const auto returned_attributes =
+            (request.common & hfs::attribute::common_returned_attributes) != 0U;
+        auto result = request.volume != 0
+            ? hfs::MetadataProvider::pack_volume_attributes(
+                  *metadata, volume, request)
+            : returned_attributes
+                ? hfs::MetadataProvider::pack_returned_attributes(*metadata,
+                      request, guest_path,
+                      (registers[4] & fsopt_pack_invalid_attributes) != 0U)
+                : hfs::MetadataProvider::pack_attributes(
+                      *metadata, request, guest_path);
         const auto full_size = static_cast<std::uint32_t>(result.size());
         if (result.size() > registers[3]) {
             result.resize(registers[3]);

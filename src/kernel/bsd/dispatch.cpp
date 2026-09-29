@@ -431,6 +431,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 345:
     case 346:
     case 347:
+    case darwin::syscall::filesystem_path_from_id:
     case darwin::syscall::path_configuration:
     case darwin::syscall::get_extended_attribute:
     case darwin::syscall::get_extended_attribute_fd:
