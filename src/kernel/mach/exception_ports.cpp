@@ -57,8 +57,10 @@ namespace {
     [[nodiscard]] std::uint32_t valid_exception_mask(
         DarwinExceptionPortAbi abi) noexcept
     {
-        const auto count = abi == DarwinExceptionPortAbi::ThroughGuard
-                               ? KernelSharedState::task_exception_type_count
+        const auto count = abi == DarwinExceptionPortAbi::ThroughCorpseNotify
+                               ? std::size_t { 14 }
+                           : abi == DarwinExceptionPortAbi::ThroughGuard
+                               ? std::size_t { 13 }
                                : std::size_t { 11 };
         return (1U << count) - 2U;
     }

@@ -28,10 +28,42 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
         return;
     }
     case 363: // kevent
-    case 369: { // kevent64
-        const bool extended = number == 369U;
-        const KeventWireFormat wire { extended };
-        const auto timeout_address = registers[extended ? 6U : 5U];
+    case 369: // kevent64
+    case 374: { // kevent_qos
+        const bool qos = number == 374U;
+        const auto format = qos ? darwin::kqueue::WireFormat::QualityOfService
+                            : number == 369U
+                                ? darwin::kqueue::WireFormat::Extended64
+                                : darwin::kqueue::WireFormat::Legacy32;
+        const KeventWireFormat wire { format };
+        const auto timeout_address =
+            qos ? 0U : registers[number == 369U ? 6U : 5U];
+        std::uint32_t call_flags = number == 369U ? registers[5] : 0U;
+        if (qos) {
+            if (shared_state_->darwin_abi.kevent_abi !=
+                DarwinKeventAbi::QualityOfService) {
+                dispatch_bsd_nosys(
+                    cpu, shared_state_->darwin_abi.capabilities.send_sigsys);
+                return;
+            }
+            // ARM32 syscall wrappers marshal seven words into r0-r6.
+            // XNU reads argument eight at saved SP + seven natural words.
+            const auto flags = registers[13] <= UINT32_MAX - 28U
+                                   ? memory_.read32(registers[13] + 28U)
+                                   : std::nullopt;
+            if (!flags ||
+                (registers[6] != 0U && !memory_.read32(registers[6]))) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            call_flags = *flags & 0x2fU;
+            // Workqueue-backed queues and stack copyout need separate runtime
+            // support; do not interpret these as ordinary descriptor calls.
+            if ((call_flags & 0x2cU) != 0U) {
+                bsd_error(cpu, 45); // ENOTSUP
+                return;
+            }
+        }
         const auto fd = registers[0];
         const auto queue = kqueues_.find(fd);
         if (queue == kqueues_.end() || registers[2] > 4096 ||
@@ -117,15 +149,16 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
                 };
                 registration.extension = value->extension;
                 if (signed_filter == darwin::kqueue::filter_timer) {
-                    registration.timer = KeventTimer::create(
-                        data, filter_flags, shared_state_->clock,
+                    registration.timer = KeventTimer::create(data, filter_flags,
+                        shared_state_->clock,
                         (flags & darwin::kqueue::event_one_shot) != 0U);
                     if (!registration.timer) {
                         bsd_error(cpu, bsd_support::invalid_argument);
                         return;
                     }
                     registration.flags |= darwin::kqueue::event_clear;
-                    if ((filter_flags & darwin::kqueue::timer_note_absolute) != 0U)
+                    if ((filter_flags & darwin::kqueue::timer_note_absolute) !=
+                        0U)
                         registration.flags |= darwin::kqueue::event_one_shot;
                 }
                 registration.enabled =
@@ -241,13 +274,13 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
                 return;
             }
         }
-        if (receipts_written != 0) {
+        if (receipts_written != 0 || (call_flags & 2U) != 0U) {
             bsd_success(cpu, receipts_written);
             return;
         }
         std::optional<std::uint64_t> timeout_deadline;
-        bool poll_only = false;
-        if (timeout_address != 0) {
+        bool poll_only = (call_flags & 1U) != 0U;
+        if (timeout_address != 0 && !poll_only) {
             const auto seconds_word =
                 memory_.read32(timeout_address +
                                darwin::kqueue::arm32_timespec::seconds_offset);
@@ -278,8 +311,8 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
                     : now + duration;
         }
         if (registers[4] != 0) {
-            const auto ready =
-                collect_ready_kevents(cpu.processor_id(), fd, registers[3], registers[4], extended);
+            const auto ready = collect_ready_kevents(
+                cpu.processor_id(), fd, registers[3], registers[4], format);
             if (!ready) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
@@ -299,7 +332,7 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
         }
         process_.waiting_for_events = true;
         pending_kevents_[cpu.processor_id()] = PendingKevent { fd, registers[3],
-            registers[4], cpu.processor_id(), timeout_deadline, extended };
+            registers[4], cpu.processor_id(), timeout_deadline, format };
         output_.write(
             "[network] kevent wait pid=" + std::to_string(process_.pid) +
             " fd=" + std::to_string(fd) +

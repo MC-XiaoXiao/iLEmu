@@ -1688,9 +1688,9 @@ CompatibilityKernel::baseband_open_description(std::uint32_t fd) const
 
 std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     std::size_t processor, std::uint32_t queue_fd, std::uint32_t event_address,
-    std::uint32_t event_count, bool extended, bool waking_blocked_receiver)
+    std::uint32_t event_count, darwin::kqueue::WireFormat format, bool waking_blocked_receiver)
 {
-    const KeventWireFormat wire { extended };
+    const KeventWireFormat wire { format };
     const auto queue = kqueues_.find(queue_fd);
     if (queue == kqueues_.end())
         return std::nullopt;
@@ -1832,7 +1832,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             data = registration->timer->expirations(shared_state_->clock.now());
             extension[0] = 0;
         }
-        if (extended && registration->filter == darwin::kqueue::filter_mach_port &&
+        if (format != darwin::kqueue::WireFormat::Legacy32 && registration->filter == darwin::kqueue::filter_mach_port &&
             (registration->filter_flags & darwin::mach_message::option_receive) != 0U) {
             const auto received = receive_kevent_mach_message(
                 *registration, processor, waking_blocked_receiver);

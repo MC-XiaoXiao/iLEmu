@@ -537,6 +537,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 362:
     case 363:
     case 369:
+    case 374:
         dispatch_bsd_kqueue(cpu, number);
         return;
     case darwin::syscall::code_signing_operations:

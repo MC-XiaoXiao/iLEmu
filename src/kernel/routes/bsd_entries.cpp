@@ -326,6 +326,8 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(362, "kqueue", Handler::BsdKqueue);
     add(363, "kevent", Handler::BsdKqueue);
     add(369, "kevent64", Handler::BsdKqueue);
+    add(374, "kevent_qos", Handler::BsdKqueue, Contract::CurrentDispatcher,
+        abi.kevent_abi == DarwinKeventAbi::QualityOfService);
     add(darwin::syscall::code_signing_operations, "code_signing_operations",
         Handler::BsdCodeSigning);
     add(darwin::syscall::code_signing_audit_operations, "csops_audittoken",

@@ -13,6 +13,8 @@
 
 namespace ilemu::darwin::kqueue {
 
+enum class WireFormat { Legacy32, Extended64, QualityOfService };
+
 inline constexpr std::int16_t filter_read = -1;
 inline constexpr std::int16_t filter_write = -2;
 inline constexpr std::int16_t filter_vnode = -4;

@@ -908,7 +908,8 @@ private:
     baseband_open_description(std::uint32_t fd) const;
     [[nodiscard]] std::optional<std::uint32_t> collect_ready_kevents(
         std::size_t processor, std::uint32_t queue_fd, std::uint32_t event_address,
-        std::uint32_t event_count, bool extended = false,
+        std::uint32_t event_count, darwin::kqueue::WireFormat format =
+            darwin::kqueue::WireFormat::Legacy32,
         bool waking_blocked_receiver = false);
     void detach_kevents_for_descriptor(std::uint32_t fd);
     using WokenThread = std::pair<std::uint32_t, std::uint32_t>;

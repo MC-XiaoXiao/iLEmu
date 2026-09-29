@@ -16,6 +16,7 @@
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/kevent_timer.hpp"
+#include "kernel/darwin_kqueue_abi.hpp"
 #include "kernel/bsd_dispatch_table.hpp"
 
 #include <algorithm>
@@ -192,7 +193,7 @@ struct PendingKevent {
     std::uint32_t event_count { };
     std::size_t processor { };
     std::optional<std::uint64_t> deadline;
-    bool extended { };
+    darwin::kqueue::WireFormat format { darwin::kqueue::WireFormat::Legacy32 };
 };
 
 struct PendingRecvmsg {
@@ -1099,7 +1100,7 @@ struct KernelSharedState {
 
         bool operator==(const TaskExceptionAction&) const = default;
     };
-    static constexpr std::size_t task_exception_type_count = 13;
+    static constexpr std::size_t task_exception_type_count = 14;
     using TaskExceptionActions =
         std::array<TaskExceptionAction, task_exception_type_count>;
     struct MachNotificationRequest {

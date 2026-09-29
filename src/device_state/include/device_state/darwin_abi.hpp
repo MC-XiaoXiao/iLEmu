@@ -17,6 +17,9 @@
 
 namespace ilemu {
 
+// Select the available kqueue syscall formats independently of pthread ABI.
+enum class DarwinKeventAbi : std::uint8_t { Legacy, QualityOfService };
+
 // libpthread moved thread creation and workqueue registration behind BSD
 // syscalls in Darwin 10. Keep that wire contract separate from the broader
 // kernel epoch: later Darwin releases revise the registration arguments and
@@ -148,6 +151,7 @@ enum class DarwinSysctlTransferAbi : std::uint8_t {
 enum class DarwinExceptionPortAbi : std::uint8_t {
     ThroughCrash,
     ThroughGuard,
+    ThroughCorpseNotify,
 };
 
 enum class DarwinCoalitionAbi : std::uint8_t {
@@ -287,6 +291,7 @@ struct DarwinAbi {
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers
     };
+    DarwinKeventAbi kevent_abi { DarwinKeventAbi::Legacy };
     DarwinPthreadAbi pthread_abi {
         DarwinPthreadAbi::LegacyMachThreads
     };

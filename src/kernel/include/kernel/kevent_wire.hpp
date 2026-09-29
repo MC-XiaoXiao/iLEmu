@@ -4,6 +4,7 @@
 #pragma once
 
 #include "foundation/address_space.hpp"
+#include "kernel/darwin_kqueue_abi.hpp"
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -20,38 +21,45 @@ struct KeventValue {
     std::array<std::uint64_t, 2> extension { };
 };
 
-// Both syscall formats share knote state and readiness semantics. Only the
-// guest copyin/copyout boundary depends on the event's wire representation.
+// Event formats share knote state and readiness. XNU 3248's kevent_qos_s
+// changes offsets as well as size; it is not a kevent64_s with a suffix.
 class KeventWireFormat {
 public:
-    explicit constexpr KeventWireFormat(bool extended)
-        : extended_ { extended }
+    using Format = darwin::kqueue::WireFormat;
+    explicit constexpr KeventWireFormat(Format format)
+        : format_ { format }
     {
     }
-    constexpr std::uint32_t size() const { return extended_ ? 48U : 20U; }
+    explicit constexpr KeventWireFormat(bool extended)
+        : KeventWireFormat(extended ? Format::Extended64 : Format::Legacy32)
+    {
+    }
+
+    constexpr std::uint32_t size() const
+    {
+        return qos() ? 72U : wide() ? 48U : 20U;
+    }
     std::optional<KeventValue> read(
         const AddressSpace& memory, std::uint32_t address) const
     {
         if (!memory.accessible(address, size(), MemoryPermission::Read))
             return std::nullopt;
-        const auto delta = extended_ ? 4U : 0U;
         KeventValue value;
         value.ident =
-            extended_ ? *memory.read64(address) : *memory.read32(address);
-        value.filter =
-            static_cast<std::int16_t>(*memory.read16(address + 4U + delta));
-        value.flags = *memory.read16(address + 6U + delta);
-        value.filter_flags = *memory.read32(address + 8U + delta);
-        value.data =
-            extended_
-                ? static_cast<std::int64_t>(*memory.read64(address + 16U))
-                : static_cast<std::int32_t>(*memory.read32(address + 12U));
-        value.user_data = extended_ ? *memory.read64(address + 24U)
-                                    : *memory.read32(address + 16U);
-        if (extended_) {
-            value.extension[0] = *memory.read64(address + 32U);
-            value.extension[1] = *memory.read64(address + 40U);
-        }
+            wide() ? *memory.read64(address) : *memory.read32(address);
+        value.filter = static_cast<std::int16_t>(
+            *memory.read16(address + filter_offset()));
+        value.flags = *memory.read16(address + filter_offset() + 2U);
+        value.filter_flags = *memory.read32(address + flags_offset());
+        value.data = wide() ? static_cast<std::int64_t>(
+                                  *memory.read64(address + data_offset()))
+                            : static_cast<std::int32_t>(
+                                  *memory.read32(address + data_offset()));
+        value.user_data = wide() ? *memory.read64(address + user_offset())
+                                 : *memory.read32(address + user_offset());
+        for (std::uint32_t i = 0; i < extension_count(); ++i)
+            value.extension[i] =
+                *memory.read64(address + extension_offset() + i * 8U);
         return value;
     }
     bool write(AddressSpace& memory, std::uint32_t address,
@@ -59,31 +67,60 @@ public:
     {
         if (!memory.accessible(address, size(), MemoryPermission::Write))
             return false;
-        const auto delta = extended_ ? 4U : 0U;
-        if (extended_) {
+        if (wide()) {
             if (!memory.write64(address, value.ident) ||
-                !memory.write64(
-                    address + 16U, static_cast<std::uint64_t>(value.data)) ||
-                !memory.write64(address + 24U, value.user_data) ||
-                !memory.write64(address + 32U, value.extension[0]) ||
-                !memory.write64(address + 40U, value.extension[1]))
+                !memory.write64(address + data_offset(),
+                    static_cast<std::uint64_t>(value.data)) ||
+                !memory.write64(address + user_offset(), value.user_data))
                 return false;
         } else if (!memory.write32(
                        address, static_cast<std::uint32_t>(value.ident)) ||
-                   !memory.write32(
-                       address + 12U, static_cast<std::uint32_t>(value.data)) ||
-                   !memory.write32(address + 16U,
+                   !memory.write32(address + data_offset(),
+                       static_cast<std::uint32_t>(value.data)) ||
+                   !memory.write32(address + user_offset(),
                        static_cast<std::uint32_t>(value.user_data))) {
             return false;
         }
-        return memory.write16(address + 4U + delta,
+        for (std::uint32_t i = 0; i < extension_count(); ++i) {
+            if (!memory.write64(
+                    address + extension_offset() + i * 8U, value.extension[i]))
+                return false;
+        }
+        // XNU 3248's descriptor-backed kqueue copies only ext[0..1]; QoS,
+        // xflags and the other extension words are reserved and zeroed.
+        if (qos() && (!memory.write32(address + 12U, 0U) ||
+                         !memory.write32(address + 28U, 0U) ||
+                         !memory.write64(address + 56U, 0U) ||
+                         !memory.write64(address + 64U, 0U)))
+            return false;
+        return memory.write16(address + filter_offset(),
                    static_cast<std::uint16_t>(value.filter)) &&
-               memory.write16(address + 6U + delta, value.flags) &&
-               memory.write32(address + 8U + delta, value.filter_flags);
+               memory.write16(address + filter_offset() + 2U, value.flags) &&
+               memory.write32(address + flags_offset(), value.filter_flags);
     }
 
 private:
-    bool extended_;
+    constexpr bool wide() const { return format_ != Format::Legacy32; }
+    constexpr bool qos() const { return format_ == Format::QualityOfService; }
+    constexpr std::uint32_t filter_offset() const { return wide() ? 8U : 4U; }
+    constexpr std::uint32_t flags_offset() const
+    {
+        return qos() ? 24U : wide() ? 12U : 8U;
+    }
+    constexpr std::uint32_t data_offset() const
+    {
+        return qos() ? 32U : wide() ? 16U : 12U;
+    }
+    constexpr std::uint32_t user_offset() const
+    {
+        return qos() ? 16U : wide() ? 24U : 16U;
+    }
+    constexpr std::uint32_t extension_offset() const
+    {
+        return qos() ? 40U : 32U;
+    }
+    constexpr std::uint32_t extension_count() const { return wide() ? 2U : 0U; }
+    Format format_;
 };
 
 } // namespace ilemu

@@ -144,6 +144,13 @@ namespace {
         return abi;
     }();
 
+    constexpr DarwinAbi darwin15_qos_events_abi = [] {
+        auto abi = darwin14_fine_priority_abi;
+        abi.kevent_abi = DarwinKeventAbi::QualityOfService;
+        abi.exception_port_abi = DarwinExceptionPortAbi::ThroughCorpseNotify;
+        return abi;
+    }();
+
     // Release identity and ABI values are independent. Entries sharing a
     // Darwin release retain the wire differences required by their callers.
     constexpr std::array configurations {
@@ -314,6 +321,11 @@ namespace {
             .darwin_release = "14.0.0",
             .abi = darwin14_fine_priority_abi,
         },
+        DarwinConfigurationEntry {
+            .name = "darwin15.0.0-qos-events",
+            .darwin_release = "15.0.0",
+            .abi = darwin15_qos_events_abi,
+        },
     };
 
     const DarwinConfigurationEntry* find_configuration(std::string_view name)
@@ -365,6 +377,7 @@ namespace {
             Rule { "11", "darwin14.0.0" },
             // iOS 8's ARM kernels remain on the Darwin 14 ABI release.
             Rule { "12", "darwin14.0.0-fine-priority" },
+            Rule { "13", "darwin15.0.0-qos-events" },
         };
         const auto branch = build.find_first_not_of("0123456789");
         const auto generation = build.substr(0, branch);
