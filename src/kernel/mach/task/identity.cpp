@@ -171,9 +171,9 @@ bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
     }
 
     if (const auto actions =
-            state.task_exception_actions.find(parent_task_object);
-        actions != state.task_exception_actions.end()) {
-        state.task_exception_actions[child_task_object] = actions->second;
+            state.exception_port_actions.find(parent_task_object);
+        actions != state.exception_port_actions.end()) {
+        state.exception_port_actions[child_task_object] = actions->second;
         for (const auto& action : actions->second) {
             if (action.port_object != xnu::ipc::null_name)
                 ++state.mach_kernel_send_rights[action.port_object];

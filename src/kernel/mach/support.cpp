@@ -619,8 +619,8 @@ namespace mach_support {
                     release_kernel_send_right_locked(state, port);
             }
         }
-        if (auto task = state.task_exception_actions.find(object);
-            task != state.task_exception_actions.end()) {
+        if (auto task = state.exception_port_actions.find(object);
+            task != state.exception_port_actions.end()) {
             std::vector<std::uint32_t> held_ports;
             for (const auto& action : task->second) {
                 if (action.port_object != xnu::ipc::null_name &&
@@ -628,11 +628,11 @@ namespace mach_support {
                     held_ports.push_back(action.port_object);
                 }
             }
-            state.task_exception_actions.erase(task);
+            state.exception_port_actions.erase(task);
             for (const auto held_port : held_ports)
                 release_kernel_send_right_locked(state, held_port);
         }
-        for (auto& [task_object, actions] : state.task_exception_actions) {
+        for (auto& [task_object, actions] : state.exception_port_actions) {
             static_cast<void>(task_object);
             for (auto& action : actions) {
                 if (action.port_object == object)

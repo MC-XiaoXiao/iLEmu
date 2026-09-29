@@ -1352,9 +1352,9 @@ struct KernelSharedState {
     std::map<std::uint32_t, std::map<std::uint32_t, std::uint32_t>>
         task_special_ports;
     std::map<std::uint32_t, std::uint32_t> host_special_ports;
-    // XNU stores exception actions on the task object, not in the caller's
-    // task-local IPC namespace. Port fields therefore use global IPC objects.
-    std::map<std::uint32_t, TaskExceptionActions> task_exception_actions;
+    // XNU stores exception actions on task/thread objects, not in the caller's
+    // IPC namespace. Both owners and handler ports use global IPC objects.
+    std::map<std::uint32_t, TaskExceptionActions> exception_port_actions;
     // Host exception handlers belong to the kernel host, independent of any
     // task's lifetime or namespace.
     TaskExceptionActions host_exception_actions { };
