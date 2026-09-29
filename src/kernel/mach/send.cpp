@@ -237,7 +237,7 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     queued.sender_pid = process_.pid;
     if (const auto sender = shared_state_->processes.find(process_.pid);
         sender != shared_state_->processes.end()) {
-        queued.sender_identity_version = sender->second.audit_identity_version;
+        queued.sender_audit_token = sender->second.audit_token(process_.pid);
     }
     if (performance_counters().cpu_source_diagnostics_configured()) {
         queued.host_enqueue_nanoseconds = static_cast<std::uint64_t>(

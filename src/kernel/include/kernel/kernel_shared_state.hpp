@@ -549,7 +549,7 @@ struct KernelSharedState {
         std::vector<std::byte> bytes;
         std::uint32_t destination { };
         std::uint32_t sender_pid { };
-        std::uint32_t sender_identity_version { };
+        std::array<std::uint32_t, 8> sender_audit_token { };
         // Set only for Guest-originated messages while CPU diagnostics are
         // enabled. This is host monotonic time, deliberately separate from the
         // Guest mach_absolute_time domain used by the probe.
@@ -666,6 +666,15 @@ struct KernelSharedState {
         std::array<std::byte, 16> executable_uuid { };
         // Audit tokens distinguish both PID reuse and replacement by exec.
         std::uint32_t audit_identity_version { };
+        std::uint32_t audit_session_id { 1U };
+        [[nodiscard]] std::array<std::uint32_t, 8> audit_token(
+            std::uint32_t pid) const
+        {
+            // The existing audit session model has audit user ID zero,
+            // as exposed by getaudit_addr; real/effective credentials differ.
+            return { 0U, effective_uid, effective_gid, uid, gid, pid,
+                audit_session_id, audit_identity_version };
+        }
         darwin::memorystatus::ProcessState memory_status { };
         std::uint32_t dirty_tracking_flags { };
         bool dirty_self { };

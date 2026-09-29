@@ -37,6 +37,11 @@ inline constexpr std::size_t basic_64_word_count = 8;
 inline constexpr std::uint32_t basic_32_peak_flavor = 6;
 inline constexpr std::size_t basic_32_peak_word_count = 8;
 
+inline constexpr std::uint32_t security_token_flavor = 13;
+inline constexpr std::size_t security_token_word_count = 2;
+inline constexpr std::uint32_t audit_token_flavor = 15;
+inline constexpr std::size_t audit_token_word_count = 8;
+
 inline constexpr std::uint32_t mach_basic_flavor = 20;
 inline constexpr std::size_t mach_basic_word_count = 12;
 

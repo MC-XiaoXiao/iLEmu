@@ -1220,6 +1220,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     record.effective_uid = process_.effective_uid;
     record.gid = process_.gid;
     record.effective_gid = process_.effective_gid;
+    record.audit_session_id = process_.audit_session_id;
     record.nice_value = process_.nice_value;
     if (new_process_incarnation) {
         record.start_wall_nanoseconds = shared_state_->clock.wall_time();
@@ -2917,6 +2918,7 @@ void CompatibilityKernel::inherit_process_state(
     child_record.effective_uid = process_.effective_uid;
     child_record.gid = process_.gid;
     child_record.effective_gid = process_.effective_gid;
+    child_record.audit_session_id = process_.audit_session_id;
     child_record.nice_value = process_.nice_value;
     child_record.syscall_counters = task_syscalls_;
     child_record.importance_donor = false;

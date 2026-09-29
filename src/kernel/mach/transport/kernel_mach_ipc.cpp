@@ -152,16 +152,7 @@ std::optional<ReceivedMessage> prepare_received_message(
             message.sender_pid == 0U ? 1U : message.sender_gid);
     }
     if (result.trailer_size >= 52U) {
-        const std::array<std::uint32_t, 8> audit_token {
-            message.sender_uid,
-            message.sender_uid,
-            message.sender_gid,
-            message.sender_uid,
-            message.sender_gid,
-            message.sender_pid,
-            message.sender_pid,
-            message.sender_identity_version,
-        };
+        const auto& audit_token = message.sender_audit_token;
         for (std::size_t index = 0; index < audit_token.size(); ++index) {
             write_word(result.bytes, aligned_size + 20U + index * 4U,
                 audit_token[index]);

@@ -5,6 +5,7 @@
 // Native task_info MIG transport. ARM flavors 4/5 share the narrow layout;
 // XNU 792--4903 osfmk/kern/task.c and osfmk/mach/task_info.h.
 #include "information.hpp"
+#include <algorithm>
 #include "cpu_time.hpp"
 #include "kernel/task_syscall_counters.hpp"
 #include "../transport/kernel_reply.hpp"
@@ -20,6 +21,8 @@ std::size_t Information::word_count(DarwinTaskInformationAbi abi,
     switch (flavor) {
     case absolute_time_flavor: return absolute_time_word_count;
     case events_flavor: return events_word_count;
+    case security_token_flavor: return security_token_word_count;
+    case audit_token_flavor: return audit_token_word_count;
     case thread_times_flavor: return thread_times_word_count;
     case basic_32_flavor: return basic_32_word_count;
     case basic_64_flavor: return basic_64_word_count;
@@ -91,6 +94,12 @@ Information::Result Information::evaluate_locked(AddressSpace& memory,
                 ? statistics->maximum_resident_bytes : statistics->resident_bytes);
             info[7] = timeshare_policy;
         }
+    } else if (flavor == security_token_flavor) {
+        info[0] = process->second.effective_uid;
+        info[1] = process->second.effective_gid;
+    } else if (flavor == audit_token_flavor) {
+        const auto token = process->second.audit_token(pid);
+        std::copy(token.begin(), token.end(), info.begin());
     } else if (flavor == events_flavor) {
         if (const auto& counters = process->second.syscall_counters) {
             const auto calls = counters->snapshot();

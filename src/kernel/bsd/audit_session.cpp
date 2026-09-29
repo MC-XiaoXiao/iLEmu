@@ -103,6 +103,9 @@ void CompatibilityKernel::dispatch_bsd_audit_session(
             return;
         }
         process_.audit_session_id = *session_id;
+        if (auto process = shared_state_->processes.find(process_.pid);
+            process != shared_state_->processes.end())
+            process->second.audit_session_id = *session_id;
         bsd_success(cpu, *session_id);
         return;
     }
