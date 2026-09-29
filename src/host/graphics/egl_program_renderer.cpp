@@ -9,7 +9,10 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 #include <algorithm>
+#include <bit>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -73,6 +76,7 @@ namespace {
             };
             std::uint64_t last_used { };
             bool inverted_vertical { };
+            bool native_argb_readback { };
         };
         struct Texture {
             GLuint object { };
@@ -144,6 +148,15 @@ namespace {
                 const auto* renderer = glGetString(GL_RENDERER);
                 name_ = renderer ? reinterpret_cast<const char*>(renderer)
                                  : "host GLES2";
+                const auto* gl_extensions = glGetString(GL_EXTENSIONS);
+                if (std::endian::native == std::endian::little &&
+                    gl_extensions &&
+                    (std::string { " " } +
+                        reinterpret_cast<const char*>(gl_extensions) + " ")
+                            .find(" GL_EXT_texture_format_BGRA8888 ") !=
+                        std::string::npos) {
+                    texture_format_ = GL_BGRA_EXT;
+                }
                 glGenBuffers(1, &attribute_buffer_);
                 glGenBuffers(1, &index_buffer_);
             } catch (...) {
@@ -352,9 +365,10 @@ namespace {
                     GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 glTexParameteri(
                     GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                glTexImage2D(GL_TEXTURE_2D, 0,
+                    static_cast<GLint>(texture_format_),
                     static_cast<GLsizei>(frame.width),
-                    static_cast<GLsizei>(frame.height), 0, GL_RGBA,
+                    static_cast<GLsizei>(frame.height), 0, texture_format_,
                     GL_UNSIGNED_BYTE, nullptr);
                 glGenRenderbuffers(1, &target.depth);
                 glBindRenderbuffer(GL_RENDERBUFFER, target.depth);
@@ -366,21 +380,28 @@ namespace {
                     GL_TEXTURE_2D, target.color, 0);
                 glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                     GL_RENDERBUFFER, target.depth);
+                GLint read_format { }, read_type { };
+                glGetIntegerv(
+                    GL_IMPLEMENTATION_COLOR_READ_FORMAT, &read_format);
+                glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &read_type);
+                target.native_argb_readback =
+                    std::endian::native == std::endian::little &&
+                    read_format == GL_BGRA_EXT && read_type == GL_UNSIGNED_BYTE;
             }
             glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
             if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
                 GL_FRAMEBUFFER_COMPLETE)
                 return false;
             if (!frame.pixels.empty()) {
-                rgba_.resize(frame.pixels.size() * 4U);
-                convert(frame.pixels, rgba_, frame.width, frame.height,
-                    !state.render_target_inverted_vertical);
+                const auto* pixels =
+                    upload_pixels(frame.pixels, rgba_, frame.width,
+                        frame.height, !state.render_target_inverted_vertical);
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, target.color);
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                     static_cast<GLsizei>(frame.width),
-                    static_cast<GLsizei>(frame.height), GL_RGBA,
-                    GL_UNSIGNED_BYTE, rgba_.data());
+                    static_cast<GLsizei>(frame.height), texture_format_,
+                    GL_UNSIGNED_BYTE, pixels);
             }
             glUseProgram(program->second.object);
             glViewport(state.viewport_x, state.viewport_y,
@@ -434,13 +455,13 @@ namespace {
                     if (previous != host.revisions.end() &&
                         previous->second == image.revision)
                         continue;
-                    texture_rgba_.resize(image.argb.size() * 4U);
-                    convert(image.argb, texture_rgba_, image.width,
-                        image.height, false);
+                    const auto* pixels = upload_pixels(image.argb,
+                        texture_rgba_, image.width, image.height, false);
                     glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level),
-                        GL_RGBA, static_cast<GLsizei>(image.width),
-                        static_cast<GLsizei>(image.height), 0, GL_RGBA,
-                        GL_UNSIGNED_BYTE, texture_rgba_.data());
+                        static_cast<GLint>(texture_format_),
+                        static_cast<GLsizei>(image.width),
+                        static_cast<GLsizei>(image.height), 0, texture_format_,
+                        GL_UNSIGNED_BYTE, pixels);
                     host.revisions[level] = image.revision;
                     host.sizes[level] =
                         image.argb.size() * sizeof(std::uint32_t);
@@ -525,8 +546,30 @@ namespace {
             frame.height = target.height;
             frame.pixels.resize(
                 static_cast<std::size_t>(frame.width) * frame.height);
-            rgba_.resize(frame.pixels.size() * 4U);
             glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
+            if (target.native_argb_readback) {
+                glReadPixels(0, 0, static_cast<GLsizei>(frame.width),
+                    static_cast<GLsizei>(frame.height), GL_BGRA_EXT,
+                    GL_UNSIGNED_BYTE, frame.pixels.data());
+                if (glGetError() != GL_NO_ERROR)
+                    return false;
+                if (!target.inverted_vertical) {
+                    const auto pixels = std::span { frame.pixels };
+                    for (std::uint32_t y = 0; y < frame.height / 2U; ++y) {
+                        auto row = pixels.subspan(
+                            static_cast<std::size_t>(y) * frame.width,
+                            frame.width);
+                        auto opposite = pixels.subspan(
+                            static_cast<std::size_t>(frame.height - 1U - y) *
+                                frame.width,
+                            frame.width);
+                        std::swap_ranges(
+                            row.begin(), row.end(), opposite.begin());
+                    }
+                }
+                return true;
+            }
+            rgba_.resize(frame.pixels.size() * 4U);
             glReadPixels(0, 0, static_cast<GLsizei>(frame.width),
                 static_cast<GLsizei>(frame.height), GL_RGBA, GL_UNSIGNED_BYTE,
                 rgba_.data());
@@ -612,6 +655,26 @@ namespace {
                 programs_.erase(found);
             }
         }
+        const void* upload_pixels(std::span<const std::uint32_t> pixels,
+            std::vector<std::uint8_t>& output, std::uint32_t width,
+            std::uint32_t height, bool flip) const
+        {
+            if (texture_format_ == GL_BGRA_EXT && !flip)
+                return pixels.data();
+            output.resize(pixels.size_bytes());
+            if (texture_format_ == GL_BGRA_EXT) {
+                const auto row_bytes = static_cast<std::size_t>(width) * 4U;
+                for (std::uint32_t y = 0; y < height; ++y)
+                    std::memcpy(
+                        output.data() + static_cast<std::size_t>(y) * row_bytes,
+                        pixels.data() +
+                            static_cast<std::size_t>(height - 1U - y) * width,
+                        row_bytes);
+            } else {
+                convert(pixels, output, width, height, flip);
+            }
+            return output.data();
+        }
         static void convert(std::span<const std::uint32_t> pixels,
             std::vector<std::uint8_t>& output, std::uint32_t width,
             std::uint32_t height, bool flip)
@@ -681,6 +744,7 @@ namespace {
         EGLSurface surface_ { EGL_NO_SURFACE };
         GLuint attribute_buffer_ { };
         GLuint index_buffer_ { };
+        GLenum texture_format_ { GL_RGBA };
         std::string name_;
         mutable std::mutex mutex_;
         std::map<std::uint32_t, Program> programs_;
