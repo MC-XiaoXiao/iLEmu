@@ -1859,9 +1859,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         if (buffer.buffer != VK_NULL_HANDLE && buffer.size >= size)
             return;
         const auto capacity = std::bit_ceil(std::max<VkDeviceSize>(size, 4096));
+        // Transfer destinations are read by the CPU. Coherent but uncached
+        // mappings are suitable for uploads, but make bulk readback costly.
+        // Keep the existing flush/invalidate path for noncoherent memory.
+        const auto preferred = (usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT) != 0
+            ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT
+            : VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         buffer =
             create_buffer(capacity, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                preferred);
     }
 
     VulkanGlesRenderer::Target& VulkanGlesRenderer::ensure_target(
