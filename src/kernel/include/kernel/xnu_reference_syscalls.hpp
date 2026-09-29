@@ -121,12 +121,14 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 2> enosys_9_4_1 {
         299, 300,
     };
-    inline constexpr std::array<std::uint16_t, 0> firmware_9_4_1 {
+    // firmware stubs from 5G77
+    inline constexpr std::array<std::uint16_t, 2> firmware_9_4_1 {
+        148, 149,
     };
-    // epoch gate bitmap (0 numbers): reference tags, next newer tag and firmware all lack them
+    // epoch gate bitmap (158 numbers): reference tags, next newer tag and firmware all lack them
     inline constexpr std::array<std::uint32_t, 16> gated_9_4_1 {
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
+        0x00680900U, 0xc0002140U, 0x49903099U, 0x208f78e8U, 0x1047a006U, 0x040ed95dU, 0x00200042U, 0x02400001U,
+        0x00000002U, 0x00000000U, 0x00008048U, 0x0fe00001U, 0x00000000U, 0xffffc000U, 0xffffffffU, 0xffffffffU,
     };
     inline constexpr std::array<std::uint16_t, 338> calls_10_0_0d3 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
