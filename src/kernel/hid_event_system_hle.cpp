@@ -161,6 +161,7 @@ void HidEventSystemHle::reset(std::uint32_t process)
     });
     consumer_process_ = 0U;
     delivering_processors_.clear();
+    interactive_processors_.clear();
     accelerometer_.stop();
     if (state_)
         state_->note_kernel_event_transition();
@@ -192,6 +193,21 @@ bool HidEventSystemHle::is_event_consumer(
     return state_ && state_->hid_event_queue.is_receiver(process, processor);
 }
 
+std::optional<std::size_t> HidEventSystemHle::interactive_processor(
+    std::uint32_t process) const
+{
+    if (!state_)
+        return std::nullopt;
+    for (const auto processor : delivering_processors_) {
+        // A physical event must not wait behind an in-flight periodic sensor
+        // callback. Finish that dependency with the same input preference.
+        if (interactive_processors_.contains(processor) ||
+            state_->hid_event_queue.has_pending(process, processor))
+            return processor;
+    }
+    return std::nullopt;
+}
+
 bool HidEventSystemHle::prepare_pending_event(
     Cpu& cpu, std::uint32_t process, std::uint32_t svc_immediate)
 {
@@ -204,16 +220,20 @@ bool HidEventSystemHle::prepare_pending_event(
     if (auto observed =
             state_->hid_event_queue.take_observer(process, processor)) {
         delivering_processors_.insert(processor);
+        interactive_processors_.insert(processor);
         const auto queued =
             HidEventTransaction::enqueue(registry_, observed->observer,
                 std::move(observed->event), state_->user_interface_geometry,
                 state_->darwin_abi.hid_digitizer, [this, processor] {
                     delivering_processors_.erase(processor);
+                    interactive_processors_.erase(processor);
                     if (state_)
                         state_->note_kernel_event_transition();
                 });
-        if (!queued)
+        if (!queued) {
             delivering_processors_.erase(processor);
+            interactive_processors_.erase(processor);
+        }
         return queued;
     }
     if (consumer_process_ != process || consumer_processor_ != processor)
@@ -228,15 +248,20 @@ bool HidEventSystemHle::prepare_pending_event(
     if (!consumer || !event)
         return false;
     delivering_processors_.insert(processor);
+    if (!std::holds_alternative<HidEventQueue::Acceleration>(event->input))
+        interactive_processors_.insert(processor);
     const auto queued = HidEventTransaction::enqueue(registry_, *consumer,
         *event, state_->user_interface_geometry,
         state_->darwin_abi.hid_digitizer, [this, processor] {
             delivering_processors_.erase(processor);
+            interactive_processors_.erase(processor);
             if (state_)
                 state_->note_kernel_event_transition();
         });
-    if (!queued)
+    if (!queued) {
         delivering_processors_.erase(processor);
+        interactive_processors_.erase(processor);
+    }
     return queued;
 }
 

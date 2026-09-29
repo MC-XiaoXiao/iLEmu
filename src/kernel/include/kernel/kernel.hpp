@@ -519,6 +519,13 @@ public:
     // latency without assigning meaning to unrelated wakeups.
     [[nodiscard]] std::optional<std::uint64_t>
     take_last_delivered_graphics_input(std::size_t processor);
+    // Native physical-input callbacks remain interactive through their guest
+    // continuations; periodic sensor samples do not carry this preference.
+    [[nodiscard]] std::optional<std::size_t> interactive_input_processor()
+    {
+        std::lock_guard lock { mutex_ };
+        return hid_event_system_hle_.interactive_processor(process_.pid);
+    }
     [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
     [[nodiscard]] TimerDeadlineSnapshot timer_deadline_snapshot() const;
     [[nodiscard]] std::optional<std::uint64_t>

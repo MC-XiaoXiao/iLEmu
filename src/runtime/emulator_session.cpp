@@ -3483,6 +3483,21 @@ void EmulatorSession::run()
                 ? std::optional<std::uint32_t> { transition->destination
                           ->process_id }
                 : std::nullopt;
+        if (!input_preferred_thread) {
+            for (const auto& runtime : runtimes) {
+                const auto processor =
+                    runtime->kernel->interactive_input_processor();
+                if (!processor)
+                    continue;
+                const XnuThreadId thread { runtime->kernel->process().pid,
+                    static_cast<std::uint32_t>(*processor) };
+                const auto info = scheduler.info(thread);
+                if (info && info->state == XnuThreadState::Runnable) {
+                    input_preferred_thread = thread;
+                    break;
+                }
+            }
+        }
         const auto active_process =
             initial_runtime->kernel->active_client_process_id();
         const auto dispatch = guest_dispatch_policy.decide(scheduler,

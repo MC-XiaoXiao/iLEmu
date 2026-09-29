@@ -29,6 +29,8 @@ public:
     void reset(std::uint32_t process);
     [[nodiscard]] bool is_event_consumer(
         std::uint32_t process, std::size_t processor) const;
+    [[nodiscard]] std::optional<std::size_t> interactive_processor(
+        std::uint32_t process) const;
     [[nodiscard]] std::optional<std::uint64_t> next_sample_deadline() const
     {
         return delivering_processors_.contains(consumer_processor_)
@@ -57,6 +59,7 @@ private:
     std::size_t consumer_processor_ { };
     std::unordered_map<std::uint32_t, EventSystemClient> event_clients_;
     std::unordered_set<std::size_t> delivering_processors_;
+    std::unordered_set<std::size_t> interactive_processors_;
     HidAccelerometer accelerometer_;
 };
 

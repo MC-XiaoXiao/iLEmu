@@ -166,6 +166,21 @@ public:
         observer->events.pop_front();
         return delivery;
     }
+    [[nodiscard]] bool has_pending(
+        std::uint32_t process, std::size_t processor) const
+    {
+        std::lock_guard lock { mutex_ };
+        if (consumer_ && consumer_->process == process &&
+            consumer_->processor == processor && !events_.empty())
+            return true;
+        return std::any_of(observers_.begin(), observers_.end(),
+            [&](const ObserverState& state) {
+                return state.observer.process == process &&
+                       state.observer.processor == processor &&
+                       !state.events.empty();
+            });
+    }
+
     [[nodiscard]] bool is_receiver(
         std::uint32_t process, std::size_t processor) const
     {

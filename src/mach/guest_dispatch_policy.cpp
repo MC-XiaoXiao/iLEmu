@@ -96,6 +96,14 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         result.explicit_handoff_stale = true;
     }
 
+    if (observation.input_target_thread &&
+        runnable(scheduler, *observation.input_target_thread)) {
+        input_process_ = observation.input_target_thread->process;
+        interaction_deadline_ = observation.now + interaction_lease_;
+        return direct(observation.input_target_thread,
+            GuestDispatchReason::InputTarget);
+    }
+
     if (observation.realtime_work_pending &&
         observation.realtime_yielded_thread && observation.realtime_process) {
         if (const auto dependency =
@@ -166,14 +174,6 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
                     GuestDispatchReason::RealtimeDependency);
             }
         }
-    }
-
-    if (observation.input_target_thread &&
-        runnable(scheduler, *observation.input_target_thread)) {
-        input_process_ = observation.input_target_thread->process;
-        interaction_deadline_ = observation.now + interaction_lease_;
-        return direct(observation.input_target_thread,
-            GuestDispatchReason::InputTarget);
     }
 
     if (observation.foreground_transition_process) {
