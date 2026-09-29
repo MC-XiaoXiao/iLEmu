@@ -10,6 +10,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_mman.c
 
 #include "kernel/kernel.hpp"
+#include "filesystem/hfs_path_configuration.hpp"
 
 #include "kernel/baseband_device.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -899,6 +900,11 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 darwin::path_configuration::disabled_control_character) {
             bsd_success(cpu,
                 darwin::path_configuration::disabled_control_character_value);
+        } else if (file_descriptors_.contains(fd)) {
+            if (const auto value = hfs::PathConfiguration::value(registers[1]))
+                bsd_success(cpu, *value);
+            else
+                bsd_error(cpu, bsd_support::invalid_argument);
         } else {
             bsd_error(cpu, bsd_support::invalid_argument);
         }

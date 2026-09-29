@@ -218,6 +218,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(345, "statfs64", Handler::BsdFilesystem);
     add(346, "fstatfs64", Handler::BsdFilesystem);
     add(347, "getfsstat64", Handler::BsdFilesystem);
+    add(darwin::syscall::path_configuration, "pathconf", Handler::BsdFilesystem);
     add(darwin::syscall::get_extended_attribute, "get_extended_attribute",
         Handler::BsdFilesystem);
     add(darwin::syscall::get_extended_attribute_fd, "get_extended_attribute_fd",

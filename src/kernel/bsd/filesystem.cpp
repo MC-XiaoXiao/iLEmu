@@ -8,6 +8,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/vfs/vfs_syscalls.c
 
 #include "kernel/kernel.hpp"
+#include "filesystem/hfs_path_configuration.hpp"
 
 #include "kernel/baseband_device.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -154,6 +155,24 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         return true;
     };
     switch (number) {
+    case darwin::syscall::path_configuration: {
+        const auto path = memory_.read_c_string(registers[0]);
+        if (!path) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        const auto host = resolve_guest_path(*path, true);
+        if (!hfs_metadata_.query_directory_entry(host, true)) {
+            bsd_error(cpu, bsd_support::darwin_filesystem_error(
+                std::error_code { errno, std::generic_category() }, 2U));
+            return;
+        }
+        if (const auto value = hfs::PathConfiguration::value(registers[1]))
+            bsd_success(cpu, *value);
+        else
+            bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+    }
     case 9: { // link
         const auto source_path = memory_.read_c_string(registers[0]);
         const auto destination_path = memory_.read_c_string(registers[1]);
