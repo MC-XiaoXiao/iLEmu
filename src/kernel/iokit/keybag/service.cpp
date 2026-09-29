@@ -9,6 +9,7 @@
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "crypto/key_store.hpp"
+#include "device_lock_state.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -26,6 +27,7 @@ namespace {
     constexpr std::uint32_t init_user_client_selector = 0U;
     constexpr std::uint32_t get_keybag_lock_state_selector = 7U;
     constexpr std::uint32_t get_device_lock_state_selector = 17U;
+    constexpr std::uint32_t get_extended_device_lock_state_selector = 35U;
     constexpr std::uint32_t get_system_keybag_selector = 14U;
     constexpr std::uint32_t copy_keybag_uuid_selector = 23U;
     constexpr std::uint32_t load_blastable_bytes_selector = 5U;
@@ -34,11 +36,11 @@ namespace {
     // passcode. State 0 means a passcode exists but the device is currently
     // unlocked, so returning zero for a fresh virtual data volume incorrectly
     // sends the firmware through passcode entry.
-    constexpr std::uint64_t device_lock_state_no_passcode = 3U;
+    constexpr std::uint64_t device_lock_state_no_passcode = DeviceLockState::no_passcode;
     // AppleKeyStoreGetLockState bit 2 records that the selected bag has been
     // unlocked since boot. A no-passcode virtual system bag is always in that
     // state.
-    constexpr std::uint64_t keybag_unlocked_since_boot = 1U << 2U;
+    constexpr std::uint64_t keybag_unlocked_since_boot = DeviceLockState::unlocked_since_boot;
 
     bool matches_class(std::span<const std::byte> matching,
         std::string_view class_name)
@@ -198,6 +200,15 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         inband_output_capacity == 0U) {
         return MethodResult {
             iokit_abi::success, { device_lock_state_no_passcode }, { } };
+    }
+    if (selector == get_device_lock_state_selector ||
+        selector == get_extended_device_lock_state_selector) {
+        if (!scalar_input.empty() || !inband_input.empty() ||
+            scalar_output_capacity != 0U ||
+            inband_output_capacity < DeviceLockState::packed_size)
+            return MethodResult { iokit_abi::bad_argument, { }, { } };
+        return MethodResult { iokit_abi::success, { },
+            DeviceLockState::packed_no_passcode() };
     }
     if (selector == copy_keybag_uuid_selector) {
         constexpr std::uint32_t uuid_size = 16U;
