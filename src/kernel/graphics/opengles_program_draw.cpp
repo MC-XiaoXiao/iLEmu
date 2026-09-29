@@ -2,27 +2,96 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+#include "foundation/address_space.hpp"
 #include "foundation/output.hpp"
 #include "foundation/userland_hle.hpp"
 #include "graphics/surface_store.hpp"
 #include "kernel/opengles_hle.hpp"
 
+#include <algorithm>
+#include <limits>
+
 namespace ilemu {
 
-bool OpenGlesHle::append_program_vertex(UserlandHleCall& call,
-    const ContextState& context, std::uint32_t index,
+bool OpenGlesHle::prepare_program_attributes(UserlandHleCall& call,
+    const ContextState& context, std::uint32_t first,
     GlesProgramDraw& draw) const
 {
-    for (auto& attribute : draw.attributes) {
-        if (attribute.location >= context.current_generic_attributes.size())
+    auto vertex_count = draw.vertex_count;
+    std::vector<bool> referenced;
+    if (!draw.indices.empty()) {
+        const auto [minimum, maximum] =
+            std::minmax_element(draw.indices.begin(), draw.indices.end());
+        first = *minimum;
+        vertex_count = static_cast<std::uint32_t>(*maximum) - first + 1U;
+        referenced.resize(vertex_count);
+        for (auto& index : draw.indices) {
+            index = static_cast<std::uint16_t>(index - first);
+            referenced[index] = true;
+        }
+    }
+    for (const auto& [name, location] : draw.state->attributes) {
+        static_cast<void>(name);
+        if (location >= context.current_generic_attributes.size())
             return false;
-        auto value = context.current_generic_attributes[attribute.location];
-        const auto array = context.generic_arrays.find(attribute.location);
-        if (array != context.generic_arrays.end() && array->second.enabled &&
-            !read_array(
-                call, array->second, index, value, array->second.normalized))
+        auto& attribute = draw.attributes.emplace_back();
+        attribute.location = location;
+        attribute.value = context.current_generic_attributes[location];
+        const auto found = context.generic_arrays.find(location);
+        if (found == context.generic_arrays.end() || !found->second.enabled)
+            continue;
+        const auto& array = found->second;
+        const auto component_size =
+            array.type == gles_abi::float_type || array.type == gles_abi::fixed
+                ? 4U
+            : array.type == gles_abi::short_type ||
+                    array.type == gles_abi::unsigned_short
+                ? 2U
+            : array.type == gles_abi::byte ||
+                    array.type == gles_abi::unsigned_byte
+                ? 1U
+                : 0U;
+        if (!component_size || !array.size || array.size > 4U)
             return false;
-        attribute.values.push_back(value);
+        const auto element_size = array.size * component_size;
+        const auto stride = array.stride ? array.stride : element_size;
+        const auto start = static_cast<std::uint64_t>(array.pointer) +
+                           static_cast<std::uint64_t>(first) * stride;
+        const auto extent =
+            static_cast<std::uint64_t>(vertex_count - 1U) * stride +
+            element_size;
+        attribute.size = array.size;
+        attribute.type = array.type;
+        attribute.normalized = array.normalized;
+        if (array.buffer) {
+            const auto* buffer = resources_.buffer(array.buffer);
+            if (!buffer || start > buffer->bytes.size() ||
+                extent > buffer->bytes.size() - start)
+                return false;
+            attribute.stride = stride;
+            attribute.buffer = std::span { buffer->bytes }.subspan(
+                static_cast<std::size_t>(start),
+                static_cast<std::size_t>(extent));
+        } else {
+            if (start > std::numeric_limits<std::uint32_t>::max() ||
+                extent > (std::uint64_t { 1 } << 32U) - start)
+                return false;
+            attribute.client.resize(
+                static_cast<std::size_t>(vertex_count) * element_size);
+            // Read only referenced vertices. Sparse client arrays can cross
+            // unmapped gaps, and padding need not be readable guest memory.
+            for (std::uint32_t index = 0; index < vertex_count; ++index) {
+                if (!referenced.empty() && !referenced[index])
+                    continue;
+                if (!call.memory().copy_out(
+                        static_cast<std::uint32_t>(
+                            start + static_cast<std::uint64_t>(index) * stride),
+                        std::span { attribute.client }.subspan(
+                            static_cast<std::size_t>(index) * element_size,
+                            element_size)))
+                    return false;
+            }
+        }
     }
     return true;
 }

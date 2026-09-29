@@ -282,8 +282,8 @@ private:
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
-    [[nodiscard]] bool append_program_vertex(UserlandHleCall& call,
-        const ContextState& context, std::uint32_t index,
+    [[nodiscard]] bool prepare_program_attributes(UserlandHleCall& call,
+        const ContextState& context, std::uint32_t first,
         GlesProgramDraw& draw) const;
     void execute_program_draw(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayFrame frame,

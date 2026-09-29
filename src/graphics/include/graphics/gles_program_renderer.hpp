@@ -21,13 +21,20 @@ namespace ilemu {
 struct GlesProgramDraw {
     struct Attribute {
         std::uint32_t location;
-        std::vector<std::array<float, 4>> values;
+        std::uint32_t size { }, type { }, stride { };
+        bool normalized { };
+        std::array<float, 4> value { };
+        // Buffer storage remains alive for the synchronous draw. Client arrays
+        // are copied from guest memory; host code never dereferences it.
+        std::span<const std::byte> buffer;
+        std::vector<std::byte> client;
     };
     std::uint32_t program { };
     std::uint32_t vertex_count { };
     std::array<std::uint32_t, gles_abi::programmable_texture_unit_count>
         textures { };
     std::vector<Attribute> attributes;
+    std::vector<std::uint16_t> indices;
     const GlesProgramState::Program* state { };
     bool depth_test { };
     bool depth_write { true };

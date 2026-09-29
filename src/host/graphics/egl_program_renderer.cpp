@@ -130,6 +130,7 @@ namespace {
                 name_ = renderer ? reinterpret_cast<const char*>(renderer)
                                  : "host GLES2";
                 glGenBuffers(1, &attribute_buffer_);
+                glGenBuffers(1, &index_buffer_);
             } catch (...) {
                 if (surface_ != EGL_NO_SURFACE)
                     eglDestroySurface(display_, surface_);
@@ -155,6 +156,7 @@ namespace {
                     destroy(target);
                 }
                 glDeleteBuffers(1, &attribute_buffer_);
+                glDeleteBuffers(1, &index_buffer_);
                 eglMakeCurrent(
                     display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             }
@@ -439,30 +441,56 @@ namespace {
                             static_cast<GLint>(value->second));
                 }
             }
-            std::size_t components { };
-            for (const auto& attribute : draw.attributes)
-                components += attribute.values.size() * 4U;
             attributes_.clear();
-            attributes_.reserve(components);
-            for (const auto& attribute : draw.attributes)
-                for (const auto& value : attribute.values)
-                    attributes_.insert(
-                        attributes_.end(), value.begin(), value.end());
+            for (const auto& attribute : draw.attributes) {
+                const auto bytes =
+                    attribute.buffer.empty()
+                        ? std::span<const std::byte> { attribute.client }
+                        : attribute.buffer;
+                attributes_.insert(
+                    attributes_.end(), bytes.begin(), bytes.end());
+                attributes_.resize(
+                    (attributes_.size() + 3U) & ~std::size_t { 3U });
+            }
             glBindBuffer(GL_ARRAY_BUFFER, attribute_buffer_);
             glBufferData(GL_ARRAY_BUFFER,
-                static_cast<GLsizeiptr>(attributes_.size() * sizeof(float)),
-                attributes_.data(), GL_STREAM_DRAW);
+                static_cast<GLsizeiptr>(attributes_.size()), attributes_.data(),
+                GL_STREAM_DRAW);
             for (GLuint index = 0; index < gles_abi::maximum_vertex_attributes;
                 ++index)
                 glDisableVertexAttribArray(index);
             std::size_t offset { };
             for (const auto& attribute : draw.attributes) {
+                if (attribute.location >= gles_abi::maximum_vertex_attributes)
+                    return false;
+                if (!attribute.size) {
+                    glVertexAttrib4fv(
+                        attribute.location, attribute.value.data());
+                    continue;
+                }
+                const auto bytes =
+                    attribute.buffer.empty()
+                        ? std::span<const std::byte> { attribute.client }
+                        : attribute.buffer;
                 glEnableVertexAttribArray(attribute.location);
-                glVertexAttribPointer(attribute.location, 4, GL_FLOAT, GL_FALSE,
-                    0, reinterpret_cast<const void*>(offset * sizeof(float)));
-                offset += attribute.values.size() * 4U;
+                glVertexAttribPointer(attribute.location,
+                    static_cast<GLint>(attribute.size), attribute.type,
+                    attribute.normalized ? GL_TRUE : GL_FALSE,
+                    static_cast<GLsizei>(attribute.stride),
+                    reinterpret_cast<const void*>(offset));
+                offset = (offset + bytes.size() + 3U) & ~std::size_t { 3U };
             }
-            glDrawArrays(mode, 0, static_cast<GLsizei>(draw.vertex_count));
+            if (draw.indices.empty()) {
+                glDrawArrays(mode, 0, static_cast<GLsizei>(draw.vertex_count));
+            } else {
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer_);
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                    static_cast<GLsizeiptr>(
+                        draw.indices.size() * sizeof(draw.indices.front())),
+                    draw.indices.data(), GL_STREAM_DRAW);
+                glDrawElements(mode, static_cast<GLsizei>(draw.indices.size()),
+                    GL_UNSIGNED_SHORT, nullptr);
+            }
             if (glGetError() != GL_NO_ERROR)
                 return false;
             trim_caches();
@@ -637,13 +665,14 @@ namespace {
         EGLContext context_ { EGL_NO_CONTEXT };
         EGLSurface surface_ { EGL_NO_SURFACE };
         GLuint attribute_buffer_ { };
+        GLuint index_buffer_ { };
         std::string name_;
         mutable std::mutex mutex_;
         std::map<std::uint32_t, Program> programs_;
         std::map<std::uint32_t, Texture> textures_;
         std::map<GlesRenderTargetKey, Target> targets_;
         std::vector<std::uint8_t> rgba_, texture_rgba_;
-        std::vector<float> attributes_;
+        std::vector<std::byte> attributes_;
         std::uint64_t use_sequence_ { };
     };
 

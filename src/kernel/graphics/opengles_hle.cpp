@@ -1248,12 +1248,6 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         program_draw->depth_function = context->depth_function;
         program_draw->depth_clear = context->depth_clear;
         program_draw->depth_generation = context->depth_generation;
-        for (const auto& [name, location] : program->attributes) {
-            static_cast<void>(name);
-            program_draw->attributes.push_back({ location, { } });
-            program_draw->attributes.back().values.reserve(
-                static_cast<std::size_t>(count));
-        }
     }
     if (!program_draw && !flush_program_draws(call))
         return;
@@ -1278,7 +1272,10 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         indexed && context->bound_element_array_buffer != 0
             ? resources_.buffer(context->bound_element_array_buffer)
             : nullptr;
-    for (std::uint32_t item = 0; item < static_cast<std::uint32_t>(count);
+    if (program_draw && indexed)
+        program_draw->indices.reserve(static_cast<std::size_t>(count));
+    for (std::uint32_t item = 0;
+        (!program_draw || indexed) && item < static_cast<std::uint32_t>(count);
         ++item) {
         auto vertex_index = static_cast<std::uint32_t>(first) + item;
         if (indexed) {
@@ -1323,11 +1320,9 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
             }
         }
         if (program_draw) {
-            if (!append_program_vertex(
-                    call, *context, vertex_index, *program_draw)) {
-                set_gl_error(call, gles_abi::invalid_operation);
-                return;
-            }
+            if (indexed)
+                program_draw->indices.push_back(
+                    static_cast<std::uint16_t>(vertex_index));
             continue;
         }
         const auto vertex = read_vertex(call, *context, vertex_index,
@@ -1337,6 +1332,11 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
             return;
         }
         vertices.push_back(*vertex);
+    }
+    if (program_draw && !prepare_program_attributes(
+            call, *context, static_cast<std::uint32_t>(first), *program_draw)) {
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
     }
     if ((program_draw ? static_cast<std::size_t>(count) : vertices.size()) <
         GlesPrimitiveAssembler::minimum_vertex_count(mode))
