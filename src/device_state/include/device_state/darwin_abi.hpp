@@ -157,6 +157,7 @@ enum class DarwinExceptionPortAbi : std::uint8_t {
 enum class DarwinCoalitionAbi : std::uint8_t {
     Unsupported,
     ResourceCoalitions,
+    ResourceAndJetsamCoalitions,
 };
 
 enum class DarwinMachVoucherAbi : std::uint8_t {

@@ -147,6 +147,7 @@ namespace {
     constexpr DarwinAbi darwin15_qos_events_abi = [] {
         auto abi = darwin14_fine_priority_abi;
         abi.kevent_abi = DarwinKeventAbi::QualityOfService;
+        abi.coalition_abi = DarwinCoalitionAbi::ResourceAndJetsamCoalitions;
         abi.exception_port_abi = DarwinExceptionPortAbi::ThroughCorpseNotify;
         return abi;
     }();

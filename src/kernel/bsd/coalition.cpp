@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Implement the Darwin resource-coalition lifecycle and BSD syscall ABI.
-// https://github.com/apple-oss-distributions/xnu/blob/xnu-2782.1.97/bsd/kern/sys_coalition.c
+// Implement the Darwin typed coalition lifecycle and BSD syscall ABI.
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-3248.20.55/bsd/kern/sys_coalition.c
 
 #include "kernel/darwin_coalition_runtime.hpp"
 
@@ -23,21 +23,33 @@ namespace {
     constexpr std::uint32_t terminate_operation = 2;
     constexpr std::uint32_t reap_operation = 3;
     constexpr std::uint32_t create_privileged_flag = 1;
-    constexpr std::uint64_t default_coalition_identifier = 1;
 
 } // namespace
 
-DarwinCoalitionRuntime::CreateResult
-DarwinCoalitionRuntime::create(std::uint32_t flags)
+DarwinCoalitionRuntime::DarwinCoalitionRuntime(DarwinCoalitionAbi abi)
+    : type_count_ {
+        abi == DarwinCoalitionAbi::ResourceAndJetsamCoalitions ? 2U : 1U
+    }
+    , next_identifier_ { type_count_ + 1U }
 {
-    if ((flags & ~create_privileged_flag) != 0)
+    for (std::uint32_t type = 0; type < type_count_; ++type)
+        coalitions_.emplace(
+            type + 1U, Coalition { .type = type, .privileged = true });
+}
+
+DarwinCoalitionRuntime::CreateResult DarwinCoalitionRuntime::create(
+    std::uint32_t flags)
+{
+    const auto type = (flags >> 4U) & 0xfU;
+    if ((flags & ~0xf1U) != 0 || type >= type_count_)
         return { bsd_support::invalid_argument, 0 };
     const std::lock_guard lock { mutex_ };
     if (next_identifier_ == std::numeric_limits<std::uint64_t>::max())
         return { darwin::error::no_memory, 0 };
     const auto identifier = next_identifier_++;
-    coalitions_.emplace(identifier,
-        Coalition { .privileged = (flags & create_privileged_flag) != 0 });
+    coalitions_.emplace(
+        identifier, Coalition { .type = type,
+                        .privileged = (flags & create_privileged_flag) != 0 });
     return { 0, identifier };
 }
 
@@ -46,7 +58,7 @@ std::uint32_t DarwinCoalitionRuntime::request_terminate(
 {
     if (flags != 0)
         return bsd_support::invalid_argument;
-    if (identifier == default_coalition_identifier)
+    if (identifier != 0 && identifier <= type_count_)
         return darwin::error::operation_not_permitted;
     const std::lock_guard lock { mutex_ };
     const auto found = coalitions_.find(identifier);
@@ -63,7 +75,7 @@ std::uint32_t DarwinCoalitionRuntime::reap(
 {
     if (flags != 0)
         return bsd_support::invalid_argument;
-    if (identifier == default_coalition_identifier)
+    if (identifier != 0 && identifier <= type_count_)
         return darwin::error::operation_not_permitted;
     const std::lock_guard lock { mutex_ };
     const auto found = coalitions_.find(identifier);
@@ -82,8 +94,8 @@ void CompatibilityKernel::dispatch_bsd_coalition(Cpu& cpu)
     const auto identifier_address = registers[1];
     const auto flags = registers[2];
     if (identifier_address == 0 ||
-        identifier_address >
-            std::numeric_limits<std::uint32_t>::max() - sizeof(std::uint64_t) + 1U) {
+        identifier_address > std::numeric_limits<std::uint32_t>::max() -
+                                 sizeof(std::uint64_t) + 1U) {
         bsd_error(cpu, bsd_support::bad_address);
         return;
     }
@@ -108,7 +120,7 @@ void CompatibilityKernel::dispatch_bsd_coalition(Cpu& cpu)
     }
     const auto error = operation == terminate_operation
                            ? runtime.request_terminate(*identifier, flags)
-                           : operation == reap_operation
+                       : operation == reap_operation
                            ? runtime.reap(*identifier, flags)
                            : bsd_support::not_implemented;
     if (error != 0)

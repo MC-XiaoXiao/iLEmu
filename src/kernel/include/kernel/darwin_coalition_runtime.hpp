@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "device_state/darwin_abi.hpp"
+
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -14,6 +16,8 @@ namespace ilemu {
 
 class DarwinCoalitionRuntime {
 public:
+    explicit DarwinCoalitionRuntime(
+        DarwinCoalitionAbi abi = DarwinCoalitionAbi::ResourceCoalitions);
     struct CreateResult {
         std::uint32_t error { };
         std::uint64_t identifier { };
@@ -27,14 +31,16 @@ public:
 
 private:
     struct Coalition {
+        std::uint32_t type { };
         bool privileged { };
         bool terminated { };
         std::uint32_t active_count { };
     };
 
     std::mutex mutex_;
-    // XNU allocates ID 1 to its privileged default coalition at startup.
-    std::uint64_t next_identifier_ { 2 };
+    const std::uint32_t type_count_;
+    // Each supported type has a privileged default coalition at startup.
+    std::uint64_t next_identifier_;
     std::map<std::uint64_t, Coalition> coalitions_;
 };
 

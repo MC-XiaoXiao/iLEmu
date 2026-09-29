@@ -28,7 +28,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         darwin_abi_route_supported(
             kernel_bsd::resource_monitor::ledger_route, abi.abi_epoch));
     add(458, "coalition", Handler::BsdCoalition, Contract::ResourceCoalitions,
-        abi.coalition_abi == DarwinCoalitionAbi::ResourceCoalitions);
+        abi.coalition_abi != DarwinCoalitionAbi::Unsupported);
     add(460, "necp_match_policy", Handler::BsdNetworkPolicy,
         Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
     add(461, "getattrlistbulk", Handler::BsdDirectoryAttributes,

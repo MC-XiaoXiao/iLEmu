@@ -74,7 +74,7 @@ namespace {
          << "exception-ports: " << choice(abi.exception_port_abi,
                 { "through-crash", "through-guard" }) << '\n'
          << "coalition: " << choice(abi.coalition_abi,
-                { "unsupported", "resource-coalitions" }) << '\n'
+                { "unsupported", "resource-coalitions", "resource-and-jetsam-coalitions" }) << '\n'
          << "mach-voucher: " << choice(abi.mach_voucher_abi,
                 { "unsupported", "host-create-inline-recipes" }) << '\n'
          << "sandbox: " << choice(abi.sandbox_abi,

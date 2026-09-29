@@ -147,8 +147,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
     }
     case 458: // coalition
-        if (shared_state_->darwin_abi.coalition_abi ==
-            DarwinCoalitionAbi::ResourceCoalitions) {
+        if (shared_state_->darwin_abi.coalition_abi !=
+            DarwinCoalitionAbi::Unsupported) {
             dispatch_bsd_coalition(cpu);
         } else {
             dispatch_bsd_nosys(cpu,

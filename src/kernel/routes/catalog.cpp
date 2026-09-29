@@ -33,7 +33,8 @@ namespace {
             "shared_region_abi");
         require_known(abi.coalition_abi,
             { DarwinCoalitionAbi::Unsupported,
-                DarwinCoalitionAbi::ResourceCoalitions },
+                DarwinCoalitionAbi::ResourceCoalitions,
+                DarwinCoalitionAbi::ResourceAndJetsamCoalitions },
             "coalition_abi");
         require_known(abi.stack_snapshot_abi,
             { DarwinStackSnapshotAbi::Unsupported,

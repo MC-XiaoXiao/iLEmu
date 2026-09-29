@@ -430,7 +430,8 @@ make_socket_pair_endpoints(std::uint32_t pair)
 
 struct KernelSharedState {
     explicit KernelSharedState(DarwinAbi abi = {})
-        : darwin_abi { abi }
+        : coalitions { abi.coalition_abi }
+        , darwin_abi { abi }
         , pthread_contract { resolve_pthread_contract(abi.pthread_abi) }
         , bsd_dispatch_table { abi }
     {
