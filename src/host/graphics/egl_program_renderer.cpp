@@ -109,12 +109,27 @@ namespace {
             try {
                 display_ = display_owner_->display;
                 eglBindAPI(EGL_OPENGL_ES_API);
-                const EGLint context_attributes[] { EGL_CONTEXT_CLIENT_VERSION,
-                    2, EGL_NONE };
+                std::vector<EGLint> context_attributes {
+                    EGL_CONTEXT_CLIENT_VERSION, 2
+                };
+                const auto* extensions =
+                    eglQueryString(display_, EGL_EXTENSIONS);
+                if (extensions &&
+                    (std::string { " " } + extensions + " ")
+                            .find(" EGL_KHR_context_flush_control ") !=
+                        std::string::npos) {
+                    // Binding scopes protect each host call. Guest flush,
+                    // readback and presentation already synchronize the stream;
+                    // releasing it after every draw need not submit GPU work.
+                    context_attributes.insert(context_attributes.end(),
+                        { EGL_CONTEXT_RELEASE_BEHAVIOR_KHR,
+                            EGL_CONTEXT_RELEASE_BEHAVIOR_NONE_KHR });
+                }
+                context_attributes.push_back(EGL_NONE);
                 const EGLint surface_attributes[] { EGL_WIDTH, 1, EGL_HEIGHT, 1,
                     EGL_NONE };
                 context_ = eglCreateContext(display_, display_owner_->config,
-                    EGL_NO_CONTEXT, context_attributes);
+                    EGL_NO_CONTEXT, context_attributes.data());
                 surface_ = eglCreatePbufferSurface(
                     display_, display_owner_->config, surface_attributes);
                 if (context_ == EGL_NO_CONTEXT || surface_ == EGL_NO_SURFACE)
