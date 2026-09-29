@@ -25,6 +25,7 @@
 #include "network/darwin_route_socket.hpp"
 #include "kernel/kernel_bsd_interval_timer.hpp"
 #include "kernel/kernel_network.hpp"
+#include "kernel/xnu_reference_syscalls.hpp"
 
 #include <algorithm>
 #include <array>
@@ -565,8 +566,15 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         output_.marker("[process] unsupported-bsd pid=" + std::to_string(process_.pid) +
             " number=" + std::to_string(number));
         trace_unknown(cpu, "BSD syscall", number);
+        // XNU raises SIGSYS only from nosys(). A slot the reference kernel
+        // implements (or answers with enosys()) is deferred here: ENOSYS
+        // without SIGSYS, so an unimplemented call cannot kill the process.
         dispatch_bsd_nosys(cpu,
-            shared_state_->darwin_abi.capabilities.send_sigsys);
+            shared_state_->darwin_abi.capabilities.send_sigsys &&
+                !xnu_reference::bsd_slot_defined(
+                    shared_state_->darwin_kernel_identity
+                        .operating_system_release,
+                    number));
         return;
     }
 }
