@@ -164,6 +164,16 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
     if (shared_state_->bsd_dispatch_table.dispatch(*this, cpu, number))
         return;
+    // Epoch gate: the reference tag, the next newer tag and this release's
+    // firmware libsystem all lack the number, so that kernel answers it with
+    // nosys(). Later-epoch handlers below must not run on older releases.
+    if (xnu_reference::bsd_slot_gated(
+            shared_state_->darwin_kernel_identity.operating_system_release,
+            number)) {
+        dispatch_bsd_nosys(cpu,
+            shared_state_->darwin_abi.capabilities.send_sigsys);
+        return;
+    }
 
     switch (number) {
     case kernel_bsd::resource_monitor::ledger_route.identifier: {
