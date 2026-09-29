@@ -85,6 +85,7 @@ private:
     std::optional<std::uint32_t> input_process_;
     std::optional<std::uint32_t> preferred_process_;
     std::size_t preferred_process_burst_ { };
+    std::size_t input_target_burst_ { };
 };
 
 } // namespace ilemu

@@ -100,9 +100,23 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         runnable(scheduler, *observation.input_target_thread)) {
         input_process_ = observation.input_target_thread->process;
         interaction_deadline_ = observation.now + interaction_lease_;
+        if (++input_target_burst_ > preferred_process_burst_limit) {
+            if (input_target_burst_ == preferred_process_burst_limit + 1U) {
+                // Firmware callbacks can spin on work owned by another
+                // thread. Give that dependency a turn even at lower priority.
+                if (const auto dependency = scheduler.oldest_runnable_thread(
+                        *input_process_, observation.input_target_thread))
+                    return direct(dependency, GuestDispatchReason::InputProcess);
+            }
+            // Also return one selection to XNU for cross-process dependencies
+            // and rendering; a pending callback must not monopolize dispatch.
+            input_target_burst_ = 0U;
+            return direct(std::nullopt, GuestDispatchReason::Ordinary);
+        }
         return direct(observation.input_target_thread,
             GuestDispatchReason::InputTarget);
     }
+    input_target_burst_ = 0U;
 
     if (observation.realtime_work_pending &&
         observation.realtime_yielded_thread && observation.realtime_process) {
