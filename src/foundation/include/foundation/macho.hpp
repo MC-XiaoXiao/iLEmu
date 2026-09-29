@@ -24,6 +24,7 @@
 #include "foundation/address_space.hpp"
 #include "foundation/arm_cpu_model.hpp"
 #include "foundation/content_identity.hpp"
+#include "foundation/code_signature.hpp"
 
 namespace ilemu {
 
@@ -170,6 +171,7 @@ public:
     {
         return code_signature_entitlements_;
     }
+    [[nodiscard]] std::optional<CodeSignature> code_signature() const;
     [[nodiscard]] const std::vector<std::uint32_t>& unknown_commands() const
     {
         return unknown_commands_;
@@ -229,6 +231,7 @@ private:
     std::optional<std::string> dynamic_linker_;
     std::optional<std::uint32_t> entry_point_;
     std::vector<std::byte> code_signature_entitlements_;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> code_signature_range_;
     std::vector<std::uint32_t> unknown_commands_;
 };
 

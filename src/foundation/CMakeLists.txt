@@ -9,6 +9,8 @@ add_library(ilemu_foundation_memory STATIC
 add_library(iLEmu::foundation_memory ALIAS ilemu_foundation_memory)
 ilemu_configure_module(ilemu_foundation_memory)
 
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
 add_library(ilemu_foundation STATIC
     address_space.cpp
     address_space_parallel.cpp
@@ -16,6 +18,7 @@ add_library(ilemu_foundation STATIC
     arm_cpu_model.cpp
     arm_unpredictable_instruction.cpp
     cpu.cpp
+    code_signature.cpp
     darwin_notify_state_hle.cpp
     device_display_profile.cpp
     device_model.cpp
@@ -58,7 +61,8 @@ target_include_directories(ilemu_foundation SYSTEM PRIVATE
     "${ILEMU_BOOST_DIR}")
 target_link_libraries(ilemu_foundation PUBLIC
     dynarmic Threads::Threads iLEmu::xnu_adapter
-    iLEmu::foundation_memory)
+    iLEmu::foundation_memory
+    PRIVATE OpenSSL::Crypto)
 if(TARGET PkgConfig::PLIST)
     target_link_libraries(ilemu_foundation PRIVATE PkgConfig::PLIST)
     target_compile_definitions(ilemu_foundation PRIVATE

@@ -905,6 +905,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             }
         }
     }
+    image.code_signature_range_ = code_signature;
     if (code_signature) {
         image.code_signature_entitlements_ =
             extract_code_signature_entitlements(
@@ -951,6 +952,17 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             return left.symbol_index < right.symbol_index;
         });
     return image;
+}
+
+std::optional<CodeSignature> MachOImage::code_signature() const
+{
+    const auto bytes = byte_span();
+    if (!code_signature_range_)
+        return std::nullopt;
+    const auto [offset, size] = *code_signature_range_;
+    if (offset > bytes.size() || size > bytes.size() - offset)
+        return std::nullopt;
+    return CodeSignature::inspect(bytes.first(offset), bytes.subspan(offset, size));
 }
 
 std::span<const std::byte> MachOImage::byte_span() const noexcept

@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "foundation/arm_cpu_model.hpp"
+#include "foundation/code_signature.hpp"
 #include "foundation/application_display.hpp"
 #include "kernel/baseband_device.hpp"
 #include "filesystem/bsd_file_lock.hpp"
@@ -626,6 +627,7 @@ struct KernelSharedState {
         Darwin9_4,
         Darwin11_0,
     };
+    std::optional<PlatformTrustCache> platform_trust_cache;
     struct ProcessRecord {
         std::uint32_t parent_pid { };
         std::uint32_t process_group { };
@@ -650,6 +652,7 @@ struct KernelSharedState {
         std::vector<std::string> environment;
         GraphicsInputAbi graphics_input_abi { GraphicsInputAbi::Darwin9_0 };
         std::vector<std::byte> code_signature_entitlements;
+        std::uint32_t code_signing_flags { };
         std::optional<CoreAnimationRemoteAbi> core_animation_remote_abi;
         DisplayOrientation display_orientation { DisplayOrientation::Portrait };
         ApplicationDisplay application_display;
