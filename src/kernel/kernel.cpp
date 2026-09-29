@@ -335,10 +335,11 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->baseband_device_state.set_offline_control_enabled(
         offline_baseband);
     shared_state_->mounts.clear();
-    for (const auto& volume : hfs_volumes_.volumes()) {
-        shared_state_->mounts.push_back({ "hfs", volume.mount_point,
-            volume.mounted_device, volume.mount_flags });
-    }
+    // fstab describes available volumes, not already mounted filesystems.
+    // The kernel boots from root; userland checks and mounts data afterwards.
+    const auto& root_volume = hfs_volumes_.for_guest_path("/");
+    shared_state_->mounts.push_back({ "hfs", root_volume.mount_point,
+        root_volume.mounted_device, root_volume.mount_flags });
     device_model_.screen.panel = display_state_->geometry();
     shared_state_->display_geometry = device_model_.screen.panel;
     shared_state_->user_interface_geometry =
