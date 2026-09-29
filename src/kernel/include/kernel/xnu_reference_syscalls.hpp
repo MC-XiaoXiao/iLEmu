@@ -370,12 +370,14 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 16> enosys_15_0_0 {
         8, 11, 17, 19, 21, 22, 275, 276, 391, 392, 393, 462, 495, 496, 497, 498,
     };
-    inline constexpr std::array<std::uint16_t, 0> firmware_15_0_0 {
+    // firmware stubs from 13A344
+    inline constexpr std::array<std::uint16_t, 4> firmware_15_0_0 {
+        148, 149, 435, 436,
     };
-    // epoch gate bitmap (0 numbers): reference tags, next newer tag and firmware all lack them
+    // epoch gate bitmap (100 numbers): reference tags, next newer tag and firmware all lack them
     inline constexpr std::array<std::uint32_t, 16> gated_15_0_0 {
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
+        0x00000000U, 0xc0003140U, 0x499031f9U, 0x208f78e8U, 0x1047a006U, 0x0403d95dU, 0x0effc042U, 0x02400001U,
+        0x00000002U, 0x00000080U, 0x00008042U, 0x0f800019U, 0x00000000U, 0x00200000U, 0x00000000U, 0xfff00000U,
     };
     inline constexpr std::array<Release, 10> releases { {
         Release { "9.0.0d1", "xnu-792.24.17", calls_9_0_0d1, enosys_9_0_0d1, firmware_9_0_0d1, gated_9_0_0d1 },
