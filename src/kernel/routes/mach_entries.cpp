@@ -48,12 +48,15 @@ void bind_mach_entries(Table& table, const DarwinAbi& abi)
     const bool wide =
         abi.mach_kernel_rpc == DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps;
     const auto vm = [&](std::uint32_t n, std::string_view name) {
-        const bool fallback = wide && (n == 11 || n == 13 || n == 15);
+        // Wide table (xnu-2422+): 11/13 are kern_invalid (KERN_INVALID_ARGUMENT);
+        // 15 is mach_vm_map, answered with the MIG fallback.
+        const bool reserved = wide && (n == 11 || n == 13);
+        const bool fallback = wide && n == 15;
         add(n, name, Handler::MachVmRpc,
             wide ? Contract::MachWideVm : Contract::MachMixedVm,
-            !direct    ? Outcome::MachUnknown
-            : fallback ? Outcome::MigFallback
-                       : Outcome::HandlerValidated,
+            !direct || reserved ? Outcome::MachUnknown
+            : fallback          ? Outcome::MigFallback
+                                : Outcome::HandlerValidated,
             "mach/vm/kernel_rpc.cpp");
     };
     vm(10, "mach_vm_allocate");

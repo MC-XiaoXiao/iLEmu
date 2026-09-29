@@ -50,12 +50,18 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         return false;
 
     auto& registers = cpu.registers();
-    if (shared_state_->darwin_abi.mach_kernel_rpc ==
-            DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps &&
-        (trap == 11U || trap == 13U || trap == 15U)) {
-        // The wide-only trap table removed vm_allocate/vm_deallocate and
-        // repurposed slot 15 from vm_protect to mach_vm_map. Let libsystem's
-        // native slow path use the complete MIG mapping implementation.
+    const bool wide_table = shared_state_->darwin_abi.mach_kernel_rpc ==
+        DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps;
+    if (wide_table && (trap == 11U || trap == 13U)) {
+        // The wide-only trap table (xnu-2422+) removed vm_allocate and
+        // vm_deallocate: those slots are kern_invalid, which answers
+        // KERN_INVALID_ARGUMENT. No firmware libsystem traps here.
+        registers[0] = 4; // KERN_INVALID_ARGUMENT
+        return true;
+    }
+    if (wide_table && trap == 15U) {
+        // Slot 15 became _kernelrpc_mach_vm_map_trap. Let libsystem's native
+        // slow path use the complete MIG mapping implementation.
         registers[0] = darwin::mach_message::send_invalid_destination;
         return true;
     }
