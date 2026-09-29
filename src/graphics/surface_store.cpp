@@ -1137,6 +1137,24 @@ bool SurfaceStore::write_argb_region_to_guest(AddressSpace& memory,
         return false;
     }
 
+    if constexpr (std::endian::native == std::endian::little) {
+        if (!packed_555 && rectangle.x == 0 &&
+            rectangle.width == backing.width &&
+            row_bytes == backing.bytes_per_row) {
+            // Adjacent rows form one guest-memory write. Besides avoiding
+            // per-row lookup/locking, this publishes one write generation for
+            // the whole region through the normal AddressSpace copy path.
+            const auto first_pixel =
+                static_cast<std::size_t>(rectangle.y) * backing.width;
+            const auto count =
+                static_cast<std::size_t>(rectangle.height) * backing.width;
+            const auto destination =
+                backing.base +
+                static_cast<std::uint32_t>(rectangle.y) * backing.bytes_per_row;
+            return memory.copy_in(
+                destination, std::as_bytes(pixels.subspan(first_pixel, count)));
+        }
+    }
     std::vector<std::byte> encoded_row;
     if (packed_555 || std::endian::native != std::endian::little)
         encoded_row.resize(static_cast<std::size_t>(row_bytes));
