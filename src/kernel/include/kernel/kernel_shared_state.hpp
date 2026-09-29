@@ -273,6 +273,9 @@ struct PendingRecordLock {
     std::uint32_t permanent_file_id { };
     bsd::RecordLockRange range;
     std::size_t processor { };
+    bsd::RecordLockOwner owner;
+    std::shared_ptr<bsd::RegularFileOpenDescription> description;
+    std::optional<std::uint64_t> deadline;
 };
 
 struct PendingSelect {

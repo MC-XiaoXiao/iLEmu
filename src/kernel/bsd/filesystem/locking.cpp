@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Implement guest flock and process-owned byte-range locking.
+// Implement guest flock and process/open-description byte-range locking.
 //
 // Apple public ABI/behavior references (guest profiles may differ):
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_descrip.c
@@ -55,8 +55,12 @@ RegularFileOpenDescription::RegularFileOpenDescription(std::uint64_t identifier,
 
 RegularFileOpenDescription::~RegularFileOpenDescription()
 {
-    if (const auto registry = lock_registry_.lock())
+    if (const auto registry = lock_registry_.lock()) {
         registry->release(*this);
+        registry->unlock_record_lock(permanent_file_id_,
+            RecordLockOwner::open_description(identifier_),
+            { AdvisoryLockKind::Shared, 0, std::nullopt });
+    }
     if (host_descriptor_ >= 0)
         static_cast<void>(::close(host_descriptor_));
 }
@@ -112,7 +116,7 @@ void AdvisoryFileLockRegistry::release(
 }
 
 std::optional<RecordLockConflict> AdvisoryFileLockRegistry::record_conflict(
-    std::uint32_t permanent_file_id, std::uint32_t owner_pid,
+    std::uint32_t permanent_file_id, RecordLockOwner owner,
     const RecordLockRange& request) const
 {
     std::lock_guard lock { mutex_ };
@@ -120,24 +124,24 @@ std::optional<RecordLockConflict> AdvisoryFileLockRegistry::record_conflict(
     if (file == record_locks_.end())
         return std::nullopt;
     for (const auto& candidate : file->second) {
-        if (candidate.owner_pid != owner_pid &&
+        if (candidate.owner != owner &&
             ranges_overlap(candidate, request) &&
             locks_conflict(candidate.kind, request.kind)) {
             return RecordLockConflict { candidate.kind, candidate.start,
-                candidate.end, candidate.owner_pid };
+                candidate.end, candidate.owner.reported_pid() };
         }
     }
     return std::nullopt;
 }
 
 bool AdvisoryFileLockRegistry::try_set_record_lock(
-    std::uint32_t permanent_file_id, std::uint32_t owner_pid,
+    std::uint32_t permanent_file_id, RecordLockOwner owner,
     const RecordLockRange& request)
 {
     std::lock_guard lock { mutex_ };
     auto& file = record_locks_[permanent_file_id];
     for (const auto& candidate : file) {
-        if (candidate.owner_pid != owner_pid &&
+        if (candidate.owner != owner &&
             ranges_overlap(candidate, request) &&
             locks_conflict(candidate.kind, request.kind)) {
             return false;
@@ -149,28 +153,28 @@ bool AdvisoryFileLockRegistry::try_set_record_lock(
     std::vector<OwnedRecordLock> replacement;
     replacement.reserve(file.size() + 1U);
     for (const auto& candidate : file) {
-        if (candidate.owner_pid != owner_pid ||
+        if (candidate.owner != owner ||
             !ranges_overlap(candidate, request)) {
             replacement.push_back(candidate);
             continue;
         }
         if (candidate.start < request.start) {
             replacement.push_back(OwnedRecordLock {
-                candidate.kind, candidate.start, request.start, owner_pid });
+                candidate.kind, candidate.start, request.start, owner });
         }
         if (request.end && (!candidate.end || *request.end < *candidate.end)) {
             replacement.push_back(OwnedRecordLock {
-                candidate.kind, *request.end, candidate.end, owner_pid });
+                candidate.kind, *request.end, candidate.end, owner });
         }
     }
     replacement.push_back(OwnedRecordLock {
-        request.kind, request.start, request.end, owner_pid });
+        request.kind, request.start, request.end, owner });
     file = std::move(replacement);
     return true;
 }
 
 void AdvisoryFileLockRegistry::unlock_record_lock(
-    std::uint32_t permanent_file_id, std::uint32_t owner_pid,
+    std::uint32_t permanent_file_id, RecordLockOwner owner,
     const RecordLockRange& range)
 {
     std::lock_guard lock { mutex_ };
@@ -180,18 +184,18 @@ void AdvisoryFileLockRegistry::unlock_record_lock(
     std::vector<OwnedRecordLock> replacement;
     replacement.reserve(found->second.size() + 1U);
     for (const auto& candidate : found->second) {
-        if (candidate.owner_pid != owner_pid ||
+        if (candidate.owner != owner ||
             !ranges_overlap(candidate, range)) {
             replacement.push_back(candidate);
             continue;
         }
         if (candidate.start < range.start) {
             replacement.push_back(OwnedRecordLock {
-                candidate.kind, candidate.start, range.start, owner_pid });
+                candidate.kind, candidate.start, range.start, owner });
         }
         if (range.end && (!candidate.end || *range.end < *candidate.end)) {
             replacement.push_back(OwnedRecordLock {
-                candidate.kind, *range.end, candidate.end, owner_pid });
+                candidate.kind, *range.end, candidate.end, owner });
         }
     }
     if (replacement.empty()) {
@@ -207,7 +211,7 @@ void AdvisoryFileLockRegistry::release_process_record_locks(
     std::lock_guard lock { mutex_ };
     for (auto file = record_locks_.begin(); file != record_locks_.end();) {
         std::erase_if(file->second, [owner_pid](const auto& candidate) {
-            return candidate.owner_pid == owner_pid;
+            return candidate.owner == RecordLockOwner::process(owner_pid);
         });
         if (file->second.empty()) {
             file = record_locks_.erase(file);
@@ -287,7 +291,8 @@ void CompatibilityKernel::release_record_locks_for_descriptor(std::uint32_t fd)
     const auto description = regular_file_open_descriptions_.find(fd);
     if (description != regular_file_open_descriptions_.end()) {
         shared_state_->advisory_file_locks->unlock_record_lock(
-            description->second->permanent_file_id(), process_.pid,
+            description->second->permanent_file_id(),
+            bsd::RecordLockOwner::process(process_.pid),
             bsd::RecordLockRange {
                 bsd::AdvisoryLockKind::Shared, 0, std::nullopt });
         return;
@@ -295,7 +300,8 @@ void CompatibilityKernel::release_record_locks_for_descriptor(std::uint32_t fd)
     if (file_descriptors_.contains(fd)) {
         if (const auto created = ensure_regular_file_open_description(fd)) {
             shared_state_->advisory_file_locks->unlock_record_lock(
-                created->permanent_file_id(), process_.pid,
+                created->permanent_file_id(),
+                bsd::RecordLockOwner::process(process_.pid),
                 bsd::RecordLockRange {
                     bsd::AdvisoryLockKind::Shared, 0, std::nullopt });
         }
@@ -305,7 +311,13 @@ void CompatibilityKernel::release_record_locks_for_descriptor(std::uint32_t fd)
 bool CompatibilityKernel::dispatch_bsd_record_locking(
     Cpu& cpu, std::uint32_t command)
 {
-    if (command != darwin::fcntl_command::get_record_lock &&
+    const bool ofd = command == darwin::fcntl_command::set_ofd_lock ||
+                     command == darwin::fcntl_command::set_ofd_lock_wait ||
+                     command == darwin::fcntl_command::get_ofd_lock ||
+                     command == darwin::fcntl_command::set_ofd_lock_timeout;
+    const bool query = command == darwin::fcntl_command::get_record_lock ||
+                       command == darwin::fcntl_command::get_ofd_lock;
+    if (!ofd && command != darwin::fcntl_command::get_record_lock &&
         command != darwin::fcntl_command::set_record_lock &&
         command != darwin::fcntl_command::set_record_lock_wait) {
         return false;
@@ -335,8 +347,7 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
         bsd_error(cpu, bsd_support::invalid_argument);
         return true;
     }
-    if (command == darwin::fcntl_command::get_record_lock &&
-        guest->type == darwin::record_lock::unlock) {
+    if (query && guest->type == darwin::record_lock::unlock) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return true;
     }
@@ -398,6 +409,29 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
         return true;
     }
 
+    std::optional<std::uint64_t> deadline;
+    if (command == darwin::fcntl_command::set_ofd_lock_timeout) {
+        // ARM32 flocktimeout appends an eight-byte timespec to flock.
+        const auto seconds = memory_.read32(address + darwin::record_lock::size);
+        const auto nanoseconds = memory_.read32(address + darwin::record_lock::size + 4U);
+        if (!seconds || !nanoseconds) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return true;
+        }
+        if (static_cast<std::int32_t>(*seconds) < 0 || *nanoseconds >= 1'000'000'000U) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return true;
+        }
+        // XNU msleep treats a zero timespec as an indefinite wait.
+        if (*seconds != 0 || *nanoseconds != 0) {
+            const auto interval = static_cast<std::uint64_t>(*seconds) *
+                                  1'000'000'000ULL + *nanoseconds;
+            const auto now = shared_state_->clock.now();
+            deadline = interval > std::numeric_limits<std::uint64_t>::max() - now
+                ? std::numeric_limits<std::uint64_t>::max() : now + interval;
+        }
+    }
+
     const auto kind = guest->type == darwin::record_lock::write
                           ? bsd::AdvisoryLockKind::Exclusive
                           : bsd::AdvisoryLockKind::Shared;
@@ -406,8 +440,11 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
             ? std::nullopt
             : std::optional { static_cast<std::uint64_t>(start + length) } };
     const auto permanent_file_id = description->permanent_file_id();
+    const auto owner = ofd
+        ? bsd::RecordLockOwner::open_description(description->identifier())
+        : bsd::RecordLockOwner::process(process_.pid);
 
-    if (command == darwin::fcntl_command::get_record_lock) {
+    if (query) {
         if (!memory_.accessible(
                 address, darwin::record_lock::size, MemoryPermission::Write)) {
             bsd_error(cpu, bsd_support::bad_address);
@@ -415,7 +452,7 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
         }
         const auto conflict =
             shared_state_->advisory_file_locks->record_conflict(
-                permanent_file_id, process_.pid, range);
+                permanent_file_id, owner, range);
         if (!conflict) {
             static_cast<void>(
                 memory_.write16(address + darwin::record_lock::type_offset,
@@ -444,7 +481,7 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
 
     if (guest->type == darwin::record_lock::unlock) {
         shared_state_->advisory_file_locks->unlock_record_lock(
-            permanent_file_id, process_.pid, range);
+            permanent_file_id, owner, range);
         shared_state_->note_io_event_transition();
         output_.write("[vfs] fcntl unlock pid=" + std::to_string(process_.pid) +
                       " fd=" + std::to_string(fd) + "\n");
@@ -464,7 +501,7 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
         return true;
     }
     if (shared_state_->advisory_file_locks->try_set_record_lock(
-            permanent_file_id, process_.pid, range)) {
+            permanent_file_id, owner, range)) {
         output_.write(
             "[vfs] fcntl lock pid=" + std::to_string(process_.pid) +
             " fd=" + std::to_string(fd) + " mode=" +
@@ -473,13 +510,15 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
         bsd_success(cpu, 0);
         return true;
     }
-    if (command == darwin::fcntl_command::set_record_lock) {
+    if (command == darwin::fcntl_command::set_record_lock ||
+        command == darwin::fcntl_command::set_ofd_lock) {
         bsd_error(cpu, bsd_support::would_block);
         return true;
     }
 
     pending_record_locks_[cpu.processor_id()] =
-        PendingRecordLock { fd, permanent_file_id, range, cpu.processor_id() };
+        PendingRecordLock { fd, permanent_file_id, range, cpu.processor_id(),
+            owner, description, deadline };
     process_.waiting_for_events = true;
     output_.write("[vfs] fcntl lock wait pid=" + std::to_string(process_.pid) +
                   " fd=" + std::to_string(fd) + "\n");

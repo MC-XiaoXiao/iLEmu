@@ -33,6 +33,28 @@ struct RecordLockRange {
     std::optional<std::uint64_t> end;
 };
 
+// Process locks and open-description locks occupy distinct ownership domains.
+struct RecordLockOwner {
+    enum class Kind { Process, OpenDescription };
+    Kind kind { Kind::Process };
+    std::uint64_t identifier { };
+    bool operator==(const RecordLockOwner&) const = default;
+
+    static RecordLockOwner process(std::uint32_t pid)
+    {
+        return { Kind::Process, pid };
+    }
+    static RecordLockOwner open_description(std::uint64_t identifier)
+    {
+        return { Kind::OpenDescription, identifier };
+    }
+    std::uint32_t reported_pid() const
+    {
+        return kind == Kind::Process ? static_cast<std::uint32_t>(identifier)
+                                     : UINT32_MAX;
+    }
+};
+
 struct RecordLockConflict : RecordLockRange {
     std::uint32_t owner_pid { };
 };
@@ -79,12 +101,12 @@ public:
     void release(const RegularFileOpenDescription& description);
 
     [[nodiscard]] std::optional<RecordLockConflict> record_conflict(
-        std::uint32_t permanent_file_id, std::uint32_t owner_pid,
+        std::uint32_t permanent_file_id, RecordLockOwner owner,
         const RecordLockRange& request) const;
     [[nodiscard]] bool try_set_record_lock(std::uint32_t permanent_file_id,
-        std::uint32_t owner_pid, const RecordLockRange& request);
+        RecordLockOwner owner, const RecordLockRange& request);
     void unlock_record_lock(std::uint32_t permanent_file_id,
-        std::uint32_t owner_pid, const RecordLockRange& range);
+        RecordLockOwner owner, const RecordLockRange& range);
     void release_process_record_locks(std::uint32_t owner_pid);
 
 private:
@@ -94,7 +116,7 @@ private:
     };
 
     struct OwnedRecordLock : RecordLockRange {
-        std::uint32_t owner_pid { };
+        RecordLockOwner owner;
     };
 
     mutable std::mutex mutex_;

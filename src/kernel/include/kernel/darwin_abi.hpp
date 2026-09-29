@@ -98,6 +98,10 @@ namespace fcntl_command {
     inline constexpr std::uint32_t get_record_lock = 7;
     inline constexpr std::uint32_t set_record_lock = 8;
     inline constexpr std::uint32_t set_record_lock_wait = 9;
+    inline constexpr std::uint32_t set_ofd_lock = 90;
+    inline constexpr std::uint32_t set_ofd_lock_wait = 91;
+    inline constexpr std::uint32_t get_ofd_lock = 92;
+    inline constexpr std::uint32_t set_ofd_lock_timeout = 93;
     // Darwin file-cache hints. They affect kernel read strategy, not descriptor
     // data or persistence, so the compatibility VFS may accept them as
     // advisory.

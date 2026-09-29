@@ -1713,6 +1713,10 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
         found != pending_semaphore_waits_.end()) {
         consider(found->second.deadline);
     }
+    if (const auto found = pending_record_locks_.find(processor);
+        found != pending_record_locks_.end()) {
+        consider(found->second.deadline);
+    }
     if (const auto found = pending_psynch_waits_.find(processor);
         found != pending_psynch_waits_.end()) {
         consider(found->second.deadline);
@@ -1876,15 +1880,21 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     }
     if (const auto pending = pending_record_locks_.find(cpu.processor_id());
         pending != pending_record_locks_.end()) {
-        if (!shared_state_->advisory_file_locks->try_set_record_lock(
-                pending->second.permanent_file_id, process_.pid,
-                pending->second.range)) {
+        const auto acquired = shared_state_->advisory_file_locks->try_set_record_lock(
+            pending->second.permanent_file_id, pending->second.owner,
+            pending->second.range);
+        const auto expired = pending->second.deadline &&
+            shared_state_->clock.now() >= *pending->second.deadline;
+        if (!acquired && !expired)
             return false;
+        if (acquired) {
+            output_.write(
+                "[vfs] fcntl lock wake pid=" + std::to_string(process_.pid) +
+                " fd=" + std::to_string(pending->second.fd) + "\n");
+            bsd_success(cpu, 0);
+        } else {
+            bsd_error(cpu, 60U); // ETIMEDOUT
         }
-        output_.write(
-            "[vfs] fcntl lock wake pid=" + std::to_string(process_.pid) +
-            " fd=" + std::to_string(pending->second.fd) + "\n");
-        bsd_success(cpu, 0);
         pending_record_locks_.erase(pending);
         process_.waiting_for_events = false;
         cpu.clear_halt();
@@ -2496,6 +2506,10 @@ CompatibilityKernel::timer_deadline_snapshot() const
             consider(local_deadline, timer.deadline);
         }
         for (const auto& [processor, wait] : pending_semaphore_waits_) {
+            static_cast<void>(processor);
+            consider(local_deadline, wait.deadline);
+        }
+        for (const auto& [processor, wait] : pending_record_locks_) {
             static_cast<void>(processor);
             consider(local_deadline, wait.deadline);
         }
