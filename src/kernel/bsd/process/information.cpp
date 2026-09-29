@@ -165,16 +165,18 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
     }
 
 
-
     const auto include_bsd =
+        flavor == darwin::proc_info::flavor_pid_bsd_info ||
+        flavor == darwin::proc_info::flavor_pid_bsd_info_with_identity;
+    const auto include_identity =
+        flavor == darwin::proc_info::flavor_pid_unique_identifier_info ||
         flavor == darwin::proc_info::flavor_pid_bsd_info_with_identity;
     if (call == darwin::proc_info::call_pid_info &&
-        (include_bsd ||
-            flavor == darwin::proc_info::flavor_pid_unique_identifier_info)) {
+        (include_bsd || include_identity)) {
         const auto identity_offset = include_bsd
             ? darwin::proc_info::bsd_info_size : 0U;
-        const auto size = identity_offset +
-            darwin::proc_info::unique_identifier_info_size;
+        const auto size = identity_offset + (include_identity
+            ? darwin::proc_info::unique_identifier_info_size : 0U);
         if (output_size < size) {
             bsd_error(cpu, darwin::error::no_memory);
             return true;
@@ -196,10 +198,12 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
                 return true;
             }
             const auto& record = target->second;
-            std::copy(record.executable_uuid.begin(), record.executable_uuid.end(),
-                output.begin() + identity_offset);
-            integer(identity_offset + 16U, record.incarnation, 8U);
-            integer(identity_offset + 24U, record.parent_incarnation, 8U);
+            if (include_identity) {
+                std::copy(record.executable_uuid.begin(), record.executable_uuid.end(),
+                    output.begin() + identity_offset);
+                integer(identity_offset + 16U, record.incarnation, 8U);
+                integer(identity_offset + 24U, record.parent_incarnation, 8U);
+            }
             if (include_bsd) {
                 integer(0, record.importance_donor
                     ? darwin::proc_info::flag_importance_donor : 0U);

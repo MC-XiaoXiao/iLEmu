@@ -28,6 +28,7 @@ inline constexpr std::uint32_t dirty_allow_idle_exit = 0x2U;
 inline constexpr std::uint32_t dirty_defer = 0x4U;
 inline constexpr std::uint32_t dirty_launch_in_progress = 0x8U;
 inline constexpr std::uint32_t dirty_is_dirty = 0x4U;
+inline constexpr std::uint32_t flavor_pid_bsd_info = 3U;
 inline constexpr std::uint32_t flavor_pid_path_info = 11U;
 inline constexpr std::uint32_t flavor_pid_short_bsd_info = 13U;
 inline constexpr std::uint32_t flavor_pid_unique_identifier_info = 17U;
