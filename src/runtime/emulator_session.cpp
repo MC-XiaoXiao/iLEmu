@@ -1948,8 +1948,11 @@ void EmulatorSession::run()
                     }
                 }
                 if (start_suspended) {
-                    static_cast<void>(
-                        scheduler.block(XnuThreadId { child_pid, 0 }));
+                    // POSIX_SPAWN_START_SUSPENDED is a process stop (SSTOP
+                    // in XNU), not a wait for an I/O event. SIGCONT must be
+                    // able to release it while preserving other holds.
+                    static_cast<void>(child_runtime->kernel->deliver_signal(
+                        darwin::signal::stop));
                 }
             } catch (const std::exception& error) {
                 output.line("[process] spawn exec failed pid=" +
