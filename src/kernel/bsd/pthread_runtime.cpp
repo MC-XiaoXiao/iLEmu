@@ -169,15 +169,12 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         darwin::arm_thread::GeneralState guest_state { };
         std::copy(state.begin(), state.end(), guest_state.begin());
         guest_state[darwin::arm_thread::cpsr_index] = cpsr;
+        // A reused worker retains the TLS base installed by libpthread.
+        // Only a new thread needs the provisional kernel-supplied base.
         const auto updated =
             thread_state_update_handler_ && thread_wake_handler_ &&
             thread_state_update_handler_(
-                process_.pid, idle_worker->processor, guest_state) &&
-            (!thread_pointer_update_handler_ ||
-                thread_pointer_update_handler_(process_.pid,
-                    idle_worker->processor,
-                    thread_pointer_for_pthread(
-                        contract, idle_worker->pthread_address)));
+                process_.pid, idle_worker->processor, guest_state);
         const auto wake_result =
             updated ? thread_wake_handler_(process_.pid, idle_worker->processor)
                     : XnuThreadWakeResult { };
