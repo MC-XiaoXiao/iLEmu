@@ -73,8 +73,9 @@ void inspect_routes(const std::optional<std::filesystem::path>& rootfs,
          << "domains: BSD number; normalized positive Mach trap; excludes "
             "ARM-fast/MIG/IOKit"
          << std::endl
-         << "unbound-bsd: trace-unknown+nosys-policy; unbound-mach: "
-            "trace-unknown+invalid-argument"
+         << "unbound-bsd: trace-unknown+ENOSYS; SIGSYS only where the "
+            "reference XNU slot is nosys (kernel/xnu_reference_syscalls.hpp); "
+            "unbound-mach: trace-unknown+invalid-argument"
          << std::endl
          << "nocancel: original numbers retained; current ungated "
             "canonicalization; no new cancellation implementation"
