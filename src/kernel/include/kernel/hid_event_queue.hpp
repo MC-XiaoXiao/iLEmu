@@ -129,11 +129,11 @@ public:
                 contact_origin_.reset();
         }
         if (primary)
-            events_.push_back(event);
+            append(events_, event);
         if (touch) {
             for (auto& state : observers_) {
                 if (state.observer.digitizer_events)
-                    state.events.push_back(event);
+                    append(state.events, event);
             }
         }
         return true;
@@ -182,6 +182,23 @@ public:
     }
 
 private:
+    static void append(std::deque<Event>& queue, const Event& event)
+    {
+        const auto* touch = std::get_if<TouchInput>(&event.input);
+        if (touch && touch->phase == TouchPhase::Move && !queue.empty()) {
+            const auto* previous = std::get_if<TouchInput>(&queue.back().input);
+            if (previous && previous->phase == TouchPhase::Move &&
+                queue.back().identity == event.identity) {
+                // A digitizer position supersedes an undelivered position of
+                // the same contact. Keep lifecycle edges and other event
+                // types ordered, including the final move before release.
+                queue.back() = event;
+                return;
+            }
+        }
+        queue.push_back(event);
+    }
+
     struct ObserverState {
         Observer observer;
         std::deque<Event> events;
