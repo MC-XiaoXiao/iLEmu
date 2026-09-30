@@ -7,6 +7,7 @@
 
 #include "kernel/kernel.hpp"
 #include <kernel/guest_socket_receive_target.hpp>
+#include <kernel/socket_rights_control.hpp>
 #include "kernel/kevent_wire.hpp"
 
 #include "kernel/baseband_device.hpp"
@@ -506,72 +507,93 @@ bool CompatibilityKernel::receive_socket_message(
     }
     const bool end_of_stream = !endpoint->second.local_read_open() ||
                                !endpoint->second.peer_write_open();
-    if (source.empty() && !end_of_stream)
+    const auto side = endpoint->second.side;
+    const auto read_begin = lifetime->read_offsets[side];
+    auto& ancillary = shared_state_->socket_pair_ancillary[endpoint->second.pair][side];
+    while (!ancillary.empty() && ancillary.front().byte_offset < read_begin)
+        ancillary.pop_front();
+    const bool control_ready = !ancillary.empty() &&
+                               ancillary.front().byte_offset == read_begin;
+    if (source.empty() && !end_of_stream && !control_ready)
         return false;
-    const auto read_begin = lifetime->read_offsets[endpoint->second.side];
-    const auto total = static_cast<std::uint32_t>(
-        std::min(receive_capacity, source.size()));
-    std::vector<std::byte> bytes(total);
-    std::copy_n(source.begin(), total, bytes.begin());
-    if (!target.copy(bytes)) {
-        auto& controls = shared_state_->socket_pair_ancillary[endpoint->second.pair]
-                                                       [endpoint->second.side];
-        while (!controls.empty() && controls.front().byte_offset <= read_begin)
-            controls.pop_front();
-        bsd_error(cpu, efault);
-        return true;
-    }
-    for (std::uint32_t i = 0; i < total; ++i)
-        source.pop_front();
-    const auto read_end = read_begin + total;
-    lifetime->read_offsets[endpoint->second.side] = read_end;
-    std::vector<KernelSharedState::DescriptorTransfer> transfers;
-    auto& ancillary =
-        shared_state_->socket_pair_ancillary[endpoint->second.pair]
-                                            [endpoint->second.side];
-    while (!ancillary.empty() && ancillary.front().byte_offset < read_begin) {
-        ancillary.pop_front();
-    }
-    while (!ancillary.empty() && ancillary.front().byte_offset < read_end) {
-        auto record = std::move(ancillary.front());
-        ancillary.pop_front();
-        transfers.insert(transfers.end(),
-            std::make_move_iterator(record.transfers.begin()),
-            std::make_move_iterator(record.transfers.end()));
-    }
-    std::vector<std::uint32_t> received_fds;
-    const auto required_control =
-        static_cast<std::uint32_t>(12U + transfers.size() * 4U);
-    std::uint32_t message_flags = 0;
-    if (!transfers.empty() &&
-        (*control_address == 0 || *control_capacity < required_control)) {
-        message_flags |= message_control_truncated;
-    } else if (!transfers.empty()) {
-        for (const auto& transfer : transfers) {
-            const auto imported = import_descriptor(transfer);
-            if (!imported) {
-                bsd_error(cpu, 24); // EMFILE
-                return true;
+
+    SocketRightsControl control;
+    std::size_t imported_count = 0;
+    const auto capacity = std::min(receive_capacity, source.size());
+    std::vector<std::byte> bytes(capacity);
+    std::copy_n(source.begin(), capacity, bytes.begin());
+    std::size_t total = 0;
+    do {
+        if (!ancillary.empty() && ancillary.front().byte_offset == lifetime->read_offsets[side]) {
+            auto record = std::move(ancillary.front());
+            ancillary.pop_front();
+            if (SocketRightsControl::externalizes(
+                    shared_state_->darwin_abi.abi_epoch, *control_address != 0)) {
+                // unp_externalize checks fdavail for the entire rights mbuf.
+                // The kernel mutex protects this reservation check and imports.
+                std::size_t available = 0;
+                for (std::uint32_t candidate = 3; candidate < file_descriptor_limit() &&
+                     available < record.transfers.size(); ++candidate) {
+                    if (!file_descriptors_.contains(candidate) &&
+                        !virtual_descriptors_.contains(candidate) &&
+                        !duplicated_descriptors_.contains(candidate))
+                        ++available;
+                }
+                if (available < record.transfers.size()) {
+                    bsd_error(cpu, 40); // EMSGSIZE; no partial descriptor imports
+                    return true;
+                }
+                if (*control_address != 0)
+                    control.begin(record.transfers.size());
+                for (const auto& transfer : record.transfers) {
+                    const auto imported = import_descriptor(transfer);
+                    if (!imported) {
+                        bsd_error(cpu, 40);
+                        return true;
+                    }
+                    if (*control_address != 0)
+                        control.append(*imported);
+                    ++imported_count;
+                }
             }
-            received_fds.push_back(*imported);
         }
-        if (!memory_.write32(*control_address, required_control) ||
-            !memory_.write32(*control_address + 4, 0xffffU) ||
-            !memory_.write32(*control_address + 8, 1U)) {
+        auto count = capacity - total;
+        if (!ancillary.empty())
+            count = std::min<std::size_t>(count,
+                ancillary.front().byte_offset - lifetime->read_offsets[side]);
+        if (!target.copy(std::span<const std::byte> {bytes}.subspan(total, count))) {
             bsd_error(cpu, efault);
             return true;
         }
-        for (std::size_t index = 0; index < received_fds.size(); ++index) {
-            if (!memory_.write32(*control_address + 12U +
-                                     static_cast<std::uint32_t>(index * 4U),
-                    received_fds[index])) {
-                bsd_error(cpu, efault);
-                return true;
-            }
+        for (std::size_t i = 0; i < count; ++i)
+            source.pop_front();
+        lifetime->read_offsets[side] += count;
+        total += count;
+        if (total == capacity)
+            break;
+        // Keep the established coalesced stream receive contract, but reach
+        // each control boundary only after copying its preceding payload.
+        // These are imported iovecs, not the caller's guest iovec array.
+        auto advance = count;
+        for (auto& vector : iovecs) {
+            const auto part = static_cast<std::uint32_t>(
+                std::min<std::size_t>(advance, vector.length));
+            vector.address += part;
+            vector.length -= part;
+            advance -= part;
+            if (advance == 0)
+                break;
         }
+    } while (total < capacity);
+
+    const auto copied_control = control.prefix(*control_capacity);
+    const auto actual_control = static_cast<std::uint32_t>(copied_control.size());
+    const auto message_flags = control.flags(*control_capacity);
+    if (!copied_control.empty() &&
+        !GuestSocketReceiveTarget {memory_, *control_address, actual_control}.copy(copied_control)) {
+        bsd_error(cpu, efault);
+        return true;
     }
-    const auto actual_control =
-        transfers.empty() || message_flags != 0 ? 0U : required_control;
     if (!memory_.write32(message_address + arm32_message::control_length_offset,
             actual_control) ||
         !memory_.write32(
@@ -579,10 +601,10 @@ bool CompatibilityKernel::receive_socket_message(
         bsd_error(cpu, efault);
         return true;
     }
-    bsd_success(cpu, total);
+    bsd_success(cpu, static_cast<std::uint32_t>(total));
     output_.write("[network] recvmsg fd=" + std::to_string(fd) +
                   " bytes=" + std::to_string(total) +
-                  " rights=" + std::to_string(received_fds.size()) + "\n");
+                  " rights=" + std::to_string(imported_count) + "\n");
     return true;
 }
 
