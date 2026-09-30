@@ -4,7 +4,7 @@
 #include "kernel/bsd_dispatch_table.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
-#include "kernel/xnu_reference_syscalls.hpp"
+#include "kernel/bsd_route_policy.hpp"
 #include "process/resource_monitor.hpp"
 #include "support.hpp"
 
@@ -205,29 +205,16 @@ BsdDispatchTable::BsdDispatchTable(
     : default_sigsys_ { abi.capabilities.send_sigsys }
 {
     const auto table = syscall_routes::build(abi);
+    const syscall_routes::BsdRoutePolicy policy { abi, darwin_release };
     for (std::uint32_t number = 0; number < bindings_.size(); ++number) {
         const auto* entry =
             table.find(syscall_routes::Domain::BsdSyscall, number);
+        const auto resolved = policy.resolve(entry, number);
         auto& binding = bindings_[number];
-        const auto canonical = entry ? entry->canonical_number : number;
-        binding.canonical = static_cast<std::uint16_t>(canonical);
-        binding.send_sigsys =
-            default_sigsys_ &&
-            !xnu_reference::bsd_slot_defined(darwin_release, canonical);
-        if (!entry)
-            continue;
-        binding.trace_unknown =
-            entry->outcome == syscall_routes::Outcome::BsdUnknown;
-        // Retain audited collisions and pthread precedence over the
-        // conservative public-reference epoch gate.
-        const bool priority_contract =
-            entry->handler == syscall_routes::Handler::BsdPthread ||
-            entry->contract == syscall_routes::Contract::SemaphoreValue ||
-            entry->contract == syscall_routes::Contract::NamedSysctl ||
-            canonical == 299U || canonical == 300U;
-        if (entry->outcome == syscall_routes::Outcome::HandlerValidated &&
-            (priority_contract ||
-                !xnu_reference::bsd_slot_gated(darwin_release, canonical)))
+        binding.canonical = static_cast<std::uint16_t>(resolved.canonical);
+        binding.send_sigsys = resolved.send_sigsys;
+        binding.trace_unknown = resolved.trace_unknown;
+        if (resolved.invokes_handler())
             binding.adapter = adapter_for(entry->handler);
     }
 }

@@ -25,6 +25,7 @@ add_library(ilemu_syscall_routes STATIC
     routes/table.cpp
     routes/names.cpp
     routes/catalog.cpp
+    routes/bsd_policy.cpp
     routes/bsd_entries.cpp
     routes/bsd_contract_entries.cpp
     routes/bsd_aliases.cpp

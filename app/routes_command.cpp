@@ -5,16 +5,40 @@
 #include "device_state/darwin_kernel_configuration.hpp"
 #include "foundation/output.hpp"
 #include "kernel/syscall_routes.hpp"
+#include "kernel/bsd_route_policy.hpp"
 #include <sstream>
 #include <stdexcept>
 namespace ilemu {
 namespace {
     using namespace syscall_routes;
     void write_routes(std::ostringstream& text, std::string_view name,
-        const DarwinAbi& abi, bool validate_only)
+        const DarwinAbi& abi, std::string_view darwin_release, bool validate_only)
     {
         const auto table = build(abi);
+        const BsdRoutePolicy policy { abi, darwin_release };
         text << "profile: " << name << std::endl;
+        text << "darwin-release: " << darwin_release << std::endl;
+        std::array<std::size_t, 3> dispositions { };
+        for (std::uint32_t number = 0; number < Table::bsd_capacity; ++number) {
+            const auto resolved =
+                policy.resolve(table.find(Domain::BsdSyscall, number), number);
+            ++dispositions[static_cast<std::size_t>(resolved.disposition)];
+            if (validate_only)
+                continue;
+            text << "bsd-policy:" << number
+                 << " canonical=" << resolved.canonical
+                 << " disposition=" << bsd_disposition_name(resolved.disposition)
+                 << " reference=" << bsd_reference_name(resolved.reference)
+                 << " fallback=ENOSYS"
+                 << " fallback-sigsys=" << resolved.send_sigsys
+                 << " trace-unknown=" << resolved.trace_unknown
+                 << " reference-gated=" << resolved.reference_gated
+                 << " source=kernel/xnu_reference_syscalls.hpp" << std::endl;
+        }
+        text << "bsd-policy-slots: " << Table::bsd_capacity << std::endl
+             << "bsd-policy-handler-validates: " << dispositions[0] << std::endl
+             << "bsd-policy-deferred: " << dispositions[1] << std::endl
+             << "bsd-policy-errno-stub: " << dispositions[2] << std::endl;
         text << "send-sigsys: " << abi.capabilities.send_sigsys << std::endl;
         for (const auto domain : { Domain::BsdSyscall, Domain::MachTrap }) {
             std::size_t count = 0;
@@ -25,12 +49,15 @@ namespace {
                 if (validate_only)
                     continue;
                 const auto& e = *slot;
+                const auto outcome = domain == Domain::BsdSyscall &&
+                        policy.resolve(&e, e.number).reference_gated
+                    ? Outcome::BsdNosys : e.outcome;
                 text << domain_name(domain) << ':' << e.number
                      << " operation=" << e.operation
                      << " canonical=" << e.canonical_number
                      << " contract=" << contract_name(e.contract)
                      << " handler=" << handler_name(e.handler)
-                     << " outcome=" << outcome_name(e.outcome)
+                     << " outcome=" << outcome_name(outcome)
                      << " cancellation="
                      << (e.cancellation == Cancellation::NoCancelAlias
                                 ? "nocancel-alias"
@@ -64,7 +91,7 @@ void inspect_routes(const std::optional<std::filesystem::path>& rootfs,
         throw std::invalid_argument(
             "routes requires --all, --rootfs DIR or --ios-build CODE");
     std::ostringstream text;
-    text << "syscall-route-schema: 1" << std::endl
+    text << "syscall-route-schema: 2" << std::endl
          << "mode: executable BSD catalog; Mach first-handler inspection"
          << std::endl
          << "scope: first-handler routing; handler-validates is not a full "
@@ -72,6 +99,11 @@ void inspect_routes(const std::optional<std::filesystem::path>& rootfs,
          << std::endl
          << "domains: BSD number; normalized positive Mach trap; excludes "
             "ARM-fast/MIG/IOKit"
+         << std::endl
+         << "bsd-policy: all normalized dispatch slots; SVC syscall(0) decodes "
+            "the effective number before this layer; handler-validates is not "
+            "an implemented-coverage claim; fallback fields also apply to "
+            "handler-level nosys"
          << std::endl
          << "unbound-bsd: trace-unknown+ENOSYS; SIGSYS only where the "
             "reference XNU slot is nosys (kernel/xnu_reference_syscalls.hpp); "
@@ -82,12 +114,13 @@ void inspect_routes(const std::optional<std::filesystem::path>& rootfs,
          << std::endl;
     if (all) {
         for (const auto& entry : darwin_configurations())
-            write_routes(text, entry.name, entry.abi, validate_only);
+            write_routes(text, entry.name, entry.abi, entry.darwin_release, validate_only);
     } else {
         const auto configuration = resolve_darwin_configuration(
             rootfs.value_or(std::filesystem::path { }), ios_build);
         write_routes(
-            text, configuration.abi_name, configuration.abi, validate_only);
+            text, configuration.abi_name, configuration.abi,
+            configuration.identity.operating_system_release, validate_only);
     }
     output.write(text.str());
 }
