@@ -8,6 +8,7 @@
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"
+#include <kernel/socket_control_buffer.hpp>
 
 #include "../support.hpp"
 
@@ -116,8 +117,7 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
         return true;
     }
     if (*iov_count > darwin::io::maximum_vector_count ||
-        *name_length > bsd_support::maximum_socket_address_size ||
-        *control_length > bsd_support::maximum_io) {
+        *name_length > bsd_support::maximum_socket_address_size) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return true;
     }
@@ -128,12 +128,15 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
                                       MemoryPermission::Read))) ||
         (*name_length != 0 && (*name_address == 0 ||
                                   !memory_.accessible(*name_address,
-                                      *name_length, MemoryPermission::Read))) ||
-        (*control_length != 0 &&
-            (*control_address == 0 ||
-                !memory_.accessible(*control_address, *control_length,
-                    MemoryPermission::Read)))) {
+                                      *name_length, MemoryPermission::Read)))) {
         bsd_error(cpu, bsd_support::bad_address);
+        return true;
+    }
+
+    SocketControlBuffer control;
+    if (const auto error = control.copy_from(
+            memory_, *control_address, *control_length)) {
+        bsd_error(cpu, error);
         return true;
     }
 
