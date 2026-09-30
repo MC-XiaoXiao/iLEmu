@@ -12,6 +12,7 @@
 #include "port/attributes.hpp"
 #include "port/membership.hpp"
 #include "port/context.hpp"
+#include "port/guarded_mig.hpp"
 #include "../clock/server.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
@@ -374,7 +375,7 @@ void CompatibilityKernel::dispatch_mach_message(
     if (!separate_receive && !clock_service_request && !host_service_request && !host_information_request &&
         !task_service_request && !thread_policy_request && !port_query_request &&
         !port_notification_request && !port_lifecycle_request && !port_rights_request &&
-        !port_attributes_request && !port_membership_request && !port_context_request && !task_information_request) {
+        !port_mig::Guarded::handles(*message_id) && !port_attributes_request && !port_membership_request && !port_context_request && !task_information_request) {
         const auto is_bootstrap_port = [&] {
             std::lock_guard lock { shared_state_->mach_mutex };
             const auto task = mach_task_identity::control_port_locked(*shared_state_, process_);

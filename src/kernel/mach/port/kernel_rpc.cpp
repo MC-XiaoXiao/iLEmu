@@ -37,14 +37,13 @@ bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
     std::lock_guard mach_lock { shared_state_->mach_mutex };
     const auto target = target_task_for_port(
         *shared_state_, process_.pid, registers[0]);
-    if (!target || *target != process_.pid) {
-        registers[0] = darwin::mach_message::send_invalid_destination;
+    if (guarded) {
+        registers[0] = dispatch_guarded_port_trap(*shared_state_, memory_,
+            target && *target == process_.pid ? *target : 0U, registers, trap);
         return true;
     }
-
-    if (guarded) {
-        registers[0] = dispatch_guarded_port_trap(
-            *shared_state_, memory_, *target, registers, trap);
+    if (!target || *target != process_.pid) {
+        registers[0] = darwin::mach_message::send_invalid_destination;
         return true;
     }
 

@@ -51,6 +51,10 @@ enum class Routine : std::uint32_t {
     mach_port_kernel_object = 3225U,
     mach_port_insert_member = 3226U,
     mach_port_extract_member = 3227U,
+    mach_port_construct = 3231U,
+    mach_port_destruct = 3232U,
+    mach_port_guard = 3233U,
+    mach_port_unguard = 3234U,
 };
 
 inline constexpr std::array<ArgumentInfo, 3> mach_port_names_arguments{{
@@ -226,13 +230,41 @@ inline constexpr std::array<ArgumentInfo, 3> mach_port_extract_member_arguments{
     {"pset", "mach_port_name_t", "", ArgumentDirection::In, WireType::Scalar, 4U, 0U, 0U, 36U, 4294967295U, 4294967295U, 4294967295U},
 }};
 
+// Guarded extensions: XNU2422/2782 ARM32 MIG layouts.
+inline constexpr std::array<ArgumentInfo, 4> mach_port_construct_arguments{{
+    {"task", "ipc_space_t", "", ArgumentDirection::In, WireType::Port, 4U, 0U, 0U, 8U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"options", "mach_port_options_ptr_t", "", ArgumentDirection::In, WireType::OutOfLine, 24U, 0U, 0U, 28U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"context", "uint64_t", "", ArgumentDirection::In, WireType::Scalar, 8U, 0U, 0U, 48U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"name", "mach_port_name_t", "", ArgumentDirection::Out, WireType::Scalar, 4U, 0U, 0U, no_wire_offset, 36U, no_wire_offset, no_wire_offset},
+}};
+
+inline constexpr std::array<ArgumentInfo, 4> mach_port_destruct_arguments{{
+    {"task", "ipc_space_t", "", ArgumentDirection::In, WireType::Port, 4U, 0U, 0U, 8U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"name", "mach_port_name_t", "", ArgumentDirection::In, WireType::Scalar, 4U, 0U, 0U, 32U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"srdelta", "mach_port_delta_t", "", ArgumentDirection::In, WireType::Scalar, 4U, 0U, 0U, 36U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"guard", "uint64_t", "", ArgumentDirection::In, WireType::Scalar, 8U, 0U, 0U, 40U, no_wire_offset, no_wire_offset, no_wire_offset},
+}};
+
+inline constexpr std::array<ArgumentInfo, 4> mach_port_guard_arguments{{
+    {"task", "ipc_space_t", "", ArgumentDirection::In, WireType::Port, 4U, 0U, 0U, 8U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"name", "mach_port_name_t", "", ArgumentDirection::In, WireType::Scalar, 4U, 0U, 0U, 32U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"guard", "uint64_t", "", ArgumentDirection::In, WireType::Scalar, 8U, 0U, 0U, 36U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"strict", "boolean_t", "", ArgumentDirection::In, WireType::Scalar, 4U, 0U, 0U, 44U, no_wire_offset, no_wire_offset, no_wire_offset},
+}};
+
+inline constexpr std::array<ArgumentInfo, 3> mach_port_unguard_arguments{{
+    {"task", "ipc_space_t", "", ArgumentDirection::In, WireType::Port, 4U, 0U, 0U, 8U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"name", "mach_port_name_t", "", ArgumentDirection::In, WireType::Scalar, 4U, 0U, 0U, 32U, no_wire_offset, no_wire_offset, no_wire_offset},
+    {"guard", "uint64_t", "", ArgumentDirection::In, WireType::Scalar, 8U, 0U, 0U, 36U, no_wire_offset, no_wire_offset, no_wire_offset},
+}};
+
 struct Descriptor {
     Routine routine;
     std::string_view name;
     std::span<const ArgumentInfo> arguments;
 };
 
-inline constexpr std::array<Descriptor, 27> routines{{
+inline constexpr std::array<Descriptor, 31> routines{{
     {Routine::mach_port_names, "mach_port_names", std::span<const ArgumentInfo>{mach_port_names_arguments}},
     {Routine::mach_port_type, "mach_port_type", std::span<const ArgumentInfo>{mach_port_type_arguments}},
     {Routine::mach_port_rename, "mach_port_rename", std::span<const ArgumentInfo>{mach_port_rename_arguments}},
@@ -260,6 +292,10 @@ inline constexpr std::array<Descriptor, 27> routines{{
     {Routine::mach_port_kernel_object, "mach_port_kernel_object", std::span<const ArgumentInfo>{mach_port_kernel_object_arguments}},
     {Routine::mach_port_insert_member, "mach_port_insert_member", std::span<const ArgumentInfo>{mach_port_insert_member_arguments}},
     {Routine::mach_port_extract_member, "mach_port_extract_member", std::span<const ArgumentInfo>{mach_port_extract_member_arguments}},
+    {Routine::mach_port_construct, "mach_port_construct", std::span<const ArgumentInfo>{mach_port_construct_arguments}},
+    {Routine::mach_port_destruct, "mach_port_destruct", std::span<const ArgumentInfo>{mach_port_destruct_arguments}},
+    {Routine::mach_port_guard, "mach_port_guard", std::span<const ArgumentInfo>{mach_port_guard_arguments}},
+    {Routine::mach_port_unguard, "mach_port_unguard", std::span<const ArgumentInfo>{mach_port_unguard_arguments}},
 }};
 
 constexpr std::uint32_t id(Routine routine) {
