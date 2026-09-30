@@ -996,6 +996,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_semaphore_waits_.clear();
     pending_psynch_waits_.clear();
     pending_signal_suspends_.clear();
+    pending_signal_waits_.clear();
     scheduler_yields_.clear();
     scheduler_handoffs_.clear();
     aio_completions_.clear();
@@ -1660,6 +1661,7 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_semaphore_waits_.contains(processor) ||
            pending_psynch_waits_.contains(processor) ||
            pending_signal_suspends_.contains(processor) ||
+           pending_signal_waits_.contains(processor) ||
            pending_timers_.contains(processor) ||
            pending_selects_.contains(processor) ||
            pending_polls_.contains(processor) ||
@@ -1906,6 +1908,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     }
     if (timer_topology_changed)
         note_timer_deadline_transition();
+    if (pending_signal_waits_.contains(cpu.processor_id()))
+        return complete_signal_wait(cpu);
     if (const auto pending = pending_signal_suspends_.find(cpu.processor_id());
         pending != pending_signal_suspends_.end() &&
         pending->second.interrupted) {
@@ -2391,6 +2395,8 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
     }
     if (pending_signal_suspends_.contains(processor))
         return "sigsuspend";
+    if (pending_signal_waits_.contains(processor))
+        return "sigwait";
     if (const auto pending = pending_semaphore_waits_.find(processor);
         pending != pending_semaphore_waits_.end()) {
         return "semaphore(port=" + std::to_string(pending->second.semaphore) +

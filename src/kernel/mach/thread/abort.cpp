@@ -90,6 +90,8 @@ bool CompatibilityKernel::complete_thread_abort(Cpu& cpu)
                 { process_.pid, static_cast<std::uint32_t>(processor) });
             bsd_error(cpu, darwin::error::interrupted);
             completed = true;
+        } else if (pending_signal_waits_.contains(processor)) {
+            completed = complete_signal_wait(cpu, true);
         } else if (pending_waits_.erase(processor) ||
                    pending_kevents_.erase(processor) ||
                    pending_recvmsgs_.erase(processor) ||

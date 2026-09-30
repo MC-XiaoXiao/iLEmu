@@ -321,6 +321,14 @@ struct PendingSignalSuspend {
     bool interrupted { };
 };
 
+struct PendingSignalWait {
+    std::uint32_t signals { };
+    std::uint32_t output_address { };
+    std::optional<std::uint32_t> selected;
+    // Zero represents PCATCH's ERESTART, which sigwait converts to success.
+    std::optional<std::uint32_t> interruption_result;
+};
+
 enum class PendingTimerKind {
     MachWaitUntil,
     ThreadSwitch,

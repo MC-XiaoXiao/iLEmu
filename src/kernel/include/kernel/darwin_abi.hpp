@@ -412,6 +412,7 @@ namespace signal {
     inline constexpr std::uint32_t information = 29;
     inline constexpr std::uint32_t default_action = 0;
     inline constexpr std::uint32_t ignore_action = 1;
+    inline constexpr std::uint32_t restart_action_flag = 0x2; // SA_RESTART
 } // namespace signal
 
 namespace extended_attribute {

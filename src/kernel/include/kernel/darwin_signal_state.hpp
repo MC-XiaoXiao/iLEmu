@@ -5,6 +5,7 @@
 #pragma once
 #include "kernel/darwin_abi.hpp"
 #include "network/darwin_abi_route.hpp"
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -17,7 +18,9 @@ namespace ilemu {
 class DarwinSignalState {
 public:
     explicit DarwinSignalState(DarwinAbiEpoch epoch)
-        : retain_retired_(epoch >= DarwinAbiEpoch::IphoneOs3) { }
+        : retain_retired_(epoch >= DarwinAbiEpoch::IphoneOs3)
+        , wait_consumes_owner_(epoch >= DarwinAbiEpoch::IphoneOs2)
+        , wait_reports_interrupt_(epoch >= DarwinAbiEpoch::IphoneOs3) { }
     enum class Scope { Thread, Process };
     static constexpr std::uint32_t unmaskable =
         (1U << (darwin::signal::kill - 1U)) |
@@ -97,6 +100,7 @@ public:
             auto& thread = threads_[processor];
             thread.mask = thread.saved_mask.value_or(thread.mask);
             thread.saved_mask.reset();
+            thread.wait_mask = 0;
         }
     }
     [[nodiscard]] std::uint32_t pending(std::size_t processor) const
@@ -105,7 +109,39 @@ public:
     }
     [[nodiscard]] std::uint32_t ready(std::size_t processor) const
     {
-        return pending(processor) & ~mask(processor);
+        return pending(processor) & (~mask(processor) | waiting_for(processor));
+    }
+    void begin_wait(std::size_t processor, std::uint32_t signals)
+    {
+        suspend(processor, ~signals);
+        threads_[processor].wait_mask = signals;
+    }
+    [[nodiscard]] std::uint32_t waiting_for(std::size_t processor) const
+    {
+        return processor < threads_.size() ? threads_[processor].wait_mask : 0U;
+    }
+    void accept_wait_signal(std::size_t processor, std::uint32_t bit)
+    {
+        // psignal replaces uu_sigwait with the delivered bit until msleep returns.
+        threads_[processor].wait_mask = bit;
+        consume(processor, bit);
+    }
+    [[nodiscard]] bool wait_reports_interrupt() const { return wait_reports_interrupt_; }
+    [[nodiscard]] std::optional<std::uint32_t> take_pending(
+        std::size_t waiter, std::uint32_t signals)
+    {
+        std::optional<std::size_t> owner;
+        for (std::size_t i = 0; i < threads_.size(); ++i)
+            if ((threads_[i].pending & signals) &&
+                (!owner || threads_[i].order < threads_[*owner].order))
+                owner = i;
+        if (!owner)
+            return std::nullopt;
+        const auto signal = static_cast<std::uint32_t>(
+            std::countr_zero(threads_[*owner].pending & signals)) + 1U;
+        // XNU 792 clears the caller's list; 1228+ clears the selected owner.
+        consume(wait_consumes_owner_ ? *owner : waiter, 1U << (signal - 1U));
+        return signal;
     }
     template <typename Eligible>
     [[nodiscard]] std::optional<std::size_t> select(std::uint32_t bit,
@@ -118,7 +154,7 @@ public:
                 continue;
             if (!first || thread.order < threads_[*first].order)
                 first = i;
-            if (eligible(i) && !(thread.mask & bit) &&
+            if (eligible(i) && (!(thread.mask & bit) || (thread.wait_mask & bit)) &&
                 (!unblocked || thread.order < threads_[*unblocked].order))
                 unblocked = i;
         }
@@ -173,6 +209,8 @@ private:
         (1U << 0U) | (1U << 1U) | (1U << 2U) | (1U << 8U) |
         (1U << 14U) | (1U << 29U) | (1U << 30U);
     const bool retain_retired_;
+    const bool wait_consumes_owner_;
+    const bool wait_reports_interrupt_;
     std::uint32_t retired_pending_ { };
     std::uint64_t next_order_ { 2 };
     struct Thread {
@@ -181,6 +219,7 @@ private:
         bool active { };
         std::uint32_t pending { };
         std::uint64_t order { };
+        std::uint32_t wait_mask { };
     };
     std::vector<Thread> threads_ { Thread { 0, std::nullopt, true, 0, 1 } };
 };

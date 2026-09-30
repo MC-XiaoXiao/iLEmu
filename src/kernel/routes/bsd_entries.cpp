@@ -160,6 +160,12 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Handler::BsdSignal);
     add(111, "sigsuspend", Handler::BsdSignal);
     add(52, "sigpending", Handler::BsdSignal);
+    add(330, "__sigwait", Handler::BsdSignal);
+    table.bind_new({ Domain::BsdSyscall, 422, 422, "__sigwait_nocancel",
+        Handler::BsdSignal, Contract::CurrentDispatcher, Cancellation::NoCancelEntry,
+        abi.abi_epoch >= DarwinAbiEpoch::IphoneOs2 ? Outcome::HandlerValidated
+                                                 : Outcome::BsdNosys,
+        "bsd/signal/signal.cpp" });
     add(darwin::syscall::pthread_kill, "pthread_kill", Handler::BsdSignal);
     add(darwin::syscall::kill, "kill", Handler::BsdSignal);
     add(darwin::syscall::get_host_uuid, "get_host_uuid", Handler::BsdPlatform);

@@ -166,6 +166,14 @@ bool CompatibilityKernel::process_pending_signals(std::size_t processor)
         const auto signal = static_cast<std::uint32_t>(std::countr_zero(ready)) + 1U;
         const auto bit = 1U << (signal - 1U);
         ready &= ~bit;
+        const auto waiting = pending_signal_waits_.find(processor);
+        if (waiting != pending_signal_waits_.end() &&
+            (signal_state_.waiting_for(processor) & bit)) {
+            waiting->second.selected = signal;
+            signal_state_.accept_wait_signal(processor, bit);
+            shared_state_->note_io_event_transition();
+            continue;
+        }
         const auto handler = signal_actions_[signal][0];
         if (handler != darwin::signal::default_action &&
             handler != darwin::signal::ignore_action) {
@@ -175,6 +183,13 @@ bool CompatibilityKernel::process_pending_signals(std::size_t processor)
                 suspended != pending_signal_suspends_.end() &&
                 !suspended->second.interrupted) {
                 suspended->second.interrupted = true;
+                shared_state_->note_io_event_transition();
+            }
+            if (waiting != pending_signal_waits_.end() &&
+                !waiting->second.interruption_result) {
+                waiting->second.interruption_result =
+                    (signal_actions_[signal][3] & darwin::signal::restart_action_flag)
+                        ? 0U : darwin::error::interrupted;
                 shared_state_->note_io_event_transition();
             }
             continue;
@@ -193,6 +208,10 @@ bool CompatibilityKernel::process_pending_signals(std::size_t processor)
 
 void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
 {
+    if (number == 330U || number == 422U) {
+        dispatch_bsd_signal_wait(cpu);
+        return;
+    }
     if (number == 52U) { // sigpending reports this uthread's list, including held signals.
         // XNU kern_sig.c intentionally ignores copyout failure here.
         if (cpu.registers()[0] != 0)

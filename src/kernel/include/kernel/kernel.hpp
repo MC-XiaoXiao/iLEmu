@@ -617,6 +617,9 @@ private:
     void dispatch_bsd_fileport(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_signal_wait(Cpu& cpu);
+    bool complete_signal_wait(Cpu& cpu, bool interrupted = false);
+    void return_waited_signal(Cpu& cpu, std::uint32_t signal, std::uint32_t output);
     void reset_signal_actions_for_exec();
     void discard_ignored_signal(std::uint32_t signal);
     bool process_pending_signals(std::size_t processor);
@@ -1118,6 +1121,7 @@ private:
     std::map<std::size_t, PendingSemaphoreWait> pending_semaphore_waits_;
     std::map<std::size_t, PendingPsynchWait> pending_psynch_waits_;
     std::map<std::size_t, PendingSignalSuspend> pending_signal_suspends_;
+    std::map<std::size_t, PendingSignalWait> pending_signal_waits_;
     struct PendingIoPollCache {
         std::uint64_t io_generation { };
         std::uint64_t mach_generation { };
