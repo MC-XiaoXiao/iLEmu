@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "../support.hpp"
+#include "state_server.hpp"
 #include "information.hpp"
 
 namespace ilemu {
@@ -150,144 +151,15 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
         return true;
     }
 
-    const auto& arguments =
-        gets_state ? xnu::mig::thread_act::thread_get_state_arguments
-                   : xnu::mig::thread_act::thread_set_state_arguments;
-    const auto flavor =
-        memory_.read32(request.address + arguments[1].request_offset);
-    const auto capacity =
-        memory_.read32(request.address + arguments[2].request_count_offset);
-
-    std::optional<std::pair<std::uint32_t, std::uint32_t>> owner;
-    {
-        std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto object = resolve_name_with_right(*shared_state_,
-            process_.pid, request.remote_port, xnu::ipc::Right::Send);
-        if (object) {
-            owner = find_thread_owner(*shared_state_, *object);
-        }
-    }
-
-    if (sets_state) {
-        darwin::arm_thread::GeneralState state { };
-        bool readable =
-            flavor && capacity && owner &&
-            *flavor == darwin::arm_thread::general_state_flavor &&
-            *capacity >= darwin::arm_thread::general_state_word_count;
-        for (std::size_t index = 0; readable && index < state.size(); ++index) {
-            const auto value = memory_.read32(
-                request.address + arguments[2].request_offset +
-                static_cast<std::uint32_t>(index * sizeof(std::uint32_t)));
-            if (!value) {
-                readable = false;
-            } else {
-                state[index] = *value;
-            }
-        }
-        const auto updated =
-            readable && thread_state_update_handler_ &&
-            thread_state_update_handler_(owner->first, owner->second, state);
-        const std::array<std::uint32_t,
-            simple_reply_size / sizeof(std::uint32_t)>
-            reply {
-                darwin::mig_wire::message_bits(
-                    darwin::mig_wire::disposition_move_send_once),
-                simple_reply_size,
-                request.local_port,
-                0,
-                0,
-                request.identifier + 100,
-                0,
-                1,
-                updated ? mach_message_success : kernel_invalid_argument,
-            };
-        registers[0] = write_words(memory_, request.address, reply)
-                           ? mach_message_success
-                           : mach_receive_invalid_data;
-        if (updated) {
-            output_.write("[mach] thread_set_state caller=" +
-                          std::to_string(process_.pid) +
-                          " target=" + std::to_string(owner->first) + ":" +
-                          std::to_string(owner->second) +
-                          " flavor=" + std::to_string(*flavor) + "\n");
-        }
-        return true;
-    }
-
-    std::optional<darwin::arm_thread::GeneralState> state;
-    if (flavor && capacity && owner &&
-        *flavor == darwin::arm_thread::general_state_flavor &&
-        *capacity >= darwin::arm_thread::general_state_word_count) {
-        if (thread_state_query_) {
-            state = thread_state_query_(owner->first, owner->second, *flavor);
-        } else if (owner->first == process_.pid &&
-                   owner->second == cpu.processor_id()) {
-            darwin::arm_thread::GeneralState current { };
-            std::copy(cpu.registers().begin(), cpu.registers().end(),
-                current.begin());
-            current[darwin::arm_thread::cpsr_index] = cpu.cpsr();
-            state = current;
-        }
-    }
-
-    if (!state) {
-        const std::array<std::uint32_t,
-            simple_reply_size / sizeof(std::uint32_t)>
-            reply {
-                darwin::mig_wire::message_bits(
-                    darwin::mig_wire::disposition_move_send_once),
-                simple_reply_size,
-                request.local_port,
-                0,
-                0,
-                request.identifier + 100,
-                0,
-                1,
-                kernel_invalid_argument,
-            };
-        registers[0] = write_words(memory_, request.address, reply)
-                           ? mach_message_success
-                           : mach_receive_invalid_data;
-        return true;
-    }
-
-    constexpr auto reply_size =
-        state_reply_prefix_size +
-        darwin::arm_thread::general_state_word_count * sizeof(std::uint32_t);
-    if (registers[3] < reply_size) {
-        registers[0] = mach_receive_invalid_data;
-        return true;
-    }
-
-    const std::array<std::uint32_t,
-        state_reply_prefix_size / sizeof(std::uint32_t)>
-        prefix {
-            darwin::mig_wire::message_bits(
-                darwin::mig_wire::disposition_move_send_once),
-            reply_size,
-            request.local_port,
-            0,
-            0,
-            request.identifier + 100,
-            0,
-            1,
-            mach_message_success,
-            static_cast<std::uint32_t>(
-                darwin::arm_thread::general_state_word_count),
-        };
-    bool written = write_words(memory_, request.address, prefix);
-    for (std::size_t index = 0; written && index < state->size(); ++index) {
-        written = memory_.write32(
-            request.address + state_reply_prefix_size +
-                static_cast<std::uint32_t>(index * sizeof(std::uint32_t)),
-            (*state)[index]);
-    }
-    registers[0] = written ? mach_message_success : mach_receive_invalid_data;
-    output_.write(
-        "[mach] thread_get_state caller=" + std::to_string(process_.pid) +
-        " target=" + std::to_string(owner->first) + ":" +
-        std::to_string(owner->second) + " flavor=" + std::to_string(*flavor) +
-        "\n");
+    if (!pending_mach_receives_.empty())
+        return false;
+    std::lock_guard mach_lock { shared_state_->mach_mutex };
+    const auto result = thread_mig::State::try_synchronous_locked(memory_, cpu,
+        *shared_state_, process_, registers, request.bits, request.local_port,
+        request.address, request.identifier, thread_state_query_, thread_state_update_handler_);
+    if (!result)
+        return false;
+    registers[0] = *result;
     return true;
 }
 

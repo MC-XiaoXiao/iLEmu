@@ -27,11 +27,12 @@ struct TaskRpcDestination {
 // Keep the capability checks independent of request storage. Fixed scalar
 // services can copy in on the stack and allocate only if a reply must queue.
 // The caller holds mach_mutex through copyin, dispatch and reply delivery.
-inline std::optional<TaskRpcDestination> validate_task_rpc_locked(
+template <typename TargetValidator>
+inline std::optional<TaskRpcDestination> validate_kernel_rpc_locked(
     AddressSpace& memory, KernelSharedState& state,
     const ProcessContext& process, std::span<const std::uint32_t> registers,
     std::uint32_t bits, std::uint32_t reply_name, std::uint32_t request_size,
-    std::uint32_t minimum_reply_size, bool complex = false)
+    std::uint32_t minimum_reply_size, bool complex, TargetValidator&& validates_target)
 {
     using namespace mach_support;
     constexpr auto send_receive = darwin::mach_message::option_send |
@@ -51,7 +52,7 @@ inline std::optional<TaskRpcDestination> validate_task_rpc_locked(
     const auto object = target ? resolve_name_with_right(state, process.pid,
                                      *target, xnu::ipc::Right::Send)
                                : std::nullopt;
-    if (!object || !state.task_port_pids.contains(*object))
+    if (!object || !validates_target(*object))
         return std::nullopt;
     const auto reply = resolve_name_with_right(
         state, process.pid, reply_name, xnu::ipc::Right::Receive);
@@ -62,6 +63,17 @@ inline std::optional<TaskRpcDestination> validate_task_rpc_locked(
     if (queue == state.mach_queues.end() || !queue->second.empty())
         return std::nullopt;
     return TaskRpcDestination { *object, *reply };
+}
+
+inline std::optional<TaskRpcDestination> validate_task_rpc_locked(
+    AddressSpace& memory, KernelSharedState& state,
+    const ProcessContext& process, std::span<const std::uint32_t> registers,
+    std::uint32_t bits, std::uint32_t reply_name, std::uint32_t request_size,
+    std::uint32_t minimum_reply_size, bool complex = false)
+{
+    return validate_kernel_rpc_locked(memory, state, process, registers, bits,
+        reply_name, request_size, minimum_reply_size, complex,
+        [&](std::uint32_t object) { return state.task_port_pids.contains(object); });
 }
 
 // Validate an uncontended fixed task RPC before dispatching in-kernel.
