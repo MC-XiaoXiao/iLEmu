@@ -112,7 +112,7 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal,
     return deliver_signal_to_thread(signal, std::nullopt, sender_pid, sender_uid);
 }
 
-bool CompatibilityKernel::transition_signal_stop(bool stopped)
+bool CompatibilityKernel::transition_signal_stop(bool stopped, std::uint32_t signal)
 {
     bool changed = false;
     {
@@ -126,6 +126,9 @@ bool CompatibilityKernel::transition_signal_stop(bool stopped)
     }
     if (changed && process_runnable_handler_)
         process_runnable_handler_(process_.pid, !stopped);
+    if (changed && stopped && child_status_handler_)
+        child_status_handler_(process_.parent_pid,
+            { ChildStatus::Kind::Stop, process_.pid, process_.uid, signal });
     return changed;
 }
 
@@ -209,7 +212,7 @@ bool CompatibilityKernel::process_pending_signals(std::size_t processor)
         if (handler == darwin::signal::ignore_action || default_signal_is_ignored(signal))
             continue;
         if (default_signal_stops(signal)) {
-            transition_signal_stop(true);
+            transition_signal_stop(true, signal);
             return true;
         }
         exit_process(0, signal);

@@ -99,6 +99,13 @@ public:
         std::optional<std::uint32_t> child_pid;
         std::uint32_t status { };
     };
+    struct ChildStatus {
+        enum class Kind { Exit, Stop };
+        Kind kind;
+        std::uint32_t pid, uid, status;
+    };
+    using ChildStatusHandler =
+        std::function<void(std::uint32_t, const ChildStatus&)>;
     using ThreadCreateHandler = std::function<std::optional<std::size_t>(
         const std::array<std::uint32_t, 16>&, std::uint32_t)>;
     using ThreadTerminateHandler =
@@ -192,7 +199,13 @@ public:
     void clear_thread_io_policy(std::size_t processor_id);
     void exit_process(std::uint32_t status, std::uint32_t signal = 0);
     [[nodiscard]] WaitChildResult wait_child(
-        std::int32_t target_pid, bool reap);
+        std::int32_t target_pid, bool reap,
+        std::optional<std::size_t> waiter = std::nullopt);
+    void notify_child_status(const ChildStatus& status);
+    void set_child_status_handler(ChildStatusHandler handler)
+    {
+        child_status_handler_ = std::move(handler);
+    }
     void set_thread_create_handler(ThreadCreateHandler handler)
     {
         thread_create_handler_ = std::move(handler);
@@ -628,7 +641,7 @@ private:
     bool deliver_pending_signal(Cpu& cpu);
     bool caught_signal_ready(std::size_t processor) const;
     bool interrupt_thread_wait(Cpu& cpu, bool restart);
-    bool transition_signal_stop(bool stopped);
+    bool transition_signal_stop(bool stopped, std::uint32_t signal = 0);
     [[nodiscard]] std::uint32_t deliver_signal_to_thread(
         std::uint32_t signal, std::optional<std::size_t> processor,
         std::uint32_t sender_pid, std::uint32_t sender_uid);
@@ -1064,7 +1077,7 @@ private:
     std::set<std::size_t> disabled_thread_signals_;
     std::array<std::array<std::uint32_t, 4>, 32> signal_actions_ { };
     struct SignalSender {
-        std::uint32_t pid { }, uid { }, status { };
+        std::uint32_t pid { }, uid { }, status { }, code { };
     } signal_sender_;
     struct AlternateSignalStack {
         std::uint32_t address { };
@@ -1104,6 +1117,7 @@ private:
     TaskPriorityHandler task_priority_handler_;
     SchedulerPreemptionQuery scheduler_preemption_query_;
     SignalDeliveryHandler signal_delivery_handler_;
+    ChildStatusHandler child_status_handler_;
     TaskMemoryStatisticsQuery task_memory_statistics_query_;
     TaskMemoryRegionQuery task_memory_region_query_;
     TaskMemoryShareQuery task_memory_share_query_;

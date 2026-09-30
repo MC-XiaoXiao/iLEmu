@@ -1976,6 +1976,13 @@ void EmulatorSession::run()
                     XnuThreadId { runtime_ptr->kernel->process().pid,
                         static_cast<std::uint32_t>(thread_slot) });
             });
+        runtime.kernel->set_child_status_handler(
+            [&runtime_index](std::uint32_t parent_pid,
+                const CompatibilityKernel::ChildStatus& status) {
+                if (auto* parent = runtime_index.find(parent_pid);
+                    parent && !parent->kernel->process().exited)
+                    parent->kernel->notify_child_status(status);
+            });
         runtime.kernel->set_signal_delivery_handler(
             [&runtime_index, &scheduler, &guest_execution_policy,
                 &guest_parallelism_policy, runtime_ptr](
@@ -3343,7 +3350,7 @@ void EmulatorSession::run()
                     parent->kernel->complete_wait(parent->cpus->cpu(processor),
                         *child.child_pid, child.status)) {
                     static_cast<void>(parent->kernel->wait_child(
-                        static_cast<std::int32_t>(*child.child_pid), true));
+                        static_cast<std::int32_t>(*child.child_pid), true, processor));
                     static_cast<void>(scheduler.make_runnable(
                         XnuThreadId { parent->kernel->process().pid,
                             static_cast<std::uint32_t>(processor) }));

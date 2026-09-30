@@ -20,7 +20,10 @@ public:
     explicit DarwinSignalState(DarwinAbiEpoch epoch)
         : retain_retired_(epoch >= DarwinAbiEpoch::IphoneOs3)
         , wait_consumes_owner_(epoch >= DarwinAbiEpoch::IphoneOs2)
-        , wait_reports_interrupt_(epoch >= DarwinAbiEpoch::IphoneOs3) { }
+        , wait_reports_interrupt_(epoch >= DarwinAbiEpoch::IphoneOs3)
+        , child_policy_(epoch >= DarwinAbiEpoch::IphoneOs3 ? ChildPolicy::ConsumeOnReap
+              : epoch >= DarwinAbiEpoch::IphoneOs2 ? ChildPolicy::KernelReap
+                                                 : ChildPolicy::Reparent) { }
     enum class Scope { Thread, Process };
     static constexpr std::uint32_t unmaskable =
         (1U << (darwin::signal::kill - 1U)) |
@@ -127,6 +130,30 @@ public:
         consume(processor, bit);
     }
     [[nodiscard]] bool wait_reports_interrupt() const { return wait_reports_interrupt_; }
+    [[nodiscard]] bool kernel_reaps_ignored_children() const
+    {
+        return child_policy_ != ChildPolicy::Reparent;
+    }
+    [[nodiscard]] std::uint32_t child_stop_status(std::uint32_t signal) const
+    {
+        // XNU 1228+ psignal encodes SIGSTOP with W_EXITCODE before sendsig
+        // extracts WEXITSTATUS. Other legacy stop paths leave the high byte zero.
+        return kernel_reaps_ignored_children() && signal == darwin::signal::stop
+                   ? signal : 0U;
+    }
+    [[nodiscard]] bool needs_last_child_check(std::size_t processor) const
+    {
+        constexpr auto bit = 1U << (darwin::signal::child - 1U);
+        return child_policy_ == ChildPolicy::ConsumeOnReap &&
+            (mask(processor) & pending(processor) & bit);
+    }
+    void reaped_last_child(std::size_t processor)
+    {
+        // kern_exit.c conformance change 6577252 (1456+): only the waiting
+        // uthread's held SIGCHLD is cleared, not another thread's signal.
+        if (needs_last_child_check(processor))
+            consume(processor, 1U << (darwin::signal::child - 1U));
+    }
     [[nodiscard]] std::optional<std::uint32_t> take_pending(
         std::size_t waiter, std::uint32_t signals)
     {
@@ -208,9 +235,11 @@ private:
     static constexpr std::uint32_t exec_mask = stop_mask | continue_mask |
         (1U << 0U) | (1U << 1U) | (1U << 2U) | (1U << 8U) |
         (1U << 14U) | (1U << 29U) | (1U << 30U);
+    enum class ChildPolicy { Reparent, KernelReap, ConsumeOnReap };
     const bool retain_retired_;
     const bool wait_consumes_owner_;
     const bool wait_reports_interrupt_;
+    const ChildPolicy child_policy_;
     std::uint32_t retired_pending_ { };
     std::uint64_t next_order_ { 2 };
     struct Thread {

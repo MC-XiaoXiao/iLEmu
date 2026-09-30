@@ -196,6 +196,10 @@ void CompatibilityKernel::exit_process(
     display_state_->clear_if_owner(process_.pid);
     release_process_mach_rights();
     process_.exited = true;
+    if (child_status_handler_)
+        child_status_handler_(process_.parent_pid,
+            { ChildStatus::Kind::Exit, process_.pid, process_.uid,
+                signal ? signal & 0x7fU : (status & 0xffU) << 8U });
     if (signal != 0)
         performance_counters().record_abnormal_exit();
     output_.write(
@@ -206,7 +210,7 @@ void CompatibilityKernel::exit_process(
 }
 
 CompatibilityKernel::WaitChildResult CompatibilityKernel::wait_child(
-    std::int32_t target_pid, bool reap)
+    std::int32_t target_pid, bool reap, std::optional<std::size_t> waiter)
 {
     WaitChildResult result;
     std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -226,8 +230,15 @@ CompatibilityKernel::WaitChildResult CompatibilityKernel::wait_child(
         result.status = record.termination_signal != 0
                             ? record.termination_signal & 0x7fU
                             : (record.exit_status & 0xffU) << 8U;
-        if (reap)
+        if (reap) {
             shared_state_->processes.erase(child);
+            if (waiter && signal_state_.needs_last_child_check(*waiter) &&
+                std::none_of(shared_state_->processes.begin(),
+                    shared_state_->processes.end(), [this](const auto& entry) {
+                        return entry.second.parent_pid == process_.pid;
+                    }))
+                signal_state_.reaped_last_child(*waiter);
+        }
         break;
     }
     return result;
@@ -371,7 +382,8 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
                 return;
             }
             static_cast<void>(
-                wait_child(static_cast<std::int32_t>(*result.child_pid), true));
+                wait_child(static_cast<std::int32_t>(*result.child_pid), true,
+                    cpu.processor_id()));
             output_.write(
                 "[process] reap-nohang parent=" + std::to_string(process_.pid) +
                 " child=" + std::to_string(*result.child_pid) + "\n");

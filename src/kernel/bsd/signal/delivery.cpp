@@ -110,6 +110,7 @@ bool CompatibilityKernel::deliver_pending_signal(Cpu& cpu)
         frame.information.pid = signal_sender_.pid;
         frame.information.uid = signal_sender_.uid;
         frame.information.status = signal_sender_.status;
+        frame.information.code = signal_sender_.code;
         signal_sender_ = { };
         break;
     }
