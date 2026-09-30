@@ -710,8 +710,6 @@ private:
     [[nodiscard]] bool dispatch_mach_thread_lifecycle_message(
         Cpu& cpu, const MachMessageRequest& request);
     void dispatch_mach_thread_self_trap(Cpu& cpu);
-    [[nodiscard]] bool dispatch_mach_vm_deallocate_message(
-        Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_vm_protect_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_vm_inherit_message(

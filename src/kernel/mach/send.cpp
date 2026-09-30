@@ -44,6 +44,7 @@
 #include "host/service_ports.hpp"
 #include "host/information.hpp"
 #include "vm/allocate.hpp"
+#include "vm/deallocate.hpp"
 #include "port/notifications.hpp"
 #include "port/lifecycle.hpp"
 #include "port/queries.hpp"
@@ -263,6 +264,9 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
         kernel_service_handled = true;
         const auto destination = vm_mig::Allocation::handles(message_id)
             ? vm_mig::Allocation::dispatch_locked(memory_, *shared_state_,
+                  process_.pid, remote_object, queued)
+            : vm_mig::Deallocation::handles(message_id)
+            ? vm_mig::Deallocation::dispatch_locked(memory_, cpu, *shared_state_,
                   process_.pid, remote_object, queued)
             : port_mig::Queries::handles(message_id)
             ? port_mig::Queries::dispatch_locked(*shared_state_, remote_object, queued)

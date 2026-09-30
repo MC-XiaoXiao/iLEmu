@@ -2,44 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Handle guest virtual-memory deallocation messages.
-//
-// Apple public ABI/behavior references (guest profiles may differ):
-// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/vm_map.defs
-// https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/osfmk/mach/mach_vm.defs
-
+#include "deallocate.hpp"
+#include "wire_format.hpp"
 #include "kernel/kernel.hpp"
-
-#include "kernel/darwin_abi.hpp"
-#include "mach/mig_wire_abi.hpp"
-#include "mach/vm_map_mig_ids.hpp"
-
 #include <algorithm>
-#include <array>
-#include <cstddef>
-#include <cstdint>
-
-#include "../support.hpp"
-#include "wire_reply.hpp"
+#include <limits>
 
 namespace ilemu {
 namespace {
-
-    using namespace mach_support;
-    using namespace mach_vm_support;
-
-    // The pointer-sized vm_map subsystem numbers this routine relative to 3800;
-    // mach_vm publishes the same ARM32 wire contract relative to 4800.
-    constexpr std::uint32_t mach_vm_deallocate_identifier = 4801U;
-    constexpr std::uint32_t request_size = 40U;
-    constexpr std::uint32_t reply_size = 36U;
-
-} // namespace
-
-bool CompatibilityKernel::unmap_memory(
-    Cpu& cpu, std::uint32_t address, std::uint32_t size)
+bool unmap_guest_memory(
+    AddressSpace& memory, Cpu& cpu, std::uint32_t address, std::uint32_t size)
 {
-    if (!memory_.unmap(address, size))
+    if (!memory.unmap(address, size))
         return false;
     if (size == 0U)
         return true;
@@ -57,61 +31,98 @@ bool CompatibilityKernel::unmap_memory(
     return true;
 }
 
-bool CompatibilityKernel::dispatch_mach_vm_deallocate_message(
-    Cpu& cpu, const MachMessageRequest& request)
+} // namespace
+
+bool CompatibilityKernel::unmap_memory(
+    Cpu& cpu, std::uint32_t address, std::uint32_t size)
 {
-    const auto vm_deallocate_identifier =
-        mig_message_id(xnu::mig::vm_map::Routine::vm_deallocate);
-    const auto is_mach_vm = request.identifier == mach_vm_deallocate_identifier;
-    if (request.identifier != vm_deallocate_identifier && !is_mach_vm)
-        return false;
-
-    auto& registers = cpu.registers();
-    if (registers[2] < request_size || registers[3] < reply_size) {
-        registers[0] = mach_receive_invalid_data;
-        return true;
-    }
-
-    const auto& arguments = xnu::mig::vm_map::vm_deallocate_arguments;
-    const auto address =
-        memory_.read32(request.address + arguments[1].request_offset);
-    const auto size =
-        memory_.read32(request.address + arguments[2].request_offset);
-
-    bool targets_current_task = false;
-    {
-        std::lock_guard lock { shared_state_->mach_mutex };
-        const auto target = target_task_for_port(
-            *shared_state_, process_.pid, request.remote_port);
-        targets_current_task = target && *target == process_.pid;
-    }
-    auto result = darwin::mach::invalid_argument;
-    if (address && size && targets_current_task) {
-        // vm_deallocate treats an already-unmapped subrange as success; unmap
-        // whatever currently overlaps the requested page range.
-        static_cast<void>(unmap_memory(cpu, *address, *size));
-        result = darwin::mach::success;
-    }
-
-    const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)> reply {
-        darwin::mig_wire::message_bits(
-            darwin::mig_wire::disposition_move_send_once),
-        reply_size,
-        request.local_port,
-        0,
-        0,
-        request.identifier + 100U,
-        0,
-        1,
-        result,
-    };
-    if (!write_words(memory_, request.address, reply)) {
-        registers[0] = mach_receive_invalid_data;
-        return true;
-    }
-
-    registers[0] = darwin::mach::success;
-    return true;
+    return unmap_guest_memory(memory_, cpu, address, size);
 }
 
+namespace vm_mig {
+using namespace mach_support;
+
+std::uint32_t Deallocation::execute(AddressSpace& memory, Cpu& cpu,
+    std::uint64_t address, std::uint64_t size, bool wide)
+{
+    // vm_user.c checks addition in the endpoint's type, then vm_map_remove
+    // clamps the rounded range to the target map. Holes are not errors.
+    const auto maximum = wide ? UINT64_MAX : std::uint64_t { UINT32_MAX };
+    if (address > maximum || size > maximum - address)
+        return darwin::mach::invalid_argument;
+    if (size == 0U)
+        return darwin::mach::success;
+    constexpr auto page_mask = std::uint64_t { AddressSpace::page_size - 1U };
+    constexpr auto limit = std::uint64_t { 1 } << 32U;
+    const auto first = address & ~page_mask;
+    const auto end = std::min((address + size + page_mask) & ~page_mask, limit);
+    if (first >= end)
+        return darwin::mach::success;
+    // UINT32_MAX rounds to the entire ARM32 map when first is zero.
+    const auto span = static_cast<std::uint32_t>(
+        std::min(end - first, std::uint64_t { UINT32_MAX }));
+    return unmap_guest_memory(memory, cpu, static_cast<std::uint32_t>(first), span)
+        ? darwin::mach::success : darwin::mach::invalid_argument;
+}
+
+std::uint32_t Deallocation::evaluate_locked(AddressSpace& memory, Cpu& cpu,
+    const KernelSharedState& state, std::uint32_t caller,
+    std::uint32_t object, std::span<const std::byte> bytes)
+{
+    const auto width = mach_vm_support::MachVmWireFormat::for_interface(
+        read_little_word(bytes, 20U) == 4801U,
+        state.darwin_abi.mach_vm_address).address_size();
+    if (bytes.size() != 32U + 2U * width ||
+        (read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit))
+        return darwin::mig::bad_arguments;
+    const auto target = state.task_port_pids.find(object);
+    if (target == state.task_port_pids.end() || target->second != caller)
+        return darwin::mach::invalid_argument;
+    const auto read_address = [&](std::size_t offset) -> std::uint64_t {
+        return read_little_word(bytes, offset) | (width == 8U
+            ? std::uint64_t { read_little_word(bytes, offset + 4U) } << 32U : 0U);
+    };
+    return execute(memory, cpu, read_address(32U),
+        read_address(32U + width), width == 8U);
+}
+
+std::optional<std::uint32_t> Deallocation::dispatch_locked(AddressSpace& memory,
+    Cpu& cpu, KernelSharedState& state, std::uint32_t caller,
+    std::uint32_t object, KernelSharedState::MachMessage& request)
+{
+    const auto identifier = read_little_word(request.bytes, 20U);
+    const auto result = evaluate_locked(memory, cpu, state, caller, object, request.bytes);
+    return mach_ipc::enqueue_kernel_reply_locked(
+        state, request, identifier, std::array { 0U, 1U, result });
+}
+
+std::optional<std::uint32_t> Deallocation::try_synchronous_locked(AddressSpace& memory,
+    Cpu& cpu, KernelSharedState& state, const ProcessContext& process,
+    std::span<const std::uint32_t> registers, std::uint32_t bits,
+    std::uint32_t reply_name, std::uint32_t receive_address, std::uint32_t identifier)
+{
+    const auto width = mach_vm_support::MachVmWireFormat::for_interface(
+        identifier == 4801U, state.darwin_abi.mach_vm_address).address_size();
+    const auto request_size = 32U + 2U * width;
+    constexpr auto reply_with_trailer = 44U;
+    const auto destination = mach_ipc::validate_task_rpc_locked(memory, state,
+        process, registers, bits, reply_name, request_size, reply_with_trailer);
+    if (!destination || !memory.accessible(
+            receive_address, reply_with_trailer, MemoryPermission::Write))
+        return std::nullopt;
+    std::array<std::byte, 48> storage;
+    const auto bytes = std::span { storage }.first(request_size);
+    if (!memory.copy_out(registers[0], bytes))
+        return darwin::mach_message::send_invalid_data;
+    if (read_little_word(bytes, 16U) != 0U)
+        return std::nullopt;
+    // Deallocation can remove the reply buffer itself. Once it executes,
+    // return copyout's error without dispatching the operation a second time.
+    const auto result = evaluate_locked(
+        memory, cpu, state, process.pid, destination->task_object, bytes);
+    state.mach_port_objects.make_send_once(destination->reply_object);
+    return mach_ipc::copyout_kernel_reply_locked<3>(memory, state, receive_address,
+        reply_name, destination->reply_object, identifier, std::array { 0U, 1U, result });
+}
+} // namespace vm_mig
 } // namespace ilemu

@@ -15,6 +15,7 @@
 #include "kernel/darwin_abi.hpp"
 
 #include "../support.hpp"
+#include "deallocate.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -148,13 +149,7 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         ? static_cast<std::uint64_t>(registers[3]) |
               (static_cast<std::uint64_t>(registers[4]) << 32U)
         : registers[2];
-    if (address > UINT32_MAX || size > UINT32_MAX) {
-        registers[0] = darwin::mach::invalid_argument;
-        return true;
-    }
-    static_cast<void>(unmap_memory(cpu, static_cast<std::uint32_t>(address),
-        static_cast<std::uint32_t>(size)));
-    registers[0] = darwin::mach::success;
+    registers[0] = vm_mig::Deallocation::execute(memory_, cpu, address, size, wide);
     return true;
 }
 
