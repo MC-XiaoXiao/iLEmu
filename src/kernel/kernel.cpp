@@ -1609,6 +1609,29 @@ CompatibilityKernel::pending_event_poll_candidates()
     return processors;
 }
 
+std::optional<std::chrono::steady_clock::time_point>
+CompatibilityKernel::next_host_event_poll_deadline()
+{
+    std::lock_guard lock { mutex_ };
+    if (pending_event_processors_.empty())
+        return std::nullopt;
+    // A syscall or another task can change readiness after the last poll.
+    // Revisit it before sleeping, including a newly blocked host operation.
+    if (!pending_event_poll_observed_ ||
+        pending_event_poll_topology_generation_ !=
+            pending_event_topology_generation_ ||
+        pending_event_poll_io_generation_ !=
+            shared_state_->io_event_generation_snapshot() ||
+        pending_event_poll_mach_generation_ !=
+            shared_state_->mach_queue_generation_snapshot()) {
+        return std::chrono::steady_clock::now();
+    }
+    if (pending_event_host_probe_ ==
+        std::chrono::steady_clock::time_point::max())
+        return std::nullopt;
+    return pending_event_host_probe_;
+}
+
 bool CompatibilityKernel::has_pending_event_locked(
     std::size_t processor) const
 {

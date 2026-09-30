@@ -508,6 +508,10 @@ public:
     // kernel owns the topology/generation/deadline gate so an idle frontend has
     // an O(1) fast path and never rediscovers wait state by scanning CPUs.
     [[nodiscard]] std::vector<std::size_t> pending_event_poll_candidates();
+    // Bound frontend sleeps while host work is pending, independently of
+    // guest timer deadlines. Reuse the indexed readiness/polling state.
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+    next_host_event_poll_deadline();
     [[nodiscard]] std::uint64_t mach_message_generation() const
     {
         return shared_state_->mach_queue_generation_snapshot();

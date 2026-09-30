@@ -2194,6 +2194,22 @@ void EmulatorSession::run()
     const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
         if (delay <= std::chrono::nanoseconds::zero())
             return;
+        // Host workers do not post window/control events. Keep the existing
+        // bounded completion polling alive without advancing guest clocks or
+        // waking idle tasks that have no host work.
+        const auto now = std::chrono::steady_clock::now();
+        for (const auto& runtime : runtimes) {
+            if (runtime->kernel->process().exited)
+                continue;
+            if (const auto deadline =
+                    runtime->kernel->next_host_event_poll_deadline()) {
+                if (*deadline <= now)
+                    return;
+                delay = std::min(delay,
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        *deadline - now));
+            }
+        }
         // A display submission may be the final Guest action before VSync is
         // disabled.  Do not let the idle wait hide an already queued frame
         // until an unrelated window event wakes the loop; the next iteration will
