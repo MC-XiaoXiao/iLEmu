@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <limits>
 
 namespace ilemu::bsd {
@@ -216,7 +217,66 @@ VirtualUdpStatus VirtualUdpNetwork::bind(
     if (!valid_address(address, socket.family_))
         return VirtualUdpStatus::InvalidArgument;
     std::lock_guard lock { mutex_ };
-    socket.bound_address_ = normalize_address(address, socket.family_);
+    if (!socket.bound_address_.empty())
+        return VirtualUdpStatus::InvalidArgument;
+    auto bound = normalize_address(address, socket.family_);
+    if (zero_port(bound)) {
+        const auto status = allocate_port_locked(socket.family_, bound);
+        if (status != VirtualUdpStatus::Success)
+            return status;
+    }
+    socket.bound_address_ = std::move(bound);
+    return VirtualUdpStatus::Success;
+}
+
+VirtualUdpStatus VirtualUdpNetwork::allocate_port_locked(
+    std::uint32_t family, std::span<std::byte> address)
+{
+    // Native in_pcbbind/in6_pcbsetport searches a bounded ephemeral range.
+    // Build occupancy once, rather than rescanning every socket for every
+    // candidate when the range is full. No heap allocation or extra lock.
+    constexpr std::size_t port_count =
+        std::numeric_limits<std::uint16_t>::max() + 1U - first_ephemeral_port;
+    std::bitset<port_count> occupied;
+    std::erase_if(sockets_, [](const auto& weak) { return weak.expired(); });
+    for (const auto& weak : sockets_) {
+        const auto other = weak.lock();
+        if (!other || other->defunct() || other->family_ != family ||
+            other->bound_address_.empty())
+            continue;
+        const auto& bound = other->bound_address_;
+        if (!wildcard_address(address, family) &&
+            !wildcard_address(bound, family) && !same_ip(address, bound, family))
+            continue;
+        const auto port =
+            (std::to_integer<std::uint32_t>(bound[sockaddr_port_offset]) << 8U) |
+            std::to_integer<std::uint32_t>(bound[sockaddr_port_offset + 1U]);
+        if (port >= first_ephemeral_port)
+            occupied.set(port - first_ephemeral_port);
+    }
+    for (std::size_t attempt = 0; attempt < port_count; ++attempt) {
+        const auto port = next_ephemeral_port_++;
+        if (next_ephemeral_port_ == 0)
+            next_ephemeral_port_ = first_ephemeral_port;
+        if (!occupied.test(port - first_ephemeral_port)) {
+            set_port(address, port);
+            return VirtualUdpStatus::Success;
+        }
+    }
+    return VirtualUdpStatus::AddressNotAvailable;
+}
+
+VirtualUdpStatus VirtualUdpNetwork::ensure_bound_locked(VirtualUdpSocket& socket)
+{
+    if (!socket.bound_address_.empty())
+        return VirtualUdpStatus::Success;
+    std::vector<std::byte> bound(address_size(socket.family_), std::byte { 0 });
+    bound[sockaddr_length_offset] = static_cast<std::byte>(bound.size());
+    bound[sockaddr_family_offset] = static_cast<std::byte>(socket.family_);
+    const auto status = allocate_port_locked(socket.family_, bound);
+    if (status != VirtualUdpStatus::Success)
+        return status;
+    socket.bound_address_ = std::move(bound);
     return VirtualUdpStatus::Success;
 }
 
@@ -264,17 +324,9 @@ VirtualUdpStatus VirtualUdpNetwork::send(VirtualUdpSocket& socket,
         return VirtualUdpStatus::InvalidArgument;
 
     std::lock_guard lock { mutex_ };
-    if (socket.bound_address_.empty()) {
-        socket.bound_address_.assign(
-            address_size(socket.family_), std::byte { 0 });
-        socket.bound_address_[sockaddr_length_offset] =
-            static_cast<std::byte>(socket.bound_address_.size());
-        socket.bound_address_[sockaddr_family_offset] =
-            static_cast<std::byte>(socket.family_);
-        set_port(socket.bound_address_, next_ephemeral_port_++);
-        if (next_ephemeral_port_ == 0)
-            next_ephemeral_port_ = 49'152;
-    }
+    if (const auto status = ensure_bound_locked(socket);
+        status != VirtualUdpStatus::Success)
+        return status;
 
     auto source = socket.bound_address_;
     if (wildcard_address(source, socket.family_)) {
@@ -407,6 +459,9 @@ VirtualUdpStatus VirtualUdpSocket::connect(std::span<const std::byte> address)
     std::lock_guard lock { network->mutex_ };
     if (!connected_address_.empty())
         return VirtualUdpStatus::AlreadyConnected;
+    if (const auto status = network->ensure_bound_locked(*this);
+        status != VirtualUdpStatus::Success)
+        return status;
     connected_address_ = std::move(normalized);
     return VirtualUdpStatus::Success;
 }

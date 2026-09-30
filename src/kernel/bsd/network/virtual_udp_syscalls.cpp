@@ -9,6 +9,7 @@
 
 #include "kernel/darwin_abi.hpp"
 #include <kernel/socket_control_buffer.hpp>
+#include <kernel/virtual_udp_error.hpp>
 
 #include "../support.hpp"
 
@@ -20,28 +21,7 @@
 #include <vector>
 
 namespace ilemu {
-namespace {
 
-    std::uint32_t socket_error(bsd::VirtualUdpStatus status)
-    {
-        switch (status) {
-        case bsd::VirtualUdpStatus::NotConnected:
-            return bsd_support::not_connected;
-        case bsd::VirtualUdpStatus::BadFileDescriptor:
-            return bsd_support::bad_file_descriptor;
-        case bsd::VirtualUdpStatus::AlreadyConnected:
-            return bsd_support::already_connected;
-        case bsd::VirtualUdpStatus::AddressFamilyUnsupported:
-            return 47; // EAFNOSUPPORT
-        case bsd::VirtualUdpStatus::InvalidArgument:
-            return bsd_support::invalid_argument;
-        case bsd::VirtualUdpStatus::Success:
-            return 0;
-        }
-        return bsd_support::invalid_argument;
-    }
-
-} // namespace
 
 bool CompatibilityKernel::send_host_socket_bytes(Cpu& cpu, std::uint32_t fd,
     std::vector<std::byte> bytes, std::vector<std::byte> destination,
@@ -185,7 +165,7 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
                             ? socket->second->send(payload)
                             : socket->second->send(payload, destination);
     if (result != bsd::VirtualUdpStatus::Success) {
-        bsd_error(cpu, socket_error(result));
+        bsd_error(cpu, virtual_udp_error(result));
     } else {
         bsd_success(cpu, static_cast<std::uint32_t>(payload.size()));
         if (socket_payload_trace_count_ < 32U) {

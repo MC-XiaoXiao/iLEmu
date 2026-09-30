@@ -18,6 +18,7 @@
 #include "network/darwin_route_socket.hpp"
 #include "kernel/kernel_network.hpp"
 #include <kernel/local_socket_control.hpp>
+#include <kernel/virtual_udp_error.hpp>
 
 #include <algorithm>
 #include <array>
@@ -631,10 +632,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 if (result == bsd::VirtualUdpStatus::Success) {
                     bsd_success(cpu, 0);
                 } else {
-                    bsd_error(
-                        cpu, result == bsd::VirtualUdpStatus::AlreadyConnected
-                                 ? bsd_support::already_connected
-                                 : bsd_support::invalid_argument);
+                    bsd_error(cpu, virtual_udp_error(result));
                 }
             }
             return;
@@ -769,9 +767,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             const auto address = memory_.read_bytes(registers[1], registers[2]);
             if (!address) {
                 bsd_error(cpu, bsd_support::bad_address);
-            } else if (udp->second->bind(*address) !=
-                       bsd::VirtualUdpStatus::Success) {
-                bsd_error(cpu, bsd_support::invalid_argument);
+            } else if (const auto result = udp->second->bind(*address);
+                       result != bsd::VirtualUdpStatus::Success) {
+                bsd_error(cpu, virtual_udp_error(result));
             } else {
                 output_.write("[network] virtual UDP bind fd=" +
                               std::to_string(registers[0]) + "\n");
@@ -1324,13 +1322,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 sent = udp->second->send(*bytes, *destination);
             }
             if (sent != bsd::VirtualUdpStatus::Success) {
-                bsd_error(cpu, sent == bsd::VirtualUdpStatus::BadFileDescriptor
-                                   ? bsd_support::bad_file_descriptor
-                               : sent == bsd::VirtualUdpStatus::NotConnected
-                                   ? bsd_support::not_connected
-                               : sent == bsd::VirtualUdpStatus::AlreadyConnected
-                                   ? bsd_support::already_connected
-                                   : bsd_support::invalid_argument);
+                bsd_error(cpu, virtual_udp_error(sent));
                 return;
             }
             bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));

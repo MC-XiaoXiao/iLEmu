@@ -16,6 +16,7 @@
 
 #include "kernel/baseband_device.hpp"
 #include "kernel/darwin_abi.hpp"
+#include <kernel/virtual_udp_error.hpp>
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
@@ -517,9 +518,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             }
             const auto sent = udp->second->send(*bytes);
             if (sent != bsd::VirtualUdpStatus::Success) {
-                bsd_error(cpu, sent == bsd::VirtualUdpStatus::NotConnected
-                                   ? bsd_support::not_connected
-                                   : bsd_support::invalid_argument);
+                bsd_error(cpu, virtual_udp_error(sent));
             } else {
                 bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
             }

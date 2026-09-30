@@ -29,6 +29,7 @@ enum class VirtualUdpStatus {
     NotConnected,
     AlreadyConnected,
     BadFileDescriptor,
+    AddressNotAvailable,
 };
 
 struct VirtualUdpDatagram {
@@ -65,6 +66,9 @@ private:
 
     [[nodiscard]] VirtualUdpStatus bind(
         VirtualUdpSocket& socket, std::span<const std::byte> address);
+    [[nodiscard]] VirtualUdpStatus allocate_port_locked(
+        std::uint32_t family, std::span<std::byte> address);
+    [[nodiscard]] VirtualUdpStatus ensure_bound_locked(VirtualUdpSocket& socket);
     [[nodiscard]] VirtualUdpStatus set_option(VirtualUdpSocket& socket,
         std::uint32_t level, std::uint32_t option,
         std::span<const std::byte> value);
@@ -81,7 +85,8 @@ private:
 
     mutable std::mutex mutex_;
     std::vector<std::weak_ptr<VirtualUdpSocket>> sockets_;
-    std::uint16_t next_ephemeral_port_ { 49'152 };
+    static constexpr std::uint16_t first_ephemeral_port = 49'152;
+    std::uint16_t next_ephemeral_port_ { first_ephemeral_port };
 };
 
 class VirtualUdpSocket final {
