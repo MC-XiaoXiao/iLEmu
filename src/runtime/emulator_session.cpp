@@ -3966,10 +3966,17 @@ void EmulatorSession::run()
                               prepared.execution.single_step;
             std::uint8_t debug_signal = gdb_signal::trap;
             const auto fatal_result = result.fault ||
+                                      result.architectural_exception ||
                                       !result.exception.empty() ||
                                       Dynarmic::Has(result.reason,
                                           Dynarmic::HaltReason::UserDefined4);
+            auto fatal_signal = gdb_signal::illegal_instruction;
             if (fatal_result) {
+                if (result.fault)
+                    fatal_signal = gdb_signal::segmentation_fault;
+                else if (result.architectural_exception &&
+                    result.architectural_exception->kind == CpuException::Kind::Breakpoint)
+                    fatal_signal = gdb_signal::trap;
                 const auto& registers = cpu.registers();
                 std::ostringstream failure;
                 failure << "[cpu] fatal pid=" << runtime.kernel->process().pid
@@ -3983,6 +3990,11 @@ void EmulatorSession::run()
                 }
                 if (!result.exception.empty())
                     failure << " exception=\"" << result.exception << '"';
+                if (result.architectural_exception) {
+                    failure << " exception-kind="
+                            << static_cast<unsigned>(result.architectural_exception->kind)
+                            << " exception-pc=0x" << result.architectural_exception->pc;
+                }
                 output.line(failure.str());
             }
             auto completion = XnuSliceCompletion::Continue;
@@ -4076,14 +4088,11 @@ void EmulatorSession::run()
             } else if (fatal_result) {
                 if (gdb_server) {
                     debug_stop = true;
-                    debug_signal = result.fault
-                                       ? gdb_signal::segmentation_fault
-                                       : gdb_signal::illegal_instruction;
+                    debug_signal = fatal_signal;
                 } else if (runtime.kernel->process().pid !=
                            initial_runtime->kernel->process().pid) {
                     runtime.kernel->exit_process(
-                        0, result.fault ? gdb_signal::segmentation_fault
-                                        : gdb_signal::illegal_instruction);
+                        0, fatal_signal);
                     completion = XnuSliceCompletion::Terminate;
                 } else {
                     completion = XnuSliceCompletion::Terminate;
@@ -4225,8 +4234,7 @@ void EmulatorSession::run()
                         runtime.kernel->process().pid !=
                             initial_runtime->kernel->process().pid) {
                         runtime.kernel->exit_process(0,
-                            result.fault ? gdb_signal::segmentation_fault
-                                         : gdb_signal::illegal_instruction);
+                            fatal_signal);
                         scheduler.remove_process(
                             runtime.kernel->process().pid);
                         guest_execution_policy.forget_process(

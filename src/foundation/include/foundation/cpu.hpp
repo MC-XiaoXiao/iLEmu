@@ -150,6 +150,14 @@ class JitTranslationProfile;
 class JitArtifactStore;
 enum class JitArtifactRetention : std::uint8_t;
 
+// Guest architectural exceptions are distinct from JIT implementation failures.
+// CPU-model-defined unpredictable behavior is resolved before publishing one.
+struct CpuException {
+    enum class Kind { UndefinedInstruction, UnpredictableInstruction, Breakpoint };
+    Kind kind;
+    std::uint32_t pc;
+};
+
 struct CpuRunResult {
     Dynarmic::HaltReason reason { };
     std::uint64_t ticks_consumed { };
@@ -167,6 +175,7 @@ struct CpuRunResult {
     std::uint64_t host_execution_ns { };
     // Compilation cost is not a sample of steady-state Guest throughput.
     bool translated_code { };
+    std::optional<CpuException> architectural_exception;
 };
 
 enum class SvcDispatchMode : std::uint8_t {

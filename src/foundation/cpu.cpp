@@ -1456,6 +1456,33 @@ public:
                 return;
             }
         }
+        using Exception = Dynarmic::A32::Exception;
+        using Kind = CpuException::Kind;
+        switch (exception) {
+        case Exception::UndefinedInstruction:
+            architectural_exception_ = CpuException { Kind::UndefinedInstruction, pc };
+            break;
+        case Exception::UnpredictableInstruction:
+            architectural_exception_ = CpuException { Kind::UnpredictableInstruction, pc };
+            break;
+        case Exception::Breakpoint:
+            architectural_exception_ = CpuException { Kind::Breakpoint, pc };
+            break;
+        case Exception::NoExecuteFault:
+            // A cached no-execute block need not call MemoryReadCode again.
+            // Preserve the execute-fault category and address on every run.
+            if (!fault_)
+                memory_fault(pc, sizeof(std::uint32_t), MemoryPermission::Execute);
+            owner_->registers()[15] = pc;
+            return;
+        default:
+            break; // Decode errors and unsupported JIT operations stay diagnostic.
+        }
+        if (architectural_exception_) {
+            // Dynarmic advances PC before this callback. Exception state must
+            // identify the faulting instruction for a debugger or guest handler.
+            owner_->registers()[15] = pc;
+        }
         std::ostringstream message;
         message << "ARM exception " << static_cast<unsigned>(exception)
                 << " at 0x" << std::hex << pc;
@@ -1491,6 +1518,7 @@ public:
         svc_calls_ = 0;
         fault_.reset();
         breakpoint_.reset();
+        architectural_exception_.reset();
         exception_.clear();
         cooperative_execution_ = cooperative_execution && ticks != 0U;
         host_yield_requested_ = false;
@@ -1515,7 +1543,7 @@ public:
     {
         return CpuRunResult { reason, consumed_, svc_, svc_calls_, fault_,
             breakpoint_, exception_, host_yield_requested_,
-            host_yield_checks_, 0U, translated_code_ };
+            host_yield_checks_, 0U, translated_code_, architectural_exception_ };
     }
 
     [[nodiscard]] const ArmCpuModel& cpu_model() const { return cpu_model_; }
@@ -1976,6 +2004,7 @@ private:
     std::uint64_t svc_calls_ { };
     std::optional<MemoryFault> fault_;
     std::optional<std::uint32_t> breakpoint_;
+    std::optional<CpuException> architectural_exception_;
     std::string exception_;
     std::shared_ptr<JitTranslationProfile> translation_profile_;
     std::shared_ptr<JitArtifactStore> artifact_store_;
