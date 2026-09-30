@@ -16,7 +16,7 @@ public:
     ~HostFileMappingPreparer();
     [[nodiscard]] std::shared_ptr<FileMappingPreparation> prepare(
         std::shared_ptr<FilePageCache> cache, const std::filesystem::path& path,
-        std::uint64_t file_offset, std::uint32_t size);
+        std::uint64_t file_offset, std::uint32_t size, int source_descriptor = -1);
 
 private:
     HostResourceController worker_;

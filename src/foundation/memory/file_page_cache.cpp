@@ -49,6 +49,28 @@ namespace {
         return descriptor;
     }
 
+    [[nodiscard]] int open_mapping_descriptor(
+        const std::filesystem::path& path, int source_descriptor)
+    {
+        if (source_descriptor < 0)
+            return open_file_descriptor(path);
+        const auto flags = ::fcntl(source_descriptor, F_GETFL);
+        if (flags >= 0 && (flags & O_ACCMODE) == O_RDWR &&
+            (flags & O_APPEND) == 0)
+            return ::fcntl(source_descriptor, F_DUPFD_CLOEXEC, 0);
+#if defined(__linux__)
+        // Reopen the pinned object, not its potentially replaced pathname.
+        // Preserve pager access independently of the guest descriptor mode;
+        // guest protection checks precede preparation.
+        const auto reopened = open_file_descriptor(
+            std::filesystem::path { "/proc/self/fd" } /
+            std::to_string(source_descriptor));
+        if (reopened >= 0)
+            return reopened;
+#endif
+        return ::fcntl(source_descriptor, F_DUPFD_CLOEXEC, 0);
+    }
+
     [[nodiscard]] std::filesystem::file_time_type file_time_from_stat(
         const struct stat& file_stat)
     {
@@ -1898,12 +1920,13 @@ std::optional<std::shared_ptr<GuestFileBacking>> FilePageCache::open_mapping(
 
 std::shared_ptr<FileMappingPreparation> FileMappingPreparation::begin(
     std::shared_ptr<FilePageCache> cache, const std::filesystem::path& path,
-    std::uint64_t file_offset, std::uint32_t size)
+    std::uint64_t file_offset, std::uint32_t size, int source_descriptor)
 {
     if (!cache)
         return { };
     auto preparation = cache->prepare_mapping(
-        path, file_offset, size, std::nullopt, std::nullopt, { }, { }, { });
+        path, file_offset, size, std::nullopt, std::nullopt, { }, { }, { },
+        source_descriptor);
     if (preparation)
         preparation->cache_ = std::move(cache);
     return preparation;
@@ -1939,7 +1962,8 @@ std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
     std::optional<ContentIdentity> expected_content_identity,
     std::shared_ptr<const std::vector<std::byte>> immutable_snapshot,
     std::shared_ptr<const ImmutableFileView> immutable_file_view,
-    std::shared_ptr<const GuestFileBacking> reusable_mapping)
+    std::shared_ptr<const GuestFileBacking> reusable_mapping,
+    int source_descriptor)
 {
     if (size == 0 || file_offset % guest_memory_page_size != 0) {
         return { };
@@ -1969,7 +1993,7 @@ std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
             return { };
         descriptor_owner = io_state;
     } else if (!immutable_file_view) {
-        descriptor = open_file_descriptor(path);
+        descriptor = open_mapping_descriptor(path, source_descriptor);
         if (descriptor < 0)
             return { };
         descriptor_owner = std::make_shared<GuestFileIoState>();
@@ -2032,9 +2056,19 @@ std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
     if (reusable) {
         generation_revision = reusable->generation_revision;
     } else if (generation_registry && !immutable_file_view) {
-        generation_revision =
-            generation_registry->observe_normalized(namespace_key, generation)
-                .revision;
+        if (source_descriptor >= 0) {
+            // Detached open vnodes cannot replace the namespace record of a
+            // new file at the same path. Warm mappings reuse its revision.
+            auto observed = generation_registry->current(path);
+            if (!observed || observed->generation != generation)
+                observed = generation_registry->observe(path);
+            if (observed->generation == generation)
+                generation_revision = observed->revision;
+        } else {
+            generation_revision =
+                generation_registry->observe_normalized(namespace_key, generation)
+                    .revision;
+        }
     }
     std::optional<ContentIdentity> content_identity;
     if (immutable_file_view) {

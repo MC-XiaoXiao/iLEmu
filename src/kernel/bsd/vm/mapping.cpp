@@ -101,6 +101,7 @@ void CompatibilityKernel::complete_bsd_mapping(
                 bsd_success(cpu, 0U);
                 return;
             }
+            int source_descriptor = -1;
             if (!posix_shared_memory) {
                 const auto block = virtual_block_descriptors_.find(fd);
                 if (block != virtual_block_descriptors_.end()) {
@@ -112,6 +113,7 @@ void CompatibilityKernel::complete_bsd_mapping(
                     bsd_error(cpu, bsd_support::invalid_argument);
                     return;
                 }
+                source_descriptor = description->host_descriptor();
             }
             const auto access = contract.file_mapping(permissions, descriptor_flags,
                 shared, posix_shared_memory
@@ -133,9 +135,10 @@ void CompatibilityKernel::complete_bsd_mapping(
             mapping.preparation =
                 preparer ? preparer->prepare(
                                mapping.cache, mapping.path, range->file_offset,
-                               mapped_size)
+                               mapped_size, source_descriptor)
                          : FileMappingPreparation::begin(mapping.cache,
-                               mapping.path, range->file_offset, mapped_size);
+                               mapping.path, range->file_offset, mapped_size,
+                               source_descriptor);
             if (!preparer && mapping.preparation)
                 mapping.preparation->complete();
             if (!mapping.preparation) {

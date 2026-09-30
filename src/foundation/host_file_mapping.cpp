@@ -15,10 +15,10 @@ HostFileMappingPreparer::~HostFileMappingPreparer()
 
 std::shared_ptr<FileMappingPreparation> HostFileMappingPreparer::prepare(
     std::shared_ptr<FilePageCache> cache, const std::filesystem::path& path,
-    std::uint64_t file_offset, std::uint32_t size)
+    std::uint64_t file_offset, std::uint32_t size, int source_descriptor)
 {
     auto preparation = FileMappingPreparation::begin(
-        std::move(cache), path, file_offset, size);
+        std::move(cache), path, file_offset, size, source_descriptor);
     if (preparation && !preparation->ready()) {
         const auto task = worker_.submit(HostWorkKind::Maintenance, std::nullopt,
             [preparation] { preparation->complete(); });

@@ -279,7 +279,7 @@ class FileMappingPreparation {
 public:
     [[nodiscard]] static std::shared_ptr<FileMappingPreparation> begin(
         std::shared_ptr<FilePageCache> cache, const std::filesystem::path& path,
-        std::uint64_t file_offset, std::uint32_t size);
+        std::uint64_t file_offset, std::uint32_t size, int source_descriptor = -1);
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] std::optional<std::shared_ptr<GuestFileBacking>> result() const;
     void complete();
@@ -524,7 +524,8 @@ private:
         std::optional<ContentIdentity> expected_content_identity,
         std::shared_ptr<const std::vector<std::byte>> immutable_snapshot,
         std::shared_ptr<const ImmutableFileView> immutable_file_view,
-        std::shared_ptr<const GuestFileBacking> reusable_mapping);
+        std::shared_ptr<const GuestFileBacking> reusable_mapping,
+        int source_descriptor = -1);
 
     struct Identity {
         GuestFileGeneration generation;
