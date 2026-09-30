@@ -699,7 +699,47 @@ HostSocketResult HostSocket::send(std::span<const std::byte> bytes,
     return result;
 }
 
-HostSocketResult HostSocket::receive(std::size_t capacity)
+HostSocketResult HostSocket::receive(
+    std::size_t capacity, SocketReceiveTarget* target)
+{
+    std::lock_guard lock {receive_mutex_};
+    auto result = receive_locked(capacity, target ? MSG_PEEK : 0);
+    if (result.status != HostSocketStatus::Success)
+        return result;
+    if (receive_metadata_consumed_) {
+        result.metadata_consumed = true;
+        result.address.clear();
+        result.destination_address.clear();
+        result.interface_index.reset();
+        result.hop_limit.reset();
+    }
+    if (!target) {
+        receive_metadata_consumed_ = false;
+        return result;
+    }
+    if (!target->copy(result.bytes)) {
+        // soreceive removes address/control mbufs before copying payload.
+        // Host MSG_PEEK preserves them, so suppress their replay on retry.
+        receive_metadata_consumed_ = true;
+        return error_result(EFAULT);
+    }
+
+    // Consumers of a shared host socket cannot race between peek/copy/commit.
+    // Datagram commit discards the entire packet, including a truncated tail.
+    // Reuse the existing buffer for stream commit; no second allocation.
+    const bool datagram = darwin_type_ == darwin_socket_datagram;
+    if (datagram || !result.bytes.empty()) {
+        const auto consumed = ::recv(descriptor_,
+            datagram ? nullptr : result.bytes.data(),
+            datagram ? 0 : result.bytes.size(), 0);
+        if (consumed < 0)
+            return error_result(errno);
+    }
+    receive_metadata_consumed_ = false;
+    return result;
+}
+
+HostSocketResult HostSocket::receive_locked(std::size_t capacity, int flags)
 {
     HostSocketResult result;
     result.bytes.resize(capacity);
@@ -713,7 +753,7 @@ HostSocketResult HostSocket::receive(std::size_t capacity)
     message.msg_iovlen = 1;
     message.msg_control = ancillary.data();
     message.msg_controllen = ancillary.size();
-    const auto transferred = ::recvmsg(descriptor_, &message, 0);
+    const auto transferred = ::recvmsg(descriptor_, &message, flags);
     if (transferred < 0)
         return error_result(errno);
     result.transferred = static_cast<std::size_t>(transferred);

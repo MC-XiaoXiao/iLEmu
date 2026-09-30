@@ -6,6 +6,7 @@
 // datagrams.
 
 #pragma once
+#include <network/socket_receive_target.hpp>
 
 #include <atomic>
 #include <cstddef>
@@ -34,6 +35,7 @@ struct VirtualUdpDatagram {
     std::vector<std::byte> bytes;
     std::vector<std::byte> source_address;
     std::vector<std::byte> destination_address;
+    bool metadata_consumed {};
 };
 
 struct VirtualUdpAncillaryOptions {
@@ -70,7 +72,7 @@ private:
         std::span<const std::byte> bytes,
         std::span<const std::byte> destination);
     [[nodiscard]] std::optional<VirtualUdpDatagram> receive(
-        VirtualUdpSocket& socket, std::size_t capacity);
+        VirtualUdpSocket& socket, std::size_t capacity, SocketReceiveTarget* target);
     [[nodiscard]] std::vector<std::byte> local_address(
         const VirtualUdpSocket& socket) const;
     [[nodiscard]] bool readable(const VirtualUdpSocket& socket) const;
@@ -96,7 +98,7 @@ public:
         std::span<const std::byte> destination);
     [[nodiscard]] VirtualUdpStatus send(std::span<const std::byte> bytes);
     [[nodiscard]] std::optional<VirtualUdpDatagram> receive(
-        std::size_t capacity);
+        std::size_t capacity, SocketReceiveTarget* target = nullptr);
     [[nodiscard]] std::vector<std::byte> local_address() const;
     [[nodiscard]] std::optional<std::vector<std::byte>> peer_address() const;
     [[nodiscard]] bool readable() const;

@@ -10,12 +10,14 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/uipc_socket.c
 
 #pragma once
+#include <network/socket_receive_target.hpp>
 
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -61,6 +63,7 @@ struct HostSocketResult {
     std::optional<std::uint32_t> interface_index;
     std::optional<std::uint32_t> hop_limit;
     std::shared_ptr<HostSocket> accepted_socket;
+    bool metadata_consumed {};
 };
 
 // Owns a non-blocking host socket while keeping every host ABI detail outside
@@ -85,7 +88,8 @@ public:
     [[nodiscard]] HostSocketResult accept();
     [[nodiscard]] HostSocketResult send(std::span<const std::byte> bytes,
         std::span<const std::byte> darwin_destination = { });
-    [[nodiscard]] HostSocketResult receive(std::size_t capacity);
+    [[nodiscard]] HostSocketResult receive(
+        std::size_t capacity, SocketReceiveTarget* target = nullptr);
     [[nodiscard]] HostSocketResult set_option(std::uint32_t darwin_level,
         std::uint32_t darwin_option, std::span<const std::byte> value);
     [[nodiscard]] HostSocketResult local_address() const;
@@ -112,7 +116,11 @@ private:
         std::uint32_t darwin_family, std::uint32_t darwin_type,
         StreamState stream_state = StreamState::Initial);
 
+    [[nodiscard]] HostSocketResult receive_locked(std::size_t capacity, int flags);
+
     int descriptor_ { -1 };
+    std::mutex receive_mutex_;
+    bool receive_metadata_consumed_ {};
     HostNetworkPolicy policy_ { HostNetworkPolicy::Isolated };
     std::uint32_t darwin_family_ { };
     std::uint32_t darwin_type_ { };

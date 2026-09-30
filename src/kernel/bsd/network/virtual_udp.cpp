@@ -131,6 +131,8 @@ std::vector<std::byte> make_virtual_udp_ancillary(std::uint32_t family,
     const VirtualUdpDatagram& datagram,
     const VirtualUdpAncillaryOptions& options)
 {
+    if (datagram.metadata_consumed)
+        return {};
     std::vector<std::byte> control;
     const auto append_u32 = [&](std::uint32_t value) {
         for (std::size_t byte = 0; byte < sizeof(value); ++byte)
@@ -333,11 +335,21 @@ VirtualUdpStatus VirtualUdpNetwork::send(VirtualUdpSocket& socket,
 }
 
 std::optional<VirtualUdpDatagram> VirtualUdpNetwork::receive(
-    VirtualUdpSocket& socket, std::size_t capacity)
+    VirtualUdpSocket& socket, std::size_t capacity, SocketReceiveTarget* target)
 {
     std::lock_guard lock { mutex_ };
     if (socket.incoming_.empty())
         return std::nullopt;
+    auto& front = socket.incoming_.front();
+    if (target && !target->copy(std::span<const std::byte> {front.bytes}.first(
+                      std::min(capacity, front.bytes.size())))) {
+        // Native soreceive has already consumed address/control mbufs.
+        // Only the failed payload remains queued for the next receive.
+        front.source_address.clear();
+        front.destination_address.clear();
+        front.metadata_consumed = true;
+        return std::nullopt;
+    }
     auto datagram = std::move(socket.incoming_.front());
     socket.incoming_.pop_front();
     if (datagram.bytes.size() > capacity)
@@ -446,10 +458,10 @@ VirtualUdpStatus VirtualUdpSocket::send(std::span<const std::byte> bytes)
 }
 
 std::optional<VirtualUdpDatagram> VirtualUdpSocket::receive(
-    std::size_t capacity)
+    std::size_t capacity, SocketReceiveTarget* target)
 {
     const auto network = network_.lock();
-    return network ? network->receive(*this, capacity) : std::nullopt;
+    return network ? network->receive(*this, capacity, target) : std::nullopt;
 }
 
 std::vector<std::byte> VirtualUdpSocket::local_address() const

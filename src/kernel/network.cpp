@@ -6,6 +6,7 @@
 // delivery.
 
 #include "kernel/kernel.hpp"
+#include <kernel/guest_socket_receive_target.hpp>
 #include "kernel/kevent_wire.hpp"
 
 #include "kernel/baseband_device.hpp"
@@ -188,11 +189,7 @@ bool CompatibilityKernel::receive_socket_message(
         return true;
     }
 
-    struct GuestIovec {
-        std::uint32_t base { };
-        std::uint32_t capacity { };
-    };
-    std::vector<GuestIovec> iovecs;
+    std::vector<GuestReadVector> iovecs;
     iovecs.reserve(*iov_count);
     std::size_t receive_capacity = 0;
     for (std::uint32_t index = 0; index < *iov_count; ++index) {
@@ -208,9 +205,11 @@ bool CompatibilityKernel::receive_socket_message(
                                : einval);
             return true;
         }
-        iovecs.push_back(GuestIovec { *base, *capacity });
+        iovecs.push_back(GuestReadVector { *base, *capacity });
         receive_capacity += *capacity;
     }
+
+    GuestSocketReceiveTarget target {memory_, 0, 0, iovecs};
 
     if (const auto udp = virtual_udp_sockets_.find(fd);
         udp != virtual_udp_sockets_.end()) {
@@ -218,24 +217,11 @@ bool CompatibilityKernel::receive_socket_message(
             bsd_error(cpu, bsd_support::bad_file_descriptor);
             return true;
         }
-        const auto received = udp->second->receive(receive_capacity);
-        if (!received)
-            return false;
-
-        std::size_t source_offset = 0;
-        for (const auto& iovec : iovecs) {
-            const auto remaining = received->bytes.size() - source_offset;
-            const auto count = std::min<std::size_t>(iovec.capacity, remaining);
-            if (count != 0 &&
-                !memory_.copy_in(iovec.base,
-                    std::span<const std::byte> { received->bytes }.subspan(
-                        source_offset, count))) {
-                bsd_error(cpu, efault);
-                return true;
-            }
-            source_offset += count;
-            if (source_offset == received->bytes.size())
-                break;
+        const auto received = udp->second->receive(receive_capacity, &target);
+        if (!received) {
+            if (!target.failed()) return false;
+            bsd_error(cpu, efault);
+            return true;
         }
 
         const auto actual_name_length =
@@ -315,28 +301,12 @@ bool CompatibilityKernel::receive_socket_message(
     }
 
     if (const auto host = host_sockets_.find(fd); host != host_sockets_.end()) {
-        const auto received = host->second->receive(receive_capacity);
+        const auto received = host->second->receive(receive_capacity, &target);
         if (received.status == HostSocketStatus::WouldBlock)
             return false;
         if (received.status == HostSocketStatus::Error) {
             bsd_error(cpu, received.darwin_error);
             return true;
-        }
-
-        std::size_t source_offset = 0;
-        for (const auto& iovec : iovecs) {
-            const auto count = std::min<std::size_t>(
-                iovec.capacity, received.bytes.size() - source_offset);
-            if (count != 0 &&
-                !memory_.copy_in(iovec.base,
-                    std::span<const std::byte> { received.bytes }.subspan(
-                        source_offset, count))) {
-                bsd_error(cpu, efault);
-                return true;
-            }
-            source_offset += count;
-            if (source_offset == received.bytes.size())
-                break;
         }
 
         const auto actual_name_length = static_cast<std::uint32_t>(
@@ -358,7 +328,8 @@ bool CompatibilityKernel::receive_socket_message(
             if (descriptor == socket_options_.end())
                 return false;
             const auto found = descriptor->second.find({ level, option });
-            if (found == descriptor->second.end() || found->second.empty()) {
+            if (received.metadata_consumed ||
+                found == descriptor->second.end() || found->second.empty()) {
                 return false;
             }
             std::uint32_t enabled = 0;
@@ -536,23 +507,20 @@ bool CompatibilityKernel::receive_socket_message(
     if (source.empty() && !end_of_stream)
         return false;
     const auto read_begin = lifetime->read_offsets[endpoint->second.side];
-    std::uint32_t total = 0;
-    for (const auto& iovec : iovecs) {
-        if (source.empty())
-            break;
-        const auto count = std::min<std::size_t>(iovec.capacity, source.size());
-        std::vector<std::byte> bytes;
-        bytes.reserve(count);
-        for (std::size_t byte = 0; byte < count; ++byte) {
-            bytes.push_back(source.front());
-            source.pop_front();
-        }
-        if (!memory_.copy_in(iovec.base, bytes)) {
-            bsd_error(cpu, efault);
-            return true;
-        }
-        total += static_cast<std::uint32_t>(count);
+    const auto total = static_cast<std::uint32_t>(
+        std::min(receive_capacity, source.size()));
+    std::vector<std::byte> bytes(total);
+    std::copy_n(source.begin(), total, bytes.begin());
+    if (!target.copy(bytes)) {
+        auto& controls = shared_state_->socket_pair_ancillary[endpoint->second.pair]
+                                                       [endpoint->second.side];
+        while (!controls.empty() && controls.front().byte_offset <= read_begin)
+            controls.pop_front();
+        bsd_error(cpu, efault);
+        return true;
     }
+    for (std::uint32_t i = 0; i < total; ++i)
+        source.pop_front();
     const auto read_end = read_begin + total;
     lifetime->read_offsets[endpoint->second.side] = read_end;
     std::vector<KernelSharedState::DescriptorTransfer> transfers;
@@ -662,16 +630,16 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
         }
         return true;
     }
+    GuestSocketReceiveTarget target {memory_, address, size, vectors};
     if (const auto host = host_sockets_.find(fd); host != host_sockets_.end()) {
-        const auto received = host->second->receive(size);
+        const auto received = host->second->receive(size, &target);
         if (received.status == HostSocketStatus::WouldBlock)
             return false;
         if (received.status == HostSocketStatus::Error) {
             bsd_error(cpu, received.darwin_error);
             return true;
         }
-        if (!GuestReadBuffer {address, vectors}.copy(memory_, received.bytes) ||
-            !copy_socket_address(
+        if (!copy_socket_address(
                 source_address, source_length_address, received.address)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
@@ -685,11 +653,13 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             bsd_error(cpu, bsd_support::bad_file_descriptor);
             return true;
         }
-        const auto received = udp->second->receive(size);
-        if (!received)
-            return false;
-        if (!GuestReadBuffer {address, vectors}.copy(memory_, received->bytes) ||
-            !copy_socket_address(source_address, source_length_address,
+        const auto received = udp->second->receive(size, &target);
+        if (!received) {
+            if (!target.failed()) return false;
+            bsd_error(cpu, efault);
+            return true;
+        }
+        if (!copy_socket_address(source_address, source_length_address,
                 received->source_address)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
@@ -784,10 +754,18 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             return false;
         const auto count = std::min<std::size_t>(size, pending.size());
         bytes.resize(count);
-        for (auto& byte : bytes) {
-            byte = pending.front();
-            pending.pop_front();
+        std::copy_n(pending.begin(), count, bytes.begin());
+        if (!target.copy(bytes)) {
+            auto& controls = shared_state_->socket_pair_ancillary[endpoint->second.pair]
+                                                           [endpoint->second.side];
+            while (!controls.empty() && controls.front().byte_offset <=
+                       lifetime->read_offsets[endpoint->second.side])
+                controls.pop_front();
+            bsd_error(cpu, darwin::error::bad_address);
+            return true;
         }
+        for (std::size_t i = 0; i < count; ++i)
+            pending.pop_front();
         const auto side = endpoint->second.side;
         lifetime->read_offsets[side] += count;
         auto& ancillary =
@@ -799,13 +777,9 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             ancillary.pop_front();
         }
     }
-    if (!GuestReadBuffer {address, vectors}.copy(memory_, bytes)) {
-        bsd_error(cpu, darwin::error::bad_address);
-    } else {
-        bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
-        output_.write("[network] read fd=" + std::to_string(fd) +
-                      " bytes=" + std::to_string(bytes.size()) + "\n");
-    }
+    bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
+    output_.write("[network] read fd=" + std::to_string(fd) +
+                  " bytes=" + std::to_string(bytes.size()) + "\n");
     return true;
 }
 
