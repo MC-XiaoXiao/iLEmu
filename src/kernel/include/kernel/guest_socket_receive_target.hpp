@@ -13,10 +13,27 @@ public:
     GuestSocketReceiveTarget(AddressSpace& memory, std::uint32_t address,
         std::uint32_t size, std::span<const GuestReadVector> vectors = {})
         : memory_(memory), scalar_ {address, size},
-          buffer_(address, vectors.empty()
-              ? std::span<const GuestReadVector> {&scalar_, 1} : vectors) {}
+          vectors_(vectors.empty()
+              ? std::span<const GuestReadVector> {&scalar_, 1} : vectors),
+          buffer_(address, vectors_) {}
     GuestSocketReceiveTarget(const GuestSocketReceiveTarget&) = delete;
     GuestSocketReceiveTarget& operator=(const GuestSocketReceiveTarget&) = delete;
+    [[nodiscard]] bool can_copy_without_fault(std::size_t capacity) const override
+    {
+        // Bound speculative work for a short packet in a large user iovec.
+        // This is an optimization budget, not a guest vector-count limit.
+        constexpr std::size_t maximum_preflight_vectors = 8;
+        if (vectors_.size() > maximum_preflight_vectors ||
+            !memory_.owns_exclusive_access()) return false;
+        for (const auto& vector : vectors_) {
+            const auto count = std::min<std::size_t>(vector.length, capacity);
+            if (count && !memory_.accessible(vector.address, count, MemoryPermission::Write))
+                return false;
+            capacity -= count;
+            if (capacity == 0) return true;
+        }
+        return false;
+    }
     bool copy(std::span<const std::byte> bytes) override
     {
         failed_ = !buffer_.copy(memory_, bytes);
@@ -26,6 +43,7 @@ public:
 private:
     AddressSpace& memory_;
     GuestReadVector scalar_;
+    std::span<const GuestReadVector> vectors_;
     GuestReadBuffer buffer_;
     bool failed_ {};
 };

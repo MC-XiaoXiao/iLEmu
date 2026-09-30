@@ -703,7 +703,8 @@ HostSocketResult HostSocket::receive(
     std::size_t capacity, SocketReceiveTarget* target)
 {
     std::lock_guard lock {receive_mutex_};
-    auto result = receive_locked(capacity, target ? MSG_PEEK : 0);
+    const bool stable_destination = target && target->can_copy_without_fault(capacity);
+    auto result = receive_locked(capacity, target && !stable_destination ? MSG_PEEK : 0);
     if (result.status != HostSocketStatus::Success)
         return result;
     if (receive_metadata_consumed_) {
@@ -728,7 +729,7 @@ HostSocketResult HostSocket::receive(
     // Datagram commit discards the entire packet, including a truncated tail.
     // Reuse the existing buffer for stream commit; no second allocation.
     const bool datagram = darwin_type_ == darwin_socket_datagram;
-    if (datagram || !result.bytes.empty()) {
+    if (!stable_destination && (datagram || !result.bytes.empty())) {
         const auto consumed = ::recv(descriptor_,
             datagram ? nullptr : result.bytes.data(),
             datagram ? 0 : result.bytes.size(), 0);

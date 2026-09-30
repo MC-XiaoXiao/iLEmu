@@ -107,6 +107,11 @@ public:
         std::unique_lock<GuestMemoryGate> lock_;
         const ExclusiveAccess* previous_;
     };
+    // True while this host thread holds an ExclusiveAccess scope for this
+    // address space. Bounded checked operations may rely on stable mappings
+    // within that existing scope; this query does not acquire a new lock.
+    [[nodiscard]] bool owns_exclusive_access() const noexcept;
+
     // A bounded native-execution lease. Checked callbacks and compilation
     // suspend it; exclusive instructions leave it before taking monitor locks.
     class ParallelAccess {
@@ -548,7 +553,6 @@ private:
     [[nodiscard]] WriteLock metadata_lock() const;
     [[nodiscard]] WriteLock scalar_access_lock(
         std::uint32_t address, std::size_t size, bool writing) const;
-    [[nodiscard]] bool owns_exclusive_access() const noexcept;
     static thread_local const ExclusiveAccess* exclusive_access_;
 
     // Checked accesses and mapping changes take exclusive ownership. Native

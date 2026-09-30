@@ -6,12 +6,18 @@
 #include <span>
 
 namespace ilemu {
-// Payload copy is the commit boundary for a socket receive. The backend
-// retains ownership until the destination accepts the bytes. No guest or
-// host address-space details cross this interface.
+// Without a stable writable destination, payload copy is the receive commit
+// boundary and the backend retains ownership until the copy succeeds. An
+// existing storage lifetime guarantee permits direct receive instead. No
+// guest or host address-space details cross this interface.
 class SocketReceiveTarget {
 public:
     virtual ~SocketReceiveTarget() = default;
+    // Optional guarantee: any prefix up to capacity can be copied without
+    // fault and its storage stays stable until copy returns. A transient
+    // pointer/protection check alone is insufficient. The caller may already
+    // own a suitable memory lifetime scope, requiring no new reservation.
+    [[nodiscard]] virtual bool can_copy_without_fault(std::size_t) const { return false; }
     [[nodiscard]] virtual bool copy(std::span<const std::byte> bytes) = 0;
 };
 } // namespace ilemu
