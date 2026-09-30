@@ -15,6 +15,7 @@ class State {
     using Owner = std::pair<std::uint32_t, std::uint32_t>;
     using Routine = xnu::mig::thread_act::Routine;
     static constexpr auto get_id = xnu::mig::thread_act::id(Routine::thread_get_state);
+    static constexpr auto act_get_id = xnu::mig::thread_act::id(Routine::act_get_state);
     static constexpr auto set_id = xnu::mig::thread_act::id(Routine::thread_set_state);
     static constexpr auto act_id = xnu::mig::thread_act::id(Routine::act_set_state);
     static constexpr auto maximum_state_words = darwin::arm_thread::maximum_state_word_count;
@@ -41,9 +42,12 @@ class State {
                                                 : floating_state_word_count;
     }
 
+    static bool gets_state(std::uint32_t id)
+    { return id == get_id || id == act_get_id; }
+
 public:
     static bool handles(std::uint32_t id)
-    { return id == get_id || id == set_id || id == act_id; }
+    { return gets_state(id) || id == set_id || id == act_id; }
 
     template <typename Processor, typename Query, typename Update>
     static std::optional<std::uint32_t> dispatch_locked(Processor& cpu,
@@ -83,7 +87,7 @@ public:
             return std::nullopt;
         const auto flavor = mach_support::read_little_word(bytes, 32U);
         const auto count = mach_support::read_little_word(bytes, 36U);
-        const auto output_count = id == get_id && size == 40U
+        const auto output_count = gets_state(id) && size == 40U
             ? reply_count(flavor, count) : 0U;
         const auto reply_size = output_count ? 48U + 4U * output_count : 44U;
         // Preflight before any update: falling back must not apply it twice.
@@ -117,7 +121,7 @@ private:
             (read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit) != 0U)
             return Result { darwin::mig::bad_arguments };
         const auto count = read_little_word(bytes, 36U);
-        if (id == get_id ? bytes.size() != 40U
+        if (gets_state(id) ? bytes.size() != 40U
                          : count > maximum_state_words || bytes.size() != 40U + 4U * count)
             return Result { darwin::mig::bad_arguments };
         if (!owner)
@@ -128,10 +132,10 @@ private:
             return Result { darwin::mach::invalid_argument };
         const auto current = owner->first == process.pid && owner->second == cpu.processor_id();
         const auto register_count = transfer_count(flavor, count);
-        if (id != get_id) {
-            // act_set_state[_from_user] explicitly excludes current_thread().
-            if (id == act_id && current)
-                return Result { darwin::mach::invalid_argument };
+        // act_{get,set}_state explicitly exclude current_thread().
+        if ((id == act_get_id || id == act_id) && current)
+            return Result { darwin::mach::invalid_argument };
+        if (!gets_state(id)) {
             std::array<std::uint32_t, darwin::arm_thread::floating_state_word_count> requested;
             for (std::size_t i = 0; i < register_count; ++i)
                 requested[i] = read_little_word(bytes, 40U + 4U * i);

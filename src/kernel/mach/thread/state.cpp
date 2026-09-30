@@ -63,7 +63,9 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
         mig_message_id(xnu::mig::thread_act::Routine::thread_info);
     const auto gets_state =
         request.identifier ==
-        mig_message_id(xnu::mig::thread_act::Routine::thread_get_state);
+        mig_message_id(xnu::mig::thread_act::Routine::thread_get_state) ||
+        request.identifier ==
+        mig_message_id(xnu::mig::thread_act::Routine::act_get_state);
     const auto sets_state =
         request.identifier ==
             mig_message_id(
