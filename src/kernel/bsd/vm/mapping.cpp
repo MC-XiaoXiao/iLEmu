@@ -4,12 +4,12 @@
 
 #include "../support.hpp"
 #include "protection.hpp"
+#include "mapping_range.hpp"
 #include "foundation/host_file_mapping.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
 
 #include <algorithm>
-#include <limits>
 #include <mutex>
 #include <utility>
 
@@ -48,18 +48,14 @@ void CompatibilityKernel::complete_bsd_mapping(
     const auto offset =
         static_cast<std::uint64_t>(mapping.arguments[5]) |
         (static_cast<std::uint64_t>(mapping.arguments[6]) << 32U);
-    if (size == 0) {
+    const auto range = bsd_vm::MappingRange::from_request(address, size, offset,
+        (flags & darwin::map_flag::fixed) != 0U);
+    if (!range) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return;
     }
-    const auto mapped_size_64 =
-        (static_cast<std::uint64_t>(size) + AddressSpace::page_size - 1U) &
-        ~(static_cast<std::uint64_t>(AddressSpace::page_size) - 1U);
-    if (mapped_size_64 > std::numeric_limits<std::uint32_t>::max()) {
-        bsd_error(cpu, bsd_support::invalid_argument);
-        return;
-    }
-    const auto mapped_size = static_cast<std::uint32_t>(mapped_size_64);
+    address = range->address;
+    const auto mapped_size = range->size;
     const bsd_vm::Protection contract { shared_state_->darwin_abi.abi_epoch };
     const auto permissions = contract.permissions(protection);
     const auto shared = (flags & darwin::map_flag::shared) != 0;
@@ -105,9 +101,10 @@ void CompatibilityKernel::complete_bsd_mapping(
             mapping.attributes = access.attributes;
             mapping.preparation =
                 preparer ? preparer->prepare(
-                               mapping.cache, mapping.path, offset, mapped_size)
+                               mapping.cache, mapping.path, range->file_offset,
+                               mapped_size)
                          : FileMappingPreparation::begin(mapping.cache,
-                               mapping.path, offset, mapped_size);
+                               mapping.path, range->file_offset, mapped_size);
             if (!preparer && mapping.preparation)
                 mapping.preparation->complete();
             if (!mapping.preparation) {
@@ -181,7 +178,7 @@ void CompatibilityKernel::complete_bsd_mapping(
             return;
         }
         static_cast<void>(install_mapped_user_image(
-            cpu, mapping.path, address, size, offset));
+            cpu, mapping.path, address, mapped_size, range->file_offset));
         if (mapping_trace_count_ < 64U) {
             output_.write("[mmap] pid=" + std::to_string(process_.pid) +
                           " address=" + std::to_string(address) +
@@ -207,7 +204,7 @@ void CompatibilityKernel::complete_bsd_mapping(
             ++mapping_trace_count_;
         }
     }
-    bsd_success(cpu, address);
+    bsd_success(cpu, address + range->page_offset);
     return;
 }
 
