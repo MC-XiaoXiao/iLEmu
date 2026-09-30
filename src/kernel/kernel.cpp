@@ -902,6 +902,9 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 {
     note_timer_deadline_transition();
     release_close_on_exec_descriptors();
+    std::erase_if(thread_working_directories_, [processor_id](const auto& entry) {
+        return entry.first != processor_id;
+    });
     install_commpage();
     hid_event_system_hle_.reset(process_.pid);
     userland_hle_.reset_mappings();
@@ -2788,7 +2791,7 @@ CompatibilityKernel::take_guest_file_mutations(std::size_t maximum_events)
 
 void CompatibilityKernel::inherit_process_state(
     const CompatibilityKernel& parent, std::uint32_t child_pid,
-    ProcessInheritance inheritance)
+    ProcessInheritance inheritance, std::size_t parent_processor)
 {
     const auto inherit_fork_state = inheritance == ProcessInheritance::Fork;
     shared_state_ = parent.shared_state_;
@@ -2842,7 +2845,8 @@ void CompatibilityKernel::inherit_process_state(
         mobile_framebuffer_hle_.inherit_state(parent.mobile_framebuffer_hle_);
         layerkit_hle_.inherit_state(parent.layerkit_hle_);
     }
-    guest_working_directory_ = parent.guest_working_directory_;
+    guest_working_directory_ = parent.working_directory(parent_processor);
+    thread_working_directories_.clear();
     if (inherit_fork_state)
         process_image_ = parent.process_image_;
     process_ = parent.process_;
@@ -3447,7 +3451,8 @@ bool CompatibilityKernel::write_guest_statfs64(
 }
 
 std::filesystem::path CompatibilityKernel::resolve_guest_path(
-    const std::string& path, bool follow_final_symlink) const
+    const std::string& path, bool follow_final_symlink,
+    std::optional<std::size_t> processor) const
 {
     constexpr std::string_view resource_fork_suffix { "/..namedfork/rsrc" };
     if (path.ends_with(resource_fork_suffix)) {
@@ -3456,10 +3461,10 @@ std::filesystem::path CompatibilityKernel::resolve_guest_path(
         if (data_path.empty())
             data_path = "/";
         return hfs::MetadataProvider::resource_sidecar(
-            resolve_guest_path(data_path, true));
+            resolve_guest_path(data_path, true, processor));
     }
     return RootfsPathResolver { rootfs_ }.resolve(
-        path, guest_working_directory_, follow_final_symlink);
+        path, working_directory(processor), follow_final_symlink);
 }
 
 std::optional<hfs::Metadata> CompatibilityKernel::query_hfs_metadata(

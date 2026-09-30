@@ -273,6 +273,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
 
 void CompatibilityKernel::clear_thread_pthread_state(std::size_t processor)
 {
+    thread_working_directories_.erase(processor);
     if (processor <= std::numeric_limits<std::uint32_t>::max())
         pthread_runtime_.remove_worker(static_cast<std::uint32_t>(processor));
 }

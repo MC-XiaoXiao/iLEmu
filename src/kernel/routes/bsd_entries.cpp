@@ -164,6 +164,10 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(6, "close", Handler::BsdFilesystem);
     add(12, "chdir", Handler::BsdFilesystem);
     add(13, "fchdir", Handler::BsdFilesystem);
+    add(348, "__pthread_chdir", Handler::BsdFilesystem,
+        Contract::CurrentDispatcher, abi.abi_epoch != DarwinAbiEpoch::IphoneOs1);
+    add(349, "__pthread_fchdir", Handler::BsdFilesystem,
+        Contract::CurrentDispatcher, abi.abi_epoch != DarwinAbiEpoch::IphoneOs1);
     add(darwin::syscall::change_mode, "change_mode", Handler::BsdFilesystem);
     add(darwin::syscall::change_owner, "change_owner", Handler::BsdFilesystem);
     add(darwin::syscall::change_owner_no_follow, "change_owner_no_follow",

@@ -1706,7 +1706,7 @@ void EmulatorSession::run()
                     pid, static_cast<std::uint32_t>(*processor) });
             });
         const auto create_child_runtime =
-            [&, runtime_ptr](Cpu* parent_cpu,
+            [&, runtime_ptr](Cpu& parent_cpu,
                 CompatibilityKernel::ProcessInheritance inheritance)
             -> std::optional<std::uint32_t> {
             const auto child_pid = next_pid++;
@@ -1766,13 +1766,15 @@ void EmulatorSession::run()
                     PerfLatencyKind::ProcessInheritSpawnKernel
                 };
                 child->kernel->inherit_process_state(
-                    *runtime_ptr->kernel, child_pid, inheritance);
+                    *runtime_ptr->kernel, child_pid, inheritance,
+                    parent_cpu.processor_id());
             } else {
                 PerformanceLatencyScope latency {
                     PerfLatencyKind::ProcessInheritKernel
                 };
                 child->kernel->inherit_process_state(
-                    *runtime_ptr->kernel, child_pid, inheritance);
+                    *runtime_ptr->kernel, child_pid, inheritance,
+                    parent_cpu.processor_id());
             }
             child->cpus->set_process_id(child_pid);
             child->allocated.assign(initial_guest_thread_slots, false);
@@ -1782,15 +1784,15 @@ void EmulatorSession::run()
                 };
                 configure_runtime(*child);
             }
-            if (parent_cpu != nullptr) {
+            if (inheritance == CompatibilityKernel::ProcessInheritance::Fork) {
                 auto& child_cpu = child->cpus->cpu(0);
-                child_cpu.registers() = parent_cpu->registers();
+                child_cpu.registers() = parent_cpu.registers();
                 child_cpu.extension_registers() =
-                    parent_cpu->extension_registers();
+                    parent_cpu.extension_registers();
                 child_cpu.registers()[0] = 0;
-                child_cpu.set_cpsr(parent_cpu->cpsr() & ~(1U << 29U));
-                child_cpu.set_fpscr(parent_cpu->fpscr());
-                child_cpu.set_cthread_self(parent_cpu->cthread_self());
+                child_cpu.set_cpsr(parent_cpu.cpsr() & ~(1U << 29U));
+                child_cpu.set_fpscr(parent_cpu.fpscr());
+                child_cpu.set_cthread_self(parent_cpu.cthread_self());
             }
             child->allocated[0] = true;
             static_cast<void>(
@@ -1804,11 +1806,11 @@ void EmulatorSession::run()
         runtime.kernel->set_fork_handler(
             [create_child_runtime](Cpu& parent_cpu) {
                 return create_child_runtime(
-                    &parent_cpu, CompatibilityKernel::ProcessInheritance::Fork);
+                    parent_cpu, CompatibilityKernel::ProcessInheritance::Fork);
             });
-        runtime.kernel->set_spawn_create_handler([create_child_runtime](Cpu&) {
+        runtime.kernel->set_spawn_create_handler([create_child_runtime](Cpu& source) {
             return create_child_runtime(
-                nullptr, CompatibilityKernel::ProcessInheritance::SpawnExec);
+                source, CompatibilityKernel::ProcessInheritance::SpawnExec);
         });
         runtime.kernel->set_exec_handler(
             [&, runtime_ptr](Cpu& source, std::string path,

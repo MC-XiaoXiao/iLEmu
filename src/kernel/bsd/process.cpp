@@ -612,7 +612,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         return;
     }
     case 59: { // execve
-        const auto path = memory_.read_c_string(registers[0]);
+        auto path = memory_.read_c_string(registers[0]);
         const auto read_vector = [&](std::uint32_t address)
             -> std::optional<std::vector<std::string>> {
             std::vector<std::string> values;
@@ -638,11 +638,16 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
             return;
         }
         std::error_code path_error;
-        const auto host_path = resolve_guest_path(*path);
+        const auto host_path = resolve_guest_path(cpu, *path);
         if (!std::filesystem::is_regular_file(host_path, path_error)) {
             bsd_error(cpu, 2); // ENOENT; execvp will continue its PATH search
             return;
         }
+        // The loader accepts root-relative guest paths. Resolve a relative
+        // executable using the caller's CWD before crossing that boundary.
+        if (std::filesystem::path { *path }.is_relative())
+            *path = (std::filesystem::path { "/" } /
+                     host_path.lexically_relative(rootfs_)).generic_string();
         std::ostringstream exec_message;
         exec_message << "[process] exec pid=" << process_.pid << " " << *path
                      << " argv=";

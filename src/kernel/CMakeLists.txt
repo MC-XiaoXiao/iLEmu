@@ -107,7 +107,8 @@ target_link_libraries(ilemu_kernel_bsd_signal PRIVATE
     iLEmu::foundation)
 
 add_library(ilemu_kernel_bsd_filesystem_control STATIC
-    bsd/filesystem/control.cpp)
+    bsd/filesystem/control.cpp
+    bsd/filesystem/working_directory.cpp)
 add_library(iLEmu::kernel_bsd_filesystem_control ALIAS
     ilemu_kernel_bsd_filesystem_control)
 ilemu_configure_module(ilemu_kernel_bsd_filesystem_control)

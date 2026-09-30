@@ -91,7 +91,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
             bsd_error(cpu, bsd_support::bad_address);
             return true;
         }
-        host = resolve_guest_path(*path);
+        host = resolve_guest_path(cpu, *path);
         target = *path;
     }
 

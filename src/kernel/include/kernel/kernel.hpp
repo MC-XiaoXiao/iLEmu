@@ -480,7 +480,8 @@ public:
     [[nodiscard]] std::vector<std::byte> take_baseband_output();
     void inherit_process_state(const CompatibilityKernel& parent,
         std::uint32_t child_pid,
-        ProcessInheritance inheritance = ProcessInheritance::Fork);
+        ProcessInheritance inheritance = ProcessInheritance::Fork,
+        std::size_t parent_processor = 0);
     void prepare_exec(std::size_t processor_id);
     void apply_spawn_signal_attributes(const SpawnSignalAttributes& attributes);
     void install_main_image_hle(
@@ -737,7 +738,13 @@ private:
         Cpu& cpu, std::uint32_t address, std::uint32_t size);
     void trace_unknown(Cpu& cpu, std::string kind, std::uint32_t number);
     [[nodiscard]] std::filesystem::path resolve_guest_path(
+        const std::string& path, bool follow_final_symlink = true,
+        std::optional<std::size_t> processor = std::nullopt) const;
+    [[nodiscard]] std::filesystem::path resolve_guest_path(const Cpu& cpu,
         const std::string& path, bool follow_final_symlink = true) const;
+    [[nodiscard]] const std::filesystem::path& working_directory(
+        std::optional<std::size_t> processor = std::nullopt) const;
+    [[nodiscard]] bool dispatch_bsd_directory(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] std::optional<std::string> read_guest_path_at(
         Cpu& cpu, std::uint32_t directory_fd, std::uint32_t path_address);
     [[nodiscard]] std::optional<hfs::Metadata> query_hfs_metadata(
@@ -978,6 +985,7 @@ private:
     Mbx2dHle mbx2d_hle_;
     MobileFramebufferHle mobile_framebuffer_hle_;
     std::filesystem::path guest_working_directory_ { "/" };
+    std::map<std::size_t, std::filesystem::path> thread_working_directories_;
     std::string process_image_ { "/sbin/launchd" };
     ProcessContext process_;
     void reset_pthread_runtime();

@@ -120,7 +120,7 @@ bool CompatibilityKernel::filesystem_dispatch_conflicts_with_rename(
         return false; // Let the normal dispatcher report EFAULT.
     std::vector<std::filesystem::path> traversed;
     const auto resolved = RootfsPathResolver { rootfs_ }.resolve(
-        *guest_path, guest_working_directory_, follow_final_symlink, &traversed);
+        *guest_path, working_directory(cpu.processor_id()), follow_final_symlink, &traversed);
     const auto within = [](const auto& path, const auto& subtree) {
         const auto relative = path.lexically_normal().lexically_relative(
             subtree.lexically_normal());
@@ -180,8 +180,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem_rename(Cpu& cpu)
         bsd_error(cpu, bsd_support::bad_address);
         return;
     }
-    auto source = resolve_guest_path(*source_path, false);
-    auto destination = resolve_guest_path(*destination_path, false);
+    auto source = resolve_guest_path(cpu, *source_path, false);
+    auto destination = resolve_guest_path(cpu, *destination_path, false);
     if (source.lexically_normal() == rootfs_.lexically_normal()) {
         bsd_error(cpu, 16U); // EBUSY
         return;

@@ -51,7 +51,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_control(
 
     const auto follow_final_symlink =
         (registers[3] & darwin::filesystem_control::option_no_follow) == 0U;
-    const auto host_path = resolve_guest_path(*path, follow_final_symlink);
+    const auto host_path = resolve_guest_path(cpu, *path, follow_final_symlink);
     std::error_code path_error;
     const auto path_status = follow_final_symlink
         ? std::filesystem::status(host_path, path_error)

@@ -223,11 +223,17 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
     // POSIX_SPAWN_START_SUSPENDED flag places the initial thread on hold.
 
     std::error_code path_error;
-    if (!std::filesystem::is_regular_file(
-            resolve_guest_path(*path), path_error)) {
+    const auto host_path = resolve_guest_path(cpu, *path);
+    if (!std::filesystem::is_regular_file(host_path, path_error)) {
         bsd_error(cpu, 2); // ENOENT
         return true;
     }
+
+    // Freeze the caller's effective CWD into the loader's absolute guest path
+    // for both spawn and SETEXEC; argv remains exactly as supplied.
+    if (std::filesystem::path { *path }.is_relative())
+        *path = (std::filesystem::path { "/" } /
+                 host_path.lexically_relative(rootfs_)).generic_string();
 
     if (attributes->setexec) {
         if (!exec_handler_ ||

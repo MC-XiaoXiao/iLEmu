@@ -119,6 +119,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         filesystem_dispatch_conflicts_with_rename(cpu, number) &&
         defer_filesystem_dispatch(cpu, number))
         return;
+    if (dispatch_bsd_directory(cpu, number))
+        return;
     if (dispatch_bsd_filesystem_control(cpu, number)) {
         return;
     }
@@ -161,7 +163,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        const auto host = resolve_guest_path(*path, true);
+        const auto host = resolve_guest_path(cpu, *path, true);
         if (!hfs_metadata_.query_directory_entry(host, true)) {
             bsd_error(cpu, bsd_support::darwin_filesystem_error(
                 std::error_code { errno, std::generic_category() }, 2U));
@@ -219,8 +221,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        const auto source = resolve_guest_path(*source_path, true);
-        const auto destination = resolve_guest_path(*destination_path, false);
+        const auto source = resolve_guest_path(cpu, *source_path, true);
+        const auto destination = resolve_guest_path(cpu, *destination_path, false);
         std::error_code error;
         const auto status = std::filesystem::status(source, error);
         if (error || status.type() == std::filesystem::file_type::not_found) {
@@ -270,7 +272,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         {
-            const auto node_path = resolve_guest_path(*path, false).generic_string();
+            const auto node_path = resolve_guest_path(cpu, *path, false).generic_string();
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             if (shared_state_->unix_socket_nodes.erase(node_path) != 0) {
                 // Existing connections and the listening open description
@@ -282,7 +284,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             }
         }
         std::error_code error;
-        const auto host = resolve_guest_path(*path, false);
+        const auto host = resolve_guest_path(cpu, *path, false);
         const auto status = std::filesystem::symlink_status(host, error);
         if (error || status.type() == std::filesystem::file_type::not_found) {
             bsd_error(cpu, 2);
@@ -356,7 +358,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, 2); // ENOENT
             return;
         }
-        const auto host = resolve_guest_path(*path);
+        const auto host = resolve_guest_path(cpu, *path);
         std::shared_ptr<bsd::baseband_device::OpenDescription>
             baseband_description;
         output_.write("[vfs] open " + *path + "\n");
@@ -621,58 +623,6 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         return;
     }
-    case 12: { // chdir
-        const auto path = memory_.read_c_string(registers[0]);
-        if (!path) {
-            bsd_error(cpu, bsd_support::bad_address);
-            return;
-        }
-        const auto host = resolve_guest_path(*path);
-        std::error_code error;
-        if (!std::filesystem::is_directory(host, error)) {
-            bsd_error(cpu, error ? 2U : 20U); // ENOENT / ENOTDIR
-            return;
-        }
-        std::filesystem::path guest { *path };
-        guest = guest.is_absolute()
-                    ? guest.lexically_normal()
-                    : (guest_working_directory_ / guest).lexically_normal();
-        guest_working_directory_ =
-            guest.empty() ? std::filesystem::path { "/" } : guest;
-        output_.write(
-            "[vfs] chdir " + guest_working_directory_.string() + "\n");
-        bsd_success(cpu, 0);
-        return;
-    }
-    case 13: { // fchdir
-        auto fd = registers[0];
-        if (const auto duplicate = duplicated_descriptors_.find(fd);
-            duplicate != duplicated_descriptors_.end()) {
-            fd = duplicate->second;
-        }
-        const auto descriptor = file_descriptors_.find(fd);
-        if (descriptor == file_descriptors_.end()) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
-            return;
-        }
-        std::error_code error;
-        if (!std::filesystem::is_directory(descriptor->second, error)) {
-            bsd_error(cpu, error ? 2U : 20U);
-            return;
-        }
-        const auto relative = descriptor->second.lexically_relative(rootfs_);
-        if (relative.empty() && descriptor->second.lexically_normal() !=
-                                    rootfs_.lexically_normal()) {
-            bsd_error(cpu, 2);
-            return;
-        }
-        guest_working_directory_ = std::filesystem::path { "/" } / relative;
-        guest_working_directory_ = guest_working_directory_.lexically_normal();
-        output_.write(
-            "[vfs] fchdir " + guest_working_directory_.string() + "\n");
-        bsd_success(cpu, 0);
-        return;
-    }
     case 18: { // getfsstat / legacy ogetfsstat
         const auto mount_count =
             static_cast<std::uint32_t>(shared_state_->mounts.size());
@@ -729,7 +679,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         std::error_code error;
-        if (!std::filesystem::exists(resolve_guest_path(*path), error)) {
+        if (!std::filesystem::exists(resolve_guest_path(cpu, *path), error)) {
             bsd_error(cpu, 2); // ENOENT
         } else {
             // Firmware files are exposed read/execute; write checks will move
@@ -750,7 +700,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        const auto host = resolve_guest_path(*path);
+        const auto host = resolve_guest_path(cpu, *path);
         std::error_code error;
         const auto status = std::filesystem::status(host, error);
         const auto virtual_console = *path == "/dev/console";
@@ -789,7 +739,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, 63U); // ENAMETOOLONG
             return;
         }
-        const auto host = resolve_guest_path(*link_path, false);
+        const auto host = resolve_guest_path(cpu, *link_path, false);
         std::error_code error;
         {
             const std::lock_guard filesystem_lock {
@@ -836,7 +786,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
-        const auto host = resolve_guest_path(*path, false);
+        const auto host = resolve_guest_path(cpu, *path, false);
         std::error_code error;
         if (!std::filesystem::is_symlink(host, error)) {
             bsd_error(cpu, error ? bsd_support::darwin_filesystem_error(error)
@@ -869,7 +819,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        const auto host = resolve_guest_path(*path);
+        const auto host = resolve_guest_path(cpu, *path);
         std::error_code error;
         {
             std::lock_guard filesystem_lock { shared_state_->filesystem_mutex };
@@ -926,7 +876,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         std::error_code error;
-        const auto host = resolve_guest_path(*path, false);
+        const auto host = resolve_guest_path(cpu, *path, false);
         const auto status = std::filesystem::symlink_status(host, error);
         if (error || status.type() == std::filesystem::file_type::not_found) {
             bsd_error(cpu, 2);
@@ -1082,7 +1032,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         std::error_code error;
-        if (!std::filesystem::exists(resolve_guest_path(*path), error)) {
+        if (!std::filesystem::exists(resolve_guest_path(cpu, *path), error)) {
             bsd_error(cpu, 2); // ENOENT
             return;
         }
@@ -1111,7 +1061,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             *path == "/dev/disk0s2" || *path == "/dev/rdisk0s1" ||
             *path == "/dev/rdisk0s2";
         if (!virtual_path &&
-            !std::filesystem::exists(resolve_guest_path(*path), error)) {
+            !std::filesystem::exists(resolve_guest_path(cpu, *path), error)) {
             bsd_error(cpu, darwin::error::no_entry);
             return;
         }
@@ -1150,7 +1100,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         std::error_code path_error;
         if (!std::filesystem::is_directory(
-                resolve_guest_path(*path), path_error)) {
+                resolve_guest_path(cpu, *path), path_error)) {
             bsd_error(cpu, path_error ? 2U : 20U);
             return;
         }
@@ -1249,7 +1199,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
-        const auto host = resolve_guest_path(*path);
+        const auto host = resolve_guest_path(cpu, *path);
         std::error_code error;
         {
             const std::lock_guard filesystem_lock {
@@ -1507,7 +1457,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         const auto follow_symlink = (registers[4] & fsopt_nofollow) == 0;
-        const auto host_path = resolve_guest_path(*path, follow_symlink);
+        const auto host_path = resolve_guest_path(cpu, *path, follow_symlink);
         const auto metadata = query_hfs_metadata(host_path, follow_symlink);
         if (!metadata) {
             bsd_error(cpu, 2);
@@ -1660,7 +1610,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         constexpr std::uint32_t fsopt_nofollow = 0x00000001U;
         const auto follow_symlink = (registers[4] & fsopt_nofollow) == 0;
-        const auto host = resolve_guest_path(*path, follow_symlink);
+        const auto host = resolve_guest_path(cpu, *path, follow_symlink);
         const auto existing = query_hfs_metadata(host, follow_symlink);
         if (!existing) {
             bsd_error(cpu, 2);
@@ -1764,7 +1714,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
-            host = resolve_guest_path(*path, follow_symlink);
+            host = resolve_guest_path(cpu, *path, follow_symlink);
         }
         const auto metadata = query_hfs_metadata(host, follow_symlink);
         if (!metadata) {
@@ -2035,7 +1985,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         const auto follow_symlink = number == 338 || number == 341;
-        const auto host = resolve_guest_path(*path, follow_symlink);
+        const auto host = resolve_guest_path(cpu, *path, follow_symlink);
         std::error_code error;
         const auto status = follow_symlink
                                 ? std::filesystem::status(host, error)
@@ -2175,7 +2125,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         const auto follow_symlink = number == 188;
-        const auto host = resolve_guest_path(*path, follow_symlink);
+        const auto host = resolve_guest_path(cpu, *path, follow_symlink);
         std::error_code error;
         const auto status = follow_symlink
                                 ? std::filesystem::status(host, error)

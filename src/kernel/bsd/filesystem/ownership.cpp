@@ -70,7 +70,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                                                bool follow_symlink,
                                                bool owner, std::uint32_t first,
                                                std::uint32_t second = 0U) {
-        const auto node_path = resolve_guest_path(path, follow_symlink).generic_string();
+        const auto node_path = resolve_guest_path(cpu, path, follow_symlink).generic_string();
         std::lock_guard socket_lock { shared_state_->socket_mutex };
         const auto node = shared_state_->unix_socket_nodes.find(node_path);
         if (node == shared_state_->unix_socket_nodes.end())
@@ -150,7 +150,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 registers[2], registers[3]))
             return true;
         const auto metadata =
-            query_hfs_metadata(resolve_guest_path(*path, follow), follow);
+            query_hfs_metadata(resolve_guest_path(cpu, *path, follow), follow);
         if (!metadata) {
             bsd_error(cpu, darwin::error::no_entry);
             return true;
@@ -171,7 +171,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         if (update_socket_permissions(*path, true, false, registers[1]))
             return true;
         std::error_code error;
-        const auto host = resolve_guest_path(*path);
+        const auto host = resolve_guest_path(cpu, *path);
         const auto metadata = query_hfs_metadata(host, true);
         if (!std::filesystem::exists(host, error) || !metadata) {
             bsd_error(cpu, darwin::error::no_entry);
@@ -225,7 +225,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             bsd_error(cpu, bsd_support::bad_address);
             return true;
         }
-        const auto host = resolve_guest_path(*path);
+        const auto host = resolve_guest_path(cpu, *path);
         std::error_code error;
         const auto metadata = query_hfs_metadata(host, true);
         if (!std::filesystem::exists(host, error) || !metadata) {
@@ -357,7 +357,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         if (update_socket_permissions(*path, follow_symlink, true,
                 registers[1], registers[2]))
             return true;
-        const auto host = resolve_guest_path(*path, follow_symlink);
+        const auto host = resolve_guest_path(cpu, *path, follow_symlink);
         std::error_code error;
         // lchown changes the link vnode, including a dangling link. Both
         // operations share credential checks and the guest metadata overlay.
@@ -413,7 +413,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             return true;
         }
         std::error_code error;
-        const auto host = resolve_guest_path(*path);
+        const auto host = resolve_guest_path(cpu, *path);
         const auto metadata = query_hfs_metadata(host, true);
         if (!std::filesystem::exists(host, error) || !metadata) {
             bsd_error(cpu, darwin::error::no_entry);

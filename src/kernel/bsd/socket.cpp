@@ -709,7 +709,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::already_connected);
             return;
         }
-        const auto node_path = resolve_guest_path(name).generic_string();
+        const auto node_path = resolve_guest_path(cpu, name).generic_string();
         std::lock_guard socket_lock { shared_state_->socket_mutex };
         const auto registration = shared_state_->unix_listeners.find(node_path);
         const auto listener =
@@ -896,7 +896,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             name = "family:" + std::to_string(*family);
         }
         if (*family == darwin::socket::local) {
-            const auto node_path = resolve_guest_path(name, false).generic_string();
+            const auto node_path = resolve_guest_path(cpu, name, false).generic_string();
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             if (name.empty()) {
                 bsd_error(cpu, bsd_support::invalid_argument);
@@ -1014,7 +1014,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, 22);
         } else {
             const auto& name = bound_socket_names_.at(registers[0]);
-            const auto node_path = resolve_guest_path(name, false).generic_string();
+            const auto node_path = resolve_guest_path(cpu, name, false).generic_string();
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             const auto own = unix_listener_states_.find(registers[0]);
             const auto linked = shared_state_->unix_socket_nodes.contains(node_path);
