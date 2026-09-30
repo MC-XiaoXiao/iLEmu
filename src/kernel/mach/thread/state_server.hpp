@@ -20,27 +20,7 @@ class State {
     static constexpr auto act_id = xnu::mig::thread_act::id(Routine::act_set_state);
     static constexpr auto maximum_state_words = darwin::arm_thread::maximum_state_word_count;
     static constexpr std::uint32_t maximum_request_size = 40U + 4U * maximum_state_words;
-    static constexpr auto state_words = darwin::arm_thread::general_state_word_count;
     static constexpr auto payload_words = 4U + maximum_state_words;
-
-    static std::uint32_t reply_count(std::uint32_t flavor, std::uint32_t count)
-    {
-        using namespace darwin::arm_thread;
-        if (flavor == general_state_flavor)
-            return count >= state_words ? state_words : 0U;
-        if (flavor != floating_state_flavor || count < floating_prefix_word_count)
-            return 0U;
-        return count < floating_state_word_count ? floating_prefix_word_count
-            : std::min<std::uint32_t>(count, maximum_state_words);
-    }
-
-    static std::size_t transfer_count(std::uint32_t flavor, std::uint32_t count)
-    {
-        using namespace darwin::arm_thread;
-        return flavor == general_state_flavor ? state_words
-            : count < floating_state_word_count ? floating_prefix_word_count - 1U
-                                                : floating_state_word_count;
-    }
 
     static bool gets_state(std::uint32_t id)
     { return id == get_id || id == act_get_id; }
@@ -88,7 +68,7 @@ public:
         const auto flavor = mach_support::read_little_word(bytes, 32U);
         const auto count = mach_support::read_little_word(bytes, 36U);
         const auto output_count = gets_state(id) && size == 40U
-            ? reply_count(flavor, count) : 0U;
+            ? darwin::arm_thread::reply_word_count(flavor, count) : 0U;
         const auto reply_size = output_count ? 48U + 4U * output_count : 44U;
         // Preflight before any update: falling back must not apply it twice.
         if (registers[3] < reply_size ||
@@ -127,11 +107,11 @@ private:
         if (!owner)
             owner = find_thread_owner(state, object);
         const auto flavor = read_little_word(bytes, 32U);
-        const auto output_count = reply_count(flavor, count);
+        const auto output_count = darwin::arm_thread::reply_word_count(flavor, count);
         if (!owner || output_count == 0U)
             return Result { darwin::mach::invalid_argument };
         const auto current = owner->first == process.pid && owner->second == cpu.processor_id();
-        const auto register_count = transfer_count(flavor, count);
+        const auto register_count = darwin::arm_thread::transfer_word_count(flavor, count);
         // act_{get,set}_state explicitly exclude current_thread().
         if ((id == act_get_id || id == act_id) && current)
             return Result { darwin::mach::invalid_argument };

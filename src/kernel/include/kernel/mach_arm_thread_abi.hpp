@@ -34,6 +34,34 @@ inline constexpr std::size_t maximum_state_word_count = 144U;
 
 using GeneralState = std::array<std::uint32_t, general_state_word_count>;
 
+// _MachineStateCount used by native exception delivery. Unsupported flavors
+// have no snapshot; do not silently substitute a general register state.
+constexpr std::uint32_t state_word_count(std::uint32_t flavor)
+{
+    return flavor == general_state_flavor ? general_state_word_count
+        : flavor == floating_state_flavor ? floating_state_word_count : 0U;
+}
+
+constexpr std::uint32_t reply_word_count(std::uint32_t flavor, std::uint32_t capacity)
+{
+    if (flavor == general_state_flavor)
+        return capacity >= general_state_word_count ? general_state_word_count : 0U;
+    if (flavor != floating_state_flavor || capacity < floating_prefix_word_count)
+        return 0U;
+    return capacity < floating_state_word_count ? floating_prefix_word_count
+        : capacity > maximum_state_word_count ? maximum_state_word_count : capacity;
+}
+
+// Register words physically present, excluding trailing MIG capacity/padding.
+constexpr std::uint32_t transfer_word_count(std::uint32_t flavor, std::uint32_t capacity)
+{
+    if (!reply_word_count(flavor, capacity))
+        return 0U;
+    return flavor == floating_state_flavor && capacity < floating_state_word_count
+        ? floating_prefix_word_count - 1U : state_word_count(flavor);
+}
+
+
 // arm/status.c machine_thread_set_state preserves PSR_USER_MASK: the
 // asynchronous-abort, IRQ/FIQ masks and mode belong to the target thread.
 // NZCV, Q, GE and Thumb state remain writable by the guest.

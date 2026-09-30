@@ -5,7 +5,7 @@
 #include "foundation/cpu.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
 #include "kernel/kernel_shared_state.hpp"
-#include "kernel/mach_arm_thread_abi.hpp"
+#include "kernel/mach_arm_thread_state.hpp"
 #include "kernel/mach_exception_delivery.hpp"
 #include "mach/mig_wire_abi.hpp"
 #include "support.hpp"
@@ -58,10 +58,12 @@ bool MachExceptionDelivery::advance_locked(KernelSharedState& state,
         const bool with_state = behavior != exception_default;
         if (behavior < 1U || behavior > 3U)
             continue;
-        // Match the thread_get/set_state flavors implemented by this kernel.
-        // Invalid state flavors fail this action and continue triage in XNU.
-        if (with_state &&
-            action.flavor != darwin::arm_thread::general_state_flavor)
+        // XNU exception.c seeds the query with _MachineStateCount[flavor].
+        const auto state_count = with_state
+            ? darwin::arm_thread::state_word_count(action.flavor) : 0U;
+        std::array<std::uint32_t, darwin::arm_thread::floating_state_word_count> snapshot { };
+        if (with_state && (!state_count || !darwin::arm_thread::read_state(
+                cpu, action.flavor, std::span { snapshot }.first(state_count))))
             continue;
         const bool wide = (action.behavior & wide_codes) != 0;
         const auto identifier = (wide ? 2404U : 2400U) + behavior;
@@ -70,8 +72,7 @@ bool MachExceptionDelivery::advance_locked(KernelSharedState& state,
         const auto state_header = codes + (wide ? 16U : 8U);
         const auto size =
             state_header +
-            (with_state ? 8U + 4U * darwin::arm_thread::general_state_word_count
-                        : 0U);
+            (with_state ? 8U + 4U * state_count : 0U);
         KernelSharedState::MachMessage message;
         message.bytes.resize(size);
         const auto write = [&](std::size_t offset, std::uint32_t value) {
@@ -116,12 +117,9 @@ bool MachExceptionDelivery::advance_locked(KernelSharedState& state,
         }
         if (with_state) {
             write(state_header, action.flavor);
-            write(state_header + 4U,
-                darwin::arm_thread::general_state_word_count);
-            for (std::size_t i = 0; i < cpu.registers().size(); ++i)
-                write(state_header + 8U + i * 4U, cpu.registers()[i]);
-            write(state_header + 8U + darwin::arm_thread::cpsr_index * 4U,
-                cpu.cpsr());
+            write(state_header + 4U, state_count);
+            for (std::size_t i = 0; i < state_count; ++i)
+                write(state_header + 8U + i * 4U, snapshot[i]);
         }
         message.destination = action.port_object;
         message.destination_send_object = action.port_object;
@@ -175,15 +173,19 @@ MachExceptionDelivery::Completion MachExceptionDelivery::poll(
             word(20) == pending.reply_identifier && word(32) == 0U;
         if (valid && pending.behavior == exception_default)
             handled = size == 36U;
-        else if (valid && size >= 44U &&
-                 word(36) == darwin::arm_thread::general_state_flavor &&
-                 word(40) >= darwin::arm_thread::general_state_word_count &&
-                 word(40) <= 144U && size == 44U + word(40) * 4U) {
-            for (std::size_t i = 0; i < cpu.registers().size(); ++i)
-                cpu.registers()[i] = word(44U + i * 4U);
-            cpu.set_cpsr(darwin::arm_thread::restored_cpsr(
-                word(44U + darwin::arm_thread::cpsr_index * 4U), cpu.cpsr()));
-            handled = true;
+        else if (valid && pending.behavior != exception_default && size >= 44U &&
+                 word(40) <= darwin::arm_thread::maximum_state_word_count &&
+                 size == 44U + word(40) * 4U) {
+            const auto flavor = word(36);
+            const auto count = darwin::arm_thread::transfer_word_count(flavor, word(40));
+            if (count) {
+                std::array<std::uint32_t, darwin::arm_thread::floating_state_word_count> registers { };
+                for (std::size_t i = 0; i < count; ++i)
+                    registers[i] = word(44U + i * 4U);
+                // The reply may change flavor, as in native thread_setstatus.
+                handled = darwin::arm_thread::write_state(
+                    cpu, flavor, std::span { registers }.first(count));
+            }
         }
         if (reply.destination_send_once_object) {
             state.mach_port_objects.release_send_once(
