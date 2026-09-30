@@ -1092,6 +1092,7 @@ namespace mach_support {
             enqueue_no_senders_notification_locked(state, object));
         release_unreferenced_fileport_locked(state, object);
         release_unreferenced_voucher_locked(state, object);
+        release_unreferenced_memory_entry_locked(state, object);
     }
 
     void retain_kernel_send_right_locked(
