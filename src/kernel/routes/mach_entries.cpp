@@ -15,34 +15,34 @@ void bind_mach_entries(Table& table, const DarwinAbi& abi)
         table.bind_new({ Domain::MachTrap, n, n, name, handler, contract,
             Cancellation::OriginalEntry, outcome, source });
     };
-    add(3, "mach_absolute_time");
-    add(26, "mach_reply_port");
+    add(3, "mach_absolute_time", Handler::MachClock);
+    add(26, "mach_reply_port", Handler::MachTask);
     add(27, "thread_self_trap", Handler::MachThreadSelf);
-    add(28, "task_self_trap");
-    add(29, "host_self_trap");
+    add(28, "task_self_trap", Handler::MachTask);
+    add(29, "host_self_trap", Handler::MachTask);
     add(31, "mach_msg_trap", Handler::MachMessage);
     add(32, "mach_msg_overwrite_trap/r8-receive-buffer", Handler::MachMessage);
-    add(33, "semaphore_signal_trap");
-    add(34, "semaphore_signal_all_trap");
-    add(35, "semaphore_signal_thread_trap");
-    add(36, "semaphore_wait_trap");
-    add(37, "semaphore_wait_signal_trap");
-    add(38, "semaphore_timedwait_trap");
-    add(39, "semaphore_timedwait_signal_trap");
+    add(33, "semaphore_signal_trap", Handler::MachSemaphore);
+    add(34, "semaphore_signal_all_trap", Handler::MachSemaphore);
+    add(35, "semaphore_signal_thread_trap", Handler::MachSemaphore);
+    add(36, "semaphore_wait_trap", Handler::MachSemaphore);
+    add(37, "semaphore_wait_signal_trap", Handler::MachSemaphore);
+    add(38, "semaphore_timedwait_trap", Handler::MachSemaphore);
+    add(39, "semaphore_timedwait_signal_trap", Handler::MachSemaphore);
     add(41, "init_process", Handler::MachInline, Contract::MachLegacyInit);
-    add(44, "task_name_for_pid");
-    add(45, "task_for_pid");
-    add(46, "pid_for_task");
-    add(darwin::mach::scheduler::swtch_pri_trap, "swtch_pri");
-    add(darwin::mach::scheduler::swtch_trap, "swtch");
-    add(darwin::mach::scheduler::thread_switch_trap, "thread_switch");
-    add(darwin::mach::clock::sleep_trap, "clock_sleep_trap");
-    add(89, "mach_timebase_info_trap");
-    add(90, "mach_wait_until_trap");
-    add(91, "mk_timer_create_trap");
-    add(92, "mk_timer_destroy_trap");
-    add(93, "mk_timer_arm_trap");
-    add(94, "mk_timer_cancel_trap");
+    add(44, "task_name_for_pid", Handler::MachTask);
+    add(45, "task_for_pid", Handler::MachTask);
+    add(46, "pid_for_task", Handler::MachTask);
+    add(darwin::mach::scheduler::swtch_pri_trap, "swtch_pri", Handler::MachScheduler);
+    add(darwin::mach::scheduler::swtch_trap, "swtch", Handler::MachScheduler);
+    add(darwin::mach::scheduler::thread_switch_trap, "thread_switch", Handler::MachScheduler);
+    add(darwin::mach::clock::sleep_trap, "clock_sleep_trap", Handler::MachClock);
+    add(89, "mach_timebase_info_trap", Handler::MachClock);
+    add(90, "mach_wait_until_trap", Handler::MachClock);
+    add(91, "mk_timer_create_trap", Handler::MachTimer);
+    add(92, "mk_timer_destroy_trap", Handler::MachTimer);
+    add(93, "mk_timer_arm_trap", Handler::MachTimer);
+    add(94, "mk_timer_cancel_trap", Handler::MachTimer);
     const bool direct =
         abi.mach_kernel_rpc != DarwinMachKernelRpcAbi::LegacyMigOnly;
     const bool wide =
@@ -54,7 +54,8 @@ void bind_mach_entries(Table& table, const DarwinAbi& abi)
         const bool fallback = wide && n == 15;
         add(n, name, Handler::MachVmRpc,
             wide ? Contract::MachWideVm : Contract::MachMixedVm,
-            !direct || reserved ? Outcome::MachUnknown
+            reserved ? Outcome::MachInvalid
+            : !direct ? Outcome::MachUnknown
             : fallback          ? Outcome::MigFallback
                                 : Outcome::HandlerValidated,
             "mach/vm/kernel_rpc.cpp");

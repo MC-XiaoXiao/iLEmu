@@ -40,6 +40,12 @@ enum class Handler {
     BsdIoPolicyInline,
     BsdStackSnapshotInline,
     MachInline,
+    MachClock,
+    MachSemaphore,
+    MachTask,
+    MachScheduler,
+    MachTimer,
+
     MachMessage,
     MachThreadSelf,
     MachVmRpc,
@@ -76,6 +82,7 @@ enum class Outcome {
     BsdNosys,
     BsdUnknown,
     MachUnknown,
+    MachInvalid,
     MigFallback
 };
 // Strings refer to static catalog storage. No entry invokes guest code.

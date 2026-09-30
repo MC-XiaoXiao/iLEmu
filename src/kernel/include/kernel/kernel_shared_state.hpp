@@ -18,6 +18,7 @@
 #include "kernel/kevent_timer.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "kernel/bsd_dispatch_table.hpp"
+#include "kernel/mach_dispatch_table.hpp"
 
 #include <algorithm>
 #include <array>
@@ -433,11 +434,12 @@ make_socket_pair_endpoints(std::uint32_t pair)
 
 struct KernelSharedState {
     explicit KernelSharedState(DarwinAbi abi = {},
-        std::string_view darwin_release = {})
+        std::string_view darwin_release = {}, std::string_view abi_profile = {})
         : coalitions { abi.coalition_abi }
         , darwin_abi { abi }
         , pthread_contract { resolve_pthread_contract(abi.pthread_abi) }
         , bsd_dispatch_table { abi, darwin_release }
+        , mach_dispatch_table { abi, abi_profile }
     {
     }
 
@@ -448,6 +450,7 @@ struct KernelSharedState {
     // Resolved once at construction; fork shares it and exec preserves it.
     const PthreadContract& pthread_contract;
     const BsdDispatchTable bsd_dispatch_table;
+    const MachDispatchTable mach_dispatch_table;
     std::string device_product_type;
     std::string device_board_config;
     std::string device_hardware_model;

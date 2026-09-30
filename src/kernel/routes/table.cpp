@@ -48,6 +48,7 @@ namespace {
                          e.outcome == Outcome::BsdNosys ||
                          e.outcome == Outcome::BsdUnknown)) ||
             (bsd && (e.outcome == Outcome::MachUnknown ||
+                        e.outcome == Outcome::MachInvalid ||
                         e.outcome == Outcome::MigFallback)))
             throw std::invalid_argument(
                 "outcome/cancellation belongs to another domain: " +

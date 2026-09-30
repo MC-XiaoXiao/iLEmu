@@ -60,6 +60,16 @@ std::string_view handler_name(Handler value)
         return "dispatch_bsd/stack_snapshot";
     case Handler::MachInline:
         return "dispatch_mach/inline";
+    case Handler::MachClock:
+        return "dispatch_mach_clock_trap";
+    case Handler::MachSemaphore:
+        return "dispatch_mach_semaphore_trap";
+    case Handler::MachTask:
+        return "dispatch_mach_task_trap";
+    case Handler::MachScheduler:
+        return "dispatch_mach_scheduler_trap";
+    case Handler::MachTimer:
+        return "dispatch_mach_timer_trap";
     case Handler::MachMessage:
         return "dispatch_mach_message";
     case Handler::MachThreadSelf:
@@ -146,6 +156,8 @@ std::string_view outcome_name(Outcome value)
         return "trace-unknown+nosys-policy";
     case Outcome::MachUnknown:
         return "trace-unknown+invalid-argument";
+    case Outcome::MachInvalid:
+        return "invalid-argument";
     case Outcome::MigFallback:
         return "send-invalid-destination/MIG-fallback";
     }

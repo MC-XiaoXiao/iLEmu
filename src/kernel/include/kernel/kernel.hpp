@@ -562,6 +562,7 @@ public:
 
 private:
     friend class BsdDispatchTable;
+    friend class MachDispatchTable;
     struct CreatedGuestThread {
         std::size_t processor { };
         std::uint32_t port_name { };
@@ -668,6 +669,12 @@ private:
         Cpu& cpu, std::uint32_t fd, std::span<const std::byte> bytes);
     void dispatch_bsd_signal(Cpu& cpu, std::uint32_t number);
     void dispatch_mach(Cpu& cpu, std::uint32_t trap);
+    void dispatch_mach_clock_trap(Cpu& cpu, std::uint32_t trap);
+    void dispatch_mach_semaphore_trap(Cpu& cpu, std::uint32_t trap);
+    void dispatch_mach_task_trap(Cpu& cpu, std::uint32_t trap);
+    void dispatch_mach_scheduler_trap(Cpu& cpu, std::uint32_t trap);
+    void dispatch_mach_timer_trap(Cpu& cpu, std::uint32_t trap);
+
     [[nodiscard]] bool dispatch_mach_port_kernel_rpc_trap(
         Cpu& cpu, std::uint32_t trap);
     [[nodiscard]] bool dispatch_mach_vm_kernel_rpc_trap(

@@ -26,6 +26,7 @@ add_library(ilemu_syscall_routes STATIC
     routes/names.cpp
     routes/catalog.cpp
     routes/bsd_policy.cpp
+    routes/mach_policy.cpp
     routes/bsd_entries.cpp
     routes/bsd_contract_entries.cpp
     routes/bsd_aliases.cpp
@@ -462,7 +463,13 @@ target_sources(ilemu_kernel PRIVATE
     mach/rights_message.cpp
     mach/notification_message.cpp
     mach/send_possible.cpp
-    mach/traps.cpp)
+    mach/traps.cpp
+    mach/dispatch_table.cpp
+    mach/traps/clock.cpp
+    mach/traps/semaphore.cpp
+    mach/traps/task.cpp
+    mach/traps/scheduler.cpp
+    mach/traps/timer.cpp)
 target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::kernel_mach_transport
     iLEmu::kernel_mach_port
