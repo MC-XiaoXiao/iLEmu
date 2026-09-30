@@ -140,23 +140,40 @@ namespace mach_support {
     }
 
     VmAllocationResult allocate_guest_vm_region(AddressSpace& memory,
-        std::uint32_t requested_address, std::uint32_t size,
+        std::uint64_t requested_address, std::uint64_t size,
         std::uint32_t flags, std::uint32_t alignment_mask)
     {
-        auto address = requested_address;
-        if ((flags & darwin::mach::vm_flags_anywhere) != 0U) {
-            address = find_free_guest_region(
-                memory, default_dynamic_base, size, alignment_mask)
-                          .value_or(0U);
+        // vm_user.c: both VM interfaces truncate the fixed start independently
+        // of rounding size. Rounding (start + size) would map an extra page.
+        if (size == 0U)
+            return { darwin::mach::success, 0U };
+        constexpr auto page_mask = std::uint64_t { AddressSpace::page_size - 1U };
+        const auto rounded_size = (size + page_mask) & ~page_mask;
+        if (rounded_size == 0U)
+            return { darwin::mach::invalid_argument, 0U };
+        const auto anywhere = (flags & darwin::mach::vm_flags_anywhere) != 0U;
+        const auto fixed_address = requested_address & ~page_mask;
+        constexpr auto address_limit = std::uint64_t { 1 } << 32U;
+        if (rounded_size >= address_limit || (!anywhere &&
+                (fixed_address >= address_limit ||
+                    rounded_size > address_limit - fixed_address)))
+            return { anywhere ? darwin::mach::no_space
+                              : darwin::mach::invalid_address, 0U };
+
+        const auto map_size = static_cast<std::uint32_t>(rounded_size);
+        auto address = static_cast<std::uint32_t>(fixed_address);
+        if (anywhere) {
+            const auto selected = find_free_guest_region(
+                memory, default_dynamic_base, map_size, alignment_mask);
+            if (!selected)
+                return { darwin::mach::no_space, 0U };
+            address = *selected;
         }
-        const auto mapped = address != 0U && size != 0U &&
-                            (address & alignment_mask) == 0U &&
-                            !guest_region_overlaps(memory, address, size) &&
-                            memory.map(address, size,
-                                MemoryPermission::Read |
-                                    MemoryPermission::Write);
-        return { mapped ? darwin::mach::success : darwin::mach::no_space,
-            address };
+        const auto mapped = (address & alignment_mask) == 0U &&
+                            !guest_region_overlaps(memory, address, map_size) &&
+                            memory.map(address, map_size,
+                                MemoryPermission::Read | MemoryPermission::Write);
+        return { mapped ? darwin::mach::success : darwin::mach::no_space, address };
     }
 
     std::uint32_t create_surface_transport_send_right_locked(

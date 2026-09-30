@@ -91,13 +91,8 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
             return true;
         }
 
-        if (*requested_address > UINT32_MAX || size > UINT32_MAX) {
-            registers[0] = darwin::mach::invalid_argument;
-            return true;
-        }
-        const auto allocation = allocate_guest_vm_region(memory_,
-            static_cast<std::uint32_t>(*requested_address),
-            static_cast<std::uint32_t>(size), flags);
+        const auto allocation = allocate_guest_vm_region(
+            memory_, *requested_address, size, flags);
         if (allocation.result == darwin::mach::success &&
             !(wide ? memory_.write64(address_pointer, allocation.address)
                    : memory_.write32(address_pointer, allocation.address))) {

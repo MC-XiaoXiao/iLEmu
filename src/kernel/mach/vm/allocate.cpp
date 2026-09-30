@@ -32,14 +32,7 @@ Allocation::Result Allocation::evaluate_locked(AddressSpace& memory,
     const auto address = read_address(32U);
     const auto size = read_address(32U + width);
     const auto flags = read_little_word(bytes, 32U + 2U * width);
-    const auto anywhere = (flags & darwin::mach::vm_flags_anywhere) != 0U;
-    // An ARM32 map cannot represent these ranges. ANYWHERE ignores the
-    // supplied address, but neither path may silently truncate a wide size.
-    if (size > UINT32_MAX || (!anywhere && address > UINT32_MAX))
-        return Result { anywhere ? darwin::mach::no_space
-                                 : darwin::mach::invalid_address };
-    const auto allocation = allocate_guest_vm_region(memory,
-        static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(size), flags);
+    const auto allocation = allocate_guest_vm_region(memory, address, size, flags);
     Result result { allocation.result };
     result.address_words = width / 4U;
     result.words[3] = allocation.address;
