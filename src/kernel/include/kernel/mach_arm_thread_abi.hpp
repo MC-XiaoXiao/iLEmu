@@ -32,6 +32,14 @@ inline constexpr std::size_t floating_state_word_count = 65U;
 inline constexpr std::size_t floating_prefix_word_count = 33U;
 inline constexpr std::size_t maximum_state_word_count = 144U;
 
+// Native ARM machine_thread_get_state flavor 0 enumerates the ABI namespace,
+// including exception/debug states whose emulation may be deferred. This is
+// not a writable state or an exception-delivery snapshot (_MachineStateCount=0).
+inline constexpr std::uint32_t flavor_list = 0U;
+inline constexpr std::array<std::uint32_t, 4> state_flavors {
+    general_state_flavor, floating_state_flavor, 3U, 4U
+};
+
 using GeneralState = std::array<std::uint32_t, general_state_word_count>;
 
 // _MachineStateCount used by native exception delivery. Unsupported flavors
@@ -44,6 +52,8 @@ constexpr std::uint32_t state_word_count(std::uint32_t flavor)
 
 constexpr std::uint32_t reply_word_count(std::uint32_t flavor, std::uint32_t capacity)
 {
+    if (flavor == flavor_list)
+        return capacity >= state_flavors.size() ? state_flavors.size() : 0U;
     if (flavor == general_state_flavor)
         return capacity >= general_state_word_count ? general_state_word_count : 0U;
     if (flavor != floating_state_flavor || capacity < floating_prefix_word_count)
@@ -52,11 +62,13 @@ constexpr std::uint32_t reply_word_count(std::uint32_t flavor, std::uint32_t cap
         : capacity > maximum_state_word_count ? maximum_state_word_count : capacity;
 }
 
-// Register words physically present, excluding trailing MIG capacity/padding.
+// State words physically present, excluding trailing MIG capacity/padding.
 constexpr std::uint32_t transfer_word_count(std::uint32_t flavor, std::uint32_t capacity)
 {
     if (!reply_word_count(flavor, capacity))
         return 0U;
+    if (flavor == flavor_list)
+        return state_flavors.size();
     return flavor == floating_state_flavor && capacity < floating_state_word_count
         ? floating_prefix_word_count - 1U : state_word_count(flavor);
 }

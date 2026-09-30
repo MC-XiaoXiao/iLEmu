@@ -14,6 +14,10 @@ template <typename Processor>
 bool read_state(const Processor& cpu, std::uint32_t flavor,
     std::span<std::uint32_t> state)
 {
+    if (flavor == flavor_list && state.size() == state_flavors.size()) {
+        std::copy(state_flavors.begin(), state_flavors.end(), state.begin());
+        return true;
+    }
     if (flavor == general_state_flavor && state.size() == general_state_word_count) {
         std::copy(cpu.registers().begin(), cpu.registers().end(), state.begin());
         state[cpsr_index] = cpu.cpsr();
