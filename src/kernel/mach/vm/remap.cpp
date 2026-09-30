@@ -170,14 +170,7 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
 
     std::optional<SharedTaskMemoryRange> source;
     if (result == kern_success && *source_pid == process_.pid) {
-        const auto region = memory_.mapping_region_at_or_after(source_address);
-        const auto end = static_cast<std::uint64_t>(source_address) + *size;
-        if (region && region->address <= source_address && region->end >= end) {
-            if (auto pages = memory_.share_pages(source_address, *size)) {
-                source = SharedTaskMemoryRange { std::move(*pages),
-                    region->permissions };
-            }
-        }
+        source = memory_.share_mapping(source_address, *size);
     } else if (result == kern_success && task_memory_share_query_) {
         source = task_memory_share_query_(*source_pid, source_address, *size);
     }
@@ -207,20 +200,14 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
 
     bool mapped = false;
     if (result == kern_success) {
-        auto pages = std::move(source->pages);
         if (*copy != 0U) {
-            for (auto& page : pages)
+            for (auto& page : source->pages)
                 page = std::make_shared<GuestPageBacking>(*page);
         }
-        mapped = memory_.map_page_backings(target_address, *size,
-            source->permissions, pages,
+        mapped = memory_.map_shared_mapping(target_address, *source,
             *copy != 0U ? AddressSpace::PageMappingMode::CopyOnWrite
-                        : AddressSpace::PageMappingMode::Shared);
-        if (mapped && !memory_.inherit(target_address, *size,
-                          static_cast<VmInheritance>(*inheritance))) {
-            static_cast<void>(memory_.unmap(target_address, *size));
-            mapped = false;
-        }
+                        : AddressSpace::PageMappingMode::Shared,
+            static_cast<VmInheritance>(*inheritance));
         if (!mapped)
             result = kern_no_space;
     }
@@ -242,7 +229,7 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
     profile.append_address(reply, result == kern_success
         ? target_address + data_offset : requested_target_address);
     reply.push_back(protection);
-    reply.push_back(protection);
+    reply.push_back(source ? darwin_permissions(source->maximum_permissions) : 0U);
     if (!write_words(memory_, request.address, reply))
         return fail_transport();
 

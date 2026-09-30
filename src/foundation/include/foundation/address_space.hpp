@@ -253,6 +253,21 @@ public:
         std::span<const std::shared_ptr<GuestPageBacking>> backings,
         PageMappingMode mode, std::uint64_t* mapping_lease_token = nullptr,
         VmMappingAttributes attributes = {});
+    // Page backings and clipped, relative mapping intervals are captured under
+    // the same address-space lock. Aggregate protections are intersections;
+    // each interval retains its own current and maximum permissions.
+    struct SharedMapping {
+        std::vector<std::shared_ptr<GuestPageBacking>> pages;
+        std::vector<MappingRegion> regions;
+        MemoryPermission permissions { MemoryPermission::Read |
+            MemoryPermission::Write | MemoryPermission::Execute };
+        MemoryPermission maximum_permissions { permissions };
+    };
+    [[nodiscard]] std::optional<SharedMapping> share_mapping(
+        std::uint32_t address, std::uint32_t size);
+    bool map_shared_mapping(std::uint32_t address, const SharedMapping& mapping,
+        PageMappingMode mode, VmInheritance inheritance);
+
     // A mapping lease is created atomically with a shared-page mapping. Any
     // guest unmap touching that range invalidates the token, so a later owner
     // release cannot erase unrelated pages remapped at the same virtual
@@ -481,6 +496,10 @@ private:
     void invalidate_mapping_leases_locked(
         std::uint32_t address, std::uint64_t end);
     void privatize_range_locked(std::uint32_t address, std::uint64_t end);
+    bool map_page_ranges(std::uint32_t address, std::uint32_t size,
+        std::span<const std::shared_ptr<GuestPageBacking>> backings,
+        std::span<const MappingRegion> regions, PageMappingMode mode,
+        VmInheritance inheritance, std::uint64_t* mapping_lease_token);
     void share_pages_locked(std::uint32_t address, std::uint64_t end,
         std::vector<std::shared_ptr<GuestPageBacking>>* output);
     void fault_file_page_locked(std::uint32_t address, Page& page,

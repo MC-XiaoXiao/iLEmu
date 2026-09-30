@@ -990,6 +990,18 @@ bool AddressSpace::map_page_backings(std::uint32_t address, std::uint32_t size,
     PageMappingMode mode, std::uint64_t* mapping_lease_token,
     VmMappingAttributes attributes)
 {
+    const MappingRegion region { 0U, size, permissions, attributes.inheritance,
+        attributes.maximum_permissions };
+    return map_page_ranges(address, size, backings,
+        std::span<const MappingRegion> { &region, 1 }, mode,
+        attributes.inheritance, mapping_lease_token);
+}
+
+bool AddressSpace::map_page_ranges(std::uint32_t address, std::uint32_t size,
+    std::span<const std::shared_ptr<GuestPageBacking>> backings,
+    std::span<const MappingRegion> regions, PageMappingMode mode,
+    VmInheritance inheritance, std::uint64_t* mapping_lease_token)
+{
     if (mapping_lease_token)
         *mapping_lease_token = 0;
     if (size == 0 || address % page_size != 0 || size % page_size != 0 ||
@@ -998,6 +1010,16 @@ bool AddressSpace::map_page_backings(std::uint32_t address, std::uint32_t size,
             [](const auto& backing) { return !backing; })) {
         return false;
     }
+
+    std::uint64_t covered = 0;
+    for (const auto& region : regions) {
+        if (region.address != covered || region.end <= covered ||
+            region.end > size || region.end % page_size != 0)
+            return false;
+        covered = region.end;
+    }
+    if (covered != size)
+        return false;
 
     auto lock = write_lock();
     const auto end = page_range_end(address, size);
@@ -1016,9 +1038,13 @@ bool AddressSpace::map_page_backings(std::uint32_t address, std::uint32_t size,
             return false;
     }
     bool has_tracked_shared_backing = false;
+    auto region = regions.begin();
     for (std::size_t index = 0; index < backings.size(); ++index) {
-        const auto base =
-            address + static_cast<std::uint32_t>(index * page_size);
+        const auto offset = static_cast<std::uint32_t>(index * page_size);
+        while (offset >= region->end)
+            ++region;
+        const auto permissions = region->permissions;
+        const auto base = address + offset;
         const auto file_writeback_capable =
             mode == PageMappingMode::SharedFile &&
             backings[index]->file_backed();
@@ -1037,8 +1063,13 @@ bool AddressSpace::map_page_backings(std::uint32_t address, std::uint32_t size,
         }
         cache_page_locked(base, page->second);
     }
-    vm_map_.map_or(address, end, permissions, attributes);
-    add_page_permissions_locked(address, end, permissions);
+    for (const auto& mapped_region : regions) {
+        const auto first = address + mapped_region.address;
+        const auto region_end = std::uint64_t { address } + mapped_region.end;
+        vm_map_.map_or(first, region_end, mapped_region.permissions,
+            { mapped_region.maximum_permissions, inheritance });
+        add_page_permissions_locked(first, region_end, mapped_region.permissions);
+    }
     if (has_tracked_shared_backing) {
         // Imported backings are supplied by an existing shared object and can
         // already have aliases in this task.

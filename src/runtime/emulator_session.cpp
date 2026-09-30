@@ -2017,17 +2017,7 @@ void EmulatorSession::run()
                 const auto* runtime = runtime_index.find(pid);
                 if (runtime == nullptr)
                     return std::nullopt;
-                const auto region =
-                    runtime->memory->mapping_region_at_or_after(address);
-                const auto end = static_cast<std::uint64_t>(address) + size;
-                if (!region || region->address > address || region->end < end)
-                    return std::nullopt;
-                auto pages = runtime->memory->share_pages(address, size);
-                if (!pages)
-                    return std::nullopt;
-                return CompatibilityKernel::SharedTaskMemoryRange {
-                    std::move(*pages), region->permissions
-                };
+                return runtime->memory->share_mapping(address, size);
             });
         runtime.kernel->set_scheduler_preemption_query(
             [runtime_ptr, &scheduler, disable_scheduler_preemption](

@@ -151,10 +151,7 @@ public:
     using TaskMemoryRegionQuery =
         std::function<std::optional<AddressSpace::MappingRegion>(
             std::uint32_t, std::uint32_t)>;
-    struct SharedTaskMemoryRange {
-        std::vector<std::shared_ptr<GuestPageBacking>> pages;
-        MemoryPermission permissions { MemoryPermission::None };
-    };
+    using SharedTaskMemoryRange = AddressSpace::SharedMapping;
     using TaskMemoryShareQuery =
         std::function<std::optional<SharedTaskMemoryRange>(
             std::uint32_t, std::uint32_t, std::uint32_t)>;
