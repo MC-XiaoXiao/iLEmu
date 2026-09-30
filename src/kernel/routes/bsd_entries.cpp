@@ -13,6 +13,7 @@
 #include "kernel/darwin_resource_abi.hpp"
 #include "kernel/kernel_bsd_interval_timer.hpp"
 #include "kernel/darwin_signal_context.hpp"
+#include <kernel/credential_groups.hpp>
 namespace ilemu::syscall_routes {
 void bind_bsd_entries(Table& table, const DarwinAbi& abi)
 {
@@ -75,6 +76,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(66, "vfork", Handler::BsdProcess);
     add(7, "wait4", Handler::BsdProcess);
     add(20, "getpid", Handler::BsdProcess);
+    add(CredentialGroups::get_syscall, "getgroups", Handler::BsdProcess);
     add(darwin::syscall::get_priority, "get_priority", Handler::BsdProcess);
     add(darwin::syscall::set_user_id, "set_user_id", Handler::BsdProcess);
     add(24, "getuid", Handler::BsdProcess);

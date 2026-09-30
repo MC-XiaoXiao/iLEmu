@@ -19,13 +19,41 @@
 namespace ilemu {
 namespace {
 
-    constexpr std::uint32_t maximum_supplementary_groups = 16;
+    constexpr auto maximum_supplementary_groups = CredentialGroups::maximum_count;
 
 } // namespace
 
 bool CompatibilityKernel::dispatch_bsd_process_credentials(
     Cpu& cpu, std::uint32_t number)
 {
+    if (number == CredentialGroups::get_syscall) {
+        const auto capacity = cpu.registers()[0];
+        const auto address = cpu.registers()[1];
+        const auto count = process_.groups.count();
+        if (capacity == 0U) {
+            bsd_success(cpu, count);
+            return true;
+        }
+        if (capacity > 0x7fffffffU || capacity < count) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return true;
+        }
+        if (address == 0U || static_cast<std::uint64_t>(address) + count * 4U >
+                                (std::uint64_t { 1 } << 32U)) {
+            bsd_error(cpu, darwin::error::bad_address);
+            return true;
+        }
+        for (std::uint32_t i = 0; i < count; ++i) {
+            if (!memory_.write32(address + i * 4U,
+                    process_.groups.at(i, process_.effective_gid))) {
+                bsd_error(cpu, darwin::error::bad_address);
+                return true;
+            }
+        }
+        bsd_success(cpu, count);
+        return true;
+    }
+
     if (number != darwin::syscall::set_groups &&
         number != darwin::syscall::set_user_id &&
         number != darwin::syscall::set_real_effective_user_id &&
@@ -68,14 +96,12 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
             return true;
         }
 
-        // The compatibility model currently only consumes the effective group.
-        // Darwin stores it in cr_groups[0], so keep that observable part while
-        // leaving supplementary membership unexpanded until VFS authorization
-        // actually needs it.
+        process_.groups.assign(std::span { groups }.first(requested_count));
         process_.effective_gid = groups[0];
         if (const auto record = shared_state_->processes.find(process_.pid);
             record != shared_state_->processes.end()) {
             record->second.effective_gid = groups[0];
+            record->second.groups = process_.groups;
         }
 
         output_.write(
@@ -110,14 +136,18 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
 
         if (requested_real != unchanged)
             process_.gid = requested_real;
-        if (requested_effective != unchanged)
+        if (requested_effective != unchanged) {
+            process_.groups.change_effective(old_effective, requested_effective,
+                shared_state_->darwin_abi.abi_epoch);
             process_.effective_gid = requested_effective;
+        }
         if (const auto record = shared_state_->processes.find(process_.pid);
             record != shared_state_->processes.end()) {
             if (requested_real != unchanged)
                 record->second.gid = requested_real;
             if (requested_effective != unchanged)
                 record->second.effective_gid = requested_effective;
+            record->second.groups = process_.groups;
         }
         output_.write("[process] setregid pid=" + std::to_string(process_.pid) +
                       " gid=" + std::to_string(process_.gid) +
@@ -207,6 +237,8 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
     if (number == darwin::syscall::set_group_id) {
         process_.gid = requested_group;
     }
+    process_.groups.change_effective(process_.effective_gid, requested_group,
+        shared_state_->darwin_abi.abi_epoch);
     process_.effective_gid = requested_group;
     if (const auto record = shared_state_->processes.find(process_.pid);
         record != shared_state_->processes.end()) {
@@ -214,6 +246,7 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
             record->second.gid = requested_group;
         }
         record->second.effective_gid = requested_group;
+        record->second.groups = process_.groups;
     }
     output_.write(
         "[process] " +

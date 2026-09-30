@@ -1848,8 +1848,9 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 put32(288, record.gid); // e_pcred.p_rgid
                 put32(292, record.gid); // e_pcred.p_svgid
                 put32(304, record.effective_uid); // e_ucred.cr_uid
-                put16(308, 1); // e_ucred.cr_ngroups
-                put32(312, record.effective_gid); // e_ucred.cr_groups[0]
+                put16(308, static_cast<std::uint16_t>(record.groups.count()));
+                for (std::uint32_t i = 0; i < record.groups.count(); ++i)
+                    put32(312 + i * 4U, record.groups.at(i, record.effective_gid));
                 put32(416, record.parent_pid);
                 put32(420, record.process_group);
                 return bytes;

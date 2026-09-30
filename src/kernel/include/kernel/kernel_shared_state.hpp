@@ -11,6 +11,7 @@
 
 #pragma once
 #include <mach/xnu_mig_reference.hpp>
+#include <kernel/credential_groups.hpp>
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
@@ -99,6 +100,7 @@ struct ProcessContext {
     std::uint32_t effective_uid { };
     std::uint32_t gid { };
     std::uint32_t effective_gid { };
+    CredentialGroups groups;
     std::uint32_t file_creation_mask { 0022 };
     std::array<darwin::resource::Limit, darwin::resource::limit_count>
         resource_limits { darwin::resource::initial_limits() };
@@ -653,6 +655,7 @@ struct KernelSharedState {
         std::uint32_t effective_uid { };
         std::uint32_t gid { };
         std::uint32_t effective_gid { };
+        CredentialGroups groups;
         std::int32_t nice_value { };
         std::uint32_t exit_status { };
         std::uint32_t termination_signal { };
