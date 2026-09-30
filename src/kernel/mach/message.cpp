@@ -117,8 +117,15 @@ void CompatibilityKernel::dispatch_mach_message(
         registers[0] = darwin::mach_message::send_message_too_small;
         return;
     }
-    if (!wants_send && wants_receive) {
-        begin_mach_receive(cpu, receive_address);
+    if (!wants_send) {
+        if (wants_receive) {
+            begin_mach_receive(cpu, receive_address);
+        } else {
+            // XNU mach_msg_overwrite_trap: with neither operation requested,
+            // succeed without copying a header, allocating a message or
+            // consuming port rights. Timeout/trailer flags alone do no work.
+            registers[0] = 0; // MACH_MSG_SUCCESS
+        }
         return;
     }
     auto bits =
