@@ -43,7 +43,7 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
             if (shared_state_->darwin_abi.kevent_abi !=
                 DarwinKeventAbi::QualityOfService) {
                 dispatch_bsd_nosys(
-                    cpu, shared_state_->darwin_abi.capabilities.send_sigsys);
+                    cpu, shared_state_->bsd_dispatch_table.sends_sigsys(number));
                 return;
             }
             // ARM32 syscall wrappers marshal seven words into r0-r6.

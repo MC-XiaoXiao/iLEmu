@@ -65,7 +65,7 @@ void inspect_routes(const std::optional<std::filesystem::path>& rootfs,
             "routes requires --all, --rootfs DIR or --ios-build CODE");
     std::ostringstream text;
     text << "syscall-route-schema: 1" << std::endl
-         << "mode: inspection-only; execution remains on existing dispatch"
+         << "mode: executable BSD catalog; Mach first-handler inspection"
          << std::endl
          << "scope: first-handler routing; handler-validates is not a full "
             "implementation guarantee"

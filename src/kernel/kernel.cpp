@@ -223,7 +223,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , shared_state_ { [&] {
         if (!configuration)
             configuration = resolve_darwin_configuration(rootfs_);
-        return std::make_shared<KernelSharedState>(configuration->abi);
+        return std::make_shared<KernelSharedState>(configuration->abi,
+            configuration->identity.operating_system_release);
     }() }
     , task_syscalls_ { std::make_shared<TaskSyscallCounters>() }
 {
