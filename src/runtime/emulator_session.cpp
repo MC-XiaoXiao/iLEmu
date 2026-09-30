@@ -1615,7 +1615,8 @@ void EmulatorSession::run()
                 auto& thread = runtime->cpus->cpu(slot);
                 std::copy_n(state.begin(), thread.registers().size(),
                     thread.registers().begin());
-                thread.set_cpsr(state[darwin::arm_thread::cpsr_index] | 0x10U);
+                thread.set_cpsr(darwin::arm_thread::restored_cpsr(
+                    state[darwin::arm_thread::cpsr_index], thread.cpsr()));
                 return true;
             });
         runtime.kernel->set_thread_pointer_update_handler(

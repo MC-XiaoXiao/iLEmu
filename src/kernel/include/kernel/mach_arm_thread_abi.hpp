@@ -25,4 +25,16 @@ inline constexpr std::size_t general_state_word_count =
 
 using GeneralState = std::array<std::uint32_t, general_state_word_count>;
 
+// arm/status.c machine_thread_set_state preserves PSR_USER_MASK: the
+// asynchronous-abort, IRQ/FIQ masks and mode belong to the target thread.
+// NZCV, Q, GE and Thumb state remain writable by the guest.
+inline constexpr std::uint32_t privileged_cpsr_mask = 0x1dfU;
+inline constexpr std::uint32_t user_cpsr = 0x10U;
+constexpr std::uint32_t restored_cpsr(
+    std::uint32_t requested, std::uint32_t current)
+{
+    return (requested & ~privileged_cpsr_mask) |
+           (current & privileged_cpsr_mask);
+}
+
 } // namespace ilemu::darwin::arm_thread

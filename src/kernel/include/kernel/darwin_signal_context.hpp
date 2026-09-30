@@ -63,7 +63,8 @@ inline constexpr std::uint32_t reset_alternate_stack = 0x80000000U;
 constexpr std::uint32_t restored_cpsr(std::uint32_t requested,
     std::uint32_t current)
 {
-    return (requested & ~0x1dfU) | (current & 0x1c0U) | 0x10U;
+    return (arm_thread::restored_cpsr(requested, current) & ~0x1fU) |
+           arm_thread::user_cpsr;
 }
 
 static_assert(std::endian::native == std::endian::little);

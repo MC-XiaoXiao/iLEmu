@@ -29,7 +29,9 @@ CompatibilityKernel::create_guest_thread(
 {
     kernel_error = darwin::mach::resource_shortage;
     const auto processor = thread_create_handler_
-                               ? thread_create_handler_(state, cpsr | 0x10U)
+                               ? thread_create_handler_(state,
+                                     darwin::arm_thread::restored_cpsr(cpsr,
+                                         darwin::arm_thread::user_cpsr))
                                : std::nullopt;
     if (!processor)
         return std::nullopt;

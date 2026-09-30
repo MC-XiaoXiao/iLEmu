@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // XNU osfmk/kern/exception.c and osfmk/mach/{exc,mach_exc}.defs.
 #include "foundation/cpu.hpp"
-#include "kernel/darwin_signal_context.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "kernel/mach_arm_thread_abi.hpp"
@@ -182,7 +181,7 @@ MachExceptionDelivery::Completion MachExceptionDelivery::poll(
                  word(40) <= 144U && size == 44U + word(40) * 4U) {
             for (std::size_t i = 0; i < cpu.registers().size(); ++i)
                 cpu.registers()[i] = word(44U + i * 4U);
-            cpu.set_cpsr(darwin::signal_context::restored_cpsr(
+            cpu.set_cpsr(darwin::arm_thread::restored_cpsr(
                 word(44U + darwin::arm_thread::cpsr_index * 4U), cpu.cpsr()));
             handled = true;
         }
