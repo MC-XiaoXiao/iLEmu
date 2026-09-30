@@ -1037,11 +1037,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 return;
             }
             capacity = *requested_size;
-            if (capacity > static_cast<std::uint32_t>(
-                               std::numeric_limits<std::int32_t>::max())) {
-                bsd_error(cpu, bsd_support::invalid_argument);
-                return;
-            }
+            // Darwin socklen_t is unsigned. Bound the copy by the generated
+            // option size below, not by an unrelated signed IO limit.
         }
 
         std::vector<std::byte> value;
@@ -1141,8 +1138,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         if ((copied_size != 0 && !memory_.copy_in(value_address,
                                      std::span<const std::byte> {
                                          value.data(), copied_size })) ||
-            !memory_.write32(
-                size_address, static_cast<std::uint32_t>(value.size()))) {
+            // sooptcopyout reports bytes copied, not the available size. A
+            // null value pointer starts with capacity zero and reports zero.
+            !memory_.write32(size_address, copied_size)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
