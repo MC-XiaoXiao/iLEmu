@@ -1089,6 +1089,22 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             }
         }
         if (value.empty()) {
+            if (const auto udp = virtual_udp_sockets_.find(fd);
+                udp != virtual_udp_sockets_.end()) {
+                if (const auto queried =
+                        udp->second->get_option(registers[1], registers[2])) {
+                    if (queried->status != bsd::VirtualUdpStatus::Success) {
+                        bsd_error(cpu, virtual_udp_error(queried->status));
+                        return;
+                    }
+                    value.resize(sizeof(queried->value));
+                    for (std::size_t byte = 0; byte < value.size(); ++byte)
+                        value[byte] = static_cast<std::byte>(
+                            queried->value >> (byte * 8U));
+                }
+            }
+        }
+        if (value.empty()) {
             if (const auto descriptor = socket_options_.find(fd);
                 descriptor != socket_options_.end()) {
                 if (const auto option =

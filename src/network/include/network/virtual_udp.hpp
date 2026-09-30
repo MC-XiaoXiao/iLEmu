@@ -40,6 +40,11 @@ enum class VirtualUdpStatus {
 
 enum class SocketUidSharing { OwnerOnly, ExplicitOptIn };
 
+struct VirtualUdpOptionResult {
+    VirtualUdpStatus status { VirtualUdpStatus::Success };
+    std::uint32_t value {};
+};
+
 struct VirtualUdpDatagram {
     std::vector<std::byte> bytes;
     std::vector<std::byte> source_address;
@@ -118,6 +123,10 @@ public:
     [[nodiscard]] bool defunct() const { return defunct_.load(); }
     [[nodiscard]] VirtualUdpStatus set_option(std::uint32_t level,
         std::uint32_t option, std::span<const std::byte> value);
+    // Empty means the option is not owned by this backend. A recognized
+    // option may still report an error for the socket's ABI contract.
+    [[nodiscard]] std::optional<VirtualUdpOptionResult> get_option(
+        std::uint32_t level, std::uint32_t option) const;
     [[nodiscard]] VirtualUdpStatus send(std::span<const std::byte> bytes,
         std::span<const std::byte> destination);
     [[nodiscard]] VirtualUdpStatus send(std::span<const std::byte> bytes);

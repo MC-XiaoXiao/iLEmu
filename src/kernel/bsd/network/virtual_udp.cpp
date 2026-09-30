@@ -652,6 +652,33 @@ VirtualUdpStatus VirtualUdpSocket::set_option(
                    : VirtualUdpStatus::AddressFamilyUnsupported;
 }
 
+std::optional<VirtualUdpOptionResult> VirtualUdpSocket::get_option(
+    std::uint32_t level, std::uint32_t option) const
+{
+    using namespace darwin::socket;
+    if (level != option_level ||
+        (option != option_reuse_address && option != option_reuse_port &&
+            option != option_reuse_share_uid && option != option_type))
+        return std::nullopt;
+    if (option == option_type)
+        return VirtualUdpOptionResult { VirtualUdpStatus::Success, datagram };
+    if (option == option_reuse_share_uid &&
+        uid_sharing_ == SocketUidSharing::OwnerOnly)
+        return VirtualUdpOptionResult { VirtualUdpStatus::OptionUnsupported };
+    const auto network = network_.lock();
+    if (!network)
+        return VirtualUdpOptionResult {
+            VirtualUdpStatus::AddressFamilyUnsupported };
+    std::lock_guard lock { network->mutex_ };
+    // XNU sogetopt returns the enabled flag mask, not the setsockopt input.
+    // SO_REUSESHAREUID lives in so_flags (SOF_REUSESHAREUID), not so_options.
+    constexpr std::uint32_t reuse_share_uid_flag = 0x40;
+    return VirtualUdpOptionResult { VirtualUdpStatus::Success,
+        option == option_reuse_share_uid
+            ? (share_uid_ ? reuse_share_uid_flag : 0U)
+            : (reuse_options_ & option) };
+}
+
 VirtualUdpStatus VirtualUdpSocket::send(
     std::span<const std::byte> bytes, std::span<const std::byte> destination)
 {
