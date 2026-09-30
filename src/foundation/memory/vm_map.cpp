@@ -34,12 +34,9 @@ void VmMap::split_at(std::uint64_t point)
     const auto containing = std::prev(after);
     if (point <= containing->first || point >= containing->second.end)
         return;
-    const auto previous_end = containing->second.end;
-    const auto permissions = containing->second.permissions;
-    const auto inheritance = containing->second.inheritance;
+    const auto previous = containing->second;
     containing->second.end = point;
-    regions_.emplace(static_cast<std::uint32_t>(point),
-        Region { previous_end, permissions, inheritance });
+    regions_.emplace(static_cast<std::uint32_t>(point), previous);
 }
 
 void VmMap::coalesce()
@@ -50,6 +47,7 @@ void VmMap::coalesce()
             break;
         if (current->second.end == next->first &&
             current->second.permissions == next->second.permissions &&
+            current->second.maximum_permissions == next->second.maximum_permissions &&
             current->second.inheritance == next->second.inheritance) {
             current->second.end = next->second.end;
             regions_.erase(next);
@@ -100,19 +98,48 @@ void VmMap::unmap(std::uint32_t start, std::uint64_t end)
     coalesce();
 }
 
-bool VmMap::protect(
-    std::uint32_t start, std::uint64_t end, MemoryPermission permissions)
+VmMap::ProtectionResult VmMap::protect(std::uint32_t start, std::uint64_t end,
+    MemoryPermission permissions, bool set_maximum, bool copy)
 {
-    if (!accessible(start, end, MemoryPermission::None))
-        return false;
+    if (!valid_range(start, end))
+        return { ProtectionError::Unmapped };
+    auto region = regions_.upper_bound(start);
+    if (region == regions_.begin())
+        return { ProtectionError::Unmapped };
+    --region;
+    // XNU vm_map_protect validates every entry before clipping or modifying.
+    for (std::uint64_t cursor = start; cursor < end; ++region) {
+        if (region == regions_.end() || region->first > cursor ||
+            region->second.end <= cursor)
+            return { ProtectionError::Unmapped };
+        const auto maximum = region->second.maximum_permissions |
+            (copy ? MemoryPermission::Write : MemoryPermission::None);
+        if (!has_permission(maximum, permissions))
+            return { ProtectionError::ProtectionFailure };
+        cursor = region->second.end;
+    }
     split_at(start);
     split_at(end);
-    for (auto region = regions_.lower_bound(start);
+    ProtectionResult result;
+    for (region = regions_.lower_bound(start);
         region != regions_.end() && region->first < end; ++region) {
-        region->second.permissions = permissions;
+        auto& entry = region->second;
+        const auto previous = entry.permissions;
+        if (copy)
+            entry.maximum_permissions |= MemoryPermission::Write;
+        if (set_maximum) {
+            entry.maximum_permissions = permissions;
+            entry.permissions = static_cast<MemoryPermission>(
+                static_cast<unsigned>(previous) & static_cast<unsigned>(permissions));
+        } else {
+            entry.permissions = permissions;
+        }
+        result.executable_permissions_changed |= previous != entry.permissions &&
+            (has_permission(previous, MemoryPermission::Execute) ||
+                has_permission(entry.permissions, MemoryPermission::Execute));
     }
     coalesce();
-    return true;
+    return result;
 }
 
 bool VmMap::inherit(
@@ -176,14 +203,15 @@ std::optional<VmMap::MappingRegion> VmMap::region_at_or_after(
         if (containing->second.end > address) {
             return MappingRegion { containing->first, containing->second.end,
                 containing->second.permissions,
-                containing->second.inheritance };
+                containing->second.inheritance, containing->second.maximum_permissions };
         }
     }
     region = regions_.lower_bound(address);
     if (region == regions_.end())
         return std::nullopt;
     return MappingRegion { region->first, region->second.end,
-        region->second.permissions, region->second.inheritance };
+        region->second.permissions, region->second.inheritance,
+        region->second.maximum_permissions };
 }
 
 std::size_t VmMap::page_count(std::uint32_t page_size) const

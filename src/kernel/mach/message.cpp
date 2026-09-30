@@ -45,6 +45,7 @@
 #include "host/information.hpp"
 #include "vm/allocate.hpp"
 #include "vm/deallocate.hpp"
+#include "vm/protect.hpp"
 #include "port/notifications.hpp"
 #include "port/lifecycle.hpp"
 #include "port/queries.hpp"
@@ -235,11 +236,16 @@ void CompatibilityKernel::dispatch_mach_message(
         }
     }
     const bool vm_memory_request = vm_mig::Allocation::handles(*message_id) ||
-                                   vm_mig::Deallocation::handles(*message_id);
+                                   vm_mig::Deallocation::handles(*message_id) ||
+                                   vm_mig::Protection::handles(*message_id);
     if (vm_memory_request && pending_mach_receives_.empty()) {
         const std::lock_guard lock { shared_state_->mach_mutex };
         const auto result = vm_mig::Allocation::handles(*message_id)
             ? vm_mig::Allocation::try_synchronous_locked(memory_, *shared_state_,
+                  process_, registers, *bits, *local_port,
+                  receive_address.value_or(message_address), *message_id)
+            : vm_mig::Protection::handles(*message_id)
+            ? vm_mig::Protection::try_synchronous_locked(memory_, cpu, *shared_state_,
                   process_, registers, *bits, *local_port,
                   receive_address.value_or(message_address), *message_id)
             : vm_mig::Deallocation::try_synchronous_locked(memory_, cpu, *shared_state_,

@@ -16,6 +16,7 @@
 
 #include "../support.hpp"
 #include "deallocate.hpp"
+#include "protect.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -23,22 +24,6 @@
 namespace ilemu {
 
 using namespace mach_support;
-
-namespace {
-
-    MemoryPermission memory_permissions(std::uint32_t protection)
-    {
-        MemoryPermission result = MemoryPermission::None;
-        if ((protection & 1U) != 0)
-            result |= MemoryPermission::Read;
-        if ((protection & 2U) != 0)
-            result |= MemoryPermission::Write;
-        if ((protection & 4U) != 0)
-            result |= MemoryPermission::Execute;
-        return result;
-    }
-
-} // namespace
 
 bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
     Cpu& cpu, std::uint32_t trap)
@@ -107,35 +92,14 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         return true;
     }
 
-    if (trap == 14U) {
-        // _kernelrpc_mach_vm_protect_trap uses two 64-bit arguments in the
-        // ARM32 register image: address r1:r2 and size r3:r4, followed by
-        // set_maximum and new_protection in r5/r6.  The guest address space is
-        // 32-bit, so reject values that cannot be represented before touching
-        // the mapping.
-        const auto address = static_cast<std::uint64_t>(registers[1]) |
-                             (static_cast<std::uint64_t>(registers[2]) << 32U);
-        const auto size = static_cast<std::uint64_t>(registers[3]) |
-                          (static_cast<std::uint64_t>(registers[4]) << 32U);
-        const auto result =
-            address <= UINT32_MAX && size <= UINT32_MAX &&
-                    protect_memory(cpu, static_cast<std::uint32_t>(address),
-                        static_cast<std::uint32_t>(size),
-                        memory_permissions(registers[6]))
-                ? darwin::mach::success
-                : darwin::mach::invalid_address;
-        registers[0] = result;
-        return true;
-    }
-
-    if (trap == 15U) {
-        // _kernelrpc_vm_protect_trap takes the address by value. The fifth
-        // argument (new_protection) is moved from the stack into r4 by the
-        // native ARM32 trampoline; r3 is set_maximum.
-        registers[0] = protect_memory(cpu, registers[1], registers[2],
-                           memory_permissions(registers[4]))
-                           ? darwin::mach::success
-                           : darwin::mach::invalid_address;
+    if (trap == 14U || trap == 15U) {
+        const bool wide = trap == 14U;
+        const auto address = std::uint64_t { registers[1] } |
+            (wide ? std::uint64_t { registers[2] } << 32U : 0U);
+        const auto size = wide ? std::uint64_t { registers[3] } |
+            (std::uint64_t { registers[4] } << 32U) : registers[2];
+        registers[0] = vm_mig::Protection::execute(memory_, cpu, address, size,
+            wide, registers[wide ? 5U : 3U] != 0U, registers[wide ? 6U : 4U]);
         return true;
     }
 

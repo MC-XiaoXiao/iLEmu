@@ -190,6 +190,7 @@ public:
     void clear();
     struct ProtectResult {
         bool succeeded { };
+        bool protection_failure { };
         // True when at least one affected mapping changed permissions and
         // either its old or new permissions allowed instruction execution.
         // Callers use this to retire translated code without invalidating
@@ -197,7 +198,8 @@ public:
         bool executable_permissions_changed { };
     };
     [[nodiscard]] ProtectResult protect_with_result(std::uint32_t address,
-        std::uint32_t size, MemoryPermission permissions);
+        std::uint32_t size, MemoryPermission permissions,
+        bool set_maximum = false, bool copy = false);
     bool protect(std::uint32_t address, std::uint32_t size,
         MemoryPermission permissions);
     // Applies Mach vm_inherit metadata to a fully mapped, page-rounded range.
@@ -420,6 +422,8 @@ private:
         std::shared_ptr<GuestFileBacking> backing;
         std::shared_ptr<FilePageCache> cache;
         PageMappingMode mode { PageMappingMode::CopyOnWrite };
+        // Retain the original object/cache when VM_PROT_COPY shadows a file.
+        bool needs_copy { };
     };
     struct TrackedWriteRange {
         std::uint32_t begin { };
@@ -472,6 +476,7 @@ private:
         bool flush_shared_files = true);
     void invalidate_mapping_leases_locked(
         std::uint32_t address, std::uint64_t end);
+    void privatize_range_locked(std::uint32_t address, std::uint64_t end);
     void share_pages_locked(std::uint32_t address, std::uint64_t end,
         std::vector<std::shared_ptr<GuestPageBacking>>* output);
     void fault_file_page_locked(std::uint32_t address, Page& page,

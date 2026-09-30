@@ -53,8 +53,7 @@ using namespace mach_support;
 bool CompatibilityKernel::dispatch_mach_task_vm_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    if (dispatch_mach_vm_protect_message(cpu, request) ||
-        dispatch_mach_vm_inherit_message(cpu, request) ||
+    if (dispatch_mach_vm_inherit_message(cpu, request) ||
         dispatch_mach_vm_copy_message(cpu, request) ||
         dispatch_mach_vm_read_message(cpu, request) ||
         dispatch_mach_vm_purgable_message(cpu, request) ||

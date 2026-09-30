@@ -3102,32 +3102,6 @@ void CompatibilityKernel::bsd_error(Cpu& cpu, std::uint32_t error)
     cpu.set_cpsr(cpu.cpsr() | carry_flag);
 }
 
-bool CompatibilityKernel::protect_memory(Cpu& cpu, std::uint32_t address,
-    std::uint32_t size, MemoryPermission permissions)
-{
-    const auto result = memory_.protect_with_result(address, size, permissions);
-    if (!result.succeeded)
-        return false;
-    // AddressSpace::protect() applies permissions to the page-rounded range.
-    // Retire only translated blocks intersecting that same range and only when
-    // executable mappings actually changed. Data-only and no-op protection
-    // calls cannot make an existing translated instruction stale.
-    if (size != 0 && result.executable_permissions_changed) {
-        constexpr std::uint64_t page_mask =
-            static_cast<std::uint64_t>(AddressSpace::page_size - 1U);
-        const auto first = static_cast<std::uint64_t>(address) & ~page_mask;
-        const auto requested_end = static_cast<std::uint64_t>(address) + size;
-        const auto rounded_end = (requested_end + page_mask) & ~page_mask;
-        const auto end =
-            std::min<std::uint64_t>(rounded_end, std::uint64_t { 1 } << 32U);
-        if (end > first) {
-            cpu.invalidate_cache_range(static_cast<std::uint32_t>(first),
-                static_cast<std::size_t>(end - first));
-        }
-    }
-    return true;
-}
-
 bool CompatibilityKernel::write_guest_stat(std::uint32_t address,
     const std::filesystem::path& path, bool follow_symlink, int host_descriptor)
 {

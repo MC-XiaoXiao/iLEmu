@@ -144,7 +144,7 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
     const auto protection = darwin_permissions(region->permissions);
     std::vector<std::uint32_t> info {
         protection,
-        protection,
+        darwin_permissions(region->maximum_permissions),
         static_cast<std::uint32_t>(region->inheritance),
         0U,
         0U,

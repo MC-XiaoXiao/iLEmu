@@ -32,14 +32,21 @@ public:
         std::uint64_t end { };
         MemoryPermission permissions { MemoryPermission::None };
         VmInheritance inheritance { VmInheritance::Copy };
+        MemoryPermission maximum_permissions { MemoryPermission::Read |
+            MemoryPermission::Write | MemoryPermission::Execute };
     };
 
     void map_or(std::uint32_t start, std::uint64_t end,
         MemoryPermission permissions,
         VmInheritance inheritance = VmInheritance::Copy);
     void unmap(std::uint32_t start, std::uint64_t end);
-    [[nodiscard]] bool protect(
-        std::uint32_t start, std::uint64_t end, MemoryPermission permissions);
+    enum class ProtectionError { None, Unmapped, ProtectionFailure };
+    struct ProtectionResult {
+        ProtectionError error { ProtectionError::None };
+        bool executable_permissions_changed { };
+    };
+    [[nodiscard]] ProtectionResult protect(std::uint32_t start, std::uint64_t end,
+        MemoryPermission permissions, bool set_maximum = false, bool copy = false);
     [[nodiscard]] bool inherit(std::uint32_t start, std::uint64_t end,
         VmInheritance inheritance);
 
@@ -57,6 +64,8 @@ private:
         std::uint64_t end { };
         MemoryPermission permissions { MemoryPermission::None };
         VmInheritance inheritance { VmInheritance::Copy };
+        MemoryPermission maximum_permissions { MemoryPermission::Read |
+            MemoryPermission::Write | MemoryPermission::Execute };
     };
 
     void split_at(std::uint64_t point);

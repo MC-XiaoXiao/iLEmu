@@ -10,6 +10,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_mman.c
 
 #include "kernel/kernel.hpp"
+#include "../mach/vm/protect.hpp"
 #include "filesystem/hfs_path_configuration.hpp"
 
 #include "kernel/baseband_device.hpp"
@@ -1262,15 +1263,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bsd_success(cpu, 0);
             return;
         }
-        MemoryPermission permissions = MemoryPermission::None;
-        if ((protection & 1U) != 0)
-            permissions |= MemoryPermission::Read;
-        if ((protection & 2U) != 0)
-            permissions |= MemoryPermission::Write;
-        if ((protection & 4U) != 0)
-            permissions |= MemoryPermission::Execute;
-        if (!protect_memory(cpu, address, size, permissions)) {
-            bsd_error(cpu, darwin::error::no_memory);
+        const auto result = vm_mig::Protection::execute(
+            memory_, cpu, address, size, true, false, protection);
+        if (result != 0U) {
+            bsd_error(cpu, result == 2U ? 13U : darwin::error::no_memory);
             return;
         }
         bsd_success(cpu, 0);

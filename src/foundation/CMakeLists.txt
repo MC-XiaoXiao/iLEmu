@@ -13,6 +13,7 @@ find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 add_library(ilemu_foundation STATIC
     address_space.cpp
+    memory/protection.cpp
     address_space_parallel.cpp
     application_display.cpp
     arm_cpu_model.cpp

@@ -710,8 +710,6 @@ private:
     [[nodiscard]] bool dispatch_mach_thread_lifecycle_message(
         Cpu& cpu, const MachMessageRequest& request);
     void dispatch_mach_thread_self_trap(Cpu& cpu);
-    [[nodiscard]] bool dispatch_mach_vm_protect_message(
-        Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_vm_inherit_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_vm_copy_message(
@@ -735,8 +733,6 @@ private:
     void bsd_success(
         Cpu& cpu, std::uint32_t value, std::uint32_t second_value = 0);
     void bsd_error(Cpu& cpu, std::uint32_t error);
-    [[nodiscard]] bool protect_memory(Cpu& cpu, std::uint32_t address,
-        std::uint32_t size, MemoryPermission permissions);
     [[nodiscard]] bool unmap_memory(
         Cpu& cpu, std::uint32_t address, std::uint32_t size);
     void trace_unknown(Cpu& cpu, std::string kind, std::uint32_t number);

@@ -673,61 +673,6 @@ void AddressSpace::clear()
     bump_executable_content_generation_locked();
 }
 
-AddressSpace::ProtectResult AddressSpace::protect_with_result(
-    std::uint32_t address, std::uint32_t size, MemoryPermission permissions)
-{
-    if (size == 0 || range_overflows(address, size)) {
-        return ProtectResult { .succeeded = size == 0 };
-    }
-    const auto first = page_base(address);
-    const auto end = page_range_end(address, size);
-    auto lock = write_lock();
-    if (!vm_map_.accessible(first, end, MemoryPermission::None))
-        return { };
-
-    bool executable_permissions_changed = false;
-    for (std::uint64_t cursor = first; cursor < end;) {
-        const auto region =
-            vm_map_.region_at_or_after(static_cast<std::uint32_t>(cursor));
-        if (!region || region->address > cursor || region->end <= cursor) {
-            return { };
-        }
-        if (region->permissions != permissions &&
-            (has_permission(region->permissions, MemoryPermission::Execute) ||
-                has_permission(permissions, MemoryPermission::Execute))) {
-            executable_permissions_changed = true;
-        }
-        cursor = std::min(region->end, end);
-    }
-
-    if (!vm_map_.protect(first, end, permissions))
-        return { };
-    set_page_permissions_locked(first, end, permissions);
-    if (has_permission(permissions, MemoryPermission::Write)) {
-        ensure_unique_page_map_locked();
-        auto page = pages_->lower_bound(first);
-        while (page != pages_->end() && page->first < end) {
-            if (page->second.file_writeback_capable) {
-                page->second.file_writeback = true;
-            }
-            ++page;
-        }
-    }
-    refresh_jit_page_range_locked(first, end);
-    if (executable_permissions_changed)
-        bump_executable_content_generation_locked();
-    return ProtectResult {
-        .succeeded = true,
-        .executable_permissions_changed = executable_permissions_changed,
-    };
-}
-
-bool AddressSpace::protect(
-    std::uint32_t address, std::uint32_t size, MemoryPermission permissions)
-{
-    return protect_with_result(address, size, permissions).succeeded;
-}
-
 bool AddressSpace::inherit(std::uint32_t address, std::uint32_t size,
     VmInheritance inheritance)
 {
@@ -1280,14 +1225,15 @@ void AddressSpace::fault_file_page_locked(std::uint32_t address, Page& page,
     if (!page.backing)
         record_resident_page_locked();
     page.backing = std::move(backing);
-    page.file_cached = !shared;
-    page.copy_on_write_possible = !shared;
-    page.shared_writable = shared;
-    page.file_writeback_capable = mapping.mode == PageMappingMode::SharedFile;
+    page.file_cached = !shared || mapping.needs_copy;
+    page.copy_on_write_possible = !shared || mapping.needs_copy;
+    page.shared_writable = shared && !mapping.needs_copy;
+    page.file_writeback_capable =
+        mapping.mode == PageMappingMode::SharedFile && !mapping.needs_copy;
     page.file_writeback = page.file_writeback_capable &&
         (page_permission_locked(address / page_size) &
             permission_bits(MemoryPermission::Write)) != 0U;
-    if (shared && tracks_write_locked(address, page_size)) {
+    if (page.shared_writable && tracks_write_locked(address, page_size)) {
         const auto epoch = GuestPageBacking::shared_write_tracking_epoch();
         const auto changed = page.backing->enable_shared_write_tracking();
         finish_shared_write_tracking_locked(epoch, changed ? 1U : 0U, true);
@@ -1345,10 +1291,11 @@ bool AddressSpace::fault_file_pages(std::uint32_t address, std::size_t size)
             mapping.file_offset +
             (static_cast<std::uint64_t>(current) - mapping_start);
         const auto cluster_file_start =
-            std::max<std::uint64_t>(mapping.backing->first_offset,
+            std::max<std::uint64_t>(mapping.file_offset,
                 current_file_offset & ~(cluster_bytes - 1U));
         const auto cluster_file_end = std::min<std::uint64_t>(
-            mapping.backing->end_offset, cluster_file_start + cluster_bytes);
+            std::min(mapping.backing->end_offset, mapping.file_offset +
+                mapping.end - mapping_start), cluster_file_start + cluster_bytes);
         const auto cluster_guest_start =
             static_cast<std::uint64_t>(mapping_start) +
             (cluster_file_start - mapping.file_offset);
@@ -1422,7 +1369,7 @@ void AddressSpace::unmap_file_mappings_locked(
             replacements.emplace_back(
                 start, FileMapping { address, source.file_offset,
                            make_backing(*source.backing, source.file_offset,
-                               left_file_end), source.cache, source.mode });
+                               left_file_end), source.cache, source.mode, source.needs_copy });
         }
         if (source.end > end) {
             const auto right_start = static_cast<std::uint32_t>(end);
@@ -1431,7 +1378,7 @@ void AddressSpace::unmap_file_mappings_locked(
             replacements.emplace_back(right_start,
                 FileMapping { source.end, right_file_offset,
                     make_backing(*source.backing, right_file_offset,
-                        source.backing->end_offset), source.cache, source.mode });
+                        source.backing->end_offset), source.cache, source.mode, source.needs_copy });
         }
     }
     for (auto& replacement : replacements) {
