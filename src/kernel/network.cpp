@@ -185,8 +185,7 @@ bool CompatibilityKernel::receive_socket_message(
     if ((*iov_count != 0 &&
             (*iov_address == 0 || !memory_.accessible(*iov_address, iovec_bytes,
                                       MemoryPermission::Read))) ||
-        (*name_capacity != 0 && *name_address == 0) ||
-        (*control_capacity != 0 && *control_address == 0)) {
+        (*name_capacity != 0 && *name_address == 0)) {
         bsd_error(cpu, efault);
         return true;
     }
@@ -241,6 +240,8 @@ bool CompatibilityKernel::receive_socket_message(
 
         const auto option_enabled = [&](std::uint32_t level,
                                         std::uint32_t option) {
+            if (*control_address == 0)
+                return false; // recvit does not request ancillary output
             const auto descriptor = socket_options_.find(fd);
             if (descriptor == socket_options_.end())
                 return false;
@@ -290,7 +291,8 @@ bool CompatibilityKernel::receive_socket_message(
                 actual_name_length) ||
             !memory_.write32(
                 message_address + arm32_message::control_length_offset,
-                static_cast<std::uint32_t>(copied_control)) ||
+                *control_address != 0 ? static_cast<std::uint32_t>(copied_control)
+                                      : *control_capacity) ||
             !memory_.write32(
                 message_address + arm32_message::flags_offset, message_flags)) {
             bsd_error(cpu, efault);
@@ -327,6 +329,8 @@ bool CompatibilityKernel::receive_socket_message(
         }
         const auto option_enabled = [&](std::uint32_t level,
                                         std::uint32_t option) {
+            if (*control_address == 0)
+                return false; // recvit does not request ancillary output
             const auto descriptor = socket_options_.find(fd);
             if (descriptor == socket_options_.end())
                 return false;
@@ -477,7 +481,8 @@ bool CompatibilityKernel::receive_socket_message(
                 actual_name_length) ||
             !memory_.write32(
                 message_address + arm32_message::control_length_offset,
-                static_cast<std::uint32_t>(copied_control)) ||
+                *control_address != 0 ? static_cast<std::uint32_t>(copied_control)
+                                      : *control_capacity) ||
             !memory_.write32(
                 message_address + arm32_message::flags_offset, message_flags)) {
             bsd_error(cpu, efault);
@@ -542,7 +547,7 @@ bool CompatibilityKernel::receive_socket_message(
         return true;
     }
     if (!memory_.write32(message_address + arm32_message::control_length_offset,
-            actual_control) ||
+            *control_address != 0 ? actual_control : *control_capacity) ||
         !memory_.write32(
             message_address + arm32_message::flags_offset, message_flags)) {
         bsd_error(cpu, efault);
