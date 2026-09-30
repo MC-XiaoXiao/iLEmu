@@ -174,7 +174,8 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         const auto updated =
             thread_state_update_handler_ && thread_wake_handler_ &&
             thread_state_update_handler_(
-                process_.pid, idle_worker->processor, guest_state);
+                process_.pid, idle_worker->processor,
+                darwin::arm_thread::general_state_flavor, guest_state);
         const auto wake_result =
             updated ? thread_wake_handler_(process_.pid, idle_worker->processor)
                     : XnuThreadWakeResult { };
@@ -244,7 +245,8 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
     guest_state[darwin::arm_thread::cpsr_index] = cpsr;
     if (!thread_state_update_handler_ ||
         !thread_state_update_handler_(
-            process_.pid, worker.processor, guest_state) ||
+            process_.pid, worker.processor,
+            darwin::arm_thread::general_state_flavor, guest_state) ||
         (thread_pointer_update_handler_ &&
             !thread_pointer_update_handler_(
                 process_.pid, worker.processor,
@@ -424,6 +426,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         if (!thread_state_update_handler_ ||
             !thread_state_update_handler_(process_.pid,
                 static_cast<std::uint32_t>(created->processor),
+                darwin::arm_thread::general_state_flavor,
                 darwin::arm_thread::GeneralState { state[0], state[1], state[2],
                     state[3], state[4], state[5], state[6], state[7], state[8],
                     state[9], state[10], state[11], state[12], state[13],

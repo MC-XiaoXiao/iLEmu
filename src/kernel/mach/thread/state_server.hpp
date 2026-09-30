@@ -4,7 +4,7 @@
 #pragma once
 
 #include "../transport/kernel_reply.hpp"
-#include "kernel/mach_arm_thread_abi.hpp"
+#include "kernel/mach_arm_thread_state.hpp"
 #include "mach/thread_act_mig_ids.hpp"
 
 namespace ilemu::thread_mig {
@@ -17,10 +17,29 @@ class State {
     static constexpr auto get_id = xnu::mig::thread_act::id(Routine::thread_get_state);
     static constexpr auto set_id = xnu::mig::thread_act::id(Routine::thread_set_state);
     static constexpr auto act_id = xnu::mig::thread_act::id(Routine::act_set_state);
-    static constexpr std::uint32_t maximum_state_words = 144U;
+    static constexpr auto maximum_state_words = darwin::arm_thread::maximum_state_word_count;
     static constexpr std::uint32_t maximum_request_size = 40U + 4U * maximum_state_words;
     static constexpr auto state_words = darwin::arm_thread::general_state_word_count;
-    static constexpr auto payload_words = 4U + state_words;
+    static constexpr auto payload_words = 4U + maximum_state_words;
+
+    static std::uint32_t reply_count(std::uint32_t flavor, std::uint32_t count)
+    {
+        using namespace darwin::arm_thread;
+        if (flavor == general_state_flavor)
+            return count >= state_words ? state_words : 0U;
+        if (flavor != floating_state_flavor || count < floating_prefix_word_count)
+            return 0U;
+        return count < floating_state_word_count ? floating_prefix_word_count
+            : std::min<std::uint32_t>(count, maximum_state_words);
+    }
+
+    static std::size_t transfer_count(std::uint32_t flavor, std::uint32_t count)
+    {
+        using namespace darwin::arm_thread;
+        return flavor == general_state_flavor ? state_words
+            : count < floating_state_word_count ? floating_prefix_word_count - 1U
+                                                : floating_state_word_count;
+    }
 
 public:
     static bool handles(std::uint32_t id)
@@ -64,10 +83,9 @@ public:
             return std::nullopt;
         const auto flavor = mach_support::read_little_word(bytes, 32U);
         const auto count = mach_support::read_little_word(bytes, 36U);
-        const auto reply_size = id == get_id && size == 40U &&
-                                       flavor == darwin::arm_thread::general_state_flavor &&
-                                       count >= state_words
-            ? 48U + 4U * state_words : 44U;
+        const auto output_count = id == get_id && size == 40U
+            ? reply_count(flavor, count) : 0U;
+        const auto reply_size = output_count ? 48U + 4U * output_count : 44U;
         // Preflight before any update: falling back must not apply it twice.
         if (registers[3] < reply_size ||
             !memory.accessible(receive_address, reply_size, MemoryPermission::Write))
@@ -105,33 +123,32 @@ private:
         if (!owner)
             owner = find_thread_owner(state, object);
         const auto flavor = read_little_word(bytes, 32U);
-        if (!owner || flavor != darwin::arm_thread::general_state_flavor || count < state_words)
+        const auto output_count = reply_count(flavor, count);
+        if (!owner || output_count == 0U)
             return Result { darwin::mach::invalid_argument };
         const auto current = owner->first == process.pid && owner->second == cpu.processor_id();
+        const auto register_count = transfer_count(flavor, count);
         if (id != get_id) {
             // act_set_state[_from_user] explicitly excludes current_thread().
             if (id == act_id && current)
                 return Result { darwin::mach::invalid_argument };
-            darwin::arm_thread::GeneralState requested;
-            for (std::size_t i = 0; i < requested.size(); ++i)
+            std::array<std::uint32_t, darwin::arm_thread::floating_state_word_count> requested;
+            for (std::size_t i = 0; i < register_count; ++i)
                 requested[i] = read_little_word(bytes, 40U + 4U * i);
-            return Result { update && update(owner->first, owner->second, requested)
+            return Result { update && update(owner->first, owner->second, flavor,
+                    std::span { requested }.first(register_count))
                     ? darwin::mach::success : darwin::mach::invalid_argument };
         }
-        std::optional<darwin::arm_thread::GeneralState> snapshot;
-        if (query)
-            snapshot = query(owner->first, owner->second, flavor);
-        else if (current) {
-            snapshot.emplace();
-            std::copy(cpu.registers().begin(), cpu.registers().end(), snapshot->begin());
-            (*snapshot)[darwin::arm_thread::cpsr_index] = cpu.cpsr();
-        }
-        if (!snapshot)
-            return Result { darwin::mach::invalid_argument };
         Result result;
-        result.words[3] = state_words;
-        result.count = payload_words;
-        std::copy(snapshot->begin(), snapshot->end(), result.words.begin() + 4U);
+        result.words[3] = output_count;
+        result.count = 4U + output_count;
+        auto output = std::span { result.words }.subspan(4U, output_count);
+        const auto registers = output.first(register_count);
+        const auto success = query
+            ? query(owner->first, owner->second, flavor, registers)
+            : current && darwin::arm_thread::read_state(cpu, flavor, registers);
+        if (!success)
+            return Result { darwin::mach::invalid_argument };
         return result;
     }
 };

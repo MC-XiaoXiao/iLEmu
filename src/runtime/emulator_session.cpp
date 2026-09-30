@@ -86,6 +86,7 @@
 #include "kernel/darwin_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel.hpp"
+#include "kernel/mach_arm_thread_state.hpp"
 #include "kernel/mach_thread_policy_abi.hpp"
 #include "mach/guest_dispatch_policy.hpp"
 #include "mach/guest_execution_policy.hpp"
@@ -1584,40 +1585,24 @@ void EmulatorSession::run()
                 return true;
             });
         runtime.kernel->set_thread_state_query(
-            [&runtime_index](
-                std::uint32_t pid, std::uint32_t slot, std::uint32_t flavor)
-                -> std::optional<darwin::arm_thread::GeneralState> {
-                if (flavor != darwin::arm_thread::general_state_flavor) {
-                    return std::nullopt;
-                }
+            [&runtime_index](std::uint32_t pid, std::uint32_t slot,
+                std::uint32_t flavor, std::span<std::uint32_t> state) {
                 const auto* runtime = runtime_index.find(pid);
                 if (runtime == nullptr || slot >= runtime->cpus->size() ||
-                    slot >= runtime->allocated.size() ||
-                    !runtime->allocated[slot]) {
-                    return std::nullopt;
-                }
-                const auto& thread = runtime->cpus->cpu(slot);
-                darwin::arm_thread::GeneralState state { };
-                std::copy(thread.registers().begin(), thread.registers().end(),
-                    state.begin());
-                state[darwin::arm_thread::cpsr_index] = thread.cpsr();
-                return state;
+                    slot >= runtime->allocated.size() || !runtime->allocated[slot])
+                    return false;
+                return darwin::arm_thread::read_state(
+                    runtime->cpus->cpu(slot), flavor, state);
             });
         runtime.kernel->set_thread_state_update_handler(
             [&runtime_index](std::uint32_t pid, std::uint32_t slot,
-                const darwin::arm_thread::GeneralState& state) {
+                std::uint32_t flavor, std::span<const std::uint32_t> state) {
                 const auto* runtime = runtime_index.find(pid);
                 if (runtime == nullptr || slot >= runtime->cpus->size() ||
-                    slot >= runtime->allocated.size() ||
-                    !runtime->allocated[slot]) {
+                    slot >= runtime->allocated.size() || !runtime->allocated[slot])
                     return false;
-                }
-                auto& thread = runtime->cpus->cpu(slot);
-                std::copy_n(state.begin(), thread.registers().size(),
-                    thread.registers().begin());
-                thread.set_cpsr(darwin::arm_thread::restored_cpsr(
-                    state[darwin::arm_thread::cpsr_index], thread.cpsr()));
-                return true;
+                return darwin::arm_thread::write_state(
+                    runtime->cpus->cpu(slot), flavor, state);
             });
         runtime.kernel->set_thread_pointer_update_handler(
             [&runtime_index](std::uint32_t pid, std::uint32_t slot,

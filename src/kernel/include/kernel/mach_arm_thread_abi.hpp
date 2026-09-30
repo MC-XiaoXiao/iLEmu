@@ -23,6 +23,15 @@ inline constexpr std::size_t cpsr_index = general_register_count;
 inline constexpr std::size_t general_state_word_count =
     general_register_count + 1U;
 
+// ARM_VFP_STATE exposes 32 D registers as 64 natural words, then FPSCR.
+// Historical kernels also accept a 33-word prefix containing only D0-D15.
+inline constexpr std::uint32_t floating_state_flavor = 2U;
+inline constexpr std::size_t floating_register_words = 64U;
+inline constexpr std::size_t floating_fpscr_index = floating_register_words;
+inline constexpr std::size_t floating_state_word_count = 65U;
+inline constexpr std::size_t floating_prefix_word_count = 33U;
+inline constexpr std::size_t maximum_state_word_count = 144U;
+
 using GeneralState = std::array<std::uint32_t, general_state_word_count>;
 
 // arm/status.c machine_thread_set_state preserves PSR_USER_MASK: the

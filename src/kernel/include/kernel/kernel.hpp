@@ -112,10 +112,11 @@ public:
     using ThreadTerminateHandler =
         std::function<bool(std::uint32_t, std::size_t)>;
     using ThreadStateQuery =
-        std::function<std::optional<darwin::arm_thread::GeneralState>(
-            std::uint32_t, std::uint32_t, std::uint32_t)>;
+        std::function<bool(std::uint32_t, std::uint32_t, std::uint32_t,
+            std::span<std::uint32_t>)>;
     using ThreadStateUpdateHandler = std::function<bool(
-        std::uint32_t, std::uint32_t, const darwin::arm_thread::GeneralState&)>;
+        std::uint32_t, std::uint32_t, std::uint32_t,
+        std::span<const std::uint32_t>)>;
     using ThreadPointerUpdateHandler = std::function<bool(
         std::uint32_t, std::uint32_t, std::optional<std::uint32_t>)>;
     using ThreadAbortHandler =
