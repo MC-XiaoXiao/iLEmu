@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #include "../support.hpp"
+#include "protection.hpp"
 #include "foundation/host_file_mapping.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
@@ -59,13 +60,11 @@ void CompatibilityKernel::complete_bsd_mapping(
         return;
     }
     const auto mapped_size = static_cast<std::uint32_t>(mapped_size_64);
-    MemoryPermission permissions = MemoryPermission::None;
-    if ((protection & 1U) != 0)
-        permissions |= MemoryPermission::Read;
-    if ((protection & 2U) != 0)
-        permissions |= MemoryPermission::Write;
-    if ((protection & 4U) != 0)
-        permissions |= MemoryPermission::Execute;
+    const bsd_vm::Protection contract { shared_state_->darwin_abi.abi_epoch };
+    const auto permissions = contract.permissions(protection);
+    const auto shared = (flags & darwin::map_flag::shared) != 0;
+    mapping.attributes.inheritance =
+        shared ? VmInheritance::Share : VmInheritance::Copy;
     std::shared_ptr<GuestFileBacking> backing;
     if ((flags & darwin::map_flag::anonymous) == 0) {
         if (!mapping.preparation) {
@@ -75,33 +74,35 @@ void CompatibilityKernel::complete_bsd_mapping(
                 return;
             }
             mapping.path = found->second;
-            const auto shared = (flags & darwin::map_flag::shared) != 0;
-            if (shared &&
-                has_permission(permissions, MemoryPermission::Write)) {
-                const auto descriptor_flags =
-                    file_status_flags_.contains(fd)
-                        ? file_status_flags_.at(fd)
-                        : darwin::open_flag::read_only;
-                if ((descriptor_flags & darwin::open_flag::access_mode) ==
-                    darwin::open_flag::read_only) {
-                    bsd_error(cpu, darwin::error::permission_denied);
-                    return;
-                }
-            }
+            const auto descriptor_flags = file_status_flags_.contains(fd)
+                ? file_status_flags_.at(fd) : darwin::open_flag::read_only;
             mapping.cache = shared ? shared_state_->shared_mapping_page_cache
                                    : memory_.file_page_cache();
             std::shared_ptr<HostFileMappingPreparer> preparer;
+            bool posix_shared_memory;
             {
                 const std::lock_guard lock { shared_state_->filesystem_mutex };
+                posix_shared_memory =
+                    shared_state_->volatile_shared_memory_backings.contains(
+                        mapping.path);
                 if (shared) {
-                    mapping.mode =
-                        shared_state_->volatile_shared_memory_backings.contains(
-                            mapping.path)
-                            ? AddressSpace::PageMappingMode::Shared
-                            : AddressSpace::PageMappingMode::SharedFile;
+                    mapping.mode = posix_shared_memory
+                        ? AddressSpace::PageMappingMode::Shared
+                        : AddressSpace::PageMappingMode::SharedFile;
                 }
                 preparer = shared_state_->file_mapping_preparer;
             }
+            const auto access = contract.file_mapping(permissions, descriptor_flags,
+                shared, posix_shared_memory
+                    ? bsd_vm::Protection::Object::PosixSharedMemory
+                    : bsd_vm::Protection::Object::File);
+            if (access.error != 0U) {
+                bsd_error(cpu, access.error);
+                return;
+            }
+            // Retain the descriptor's limits across asynchronous preparation;
+            // completion must not re-read a closed or reused descriptor.
+            mapping.attributes = access.attributes;
             mapping.preparation =
                 preparer ? preparer->prepare(
                                mapping.cache, mapping.path, offset, mapped_size)
@@ -174,7 +175,8 @@ void CompatibilityKernel::complete_bsd_mapping(
     }
     if ((flags & darwin::map_flag::anonymous) == 0) {
         if (!memory_.map_file_backing(address, mapped_size, permissions,
-                std::move(backing), mapping.cache, mapping.mode)) {
+                std::move(backing), mapping.cache, mapping.mode,
+                mapping.attributes)) {
             bsd_error(cpu, darwin::error::no_memory);
             return;
         }
@@ -191,7 +193,7 @@ void CompatibilityKernel::complete_bsd_mapping(
             ++mapping_trace_count_;
         }
     } else {
-        if (!memory_.map(address, mapped_size, permissions)) {
+        if (!memory_.map(address, mapped_size, permissions, mapping.attributes)) {
             bsd_error(cpu, darwin::error::no_memory);
             return;
         }

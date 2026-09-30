@@ -11,6 +11,7 @@
 
 #include "kernel/kernel.hpp"
 #include "../mach/vm/protect.hpp"
+#include "vm/protection.hpp"
 #include "filesystem/hfs_path_configuration.hpp"
 
 #include "kernel/baseband_device.hpp"
@@ -1263,8 +1264,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bsd_success(cpu, 0);
             return;
         }
-        const auto result = vm_mig::Protection::execute(
-            memory_, cpu, address, size, true, false, protection);
+        const bsd_vm::Protection contract { shared_state_->darwin_abi.abi_epoch };
+        const auto result = vm_mig::Protection::execute(memory_, cpu, address,
+            size, true, false, contract.normalized_bits(protection));
         if (result != 0U) {
             bsd_error(cpu, result == 2U ? 13U : darwin::error::no_memory);
             return;

@@ -822,6 +822,7 @@ private:
     struct PendingFileMapping {
         std::array<std::uint32_t, 7> arguments { };
         std::filesystem::path path;
+        VmMappingAttributes attributes;
         std::shared_ptr<FileMappingPreparation> preparation;
         std::shared_ptr<FilePageCache> cache;
         AddressSpace::PageMappingMode mode { AddressSpace::PageMappingMode::CopyOnWrite };
