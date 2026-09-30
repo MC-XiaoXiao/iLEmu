@@ -6,6 +6,7 @@
 #include "../bsd/process/uuid_policy.hpp"
 #include "catalog_internal.hpp"
 #include "kernel/darwin_abi.hpp"
+#include "kernel/mach_task_trace_abi.hpp"
 #include "kernel/darwin_memorystatus_abi.hpp"
 #include "kernel/darwin_proc_info_abi.hpp"
 #include "kernel/darwin_process_policy_abi.hpp"
@@ -27,6 +28,9 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Handler::BsdLedgerInline, Contract::Ledger,
         darwin_abi_route_supported(
             kernel_bsd::resource_monitor::ledger_route, abi.abi_epoch));
+    add(darwin::task_trace::inspect_syscall, "proc_trace_log",
+        Handler::BsdProcess, Contract::TaskTraceInspection,
+        abi.task_trace_memory == DarwinTaskTraceMemoryAbi::ProcessInspection);
     add(458, "coalition", Handler::BsdCoalition, Contract::ResourceCoalitions,
         abi.coalition_abi != DarwinCoalitionAbi::Unsupported);
     add(460, "necp_match_policy", Handler::BsdNetworkPolicy,

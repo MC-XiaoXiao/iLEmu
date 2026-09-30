@@ -56,6 +56,7 @@ enum class Contract {
     CurrentDispatcher,
     LaterEpoch,
     ResourceCoalitions,
+    TaskTraceInspection,
     Ledger,
     IoPolicy,
     GuardedFdChange,

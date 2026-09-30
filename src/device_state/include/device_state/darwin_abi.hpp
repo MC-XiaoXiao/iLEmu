@@ -274,6 +274,11 @@ enum class DarwinTaskInformationAbi : std::uint8_t {
     Basic, ResidentPeak, DyldAddressPair, DyldWithFormat, UnifiedBasic,
 };
 
+// XNU2422 registers task trace memory;2782 adds privileged process inspection.
+enum class DarwinTaskTraceMemoryAbi : std::uint8_t {
+    Unsupported, Registration, ProcessInspection,
+};
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -281,6 +286,7 @@ struct DarwinAbi {
     };
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
     DarwinTaskInformationAbi task_information { DarwinTaskInformationAbi::Basic };
+    DarwinTaskTraceMemoryAbi task_trace_memory { DarwinTaskTraceMemoryAbi::Unsupported };
     DarwinTaskSpecialPortsAbi task_special_ports { DarwinTaskSpecialPortsAbi::Ledger };
     DarwinMachPortRequestAbi mach_port_requests { DarwinMachPortRequestAbi::DeadNameRequests };
     DarwinMachPortAttributeArray mach_port_attribute_array { DarwinMachPortAttributeArray::ReceiveStatus10 };

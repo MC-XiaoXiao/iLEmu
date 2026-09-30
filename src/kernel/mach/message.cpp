@@ -47,6 +47,7 @@
 #include "port/queries.hpp"
 #include "task/enumeration.hpp"
 #include "task/information.hpp"
+#include "task/trace_memory.hpp"
 #include "task/special_ports.hpp"
 #include "task/lifecycle.hpp"
 #include "thread/policy.hpp"
@@ -229,7 +230,8 @@ void CompatibilityKernel::dispatch_mach_message(
             return;
         }
     }
-    const bool task_service_request = task_mig::Lifecycle::handles(*message_id) ||
+    const bool task_service_request = task_mig::TraceMemory::handles(*message_id) ||
+                                      task_mig::Lifecycle::handles(*message_id) ||
                                       task_mig::Enumeration::handles(*message_id) ||
                                       task_mig::SpecialPorts::handles(*message_id);
     const bool thread_policy_request = thread_mig::Policy::handles(*message_id);

@@ -140,6 +140,8 @@ namespace mach_support {
         KernelSharedState& state, std::uint32_t pid);
     void terminate_exited_semaphores_locked(
         KernelSharedState& state, std::uint32_t pid);
+    void reset_task_trace_memory_locked(
+        KernelSharedState& state, std::uint32_t pid);
     void cleanup_exited_process_metadata_locked(
         KernelSharedState& state, std::uint32_t pid);
     void release_unreferenced_iokit_object_locked(

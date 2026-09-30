@@ -90,6 +90,7 @@ namespace {
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
         .task_suspension = DarwinTaskSuspensionAbi::ResumePortTokens,
         .task_information = DarwinTaskInformationAbi::UnifiedBasic,
+        .task_trace_memory = DarwinTaskTraceMemoryAbi::Registration,
         .task_special_ports = DarwinTaskSpecialPortsAbi::Security,
         .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
         .mach_port_attribute_array = DarwinMachPortAttributeArray::ExtendedStatus17,
@@ -132,6 +133,7 @@ namespace {
     constexpr DarwinAbi darwin14_fine_priority_abi = [] {
         auto abi = darwin14_expanded_shared_region_abi;
         abi.task_special_ports = DarwinTaskSpecialPortsAbi::SecurityDebug;
+        abi.task_trace_memory = DarwinTaskTraceMemoryAbi::ProcessInspection;
         abi.mach_message_header = DarwinMachMessageHeaderAbi::MaskedPortFields;
         abi.pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues;

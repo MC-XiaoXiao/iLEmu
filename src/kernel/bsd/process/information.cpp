@@ -5,6 +5,7 @@
 // Return guest process metadata and resource-information records.
 
 #include "kernel/kernel.hpp"
+#include "../../mach/task/trace_memory.hpp"
 
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_proc_info_abi.hpp"
@@ -22,6 +23,30 @@ namespace ilemu {
 bool CompatibilityKernel::dispatch_bsd_process_information(
     Cpu& cpu, std::uint32_t number)
 {
+    if (number == darwin::task_trace::inspect_syscall) {
+        const auto& registers = cpu.registers();
+        const auto pid = registers[0];
+        const auto identity = std::uint64_t { registers[1] } |
+            (std::uint64_t { registers[2] } << 32U);
+        std::uint32_t error = 0;
+        {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            const auto target = shared_state_->processes.find(pid);
+            if (process_.effective_uid != 0U)
+                error = darwin::error::operation_not_permitted;
+            else if (target == shared_state_->processes.end() ||
+                     target->second.exited || target->second.incarnation != identity)
+                error = darwin::error::no_entry;
+            else if (!task_mig::TraceMemory::inspect_locked(*shared_state_, pid, identity))
+                error = darwin::error::invalid_argument;
+        }
+        if (error)
+            bsd_error(cpu, error);
+        else
+            bsd_success(cpu, 0U);
+        return true;
+    }
+
     if (number != darwin::proc_info::syscall_number)
         return false;
 

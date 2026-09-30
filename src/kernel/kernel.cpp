@@ -936,6 +936,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     std::optional<std::uint32_t> surviving_thread_policy;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
+        mach_support::reset_task_trace_memory_locked(*shared_state_, process_.pid);
         auto& thread_objects =
             shared_state_->task_thread_port_objects[process_.pid];
         if (const auto current =

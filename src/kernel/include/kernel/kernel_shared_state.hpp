@@ -1113,6 +1113,11 @@ struct KernelSharedState {
         std::uint32_t protection { };
         bool purgable { };
     };
+    struct TaskTraceMemory {
+        std::uint32_t memory_object { };
+        std::uint64_t buffer_size { };
+        std::uint64_t mailbox_size { };
+    };
     struct TaskExceptionAction {
         std::uint32_t port_object { };
         std::uint32_t behavior { };
@@ -1679,6 +1684,8 @@ struct KernelSharedState {
     // XNU named-memory entries are kernel ipc_port objects. The per-task Mach
     // namespace carries rights; this table carries the referenced VM object.
     std::map<std::uint32_t, MachMemoryEntry> mach_memory_entries;
+    // A registration owns one kernel-held Send to its readonly memory entry.
+    std::map<std::uint32_t, TaskTraceMemory> task_trace_memory;
     std::map<std::uint32_t, std::vector<std::byte>> mach_vouchers;
     // BSD fileports are send-only Mach objects whose payload is a transferable
     // open-file description. The key is the global object identifier; callers

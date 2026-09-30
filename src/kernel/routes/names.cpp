@@ -92,6 +92,8 @@ std::string_view contract_name(Contract value)
         return "LaterEpoch";
     case Contract::ResourceCoalitions:
         return "ResourceCoalitions";
+    case Contract::TaskTraceInspection:
+        return "TaskTraceInspection";
     case Contract::Ledger:
         return "Ledger";
     case Contract::IoPolicy:

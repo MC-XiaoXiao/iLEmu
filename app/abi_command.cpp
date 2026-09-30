@@ -75,6 +75,8 @@ namespace {
                 { "through-crash", "through-guard" }) << '\n'
          << "coalition: " << choice(abi.coalition_abi,
                 { "unsupported", "resource-coalitions", "resource-and-jetsam-coalitions" }) << '\n'
+         << "task-trace-memory: " << choice(abi.task_trace_memory,
+                { "unsupported", "registration", "process-inspection" }) << '\n'
          << "mach-voucher: " << choice(abi.mach_voucher_abi,
                 { "unsupported", "host-create-inline-recipes" }) << '\n'
          << "sandbox: " << choice(abi.sandbox_abi,

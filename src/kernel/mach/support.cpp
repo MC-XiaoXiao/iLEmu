@@ -821,9 +821,21 @@ namespace mach_support {
         }
     }
 
+    void reset_task_trace_memory_locked(
+        KernelSharedState& state, std::uint32_t pid)
+    {
+        if (const auto trace = state.task_trace_memory.find(pid);
+            trace != state.task_trace_memory.end()) {
+            const auto memory = trace->second.memory_object;
+            state.task_trace_memory.erase(trace);
+            release_kernel_send_right_locked(state, memory);
+        }
+    }
+
     void cleanup_exited_process_metadata_locked(
         KernelSharedState& state, std::uint32_t pid)
     {
+        reset_task_trace_memory_locked(state, pid);
         // terminate_exited_task_ports_locked normally removes these entries via
         // remove_port_object_locked. The explicit erases make cleanup
         // idempotent for partially initialized/failing tasks as well.
