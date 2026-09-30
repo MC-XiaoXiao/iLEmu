@@ -318,7 +318,6 @@ struct PendingPsynchWait {
 };
 
 struct PendingSignalSuspend {
-    std::uint32_t mask { };
     bool interrupted { };
 };
 

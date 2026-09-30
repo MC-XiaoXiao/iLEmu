@@ -229,7 +229,8 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         workqueue_thread_state(*registration, worker, *next_item, false);
     const auto cpsr = pthread_start_cpsr(registration->workqueue_thread_start);
     std::uint32_t create_error { };
-    const auto created = create_guest_thread(state, cpsr, false, create_error);
+    const auto created = create_guest_thread(state, cpsr, false,
+        DarwinSignalMasks::workqueue_mask, create_error);
     if (!created) {
         static_cast<void>(memory_.unmap(*base, total_size));
         static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
@@ -406,7 +407,8 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                               : std::uint32_t { 0x10U };
         std::uint32_t create_error { };
         const auto created =
-            create_guest_thread(state, cpsr, false, create_error);
+            create_guest_thread(state, cpsr, false,
+                signal_masks_.inherited_mask(cpu.processor_id()), create_error);
         if (!created) {
             if (allocation)
                 static_cast<void>(
@@ -661,6 +663,8 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return true;
             }
+            // XNU workq_kernreturn resets masks before recycling a worker.
+            signal_masks_.initialize(processor, DarwinSignalMasks::workqueue_mask);
             const auto next_item = pthread_runtime_.take_workitem();
             if (next_item) {
                 const auto& registration = *pthread_runtime_.registration();

@@ -9,6 +9,7 @@
 #include "kernel/task_memory_statistics.hpp"
 
 #include "kernel/darwin_file_guard.hpp"
+#include "kernel/darwin_signal_masks.hpp"
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -609,11 +610,15 @@ private:
         std::size_t processor) const;
     [[nodiscard]] std::optional<CreatedGuestThread> create_guest_thread(
         const std::array<std::uint32_t, 16>& state, std::uint32_t cpsr,
-        bool start_suspended, std::uint32_t& kernel_error);
+        bool start_suspended, std::uint32_t initial_signal_mask,
+        std::uint32_t& kernel_error);
     void dispatch_bsd_aio(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_audit_session(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_fileport(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t number);
+    [[nodiscard]] std::uint32_t deliver_signal_to_thread(
+        std::uint32_t signal, std::optional<std::size_t> processor);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_posix_semaphore(Cpu& cpu, std::uint32_t number);
     void release_process_mach_rights();
@@ -1040,7 +1045,7 @@ private:
     std::map<std::uint32_t, std::uint32_t> vm_purgable_states_;
     std::set<std::size_t> disabled_thread_signals_;
     std::array<std::array<std::uint32_t, 4>, 32> signal_actions_ { };
-    std::uint32_t signal_mask_ { };
+    DarwinSignalMasks signal_masks_;
     struct AlternateSignalStack {
         std::uint32_t address { };
         std::uint32_t size { };

@@ -364,7 +364,8 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
         }
         std::uint32_t create_error { };
         const auto created = create_guest_thread(
-            state, guest_cpsr, creates_suspended_thread, create_error);
+            state, guest_cpsr, creates_suspended_thread,
+            signal_masks_.inherited_mask(cpu.processor_id()), create_error);
         if (!created)
             return write_create_error(create_error);
         const std::array<std::uint32_t, 10> reply {

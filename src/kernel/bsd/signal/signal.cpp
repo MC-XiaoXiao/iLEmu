@@ -39,15 +39,38 @@ namespace {
 
 } // namespace
 
+void CompatibilityKernel::dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t number)
+{
+    const auto& registers = cpu.registers();
+    const auto processor = cpu.processor_id();
+    const auto previous = signal_masks_.mask(processor);
+    if (registers[1] != 0) {
+        // XNU reads the new mask before touching an aliased old-mask output.
+        const auto requested = memory_.read32(registers[1]);
+        if (!requested) {
+            bsd_error(cpu, darwin::error::bad_address);
+            return;
+        }
+        const auto scope = number == darwin::syscall::pthread_sigmask
+                               ? DarwinSignalMasks::Scope::Thread
+                               : DarwinSignalMasks::Scope::Process;
+        if (!signal_masks_.update(processor, registers[0], *requested, scope)) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+    }
+    // kern_sig.c deliberately ignores copyout failure for both mask calls.
+    if (registers[2] != 0)
+        static_cast<void>(memory_.write32(registers[2], previous));
+    bsd_success(cpu, 0);
+}
+
 void CompatibilityKernel::apply_spawn_signal_attributes(
     const SpawnSignalAttributes& attributes)
 {
-    if (attributes.mask) {
-        constexpr auto unmaskable =
-            (1U << (darwin::signal::kill - 1U)) |
-            (1U << (darwin::signal::stop - 1U));
-        signal_mask_ = *attributes.mask & ~unmaskable;
-    }
+    if (attributes.mask)
+        static_cast<void>(signal_masks_.update(0, 3, *attributes.mask,
+            DarwinSignalMasks::Scope::Process));
     for (std::size_t signal = 1; signal < signal_actions_.size(); ++signal) {
         if ((attributes.defaults & (1U << (signal - 1U))) != 0U)
             signal_actions_[signal] = { };
@@ -55,6 +78,12 @@ void CompatibilityKernel::apply_spawn_signal_attributes(
 }
 
 std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
+{
+    return deliver_signal_to_thread(signal, std::nullopt);
+}
+
+std::uint32_t CompatibilityKernel::deliver_signal_to_thread(
+    std::uint32_t signal, std::optional<std::size_t> processor)
 {
     if (signal == 0 || signal >= darwin::signal::count) {
         return signal == 0 ? 0U : darwin::error::invalid_argument;
@@ -91,8 +120,10 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
         signal == darwin::signal::kill || signal == darwin::signal::stop;
     const auto suspended = std::find_if(pending_signal_suspends_.begin(),
         pending_signal_suspends_.end(), [&](const auto& pending) {
-            return unmaskable ||
-                   (pending.second.mask & (1U << (signal - 1U))) == 0;
+            return (!processor || pending.first == *processor) &&
+                   (unmaskable ||
+                       (signal_masks_.mask(pending.first) &
+                           (1U << (signal - 1U))) == 0);
         });
     if (!unmaskable && handler == darwin::signal::ignore_action) {
         output_.write("[signal] ignored pid=" + std::to_string(process_.pid) +
@@ -113,7 +144,11 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
         }
         return 0;
     }
-    if (!unmaskable && (signal_mask_ & (1U << (signal - 1U))) != 0) {
+    const auto bit = 1U << (signal - 1U);
+    const bool blocked = processor
+                             ? (signal_masks_.mask(*processor) & bit) != 0
+                             : signal_masks_.all_blocked(bit);
+    if (!unmaskable && blocked) {
         output_.write(
             "[signal] masked-pending pid=" + std::to_string(process_.pid) +
             " signal=" + std::to_string(signal) + "\n");
@@ -203,11 +238,9 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
         return;
     }
     if (number == 111U) { // sigsuspend
-        constexpr std::uint32_t unblockable =
-            (1U << (darwin::signal::kill - 1U)) |
-            (1U << (darwin::signal::stop - 1U));
+        signal_masks_.suspend(cpu.processor_id(), cpu.registers()[0]);
         pending_signal_suspends_[cpu.processor_id()] =
-            PendingSignalSuspend { cpu.registers()[0] & ~unblockable, false };
+            PendingSignalSuspend { false };
         process_.waiting_for_events = true;
         output_.write("[signal] suspend pid=" + std::to_string(process_.pid) +
                       " cpu=" + std::to_string(cpu.processor_id()) + "\n");
@@ -238,7 +271,7 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
             return;
         }
         if (signal != 0) {
-            const auto error = deliver_signal(signal);
+            const auto error = deliver_signal_to_thread(signal, target->second);
             if (error != 0) {
                 bsd_error(cpu, error);
                 return;

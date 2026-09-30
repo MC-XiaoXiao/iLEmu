@@ -24,7 +24,8 @@ using namespace mach_support;
 std::optional<CompatibilityKernel::CreatedGuestThread>
 CompatibilityKernel::create_guest_thread(
     const std::array<std::uint32_t, 16>& state, std::uint32_t cpsr,
-    bool start_suspended, std::uint32_t& kernel_error)
+    bool start_suspended, std::uint32_t initial_signal_mask,
+    std::uint32_t& kernel_error)
 {
     kernel_error = darwin::mach::resource_shortage;
     const auto processor = thread_create_handler_
@@ -93,6 +94,7 @@ CompatibilityKernel::create_guest_thread(
         return std::nullopt;
     }
 
+    signal_masks_.initialize(*processor, initial_signal_mask);
     thread_ports_[*processor] = port_name;
     kernel_error = darwin::mach::success;
     return CreatedGuestThread { *processor, port_name };

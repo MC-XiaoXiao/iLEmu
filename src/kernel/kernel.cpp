@@ -900,6 +900,7 @@ bool CompatibilityKernel::owns_display_scanout() const
 
 void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 {
+    signal_masks_.reset(processor_id, signal_masks_.mask(processor_id));
     note_timer_deadline_transition();
     release_close_on_exec_descriptors();
     std::erase_if(thread_working_directories_, [processor_id](const auto& entry) {
@@ -1901,6 +1902,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         pending != pending_signal_suspends_.end() &&
         pending->second.interrupted) {
         bsd_error(cpu, darwin::error::interrupted);
+        signal_masks_.resume(cpu.processor_id());
         pending_signal_suspends_.erase(pending);
         process_.waiting_for_events = false;
         cpu.clear_halt();
@@ -2750,6 +2752,7 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline)
                       std::to_string(process_.pid) + "\n");
         return;
     }
+    signal_masks_.initialize(*processor, 0);
     core_audio_hle_.io_proc_thread_scheduled(callback->process_id,
         callback->native, callback->io_proc_id, *processor);
 }
@@ -2758,6 +2761,7 @@ void CompatibilityKernel::reap_stopped_audio_threads()
 {
     for (const auto processor :
         core_audio_hle_.take_retired_io_proc_threads()) {
+        signal_masks_.retire(processor);
         userland_hle_.unbind_thread_callback(processor);
         if (thread_terminate_handler_) {
             static_cast<void>(
@@ -2925,7 +2929,7 @@ void CompatibilityKernel::inherit_process_state(
     // A fresh spawn address space still inherits signal state; explicit
     // spawn attributes override it after exec has reset caught handlers.
     signal_actions_ = parent.signal_actions_;
-    signal_mask_ = parent.signal_mask_;
+    signal_masks_.reset(0, parent.signal_masks_.inherited_mask(parent_processor));
     kqueues_ = parent.kqueues_;
     // Descriptors with FD_CLOFORK close in the child. Other guarded
     // descriptors inherit their guard along with the descriptor.

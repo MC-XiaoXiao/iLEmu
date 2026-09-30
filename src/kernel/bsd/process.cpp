@@ -532,38 +532,9 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         return;
     }
     case 48: // sigprocmask
-    case darwin::syscall::pthread_sigmask: { // __pthread_sigmask
-        constexpr std::uint32_t unblockable =
-            (1U << (9U - 1U)) | (1U << (17U - 1U));
-        if (registers[2] != 0 && !memory_.write32(registers[2], signal_mask_)) {
-            bsd_error(cpu, bsd_support::bad_address);
-            return;
-        }
-        if (registers[1] != 0) {
-            const auto requested = memory_.read32(registers[1]);
-            if (!requested) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            switch (registers[0]) {
-            case 1:
-                signal_mask_ |= *requested;
-                break; // SIG_BLOCK
-            case 2:
-                signal_mask_ &= ~*requested;
-                break; // SIG_UNBLOCK
-            case 3:
-                signal_mask_ = *requested;
-                break; // SIG_SETMASK
-            default:
-                bsd_error(cpu, bsd_support::invalid_argument);
-                return;
-            }
-            signal_mask_ &= ~unblockable;
-        }
-        bsd_success(cpu, 0);
+    case darwin::syscall::pthread_sigmask:
+        dispatch_bsd_signal_mask(cpu, number);
         return;
-    }
     case 49: { // getlogin
         if (registers[1] == 0 ||
             process_.login_name.size() + 1 > registers[1]) {
