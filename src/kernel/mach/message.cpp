@@ -43,6 +43,7 @@
 
 #include "host/service_ports.hpp"
 #include "host/information.hpp"
+#include "vm/allocate.hpp"
 #include "port/notifications.hpp"
 #include "port/lifecycle.hpp"
 #include "port/queries.hpp"
@@ -232,6 +233,17 @@ void CompatibilityKernel::dispatch_mach_message(
             return;
         }
     }
+    const bool vm_allocation_request = vm_mig::Allocation::handles(*message_id);
+    if (vm_allocation_request && pending_mach_receives_.empty()) {
+        const std::lock_guard lock { shared_state_->mach_mutex };
+        const auto result = vm_mig::Allocation::try_synchronous_locked(memory_,
+            *shared_state_, process_, registers, *bits, *local_port,
+            receive_address.value_or(message_address), *message_id);
+        if (result) {
+            registers[0] = *result;
+            return;
+        }
+    }
     const bool task_service_request = task_mig::TraceMemory::handles(*message_id) ||
                                       task_mig::Lifecycle::handles(*message_id) ||
                                       task_mig::Enumeration::handles(*message_id) ||
@@ -374,7 +386,7 @@ void CompatibilityKernel::dispatch_mach_message(
         }
     }
     if (!separate_receive && !clock_service_request && !host_service_request && !host_information_request &&
-        !task_service_request && !thread_policy_request && !port_query_request &&
+        !task_service_request && !vm_allocation_request && !thread_policy_request && !port_query_request &&
         !port_notification_request && !port_lifecycle_request && !port_rights_request &&
         !port_mig::Guarded::handles(*message_id) && !port_attributes_request && !port_membership_request && !port_context_request && !task_information_request) {
         const auto is_bootstrap_port = [&] {
