@@ -519,7 +519,8 @@ AddressSpace::ExclusiveAccess::~ExclusiveAccess()
 }
 
 bool AddressSpace::map(
-    std::uint32_t address, std::uint32_t size, MemoryPermission permissions)
+    std::uint32_t address, std::uint32_t size, MemoryPermission permissions,
+    VmMappingAttributes attributes)
 {
     if (size == 0 || range_overflows(address, size)) {
         return size == 0;
@@ -527,22 +528,23 @@ bool AddressSpace::map(
     const auto first = page_base(address);
     const auto end = page_range_end(address, size);
     auto lock = write_lock();
-    map_range_locked(first, end, permissions);
+    map_range_locked(first, end, permissions, attributes);
     return true;
 }
 
 void AddressSpace::map_range_locked(std::uint32_t first, std::uint64_t end,
-    MemoryPermission permissions)
+    MemoryPermission permissions, VmMappingAttributes attributes)
 {
     invalidate_mapping_leases_locked(first, end);
-    vm_map_.map_or(first, end, permissions);
+    vm_map_.map_or(first, end, permissions, attributes);
     add_page_permissions_locked(first, end, permissions);
     refresh_jit_page_range_locked(first, end);
     bump_executable_content_generation_locked();
 }
 
 bool AddressSpace::map_anonymous(std::uint32_t address, std::uint32_t size,
-    MemoryPermission permissions, AnonymousMappingMode mode)
+    MemoryPermission permissions, AnonymousMappingMode mode,
+    VmMappingAttributes attributes)
 {
     if (size == 0U || range_overflows(address, size))
         return false;
@@ -556,7 +558,7 @@ bool AddressSpace::map_anonymous(std::uint32_t address, std::uint32_t size,
         invalidate_mapping_leases_locked(first, end);
         unmap_range_locked(first, end);
     }
-    map_range_locked(first, end, permissions);
+    map_range_locked(first, end, permissions, attributes);
     return true;
 }
 
@@ -868,7 +870,7 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
     std::optional<ContentIdentity> expected_content_identity,
     std::shared_ptr<const std::vector<std::byte>> immutable_snapshot,
     std::shared_ptr<const ImmutableFileView> immutable_file_view,
-    FileMappingBatchContext* batch_context)
+    FileMappingBatchContext* batch_context, VmMappingAttributes attributes)
 {
     if (size == 0 || range_overflows(address, size) ||
         address % page_size != 0 || file_offset % page_size != 0) {
@@ -883,7 +885,7 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
         return false;
 
     if (!map_file_backing(address, size, permissions, *backing,
-            file_page_cache_, PageMappingMode::CopyOnWrite))
+            file_page_cache_, PageMappingMode::CopyOnWrite, attributes))
         return false;
     if (batch_context && !batch_context->backing)
         batch_context->backing = *backing;
@@ -892,7 +894,8 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
 
 bool AddressSpace::map_file_backing(std::uint32_t address, std::uint32_t size,
     MemoryPermission permissions, std::shared_ptr<GuestFileBacking> backing,
-    std::shared_ptr<FilePageCache> cache, PageMappingMode mode)
+    std::shared_ptr<FilePageCache> cache, PageMappingMode mode,
+    VmMappingAttributes attributes)
 {
     if (!backing || !cache || size == 0 || range_overflows(address, size) ||
         address % page_size != 0 || backing->first_offset % page_size != 0 ||
@@ -913,7 +916,7 @@ bool AddressSpace::map_file_backing(std::uint32_t address, std::uint32_t size,
     static_cast<void>(mapping);
     if (!inserted)
         return false;
-    vm_map_.map_or(address, end, permissions);
+    vm_map_.map_or(address, end, permissions, attributes);
     // The range has no resident pages or previous permissions to preserve.
     set_page_permissions_locked(address, end, permissions);
     bump_executable_content_generation_locked();
@@ -984,7 +987,8 @@ void AddressSpace::share_pages_locked(std::uint32_t address, std::uint64_t end,
 bool AddressSpace::map_page_backings(std::uint32_t address, std::uint32_t size,
     MemoryPermission permissions,
     std::span<const std::shared_ptr<GuestPageBacking>> backings,
-    PageMappingMode mode, std::uint64_t* mapping_lease_token)
+    PageMappingMode mode, std::uint64_t* mapping_lease_token,
+    VmMappingAttributes attributes)
 {
     if (mapping_lease_token)
         *mapping_lease_token = 0;
@@ -1033,7 +1037,7 @@ bool AddressSpace::map_page_backings(std::uint32_t address, std::uint32_t size,
         }
         cache_page_locked(base, page->second);
     }
-    vm_map_.map_or(address, end, permissions);
+    vm_map_.map_or(address, end, permissions, attributes);
     add_page_permissions_locked(address, end, permissions);
     if (has_tracked_shared_backing) {
         // Imported backings are supplied by an existing shared object and can

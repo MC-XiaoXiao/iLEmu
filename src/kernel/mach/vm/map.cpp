@@ -221,21 +221,21 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
                     *copy != 0 ? AddressSpace::PageMappingMode::CopyOnWrite
                                : AddressSpace::PageMappingMode::Shared;
                 map_ok = memory_.map_page_backings(*address, *size,
-                    memory_permissions(effective_protection), pages, mode);
+                    memory_permissions(effective_protection), pages, mode,
+                    nullptr,
+                    { memory_permissions(effective_maximum_protection),
+                        static_cast<VmInheritance>(*inheritance) });
             }
         }
     } else if (result == kern_success) {
-        map_ok = memory_.map(
-            *address, *size, memory_permissions(effective_protection));
+        map_ok = memory_.map_anonymous(*address, *size,
+            memory_permissions(effective_protection),
+            AddressSpace::AnonymousMappingMode::Exclusive,
+            { memory_permissions(effective_maximum_protection),
+                static_cast<VmInheritance>(*inheritance) });
     }
     if (result == kern_success && !map_ok)
         result = kern_no_space;
-    if (result == kern_success &&
-        !memory_.inherit(*address, *size,
-            static_cast<VmInheritance>(*inheritance))) {
-        static_cast<void>(memory_.unmap(*address, *size));
-        result = kern_invalid_argument;
-    }
 
     std::vector<std::uint32_t> reply {
         darwin::mig_wire::message_bits(

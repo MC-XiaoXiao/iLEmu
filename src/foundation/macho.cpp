@@ -1336,13 +1336,16 @@ void MachOImage::map_into(
         const auto mapping_size =
             align_up(static_cast<std::uint64_t>(prefix) + segment.vm_size);
         const auto permissions = vm_protection(segment.initial_protection);
+        const VmMappingAttributes attributes {
+            vm_protection(segment.max_protection), VmInheritance::Copy };
 
         const auto map_anonymous = [&](std::uint32_t range_start,
                                        std::uint32_t range_end) {
             if (range_start >= range_end)
                 return;
             if (!memory.map(
-                    range_start, range_end - range_start, permissions)) {
+                    range_start, range_end - range_start, permissions,
+                    attributes)) {
                 throw std::runtime_error { "failed to map segment " +
                                            segment.name };
             }
@@ -1408,7 +1411,7 @@ void MachOImage::map_into(
                         batch_context && batch_context->backing
                             ? std::shared_ptr<const std::vector<std::byte>> { }
                             : bytes_,
-                        immutable_file_view_, batch_context)) {
+                        immutable_file_view_, batch_context, attributes)) {
                     // File backing is an optimization for immutable text, not
                     // part of the Mach-O loading contract. A transient host
                     // mapping failure must retain the original anonymous-copy

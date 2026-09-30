@@ -174,12 +174,13 @@ public:
     void synchronize_shared_write_tracking();
 
     bool map(std::uint32_t address, std::uint32_t size,
-        MemoryPermission permissions);
+        MemoryPermission permissions, VmMappingAttributes attributes = {});
     enum class AnonymousMappingMode { Exclusive, Replace };
     // Publish a fresh zero-fill mapping under one address-space lock. Replace
     // retires old backing/JIT state; Exclusive rejects any existing mapping.
     bool map_anonymous(std::uint32_t address, std::uint32_t size,
-        MemoryPermission permissions, AnonymousMappingMode mode);
+        MemoryPermission permissions, AnonymousMappingMode mode,
+        VmMappingAttributes attributes = {});
     bool unmap(std::uint32_t address, std::uint32_t size);
     enum class FileSyncResult { Success, Unmapped, IoError };
     // Writes shared file pages through their retained backing descriptors.
@@ -227,7 +228,8 @@ public:
         std::optional<ContentIdentity> expected_content_identity = std::nullopt,
         std::shared_ptr<const std::vector<std::byte>> immutable_snapshot = { },
         std::shared_ptr<const ImmutableFileView> immutable_file_view = { },
-        FileMappingBatchContext* batch_context = nullptr);
+        FileMappingBatchContext* batch_context = nullptr,
+        VmMappingAttributes attributes = {});
     enum class PageMappingMode {
         CopyOnWrite,
         Shared,
@@ -237,7 +239,8 @@ public:
     // ranges fault through the supplied vnode cache and retain writeback mode.
     bool map_file_backing(std::uint32_t address, std::uint32_t size,
         MemoryPermission permissions, std::shared_ptr<GuestFileBacking> backing,
-        std::shared_ptr<FilePageCache> cache, PageMappingMode mode);
+        std::shared_ptr<FilePageCache> cache, PageMappingMode mode,
+        VmMappingAttributes attributes = {});
     // Exposes an existing page-aligned range as a Mach named-memory object.
     // Existing fork/file-cache COW backings are detached first; subsequent
     // mappings of the returned pages observe shared writes like XNU vm_map.
@@ -248,7 +251,8 @@ public:
     bool map_page_backings(std::uint32_t address, std::uint32_t size,
         MemoryPermission permissions,
         std::span<const std::shared_ptr<GuestPageBacking>> backings,
-        PageMappingMode mode, std::uint64_t* mapping_lease_token = nullptr);
+        PageMappingMode mode, std::uint64_t* mapping_lease_token = nullptr,
+        VmMappingAttributes attributes = {});
     // A mapping lease is created atomically with a shared-page mapping. Any
     // guest unmap touching that range invalidates the token, so a later owner
     // release cannot erase unrelated pages remapped at the same virtual
@@ -471,7 +475,7 @@ private:
     bool flush_shared_file_pages_locked(
         std::uint32_t address, std::uint64_t end, bool synchronous = false);
     void map_range_locked(std::uint32_t address, std::uint64_t end,
-        MemoryPermission permissions);
+        MemoryPermission permissions, VmMappingAttributes attributes);
     void unmap_range_locked(std::uint32_t address, std::uint64_t end,
         bool flush_shared_files = true);
     void invalidate_mapping_leases_locked(

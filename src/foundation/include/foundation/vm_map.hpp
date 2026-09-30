@@ -22,6 +22,14 @@ enum class VmInheritance : std::uint8_t {
     None = 2,
 };
 
+// Creation attributes are independent of current access permissions. In
+// particular, initializing a maximum must not grant or trim current access.
+struct VmMappingAttributes {
+    MemoryPermission maximum_permissions { MemoryPermission::Read |
+        MemoryPermission::Write | MemoryPermission::Execute };
+    VmInheritance inheritance { VmInheritance::Copy };
+};
+
 // Compact, non-overlapping vm_map-style metadata. Callers retain their own
 // synchronization; this class only owns mapping, protection, and fork
 // inheritance intervals.
@@ -38,7 +46,7 @@ public:
 
     void map_or(std::uint32_t start, std::uint64_t end,
         MemoryPermission permissions,
-        VmInheritance inheritance = VmInheritance::Copy);
+        VmMappingAttributes attributes = {});
     void unmap(std::uint32_t start, std::uint64_t end);
     enum class ProtectionError { None, Unmapped, ProtectionFailure };
     struct ProtectionResult {

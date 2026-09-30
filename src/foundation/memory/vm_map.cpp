@@ -59,7 +59,7 @@ void VmMap::coalesce()
 
 void VmMap::map_or(
     std::uint32_t start, std::uint64_t end, MemoryPermission permissions,
-    VmInheritance inheritance)
+    VmMappingAttributes attributes)
 {
     if (!valid_range(start, end))
         return;
@@ -75,10 +75,12 @@ void VmMap::map_or(
                     ? end
                     : std::min<std::uint64_t>(end, region->first);
             regions_.emplace(static_cast<std::uint32_t>(cursor),
-                Region { gap_end, permissions, inheritance });
+                Region { gap_end, permissions, attributes.inheritance,
+                    attributes.maximum_permissions });
             cursor = gap_end;
             continue;
         }
+        // Layering internal mappings must preserve an existing limit.
         region->second.permissions |= permissions;
         cursor = region->second.end;
     }
