@@ -53,6 +53,7 @@
 #include "task/lifecycle.hpp"
 #include "thread/policy.hpp"
 #include "transport/port_copyin.hpp"
+#include "transport/kernel_destination.hpp"
 #include "transport/user_header.hpp"
 #include "transport/voucher_header.hpp"
 #include "transport/ool_copyin.hpp"
@@ -385,7 +386,13 @@ void CompatibilityKernel::dispatch_mach_message(
         };
         const MachMessageRequest request { message_address, *bits, *remote_port,
             *local_port, *message_id };
-        if (dispatch_mach_host_message(cpu, request) ||
+        const auto kernel_destination = [&] {
+            if (!wants_send) return false;
+            const std::lock_guard lock { shared_state_->mach_mutex };
+            return mach_transport::KernelDestination::matches_locked(
+                *shared_state_, process_.pid, request.remote_port, request.bits);
+        }();
+        if (kernel_destination && (dispatch_mach_host_message(cpu, request) ||
             dispatch_mach_host_special_port_message(cpu, request) ||
             dispatch_mach_voucher_message(cpu, request) ||
             dispatch_mach_processor_message(cpu, request) ||
@@ -393,7 +400,7 @@ void CompatibilityKernel::dispatch_mach_message(
             dispatch_mach_thread_lifecycle_message(cpu, request) ||
             dispatch_mach_thread_state_message(cpu, request) ||
             dispatch_mach_task_vm_message(cpu, request) ||
-            dispatch_mach_rights_message(cpu, request)) {
+            dispatch_mach_rights_message(cpu, request))) {
             return;
         }
         const auto* vproc_log_contract =
