@@ -3160,6 +3160,15 @@ void EmulatorSession::run()
                     display_vsync_receiver &&
                     *display_vsync_receiver == processor;
                 if (runtime->kernel->deliver_pending_event(waiting_cpu)) {
+                    // Exception replies and failed signal-frame copyout can
+                    // terminate a task during continuation completion. Retire
+                    // it before selecting a dead queue head with live peers.
+                    if (runtime->kernel->process().exited) {
+                        scheduler.remove_process(thread.process);
+                        guest_execution_policy.forget_process(thread.process);
+                        guest_parallelism_policy.forget_process(thread.process);
+                        break;
+                    }
                     if (delivered_display_vsync) {
                         auto callback_processor =
                             runtime->kernel->display_vsync_callback_processor();
@@ -3979,7 +3988,9 @@ void EmulatorSession::run()
                     fatal_signal = gdb_signal::trap;
                 const auto& registers = cpu.registers();
                 std::ostringstream failure;
-                failure << "[cpu] fatal pid=" << runtime.kernel->process().pid
+                failure << (result.fault || result.architectural_exception
+                                   ? "[cpu] exception pid=" : "[cpu] fatal pid=")
+                        << runtime.kernel->process().pid
                         << " cpu=" << index << " pc=0x" << std::hex
                         << registers[15] << " lr=0x" << registers[14];
                 if (result.fault) {
@@ -4089,6 +4100,11 @@ void EmulatorSession::run()
                 if (gdb_server) {
                     debug_stop = true;
                     debug_signal = fatal_signal;
+                } else if (runtime.kernel->handle_cpu_exception(cpu, result)) {
+                    completion = runtime.kernel->process().exited
+                        ? XnuSliceCompletion::Terminate
+                        : runtime.kernel->cpu_exception_pending(index)
+                            ? XnuSliceCompletion::Block : XnuSliceCompletion::Continue;
                 } else if (runtime.kernel->process().pid !=
                            initial_runtime->kernel->process().pid) {
                     runtime.kernel->exit_process(

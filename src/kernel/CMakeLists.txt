@@ -403,7 +403,9 @@ add_library(ilemu_kernel_mach_task STATIC
     mach/task/identity.cpp
     mach/task/info.cpp
     mach/task/enumeration.cpp
-    mach/exception_ports.cpp)
+    mach/exception_ports.cpp
+    mach/exception_delivery.cpp
+    mach/exception.cpp)
 add_library(iLEmu::kernel_mach_task ALIAS
     ilemu_kernel_mach_task)
 ilemu_configure_module(ilemu_kernel_mach_task)

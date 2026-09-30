@@ -18,8 +18,17 @@ bool CompatibilityKernel::abort_thread(
     // messages, clocks, semaphores, psynch and BSD PCATCH waits. Both abort
     // APIs may interrupt these. Accepted asynchronous filesystem operations
     // have no safe cancellation point and must finish before user return.
-    static_cast<void>(safely);
     const auto processor = cpu.processor_id();
+    if (exception_delivery_.waiting(processor)) {
+        // Exception RPC is not an abort-safe user syscall. A full abort
+        // destroys its private receive right and resumes the saved context.
+        if (safely) return false;
+        exception_delivery_.cancel(*shared_state_, processor);
+        cpu.clear_halt();
+        refresh_pending_event_processor_locked(processor);
+        process_.waiting_for_events = !pending_event_processors_.empty() || !pending_waits_.empty();
+        return true;
+    }
     if (kernel_entry_pending || has_pending_event_locked(processor) ||
         pending_waits_.contains(processor)) {
         pending_thread_aborts_.insert(processor);

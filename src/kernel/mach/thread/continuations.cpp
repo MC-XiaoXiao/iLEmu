@@ -34,6 +34,8 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
         shared_state_->semaphore_terminations.erase(waiter);
     }
 
+    exception_delivery_.cancel(*shared_state_, processor);
+    synchronous_exceptions_.erase(processor);
     clear_thread_pthread_state(processor);
     disabled_thread_signals_.erase(processor);
     alternate_signal_stacks_.erase(processor);

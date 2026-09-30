@@ -57,6 +57,8 @@ void CompatibilityKernel::release_process_mach_rights()
     // A blocked receive/wait is a thread-local continuation, not a surviving
     // Mach right. Drop it with the task so a later PID/processor reuse cannot
     // consume a stale message or semaphore wakeup.
+    exception_delivery_.clear(*shared_state_);
+    synchronous_exceptions_.clear();
     pending_mach_sends_.clear();
     pending_mach_receives_.clear();
     pending_semaphore_waits_.clear();

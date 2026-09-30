@@ -57,6 +57,7 @@
 #include "device_state/lockdown_state.hpp"
 #include "device_state/darwin_kernel_configuration.hpp"
 #include "kernel/mach_arm_thread_abi.hpp"
+#include "kernel/mach_exception_delivery.hpp"
 #include "kernel/mbx2d_hle.hpp"
 #include "kernel/mobile_framebuffer_hle.hpp"
 #include "kernel/offline_serial_device.hpp"
@@ -519,6 +520,9 @@ public:
     // Scheduler-facing event dispatch. A guest thread can block in only one
     // syscall at a time, so this avoids probing every unrelated pending table.
     bool deliver_pending_event(Cpu& cpu);
+    bool handle_cpu_exception(Cpu& cpu, const CpuRunResult& result);
+    [[nodiscard]] bool cpu_exception_pending(std::size_t slot) const
+    { return exception_delivery_.waiting(slot); }
     // Return only blocked CPU contexts whose readiness may have changed. The
     // kernel owns the topology/generation/deadline gate so an idle frontend has
     // an O(1) fast path and never rediscovers wait state by scanning CPUs.
@@ -639,6 +643,7 @@ private:
     void discard_ignored_signal(std::uint32_t signal);
     bool process_pending_signals(std::size_t processor);
     bool deliver_pending_signal(Cpu& cpu);
+    bool complete_cpu_exception(Cpu& cpu, const MachExceptionDelivery::Completion& completion);
     bool caught_signal_ready(std::size_t processor) const;
     bool interrupt_thread_wait(Cpu& cpu, bool restart);
     bool transition_signal_stop(bool stopped, std::uint32_t signal = 0);
@@ -1091,6 +1096,8 @@ private:
     };
     std::shared_ptr<TaskSyscallCounters> task_syscalls_;
     DarwinSignalState signal_state_;
+    MachExceptionDelivery exception_delivery_;
+    std::map<std::size_t, MachExceptionDelivery::Exception> synchronous_exceptions_;
     ThreadCreateHandler thread_create_handler_;
     ThreadTerminateHandler thread_terminate_handler_;
     ThreadStateQuery thread_state_query_;

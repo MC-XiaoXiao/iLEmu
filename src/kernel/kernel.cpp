@@ -976,6 +976,8 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         shared_state_->cancel_mach_sends_locked(process_.pid);
     }
+    exception_delivery_.clear(*shared_state_);
+    synchronous_exceptions_.clear();
     pending_mach_sends_.clear();
     pending_mach_receives_.clear();
     pending_kevents_.clear();
@@ -1491,6 +1493,10 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
 bool CompatibilityKernel::deliver_pending_io(Cpu& cpu)
 {
     std::lock_guard lock { mutex_ };
+    if (exception_delivery_.waiting(cpu.processor_id())) {
+        const auto completion = exception_delivery_.poll(*shared_state_, process_, cpu);
+        return complete_cpu_exception(cpu, completion);
+    }
     if (deliver_pending_signal(cpu))
         return true;
     auto delivered = deliver_pending_io_locked(cpu);
@@ -1511,6 +1517,10 @@ bool CompatibilityKernel::deliver_pending_io(Cpu& cpu)
 bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
 {
     std::lock_guard lock { mutex_ };
+    if (exception_delivery_.waiting(cpu.processor_id())) {
+        const auto completion = exception_delivery_.poll(*shared_state_, process_, cpu);
+        return complete_cpu_exception(cpu, completion);
+    }
     if (deliver_pending_signal(cpu))
         return true;
     bool delivered = false;
@@ -1607,7 +1617,8 @@ CompatibilityKernel::pending_event_poll_candidates()
         const auto hid_receiver =
             hid_event_system_hle_.is_event_consumer(process_.pid, processor);
         if (caught_signal_ready(processor) ||
-            (send != pending_mach_sends_.end() ? send->second.ticket->ready(guest_now) :
+            (exception_delivery_.waiting(processor) ? exception_delivery_.ready(*shared_state_, processor) :
+            send != pending_mach_sends_.end() ? send->second.ticket->ready(guest_now) :
             receive != pending_mach_receives_.end()
                 ? hid_receiver || mach_receive_poll_required_locked(
                                       receive->second, guest_now)
@@ -1656,7 +1667,8 @@ CompatibilityKernel::next_host_event_poll_deadline()
 bool CompatibilityKernel::has_pending_event_locked(
     std::size_t processor) const
 {
-    return pending_mach_sends_.contains(processor) ||
+    return exception_delivery_.waiting(processor) ||
+           pending_mach_sends_.contains(processor) ||
            pending_mach_receives_.contains(processor) ||
            pending_record_locks_.contains(processor) ||
            pending_flocks_.contains(processor) ||

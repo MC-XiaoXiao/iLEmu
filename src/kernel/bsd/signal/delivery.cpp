@@ -13,6 +13,7 @@ namespace ilemu {
 
 bool CompatibilityKernel::caught_signal_ready(std::size_t processor) const
 {
+    if (exception_delivery_.waiting(processor)) return false;
     auto ready = signal_state_.ready(processor);
     if (!ready || process_.exited)
         return false;
@@ -65,6 +66,11 @@ bool CompatibilityKernel::deliver_pending_signal(Cpu& cpu)
     frame.machine.general[darwin::arm_thread::cpsr_index] = cpu.cpsr();
     frame.machine.floating = cpu.extension_registers();
     frame.machine.fpscr = cpu.fpscr();
+    if (const auto fault = synchronous_exceptions_.find(processor);
+        fault != synchronous_exceptions_.end() && fault->second.signal == signal) {
+        frame.machine.exception = fault->second.arm_state;
+        synchronous_exceptions_.erase(fault);
+    }
     const auto stack = alternate_signal_stacks_.find(processor);
     const auto on_stack = stack != alternate_signal_stacks_.end() &&
         (stack->second.flags & darwin::signal::alternate_stack_on_stack);
