@@ -9,16 +9,20 @@
 #include <network/socket_receive_target.hpp>
 
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <span>
 #include <utility>
 #include <vector>
+
+namespace ilemu::darwin::network { struct InterfaceSnapshot; }
 
 namespace ilemu::bsd {
 
@@ -65,6 +69,7 @@ public:
     [[nodiscard]] std::shared_ptr<VirtualUdpSocket> create(
         std::uint32_t family, std::uint32_t owner_uid = 0,
         SocketUidSharing uid_sharing = SocketUidSharing::ExplicitOptIn);
+    void update_interface(const darwin::network::InterfaceSnapshot& interface);
 
 private:
     friend class VirtualUdpSocket;
@@ -89,10 +94,16 @@ private:
     [[nodiscard]] bool readable(const VirtualUdpSocket& socket) const;
     [[nodiscard]] std::size_t pending_bytes(
         const VirtualUdpSocket& socket) const;
+    [[nodiscard]] bool broadcast_address_locked(
+        std::span<const std::byte> address, std::uint32_t family) const;
+    static void enqueue_locked(VirtualUdpSocket& socket,
+        std::span<const std::byte> bytes, std::span<const std::byte> source,
+        std::span<const std::byte> destination);
 
     mutable std::mutex mutex_;
     std::vector<std::weak_ptr<VirtualUdpSocket>> sockets_;
-    std::uint64_t next_binding_order_ {};
+    std::uint64_t next_socket_order_ {};
+    std::map<std::uint16_t, std::vector<std::array<std::byte, 4>>> broadcast_addresses_;
     static constexpr std::uint16_t first_ephemeral_port = 49'152;
     std::uint16_t next_ephemeral_port_ { first_ephemeral_port };
 };
@@ -138,6 +149,7 @@ private:
     std::uint32_t reuse_options_ {};
     bool share_uid_ {};
     std::uint64_t binding_order_ {};
+    std::uint64_t lookup_order_ {};
     std::vector<std::byte> bound_address_;
     std::vector<std::byte> connected_address_;
     std::set<std::vector<std::byte>> multicast_groups_;

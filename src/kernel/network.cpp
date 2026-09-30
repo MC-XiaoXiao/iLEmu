@@ -1172,6 +1172,10 @@ void CompatibilityKernel::synchronize_interface_routes(
         interface = found->second;
     }
 
+    if (family == darwin::network::address_family_inet)
+        shared_state_->virtual_udp_network->update_interface(
+            kernel_network::make_interface_snapshot(interface_name, interface));
+
     std::vector<darwin::route::Entry> replacements;
     if (family == darwin::network::address_family_inet && interface.has_ipv4) {
         const auto loopback =

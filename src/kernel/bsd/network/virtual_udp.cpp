@@ -200,6 +200,65 @@ std::vector<std::byte> make_virtual_udp_ancillary(std::uint32_t family,
     return control;
 }
 
+void VirtualUdpNetwork::update_interface(
+    const darwin::network::InterfaceSnapshot& interface)
+{
+    std::vector<std::array<std::byte, 4>> addresses;
+    if ((interface.flags & interface_flag_broadcast) &&
+        interface.ipv4_address && interface.ipv4_netmask) {
+        const auto ip = address_bytes(*interface.ipv4_address, address_family_inet);
+        const auto mask = address_bytes(*interface.ipv4_netmask, address_family_inet);
+        if (!std::all_of(mask.begin(), mask.end(),
+                [](std::byte byte) { return byte == std::byte { 0xff }; })) {
+            if (interface.ipv4_broadcast) {
+                std::array<std::byte, 4> broadcast;
+                std::copy_n(interface.ipv4_broadcast->begin() +
+                    sockaddr_ipv4_address_offset, 4, broadcast.begin());
+                addresses.push_back(broadcast);
+            }
+            // in_broadcast also accepts classful network broadcasts and
+            // legacy host-zero network/subnet destinations. Cache on change,
+            // rather than acquiring the kernel interface lock on every send.
+            std::array<std::byte, 4> subnet, network, broadcast;
+            const auto first = std::to_integer<unsigned>(ip.front());
+            const unsigned network_bytes = first < 128 ? 1U : first < 192 ? 2U : 3U;
+            for (unsigned i = 0; i < 4; ++i) {
+                const auto network_mask = i < network_bytes ? mask[i] : std::byte { 0 };
+                subnet[i] = ip[i] & mask[i];
+                network[i] = ip[i] & network_mask;
+                broadcast[i] = network[i] | ~network_mask;
+            }
+            addresses.push_back(subnet);
+            addresses.push_back(network);
+            addresses.push_back(broadcast);
+        }
+    }
+    std::lock_guard lock { mutex_ };
+    if (addresses.empty())
+        broadcast_addresses_.erase(interface.index);
+    else
+        broadcast_addresses_[interface.index] = std::move(addresses);
+}
+
+bool VirtualUdpNetwork::broadcast_address_locked(
+    std::span<const std::byte> address, std::uint32_t family) const
+{
+    if (family != address_family_inet)
+        return false;
+    const auto ip = address_bytes(address, family);
+    if (std::all_of(ip.begin(), ip.end(),
+            [](std::byte byte) { return byte == std::byte { 0xff }; }) ||
+        wildcard_address(address, family))
+        return true;
+    for (const auto& [index, addresses] : broadcast_addresses_) {
+        for (const auto& broadcast : addresses) {
+            if (std::equal(ip.begin(), ip.end(), broadcast.begin()))
+                return true;
+        }
+    }
+    return false;
+}
+
 std::shared_ptr<VirtualUdpSocket> VirtualUdpNetwork::create(
     std::uint32_t family, std::uint32_t owner_uid, SocketUidSharing uid_sharing)
 {
@@ -248,7 +307,7 @@ VirtualUdpStatus VirtualUdpNetwork::bind(
             return VirtualUdpStatus::AddressInUse;
     }
     socket.bound_address_ = std::move(bound);
-    socket.binding_order_ = ++next_binding_order_;
+    socket.lookup_order_ = socket.binding_order_ = ++next_socket_order_;
     return VirtualUdpStatus::Success;
 }
 
@@ -331,7 +390,7 @@ VirtualUdpStatus VirtualUdpNetwork::ensure_bound_locked(VirtualUdpSocket& socket
     if (status != VirtualUdpStatus::Success)
         return status;
     socket.bound_address_ = std::move(bound);
-    socket.binding_order_ = ++next_binding_order_;
+    socket.lookup_order_ = socket.binding_order_ = ++next_socket_order_;
     return VirtualUdpStatus::Success;
 }
 
@@ -419,6 +478,10 @@ VirtualUdpStatus VirtualUdpNetwork::send(VirtualUdpSocket& socket,
     const auto group =
         multicast ? multicast_group(normalized_destination, socket.family_)
                   : std::vector<std::byte> { };
+    const bool fanout = multicast ||
+        broadcast_address_locked(normalized_destination, socket.family_);
+    std::shared_ptr<VirtualUdpSocket> receiver;
+    unsigned best_rank = 3;
     for (auto current = sockets_.begin(); current != sockets_.end();) {
         const auto target = current->lock();
         if (!target) {
@@ -451,12 +514,38 @@ VirtualUdpStatus VirtualUdpNetwork::send(VirtualUdpSocket& socket,
                                     normalized_destination, target->family_)) {
             continue;
         }
-        if (target->incoming_.size() >= maximum_pending_datagrams)
-            target->incoming_.pop_front();
-        target->incoming_.push_back(VirtualUdpDatagram {
-            { bytes.begin(), bytes.end() }, source, normalized_destination });
+        if (fanout) {
+            enqueue_locked(*target, bytes, source, normalized_destination);
+            continue;
+        }
+        // XNU's PCB hash lookup prefers a connected tuple, then an exact
+        // local address, then a wildcard. Only multicast/broadcast fan out.
+        const unsigned rank = !target->connected_address_.empty() ? 0U
+            : wildcard ? 2U : 1U;
+        // Exact lookup returns the first hash entry; wildcard lookup keeps
+        // the last. Connect/disconnect rehash without changing bind order.
+        const bool preferred_tie = receiver && rank == best_rank &&
+            (rank == 2 ? target->lookup_order_ < receiver->lookup_order_
+                       : target->lookup_order_ > receiver->lookup_order_);
+        if (!receiver || rank < best_rank || preferred_tie) {
+            receiver = target;
+            best_rank = rank;
+        }
     }
+    if (receiver)
+        enqueue_locked(*receiver, bytes, source, normalized_destination);
     return VirtualUdpStatus::Success;
+}
+
+void VirtualUdpNetwork::enqueue_locked(VirtualUdpSocket& socket,
+    std::span<const std::byte> bytes, std::span<const std::byte> source,
+    std::span<const std::byte> destination)
+{
+    if (socket.incoming_.size() >= maximum_pending_datagrams)
+        socket.incoming_.pop_front();
+    socket.incoming_.push_back(VirtualUdpDatagram {
+        { bytes.begin(), bytes.end() }, { source.begin(), source.end() },
+        { destination.begin(), destination.end() } });
 }
 
 std::optional<VirtualUdpDatagram> VirtualUdpNetwork::receive(
@@ -536,6 +625,7 @@ VirtualUdpStatus VirtualUdpSocket::connect(std::span<const std::byte> address)
         status != VirtualUdpStatus::Success)
         return status;
     connected_address_ = std::move(normalized);
+    lookup_order_ = ++network->next_socket_order_;
     return VirtualUdpStatus::Success;
 }
 
@@ -550,6 +640,7 @@ VirtualUdpStatus VirtualUdpSocket::disconnect()
     if (connected_address_.empty())
         return VirtualUdpStatus::NotConnected;
     connected_address_.clear();
+    lookup_order_ = ++network->next_socket_order_;
     return VirtualUdpStatus::Success;
 }
 
