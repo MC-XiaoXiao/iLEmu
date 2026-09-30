@@ -12,6 +12,7 @@
 #pragma once
 #include <mach/xnu_mig_reference.hpp>
 #include <kernel/credential_groups.hpp>
+#include <kernel/open_file_offset.hpp>
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
@@ -620,7 +621,7 @@ struct KernelSharedState {
 
         Kind kind { Kind::Virtual };
         std::filesystem::path file_path;
-        std::uint64_t file_offset { };
+        OpenFileOffset file_offset;
         std::uint32_t file_status_flags { };
         std::shared_ptr<bsd::RegularFileOpenDescription>
             regular_file_open_description;

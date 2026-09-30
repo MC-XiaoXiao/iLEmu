@@ -1038,7 +1038,7 @@ private:
         regular_file_open_descriptions_;
     std::map<std::uint32_t, std::pair<std::uint32_t, bool>>
         virtual_block_descriptors_;
-    std::map<std::uint32_t, std::uint64_t> file_offsets_;
+    std::map<std::uint32_t, OpenFileOffset> file_offsets_;
     std::map<std::filesystem::path, std::vector<DirectoryEntry>>
         directory_entries_cache_;
     std::map<std::uint32_t, std::uint32_t> file_status_flags_;

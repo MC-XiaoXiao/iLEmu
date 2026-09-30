@@ -1378,8 +1378,8 @@ CompatibilityKernel::export_descriptor(std::uint32_t fd) const
         KernelSharedState::DescriptorTransfer transfer;
         transfer.kind = KernelSharedState::DescriptorTransfer::Kind::File;
         transfer.file_path = file->second;
-        transfer.file_offset =
-            file_offsets_.contains(fd) ? file_offsets_.at(fd) : 0;
+        if (const auto offset = file_offsets_.find(fd); offset != file_offsets_.end())
+            transfer.file_offset = offset->second;
         transfer.file_status_flags =
             file_status_flags_.contains(fd) ? file_status_flags_.at(fd) : 0;
         if (const auto description = regular_file_open_descriptions_.find(fd);

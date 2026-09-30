@@ -1369,6 +1369,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                                : bsd_support::bad_file_descriptor); // ESPIPE
             return;
         }
+        // Resolve a lazy host description before locking the cursor: opening
+        // may take filesystem_mutex, while writes acquire that mutex first.
+        static_cast<void>(ensure_regular_file_open_description(fd));
+        const auto offset_lock = file_offsets_[fd].lock();
         const auto raw_offset =
             static_cast<std::uint64_t>(registers[1]) |
             (static_cast<std::uint64_t>(registers[2]) << 32U);

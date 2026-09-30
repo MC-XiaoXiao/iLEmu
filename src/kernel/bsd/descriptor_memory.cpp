@@ -90,6 +90,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
     auto& registers = cpu.registers();
     switch (number) {
     case darwin::syscall::read: {
+        std::unique_lock<std::mutex> read_offset_lock;
         auto fd = registers[0];
         if (const auto duplicate = duplicated_descriptors_.find(fd);
             duplicate != duplicated_descriptors_.end()) {
@@ -195,6 +196,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             constexpr std::string_view configuration {
                 "nameserver 10.0.2.3\n"
             };
+            read_offset_lock = file_offsets_[fd].lock();
             const auto offset =
                 std::min<std::size_t>(file_offsets_[fd], configuration.size());
             const auto count =
@@ -218,6 +220,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 bsd_error(cpu, darwin::error::bad_file_descriptor);
                 return;
             }
+            read_offset_lock = file_offsets_[fd].lock();
             const auto result =
                 ::pread(description->host_descriptor(), bytes.data(),
                     bytes.size(), static_cast<off_t>(file_offsets_[fd]));
@@ -637,6 +640,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 return;
             }
             std::lock_guard filesystem_lock { shared_state_->filesystem_mutex };
+            const auto offset_lock = file_offsets_[fd].lock();
             std::uint64_t position = file_offsets_[fd];
             if ((flags & darwin::open_flag::append) != 0) {
                 struct stat status { };
