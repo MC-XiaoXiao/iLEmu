@@ -101,6 +101,7 @@ add_library(iLEmu::kernel_bsd_sysctl ALIAS
 ilemu_configure_module(ilemu_kernel_bsd_sysctl)
 
 add_library(ilemu_kernel_bsd_signal STATIC
+    bsd/signal/context.cpp
     bsd/signal/signal.cpp
     bsd/signal/wait.cpp)
 add_library(iLEmu::kernel_bsd_signal ALIAS

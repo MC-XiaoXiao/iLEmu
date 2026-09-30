@@ -12,6 +12,7 @@
 #include "kernel/darwin_process_policy_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
 #include "kernel/kernel_bsd_interval_timer.hpp"
+#include "kernel/darwin_signal_context.hpp"
 namespace ilemu::syscall_routes {
 void bind_bsd_entries(Table& table, const DarwinAbi& abi)
 {
@@ -160,6 +161,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Handler::BsdSignal);
     add(111, "sigsuspend", Handler::BsdSignal);
     add(52, "sigpending", Handler::BsdSignal);
+    add(darwin::signal_context::syscall, "sigreturn", Handler::BsdSignal);
     add(330, "__sigwait", Handler::BsdSignal);
     table.bind_new({ Domain::BsdSyscall, 422, 422, "__sigwait_nocancel",
         Handler::BsdSignal, Contract::CurrentDispatcher, Cancellation::NoCancelEntry,

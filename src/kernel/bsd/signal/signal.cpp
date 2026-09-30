@@ -11,6 +11,7 @@
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_signal_context.hpp"
 #include "../../mach/support.hpp"
 #include <algorithm>
 #include <bit>
@@ -208,6 +209,10 @@ bool CompatibilityKernel::process_pending_signals(std::size_t processor)
 
 void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
 {
+    if (number == darwin::signal_context::syscall) {
+        dispatch_bsd_signal_return(cpu);
+        return;
+    }
     if (number == 330U || number == 422U) {
         dispatch_bsd_signal_wait(cpu);
         return;

@@ -618,6 +618,7 @@ private:
     void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_signal_wait(Cpu& cpu);
+    void dispatch_bsd_signal_return(Cpu& cpu);
     bool complete_signal_wait(Cpu& cpu, bool interrupted = false);
     void return_waited_signal(Cpu& cpu, std::uint32_t signal, std::uint32_t output);
     void reset_signal_actions_for_exec();
