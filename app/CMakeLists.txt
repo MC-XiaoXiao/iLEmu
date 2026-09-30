@@ -26,7 +26,7 @@ if(TARGET PkgConfig::SDL2)
     endif()
 endif()
 
-add_executable(ilemu main.cpp desktop_host.cpp abi_command.cpp routes_command.cpp)
+add_executable(ilemu main.cpp desktop_host.cpp abi_command.cpp routes_command.cpp mig_command.cpp)
 target_link_libraries(ilemu PRIVATE
     iLEmu::syscall_routes
     iLEmu::host

@@ -59,13 +59,32 @@ namespace mach_support {
         darwin::mach::thread_policy::policy_set_message ==
         mig_message_id(xnu::mig::thread_act::Routine::thread_policy_set));
 
-    std::string mig_message_label(std::uint32_t identifier)
+    std::string mig_message_label(
+        const xnu::mig::reference::Catalog& catalog, std::uint32_t identifier)
     {
-        const auto routine = xnu::mig::lookup_routine(identifier);
-        if (!routine)
-            return { };
-        return " mig=" + std::string { routine->subsystem_name } + '.' +
-               std::string { routine->routine_name };
+        // IDs overlap userspace servers (host_priv/bootstrap, for example).
+        // Without destination context these are candidates, not dispatch keys.
+        const auto reference = catalog.resolve(identifier);
+        const auto registered = xnu::mig::lookup_routine(identifier);
+        std::string result;
+        if (reference.routine) {
+            result =
+                " mig-reference=" + std::string { reference.subsystem->name } +
+                '.' + std::string { reference.routine->name };
+        } else if (reference.presence ==
+                   xnu::mig::reference::Presence::Absent) {
+            result = " mig-reference=absent:" +
+                     std::string { reference.subsystem->name };
+        }
+        if (!result.empty())
+            result +=
+                " mig-source=" + std::string { catalog.profile()->source };
+        if (registered) {
+            result +=
+                " mig-candidate=" + std::string { registered->subsystem_name } +
+                '.' + std::string { registered->routine_name };
+        }
+        return result;
     }
 
     bool guest_region_overlaps(

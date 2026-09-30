@@ -397,7 +397,7 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
                       " owner=" + std::to_string(remote_owner) +
                       " depth=" + std::to_string(remote_queue_depth) +
                       " id=" + std::to_string(message_id) +
-                      mig_message_label(message_id) +
+                      mig_message_label(shared_state_->mig_reference, message_id) +
                       (bootstrap_service_name.empty()
                               ? std::string { }
                               : " service=" + bootstrap_service_name) +

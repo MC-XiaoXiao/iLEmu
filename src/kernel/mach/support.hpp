@@ -47,7 +47,8 @@ namespace mach_support {
     inline constexpr std::uint32_t mach_notify_send_once = 71;
     inline constexpr std::uint32_t mach_notify_dead_name = 72;
 
-    [[nodiscard]] std::string mig_message_label(std::uint32_t identifier);
+    [[nodiscard]] std::string mig_message_label(
+        const xnu::mig::reference::Catalog& catalog, std::uint32_t identifier);
     [[nodiscard]] bool guest_region_overlaps(
         const AddressSpace& memory, std::uint32_t address, std::uint32_t size);
     [[nodiscard]] std::optional<std::uint32_t> find_free_guest_region(

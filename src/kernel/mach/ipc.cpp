@@ -921,7 +921,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             " receiver=" + std::to_string(process_.pid) +
             " port=" + std::to_string(queued_port) +
             " id=" + std::to_string(received->message_id) +
-            mig_message_label(received->message_id) +
+            mig_message_label(shared_state_->mig_reference, received->message_id) +
             " header=" + std::to_string(received->caller_header_size) +
             " bytes=" + std::to_string(received->message_size) +
             " trailer=" + std::to_string(received->trailer_size) + "\n");

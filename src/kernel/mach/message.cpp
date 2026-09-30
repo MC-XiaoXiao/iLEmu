@@ -1234,7 +1234,7 @@ void CompatibilityKernel::dispatch_mach_message(
     }
     std::ostringstream message;
     message << "[mach_msg] unsupported id=" << *message_id
-            << mig_message_label(*message_id) << " bits=0x" << std::hex << *bits
+            << mig_message_label(shared_state_->mig_reference, *message_id) << " bits=0x" << std::hex << *bits
             << " header=0x"
             << memory_
                    .read32(

@@ -10,6 +10,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/task.h
 
 #pragma once
+#include <mach/xnu_mig_reference.hpp>
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
@@ -440,6 +441,7 @@ struct KernelSharedState {
         , pthread_contract { resolve_pthread_contract(abi.pthread_abi) }
         , bsd_dispatch_table { abi, darwin_release }
         , mach_dispatch_table { abi, abi_profile }
+        , mig_reference { abi_profile }
     {
     }
 
@@ -451,6 +453,7 @@ struct KernelSharedState {
     const PthreadContract& pthread_contract;
     const BsdDispatchTable bsd_dispatch_table;
     const MachDispatchTable mach_dispatch_table;
+    const xnu::mig::reference::Catalog mig_reference;
     std::string device_product_type;
     std::string device_board_config;
     std::string device_hardware_model;
