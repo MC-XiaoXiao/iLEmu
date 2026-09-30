@@ -2418,7 +2418,10 @@ public:
         guest_preemption_requested_ = false;
         guest_preemption_requested_at_.reset();
         if (jit_) {
-            jit_->ClearHalt(all_halt_reasons());
+            // IPC completion can resume the guest inside an SVC callback.
+            // Keep an outstanding cache invalidation armed: the slab cannot
+            // retire code until this native execution reaches its boundary.
+            jit_->ClearHalt(guest_halt_reasons());
         }
     }
 
@@ -2999,10 +3002,9 @@ private:
         observed_slab_generation_ = slab_generation;
     }
 
-    [[nodiscard]] static constexpr Dynarmic::HaltReason all_halt_reasons()
+    [[nodiscard]] static constexpr Dynarmic::HaltReason guest_halt_reasons()
     {
-        return Dynarmic::HaltReason::CacheInvalidation |
-               Dynarmic::HaltReason::MemoryAbort |
+        return Dynarmic::HaltReason::MemoryAbort |
                Dynarmic::HaltReason::UserDefined1 |
                Dynarmic::HaltReason::UserDefined2 |
                Dynarmic::HaltReason::UserDefined3 |
