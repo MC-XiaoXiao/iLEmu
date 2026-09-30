@@ -32,12 +32,16 @@ inline constexpr std::size_t floating_state_word_count = 65U;
 inline constexpr std::size_t floating_prefix_word_count = 33U;
 inline constexpr std::size_t maximum_state_word_count = 144U;
 
+// ARM_EXCEPTION_STATE: exception number, FSR and FAR. Native setters are no-ops.
+inline constexpr std::uint32_t exception_state_flavor = 3U;
+inline constexpr std::size_t exception_state_word_count = 3U;
+
 // Native ARM machine_thread_get_state flavor 0 enumerates the ABI namespace,
-// including exception/debug states whose emulation may be deferred. This is
+// including debug state whose emulation may be deferred. This is
 // not a writable state or an exception-delivery snapshot (_MachineStateCount=0).
 inline constexpr std::uint32_t flavor_list = 0U;
 inline constexpr std::array<std::uint32_t, 4> state_flavors {
-    general_state_flavor, floating_state_flavor, 3U, 4U
+    general_state_flavor, floating_state_flavor, exception_state_flavor, 4U
 };
 
 using GeneralState = std::array<std::uint32_t, general_state_word_count>;
@@ -47,7 +51,8 @@ using GeneralState = std::array<std::uint32_t, general_state_word_count>;
 constexpr std::uint32_t state_word_count(std::uint32_t flavor)
 {
     return flavor == general_state_flavor ? general_state_word_count
-        : flavor == floating_state_flavor ? floating_state_word_count : 0U;
+        : flavor == floating_state_flavor ? floating_state_word_count
+        : flavor == exception_state_flavor ? exception_state_word_count : 0U;
 }
 
 constexpr std::uint32_t reply_word_count(std::uint32_t flavor, std::uint32_t capacity)
@@ -56,6 +61,8 @@ constexpr std::uint32_t reply_word_count(std::uint32_t flavor, std::uint32_t cap
         return capacity >= state_flavors.size() ? state_flavors.size() : 0U;
     if (flavor == general_state_flavor)
         return capacity >= general_state_word_count ? general_state_word_count : 0U;
+    if (flavor == exception_state_flavor)
+        return capacity >= exception_state_word_count ? exception_state_word_count : 0U;
     if (flavor != floating_state_flavor || capacity < floating_prefix_word_count)
         return 0U;
     return capacity < floating_state_word_count ? floating_prefix_word_count

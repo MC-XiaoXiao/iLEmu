@@ -183,12 +183,20 @@ enum class SvcDispatchMode : std::uint8_t {
     Deferred,
 };
 
+// Architectural abort registers survive ordinary user/kernel transitions.
+// They belong to the guest thread, independently of transient fault delivery.
+struct CpuAbortState {
+    std::uint32_t fault_status { };
+    std::uint32_t fault_address { };
+};
+
 struct CpuThreadState {
     std::array<std::uint32_t, 16> registers { };
     std::array<std::uint32_t, 64> extension_registers { };
     std::uint32_t cpsr { };
     std::uint32_t fpscr { };
     std::optional<std::uint32_t> cthread_self;
+    CpuAbortState abort_state;
 };
 
 class CpuExecutionPool;
@@ -249,6 +257,8 @@ public:
     extension_registers() const;
     [[nodiscard]] std::uint32_t fpscr() const;
     void set_fpscr(std::uint32_t value);
+    [[nodiscard]] const CpuAbortState& abort_state() const { return state_.abort_state; }
+    void set_abort_state(CpuAbortState state) { state_.abort_state = state; }
     [[nodiscard]] std::optional<std::uint32_t> cthread_self() const;
     void set_cthread_self(std::optional<std::uint32_t> value);
     void set_svc_handler(SvcHandler handler);

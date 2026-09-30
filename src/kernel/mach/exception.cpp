@@ -28,6 +28,7 @@ bool CompatibilityKernel::handle_cpu_exception(
         // permission=15, WnR=bit11. Guest memory is managed in 4KiB pages.
         exception.arm_state = { execute ? 3U : 4U,
             (protection ? 15U : 7U) | (write ? 1U << 11U : 0U), fault.address };
+        cpu.set_abort_state({ exception.arm_state[1], fault.address });
     } else {
         const auto& fault = *result.architectural_exception;
         const bool breakpoint = fault.kind == CpuException::Kind::Breakpoint;

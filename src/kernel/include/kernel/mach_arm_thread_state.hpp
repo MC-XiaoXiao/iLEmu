@@ -23,6 +23,14 @@ bool read_state(const Processor& cpu, std::uint32_t flavor,
         state[cpsr_index] = cpu.cpsr();
         return true;
     }
+    if (flavor == exception_state_flavor && state.size() == exception_state_word_count) {
+        // ARM locore records FSR/FAR on aborts, but leaves the zero-initialized
+        // PCB exception field untouched. It is not the Mach exception type.
+        state[0] = 0U;
+        state[1] = cpu.abort_state().fault_status;
+        state[2] = cpu.abort_state().fault_address;
+        return true;
+    }
     if (flavor != floating_state_flavor ||
         (state.size() != floating_prefix_word_count - 1U &&
             state.size() != floating_state_word_count))
@@ -43,6 +51,10 @@ bool write_state(Processor& cpu, std::uint32_t flavor,
         cpu.set_cpsr(restored_cpsr(state[cpsr_index], cpu.cpsr()));
         return true;
     }
+    // Native machine_thread_set_state accepts this flavor without changing
+    // the saved abort registers or the general/VFP state.
+    if (flavor == exception_state_flavor)
+        return state.size() == exception_state_word_count;
     if (flavor != floating_state_flavor ||
         (state.size() != floating_prefix_word_count - 1U &&
             state.size() != floating_state_word_count))

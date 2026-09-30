@@ -1778,6 +1778,7 @@ void EmulatorSession::run()
                 child_cpu.registers()[0] = 0;
                 child_cpu.set_cpsr(parent_cpu.cpsr() & ~(1U << 29U));
                 child_cpu.set_fpscr(parent_cpu.fpscr());
+                child_cpu.set_abort_state(parent_cpu.abort_state());
                 child_cpu.set_cthread_self(parent_cpu.cthread_self());
             }
             child->allocated[0] = true;
