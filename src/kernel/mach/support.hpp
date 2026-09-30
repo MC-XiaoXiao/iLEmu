@@ -12,6 +12,7 @@
 #pragma once
 
 #include "kernel/kernel_shared_state.hpp"
+#include "kernel/mach_vm_allocation_abi.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -64,7 +65,8 @@ namespace mach_support {
     // traps. Keep address selection and overlap handling identical at both
     // entry points.
     [[nodiscard]] VmAllocationResult allocate_guest_vm_region(
-        AddressSpace& memory, std::uint64_t requested_address,
+        AddressSpace& memory, const darwin::mach::vm_allocation::Contract& contract,
+        std::uint64_t requested_address,
         std::uint64_t size, std::uint32_t flags,
         std::uint32_t alignment_mask = 0U);
 

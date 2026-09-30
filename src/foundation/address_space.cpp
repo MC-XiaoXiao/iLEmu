@@ -527,11 +527,36 @@ bool AddressSpace::map(
     const auto first = page_base(address);
     const auto end = page_range_end(address, size);
     auto lock = write_lock();
+    map_range_locked(first, end, permissions);
+    return true;
+}
+
+void AddressSpace::map_range_locked(std::uint32_t first, std::uint64_t end,
+    MemoryPermission permissions)
+{
     invalidate_mapping_leases_locked(first, end);
     vm_map_.map_or(first, end, permissions);
     add_page_permissions_locked(first, end, permissions);
     refresh_jit_page_range_locked(first, end);
     bump_executable_content_generation_locked();
+}
+
+bool AddressSpace::map_anonymous(std::uint32_t address, std::uint32_t size,
+    MemoryPermission permissions, AnonymousMappingMode mode)
+{
+    if (size == 0U || range_overflows(address, size))
+        return false;
+    const auto first = page_base(address);
+    const auto end = page_range_end(address, size);
+    auto lock = write_lock();
+    if (mode == AnonymousMappingMode::Exclusive) {
+        if (vm_map_.overlaps(first, end))
+            return false;
+    } else {
+        invalidate_mapping_leases_locked(first, end);
+        unmap_range_locked(first, end);
+    }
+    map_range_locked(first, end, permissions);
     return true;
 }
 

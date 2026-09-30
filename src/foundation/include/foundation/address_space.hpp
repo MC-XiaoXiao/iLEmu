@@ -175,6 +175,11 @@ public:
 
     bool map(std::uint32_t address, std::uint32_t size,
         MemoryPermission permissions);
+    enum class AnonymousMappingMode { Exclusive, Replace };
+    // Publish a fresh zero-fill mapping under one address-space lock. Replace
+    // retires old backing/JIT state; Exclusive rejects any existing mapping.
+    bool map_anonymous(std::uint32_t address, std::uint32_t size,
+        MemoryPermission permissions, AnonymousMappingMode mode);
     bool unmap(std::uint32_t address, std::uint32_t size);
     enum class FileSyncResult { Success, Unmapped, IoError };
     // Writes shared file pages through their retained backing descriptors.
@@ -461,6 +466,8 @@ private:
     void unmap_file_mappings_locked(std::uint32_t address, std::uint64_t end);
     bool flush_shared_file_pages_locked(
         std::uint32_t address, std::uint64_t end, bool synchronous = false);
+    void map_range_locked(std::uint32_t address, std::uint64_t end,
+        MemoryPermission permissions);
     void unmap_range_locked(std::uint32_t address, std::uint64_t end,
         bool flush_shared_files = true);
     void invalidate_mapping_leases_locked(

@@ -32,7 +32,9 @@ Allocation::Result Allocation::evaluate_locked(AddressSpace& memory,
     const auto address = read_address(32U);
     const auto size = read_address(32U + width);
     const auto flags = read_little_word(bytes, 32U + 2U * width);
-    const auto allocation = allocate_guest_vm_region(memory, address, size, flags);
+    const auto allocation = allocate_guest_vm_region(memory,
+        darwin::mach::vm_allocation::Contract { state.darwin_abi.abi_epoch },
+        address, size, flags);
     Result result { allocation.result };
     result.address_words = width / 4U;
     result.words[3] = allocation.address;

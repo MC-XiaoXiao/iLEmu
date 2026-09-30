@@ -92,7 +92,8 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         }
 
         const auto allocation = allocate_guest_vm_region(
-            memory_, *requested_address, size, flags);
+            memory_, darwin::mach::vm_allocation::Contract { shared_state_->darwin_abi.abi_epoch },
+            *requested_address, size, flags);
         if (allocation.result == darwin::mach::success &&
             !(wide ? memory_.write64(address_pointer, allocation.address)
                    : memory_.write32(address_pointer, allocation.address))) {

@@ -140,13 +140,18 @@ namespace mach_support {
     }
 
     VmAllocationResult allocate_guest_vm_region(AddressSpace& memory,
+        const darwin::mach::vm_allocation::Contract& contract,
         std::uint64_t requested_address, std::uint64_t size,
         std::uint32_t flags, std::uint32_t alignment_mask)
     {
+        if (!contract.valid_user_flags(flags))
+            return { darwin::mach::invalid_argument, 0U };
         // vm_user.c: both VM interfaces truncate the fixed start independently
         // of rounding size. Rounding (start + size) would map an extra page.
         if (size == 0U)
             return { darwin::mach::success, 0U };
+        if (!contract.valid_mapping_flags(flags))
+            return { darwin::mach::invalid_argument, 0U };
         constexpr auto page_mask = std::uint64_t { AddressSpace::page_size - 1U };
         const auto rounded_size = (size + page_mask) & ~page_mask;
         if (rounded_size == 0U)
@@ -169,10 +174,12 @@ namespace mach_support {
                 return { darwin::mach::no_space, 0U };
             address = *selected;
         }
+        const auto mode = contract.replaces_mapping(flags)
+            ? AddressSpace::AnonymousMappingMode::Replace
+            : AddressSpace::AnonymousMappingMode::Exclusive;
         const auto mapped = (address & alignment_mask) == 0U &&
-                            !guest_region_overlaps(memory, address, map_size) &&
-                            memory.map(address, map_size,
-                                MemoryPermission::Read | MemoryPermission::Write);
+                            memory.map_anonymous(address, map_size,
+                                MemoryPermission::Read | MemoryPermission::Write, mode);
         return { mapped ? darwin::mach::success : darwin::mach::no_space, address };
     }
 
