@@ -23,6 +23,33 @@ public:
         return requested || (epoch != DarwinAbiEpoch::IphoneOs1 &&
                              epoch != DarwinAbiEpoch::Unknown);
     }
+    template <typename Transfers, typename Available, typename Import>
+    std::uint32_t externalize(const Transfers& transfers, DarwinAbiEpoch epoch,
+        bool requested, std::uint32_t limit, Available&& available, Import&& import)
+    {
+        if (!externalizes(epoch, requested))
+            return 0;
+        // unp_externalize checks fdavail for the complete rights mbuf.
+        // The caller's kernel mutex protects this check and all imports.
+        std::size_t free = 0;
+        for (std::uint32_t fd = 3; fd < limit && free < transfers.size(); ++fd)
+            if (available(fd))
+                ++free;
+        if (free < transfers.size())
+            return 40; // EMSGSIZE; never partially import a descriptor batch
+        if (requested)
+            begin(transfers.size());
+        for (const auto& transfer : transfers) {
+            const auto descriptor = import(transfer);
+            if (!descriptor)
+                return 40;
+            if (requested)
+                append(*descriptor);
+            ++imported_;
+        }
+        return 0;
+    }
+    [[nodiscard]] std::size_t imported() const { return imported_; }
     void begin(std::size_t descriptors)
     {
         ends_.push_back(bytes_.size() + 12U + descriptors * 4U);
@@ -49,6 +76,7 @@ public:
             ? darwin::socket::message_control_truncated : 0U;
     }
 private:
+    std::size_t imported_ {};
     std::vector<std::byte> bytes_;
     std::vector<std::size_t> ends_;
 };

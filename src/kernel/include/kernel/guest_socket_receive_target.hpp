@@ -39,6 +39,37 @@ public:
         failed_ = !buffer_.copy(memory_, bytes);
         return !failed_;
     }
+    // Local stream control boundaries may split one syscall into several
+    // copy chunks. Keep ordinary copy()/host receive fast paths unchanged.
+    bool copy_at(std::span<const std::byte> bytes, std::size_t offset)
+    {
+        if (offset == 0)
+            return copy(bytes);
+        const auto finish = [&](bool result) {
+            failed_ = !result;
+            return result;
+        };
+        if (bytes.empty())
+            return finish(true);
+        auto remaining = vectors_;
+        while (!remaining.empty() && offset >= remaining.front().length) {
+            offset -= remaining.front().length;
+            remaining = remaining.subspan(1);
+        }
+        if (remaining.empty())
+            return finish(false);
+        const auto address = static_cast<std::uint64_t>(remaining.front().address) + offset;
+        if (address >= (std::uint64_t {1} << 32U))
+            return finish(false);
+        const GuestReadVector first {static_cast<std::uint32_t>(address),
+            remaining.front().length - static_cast<std::uint32_t>(offset)};
+        const auto count = std::min<std::size_t>(bytes.size(), first.length);
+        return finish(GuestReadBuffer {0, std::span<const GuestReadVector> {&first, 1}}.copy(
+                   memory_, bytes.first(count)) &&
+               (count == bytes.size() || (remaining.size() > 1 &&
+                   GuestReadBuffer {0, remaining.subspan(1)}.copy(
+                       memory_, bytes.subspan(count)))));
+    }
     [[nodiscard]] bool failed() const { return failed_; }
 private:
     AddressSpace& memory_;
