@@ -618,21 +618,21 @@ bool CompatibilityKernel::receive_socket_message(
 
 bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
     std::uint32_t address, std::uint32_t size, std::uint32_t source_address,
-    std::uint32_t source_length_address)
+    std::uint32_t source_length_address, std::span<const GuestReadVector> vectors)
 {
     if (size == 0) {
         bsd_success(cpu, 0);
         return true;
     }
     if (bpf_descriptors_.contains(fd)) {
-        return receive_bpf_bytes(cpu, fd, address, size);
+        return receive_bpf_bytes(cpu, fd, address, size, vectors);
     }
     if (const auto event_stream = wifi_driver_event_streams_.find(fd);
         event_stream != wifi_driver_event_streams_.end() &&
         event_stream->second && event_stream->second->readable()) {
         const auto previous_format = event_stream->second->format();
         const auto bytes = event_stream->second->prepare_read(size);
-        if (!memory_.copy_in(address, bytes)) {
+        if (!GuestReadBuffer {address, vectors}.copy(memory_, bytes)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
             if (previous_format == darwin::network::apple80211_driver::
@@ -655,7 +655,7 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
         const auto bytes = offline_serial_state_.read(size);
         if (bytes.empty())
             return false;
-        if (!memory_.copy_in(address, bytes)) {
+        if (!GuestReadBuffer {address, vectors}.copy(memory_, bytes)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
             bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
@@ -670,7 +670,7 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             bsd_error(cpu, received.darwin_error);
             return true;
         }
-        if (!memory_.copy_in(address, received.bytes) ||
+        if (!GuestReadBuffer {address, vectors}.copy(memory_, received.bytes) ||
             !copy_socket_address(
                 source_address, source_length_address, received.address)) {
             bsd_error(cpu, darwin::error::bad_address);
@@ -688,7 +688,7 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
         const auto received = udp->second->receive(size);
         if (!received)
             return false;
-        if (!memory_.copy_in(address, received->bytes) ||
+        if (!GuestReadBuffer {address, vectors}.copy(memory_, received->bytes) ||
             !copy_socket_address(source_address, source_length_address,
                 received->source_address)) {
             bsd_error(cpu, darwin::error::bad_address);
@@ -714,7 +714,7 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             }
             return false;
         }
-        if (!memory_.copy_in(address, bytes)) {
+        if (!GuestReadBuffer {address, vectors}.copy(memory_, bytes)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
             bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
@@ -733,8 +733,8 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             return false;
         const auto copied_size =
             std::min<std::size_t>(size, event->bytes.size());
-        if (!memory_.copy_in(
-                address, std::span<const std::byte> { event->bytes }.first(
+        if (!GuestReadBuffer {address, vectors}.copy(
+                memory_, std::span<const std::byte> { event->bytes }.first(
                              copied_size))) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
@@ -753,8 +753,8 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             return false;
         const auto copied_size =
             std::min<std::size_t>(size, message->bytes.size());
-        if (!memory_.copy_in(
-                address, std::span<const std::byte> { message->bytes }.first(
+        if (!GuestReadBuffer {address, vectors}.copy(
+                memory_, std::span<const std::byte> { message->bytes }.first(
                              copied_size))) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
@@ -799,7 +799,7 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             ancillary.pop_front();
         }
     }
-    if (!memory_.copy_in(address, bytes)) {
+    if (!GuestReadBuffer {address, vectors}.copy(memory_, bytes)) {
         bsd_error(cpu, darwin::error::bad_address);
     } else {
         bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));

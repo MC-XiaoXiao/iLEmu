@@ -13,6 +13,7 @@
 #include <mach/xnu_mig_reference.hpp>
 #include <kernel/credential_groups.hpp>
 #include <kernel/open_file_offset.hpp>
+#include <kernel/guest_read_buffer.hpp>
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
@@ -216,6 +217,7 @@ struct PendingSocketRead {
     std::uint32_t source_length_address { };
     std::size_t processor { };
     std::optional<std::uint64_t> deadline;
+    std::vector<GuestReadVector> vectors {};
 };
 
 struct PendingHostConnect {

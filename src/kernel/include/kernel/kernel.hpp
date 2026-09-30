@@ -896,13 +896,15 @@ private:
         std::vector<std::byte> bytes, std::vector<std::byte> destination,
         bool nonblocking);
     bool receive_bpf_bytes(
-        Cpu& cpu, std::uint32_t fd, std::uint32_t address, std::uint32_t size);
+        Cpu& cpu, std::uint32_t fd, std::uint32_t address, std::uint32_t size,
+        std::span<const GuestReadVector> vectors = {});
     bool write_bpf_bytes(
         Cpu& cpu, std::uint32_t fd, std::uint32_t address, std::uint32_t size);
     [[nodiscard]] bool bpf_descriptor_readable(std::uint32_t fd) const;
     bool receive_socket_bytes(Cpu& cpu, std::uint32_t fd, std::uint32_t address,
         std::uint32_t size, std::uint32_t source_address = 0,
-        std::uint32_t source_length_address = 0);
+        std::uint32_t source_length_address = 0,
+        std::span<const GuestReadVector> vectors = {});
     bool copy_socket_address(std::uint32_t address,
         std::uint32_t length_address,
         std::span<const std::byte> socket_address);

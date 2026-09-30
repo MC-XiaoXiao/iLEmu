@@ -337,6 +337,13 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(darwin::syscall::listen, "listen", Handler::BsdSocket);
     add(118, "getsockopt", Handler::BsdSocket);
     add(darwin::syscall::write_vector, "write_vector", Handler::BsdSocket);
+    add(darwin::syscall::read_vector, "readv", Handler::BsdDescriptorMemory);
+    if (abi.abi_epoch != DarwinAbiEpoch::IphoneOs1 && abi.abi_epoch != DarwinAbiEpoch::Unknown) {
+        table.bind_new({Domain::BsdSyscall, 411, darwin::syscall::read_vector,
+            "readv_nocancel", Handler::BsdDescriptorMemory, Contract::CurrentDispatcher,
+            Cancellation::NoCancelAlias, Outcome::HandlerValidated,
+            "bsd/kern/sys_generic.c:readv_nocancel"});
+    }
     add(darwin::syscall::send_to, "send_to", Handler::BsdSocket);
     add(darwin::syscall::shutdown, "shutdown", Handler::BsdSocket);
     add(darwin::syscall::socket_pair, "socket_pair", Handler::BsdSocket);

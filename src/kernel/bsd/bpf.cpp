@@ -132,7 +132,8 @@ bool CompatibilityKernel::bpf_descriptor_readable(std::uint32_t fd) const
 }
 
 bool CompatibilityKernel::receive_bpf_bytes(
-    Cpu& cpu, std::uint32_t fd, std::uint32_t address, std::uint32_t size)
+    Cpu& cpu, std::uint32_t fd, std::uint32_t address, std::uint32_t size,
+    std::span<const GuestReadVector> vectors)
 {
     const auto descriptor = bpf_descriptors_.find(fd);
     if (descriptor == bpf_descriptors_.end() || !descriptor->second) {
@@ -186,7 +187,7 @@ bool CompatibilityKernel::receive_bpf_bytes(
         bsd_error(cpu, darwin::error::invalid_argument);
         return true;
     }
-    if (!memory_.copy_in(address, capture)) {
+    if (!GuestReadBuffer {address, vectors}.copy(memory_, capture)) {
         bsd_error(cpu, bsd_support::bad_address);
         return true;
     }

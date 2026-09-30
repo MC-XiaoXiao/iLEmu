@@ -89,14 +89,36 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
     }
     auto& registers = cpu.registers();
     switch (number) {
-    case darwin::syscall::read: {
-        std::unique_lock<std::mutex> read_offset_lock;
+    case darwin::syscall::read:
+    case darwin::syscall::read_vector: {
         auto fd = registers[0];
         if (const auto duplicate = duplicated_descriptors_.find(fd);
             duplicate != duplicated_descriptors_.end()) {
             fd = duplicate->second;
         }
-        const auto size = static_cast<std::size_t>(registers[2]);
+        std::vector<GuestReadVector> vectors;
+        auto size = static_cast<std::size_t>(registers[2]);
+        if (number == darwin::syscall::read_vector) {
+            std::uint64_t residual = 0;
+            const auto error = GuestReadBuffer::import(memory_, registers[1],
+                registers[2], shared_state_->darwin_abi.abi_epoch, vectors, residual);
+            if (error) {
+                bsd_error(cpu, error);
+                return;
+            }
+            const auto flags = file_status_flags_.find(fd);
+            if ((!file_descriptors_.contains(fd) && !virtual_descriptors_.contains(fd) && fd != 0) ||
+                (flags != file_status_flags_.end() && (flags->second & 3U) == darwin::open_flag::write_only)) {
+                bsd_error(cpu, bsd_support::bad_file_descriptor);
+                return;
+            }
+            // Keep the existing bounded backend buffer. A successful short
+            // read is allowed; never allocate the guest aggregate length.
+            size = static_cast<std::size_t>(std::min<std::uint64_t>(residual, bsd_support::maximum_io));
+        }
+        const GuestReadBuffer target {registers[1], vectors};
+        bool advance_vector_offset = false;
+        std::unique_lock<std::mutex> read_offset_lock;
         if (size > bsd_support::maximum_io) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
@@ -112,7 +134,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 return;
             }
             if (auto bytes = offline_serial_state_.read(size); !bytes.empty()) {
-                if (!memory_.copy_in(registers[1], bytes)) {
+                if (!target.copy(memory_, bytes)) {
                     bsd_error(cpu, bsd_support::bad_address);
                 } else {
                     bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
@@ -140,7 +162,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                                       nanoseconds_per_decisecond;
             pending_socket_reads_[cpu.processor_id()] = PendingSocketRead { fd,
                 registers[1], static_cast<std::uint32_t>(size), 0, 0,
-                cpu.processor_id(), deadline };
+                cpu.processor_id(), deadline, std::move(vectors) };
             process_.waiting_for_events = true;
             cpu.halt(Dynarmic::HaltReason::UserDefined5);
             return;
@@ -161,7 +183,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                             event_descriptor_kind));
         if (readable_socket) {
             if (receive_socket_bytes(
-                    cpu, fd, registers[1], static_cast<std::uint32_t>(size))) {
+                    cpu, fd, registers[1], static_cast<std::uint32_t>(size), 0, 0, vectors)) {
                 return;
             }
             if ((file_status_flags_[fd] & darwin::open_flag::non_block) != 0) {
@@ -170,7 +192,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             }
             pending_socket_reads_[cpu.processor_id()] = PendingSocketRead { fd,
                 registers[1], static_cast<std::uint32_t>(size), 0, 0,
-                cpu.processor_id(), std::nullopt };
+                cpu.processor_id(), std::nullopt, std::move(vectors) };
             process_.waiting_for_events = true;
             output_.write(std::string { baseband_descriptor ? "[baseband]"
                                                             : "[network]" } +
@@ -207,7 +229,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             std::transform(begin, begin + static_cast<std::ptrdiff_t>(count),
                 bytes.begin(),
                 [](char value) { return static_cast<std::byte>(value); });
-            file_offsets_[fd] = offset + count;
+            if (vectors.empty())
+                file_offsets_[fd] = offset + count;
+            else
+                advance_vector_offset = true;
         } else if (const auto console_device = virtual_descriptors_.find(fd);
             console_device != virtual_descriptors_.end() &&
             (console_device->second == "console" ||
@@ -231,14 +256,21 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 return;
             }
             bytes.resize(static_cast<std::size_t>(result));
-            file_offsets_[fd] += bytes.size();
+            if (vectors.empty())
+                file_offsets_[fd] += bytes.size();
+            else
+                advance_vector_offset = true;
         } else if (fd == 0) {
             bytes.clear(); // terminal input currently presents non-blocking EOF
         } else {
             bsd_error(cpu, bsd_support::bad_file_descriptor);
             return;
         }
-        if (!memory_.copy_in(registers[1], bytes)) {
+        std::size_t transferred = 0;
+        const auto copied = target.copy(memory_, bytes, &transferred);
+        if (advance_vector_offset)
+            file_offsets_[fd] += transferred;
+        if (!copied) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }

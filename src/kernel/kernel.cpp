@@ -2318,7 +2318,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
             descriptor->second == bsd::offline_serial_device::descriptor_kind) {
             if (auto bytes = offline_serial_state_.read(pending->second.size);
                 !bytes.empty()) {
-                if (!memory_.copy_in(pending->second.address, bytes)) {
+                if (!GuestReadBuffer {pending->second.address, pending->second.vectors}.copy(memory_, bytes)) {
                     bsd_error(cpu, efault);
                 } else {
                     bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
@@ -2341,7 +2341,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         if (!receive_socket_bytes(cpu, pending->second.fd,
                 pending->second.address, pending->second.size,
                 pending->second.source_address,
-                pending->second.source_length_address)) {
+                pending->second.source_length_address, pending->second.vectors)) {
             return false;
         }
         pending_socket_reads_.erase(pending);
