@@ -42,6 +42,7 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     scheduler_yields_.erase(processor);
     scheduler_handoffs_.erase(processor);
     pending_waits_.erase(processor);
+    pending_bsd_entries_.erase(processor);
     pending_thread_aborts_.erase(processor);
     pending_mach_sends_.erase(processor);
     pending_mach_receives_.erase(processor);

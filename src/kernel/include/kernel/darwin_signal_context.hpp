@@ -32,6 +32,24 @@ struct MachineContext {
     std::uint32_t fpscr;
 };
 
+// sys/signal.h user32_siginfo_t. Firmware trampolines take the context
+// pointer from entry SP; the remaining objects are reached by pointers.
+// Target ARM32 trampolines predate the later sigreturn validation token.
+struct SignalInfo {
+    std::uint32_t signal, error, code, pid, uid, status, address, value, band;
+    std::array<std::uint32_t, 7> padding;
+};
+struct Frame {
+    std::uint32_t context_address;
+    SignalInfo information;
+    UserContext user;
+    MachineContext machine;
+};
+inline constexpr std::uint32_t on_stack_action = 0x01U;
+inline constexpr std::uint32_t reset_action = 0x04U;
+inline constexpr std::uint32_t no_defer_action = 0x10U;
+inline constexpr std::uint32_t information_action = 0x40U;
+
 // The firmware's __sigtramp uses 184/30; __sigunaltstack uses these
 // flag-only operations (no ucontext copyin). The obsolete slot 103 is not
 // the ARM sigreturn entry.
@@ -50,6 +68,12 @@ constexpr std::uint32_t restored_cpsr(std::uint32_t requested,
 
 static_assert(std::endian::native == std::endian::little);
 static_assert(sizeof(UserContext) == 32);
+static_assert(sizeof(SignalInfo) == 64);
+static_assert(offsetof(SignalInfo, padding) == 36);
+static_assert(sizeof(Frame) == 440);
+static_assert(offsetof(Frame, information) == 4);
+static_assert(offsetof(Frame, user) == 68);
+static_assert(offsetof(Frame, machine) == 100);
 static_assert(offsetof(UserContext, machine_size) == 24);
 static_assert(offsetof(UserContext, machine_address) == 28);
 static_assert(sizeof(MachineContext) == 340);

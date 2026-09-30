@@ -324,7 +324,8 @@ public:
     {
         task_memory_share_query_ = std::move(query);
     }
-    [[nodiscard]] std::uint32_t deliver_signal(std::uint32_t signal);
+    [[nodiscard]] std::uint32_t deliver_signal(std::uint32_t signal,
+        std::uint32_t sender_pid = 0, std::uint32_t sender_uid = 0);
     [[nodiscard]] std::optional<SchedulerYieldRequest> consume_scheduler_yield(
         std::size_t processor_id);
     [[nodiscard]] std::optional<XnuThreadId> consume_scheduler_handoff(
@@ -624,9 +625,13 @@ private:
     void reset_signal_actions_for_exec();
     void discard_ignored_signal(std::uint32_t signal);
     bool process_pending_signals(std::size_t processor);
+    bool deliver_pending_signal(Cpu& cpu);
+    bool caught_signal_ready(std::size_t processor) const;
+    bool interrupt_thread_wait(Cpu& cpu, bool restart);
     bool transition_signal_stop(bool stopped);
     [[nodiscard]] std::uint32_t deliver_signal_to_thread(
-        std::uint32_t signal, std::optional<std::size_t> processor);
+        std::uint32_t signal, std::optional<std::size_t> processor,
+        std::uint32_t sender_pid, std::uint32_t sender_uid);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_posix_semaphore(Cpu& cpu, std::uint32_t number);
     void release_process_mach_rights();
@@ -857,7 +862,12 @@ private:
         std::size_t processor) const;
     [[nodiscard]] bool has_pending_event_locked(
         std::size_t processor) const;
-    void refresh_pending_event_processor_locked(std::size_t processor);
+    struct BsdSyscallContext {
+        std::array<std::uint32_t, 16> registers;
+        std::uint32_t cpsr;
+    };
+    void refresh_pending_event_processor_locked(std::size_t processor,
+        const BsdSyscallContext* entry = nullptr);
     void note_timer_deadline_transition() noexcept;
     bool receive_socket_message(
         Cpu& cpu, std::uint32_t fd, std::uint32_t message_address);
@@ -1053,6 +1063,9 @@ private:
     std::map<std::uint32_t, std::uint32_t> vm_purgable_states_;
     std::set<std::size_t> disabled_thread_signals_;
     std::array<std::array<std::uint32_t, 4>, 32> signal_actions_ { };
+    struct SignalSender {
+        std::uint32_t pid { }, uid { }, status { };
+    } signal_sender_;
     struct AlternateSignalStack {
         std::uint32_t address { };
         std::uint32_t size { };
@@ -1098,6 +1111,7 @@ private:
     std::map<std::size_t, XnuThreadId> scheduler_handoffs_;
     std::set<std::size_t> pending_thread_aborts_;
     std::map<std::size_t, PendingWait> pending_waits_;
+    std::map<std::size_t, BsdSyscallContext> pending_bsd_entries_;
     std::map<std::size_t, PendingMachSend> pending_mach_sends_;
     std::map<std::size_t, PendingMachReceive> pending_mach_receives_;
     std::map<std::size_t, std::uint64_t> last_delivered_graphics_inputs_;

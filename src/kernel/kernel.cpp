@@ -902,6 +902,7 @@ bool CompatibilityKernel::owns_display_scanout() const
 void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 {
     signal_state_.exec(processor_id);
+    signal_sender_ = { };
     note_timer_deadline_transition();
     release_close_on_exec_descriptors();
     std::erase_if(thread_working_directories_, [processor_id](const auto& entry) {
@@ -970,6 +971,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     disabled_thread_signals_.clear();
     pending_thread_aborts_.clear();
     pending_waits_.clear();
+    pending_bsd_entries_.clear();
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         shared_state_->cancel_mach_sends_locked(process_.pid);
@@ -1340,6 +1342,7 @@ bool CompatibilityKernel::complete_wait(
         bsd_success(cpu, child_pid);
     }
     pending_waits_.erase(pending);
+    pending_bsd_entries_.erase(cpu.processor_id());
     process_.waiting_for_events = !pending_waits_.empty();
     output_.write("[process] reap parent=" + std::to_string(process_.pid) +
                   " child=" + std::to_string(child_pid) + "\n");
@@ -1353,6 +1356,7 @@ bool CompatibilityKernel::fail_wait(Cpu& cpu, std::uint32_t error)
         return false;
     bsd_error(cpu, error);
     pending_waits_.erase(pending);
+    pending_bsd_entries_.erase(cpu.processor_id());
     process_.waiting_for_events = !pending_waits_.empty();
     return true;
 }
@@ -1487,7 +1491,9 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
 bool CompatibilityKernel::deliver_pending_io(Cpu& cpu)
 {
     std::lock_guard lock { mutex_ };
-    const auto delivered = deliver_pending_io_locked(cpu);
+    if (deliver_pending_signal(cpu))
+        return true;
+    auto delivered = deliver_pending_io_locked(cpu);
     if (delivered) {
         pending_io_poll_cache_.erase(cpu.processor_id());
         note_timer_deadline_transition();
@@ -1496,6 +1502,7 @@ bool CompatibilityKernel::deliver_pending_io(Cpu& cpu)
             cpu.request_guest_preemption();
         if (process_.exited)
             cpu.halt(Dynarmic::HaltReason::UserDefined1);
+        delivered = deliver_pending_signal(cpu) || delivered;
     }
     refresh_pending_event_processor_locked(cpu.processor_id());
     return delivered;
@@ -1504,6 +1511,8 @@ bool CompatibilityKernel::deliver_pending_io(Cpu& cpu)
 bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
 {
     std::lock_guard lock { mutex_ };
+    if (deliver_pending_signal(cpu))
+        return true;
     bool delivered = false;
     const auto processor = cpu.processor_id();
     if (pending_mach_sends_.contains(processor)) {
@@ -1547,6 +1556,7 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
         cpu.request_guest_preemption();
     if (process_.exited)
         cpu.halt(Dynarmic::HaltReason::UserDefined1);
+    delivered = deliver_pending_signal(cpu) || delivered;
     refresh_pending_event_processor_locked(processor);
     return delivered;
 }
@@ -1596,11 +1606,12 @@ CompatibilityKernel::pending_event_poll_candidates()
         // Mach queue. Keep that consumer eligible even while the queue is empty.
         const auto hid_receiver =
             hid_event_system_hle_.is_event_consumer(process_.pid, processor);
-        if (send != pending_mach_sends_.end() ? send->second.ticket->ready(guest_now) :
+        if (caught_signal_ready(processor) ||
+            (send != pending_mach_sends_.end() ? send->second.ticket->ready(guest_now) :
             receive != pending_mach_receives_.end()
                 ? hid_receiver || mach_receive_poll_required_locked(
                                       receive->second, guest_now)
-                : pending_io_poll_required_locked(processor)) {
+                : pending_io_poll_required_locked(processor))) {
             processors.push_back(processor);
         }
         if (const auto deadline = pending_io_deadline_locked(processor);
@@ -1671,9 +1682,18 @@ bool CompatibilityKernel::has_pending_event_locked(
 }
 
 void CompatibilityKernel::refresh_pending_event_processor_locked(
-    std::size_t processor)
+    std::size_t processor, const BsdSyscallContext* entry)
 {
-    const auto pending = has_pending_event_locked(processor);
+    const auto event = has_pending_event_locked(processor);
+    const auto blocked = event || pending_waits_.contains(processor);
+    // Reuse the continuation walk: ordinary BSD calls retain no snapshot or
+    // heap allocation. Preserve the outer entry before syscall(0) shifts its
+    // arguments or a blocking handler publishes a provisional return value.
+    if (entry && blocked)
+        pending_bsd_entries_.insert_or_assign(processor, *entry);
+    else if (!blocked && !pending_bsd_entries_.empty())
+        pending_bsd_entries_.erase(processor);
+    const auto pending = event || caught_signal_ready(processor);
     const auto indexed = pending_event_processors_.contains(processor);
     if (pending == indexed)
         return;
@@ -3011,6 +3031,7 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
 {
     const SvcDispatchDiagnostics diagnostics { process_.pid, cpu,
         svc_immediate };
+    std::optional<BsdSyscallContext> bsd_entry;
     // Guest kernel entries conservatively invalidate timer topology. I/O
     // readiness has a narrower producer generation so drawing and unrelated
     // syscalls cannot force every blocked descriptor tree to be rescanned.
@@ -3048,17 +3069,20 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
         } else {
             // Count the outer entry only; syscall(0) redispatches internally.
             task_syscalls_->record_unix();
+            bsd_entry = BsdSyscallContext { cpu.registers(), cpu.cpsr() };
             dispatch_bsd(cpu, static_cast<std::uint32_t>(number));
         }
     }
+    refresh_pending_event_processor_locked(cpu.processor_id(),
+        bsd_entry ? &*bsd_entry : nullptr);
     if (!pending_thread_aborts_.empty())
         static_cast<void>(complete_thread_abort(cpu));
     if (signal_state_.ready(cpu.processor_id()) &&
         process_pending_signals(cpu.processor_id()))
         cpu.request_guest_preemption();
+    static_cast<void>(deliver_pending_signal(cpu));
     if (process_.exited)
         cpu.halt(Dynarmic::HaltReason::UserDefined1);
-    refresh_pending_event_processor_locked(cpu.processor_id());
 }
 
 void CompatibilityKernel::dispatch_arm_fast_trap(Cpu& cpu)

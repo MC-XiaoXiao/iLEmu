@@ -106,9 +106,10 @@ void CompatibilityKernel::apply_spawn_signal_attributes(
     }
 }
 
-std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
+std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal,
+    std::uint32_t sender_pid, std::uint32_t sender_uid)
 {
-    return deliver_signal_to_thread(signal, std::nullopt);
+    return deliver_signal_to_thread(signal, std::nullopt, sender_pid, sender_uid);
 }
 
 bool CompatibilityKernel::transition_signal_stop(bool stopped)
@@ -129,7 +130,8 @@ bool CompatibilityKernel::transition_signal_stop(bool stopped)
 }
 
 std::uint32_t CompatibilityKernel::deliver_signal_to_thread(
-    std::uint32_t signal, std::optional<std::size_t> processor)
+    std::uint32_t signal, std::optional<std::size_t> processor,
+    std::uint32_t sender_pid, std::uint32_t sender_uid)
 {
     if (signal == 0 || signal >= darwin::signal::count)
         return signal == 0 ? 0U : darwin::error::invalid_argument;
@@ -156,7 +158,13 @@ std::uint32_t CompatibilityKernel::deliver_signal_to_thread(
     // XNU psignal selects one uthread, coalesces duplicates, and cancels
     // opposing stop/continue bits on that uthread, even when held.
     signal_state_.queue(*processor, bit);
+    // kern_sig.c keeps ordinary sender information on the process, not in
+    // a fabricated per-signal FIFO. Held signals do not overwrite it.
+    if (handler > darwin::signal::ignore_action &&
+        !(signal_state_.mask(*processor) & bit) && signal != darwin::signal::child)
+        signal_sender_ = { sender_pid, sender_uid, signal };
     static_cast<void>(process_pending_signals(*processor));
+    refresh_pending_event_processor_locked(*processor);
     return 0;
 }
 
@@ -178,8 +186,10 @@ bool CompatibilityKernel::process_pending_signals(std::size_t processor)
         const auto handler = signal_actions_[signal][0];
         if (handler != darwin::signal::default_action &&
             handler != darwin::signal::ignore_action) {
-            // Keep the bit until a real ARM signal frame consumes it. A caught
-            // signal still interrupts the existing sigsuspend continuation.
+            // Publish an AST-style event; only a safe user-return boundary
+            // may consume this bit and install the ARM frame.
+            shared_state_->note_io_event_transition();
+            refresh_pending_event_processor_locked(processor);
             if (const auto suspended = pending_signal_suspends_.find(processor);
                 suspended != pending_signal_suspends_.end() &&
                 !suspended->second.interrupted) {
@@ -324,7 +334,8 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
             return;
         }
         if (signal != 0) {
-            const auto error = deliver_signal_to_thread(signal, target->second);
+            const auto error = deliver_signal_to_thread(signal, target->second,
+                process_.pid, process_.uid);
             if (error != 0) {
                 bsd_error(cpu, error);
                 return;
@@ -394,7 +405,7 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
         const auto error = signal_delivery_handler_
                                ? signal_delivery_handler_(target_pid, signal)
                            : target_pid == process_.pid
-                               ? deliver_signal(signal)
+                               ? deliver_signal(signal, process_.pid, process_.uid)
                                : darwin::error::no_such_process;
         if (error != 0) {
             bsd_error(cpu, error);

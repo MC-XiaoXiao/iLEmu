@@ -1978,12 +1978,14 @@ void EmulatorSession::run()
             });
         runtime.kernel->set_signal_delivery_handler(
             [&runtime_index, &scheduler, &guest_execution_policy,
-                &guest_parallelism_policy](
+                &guest_parallelism_policy, runtime_ptr](
                 std::uint32_t target_pid, std::uint32_t signal) {
                 auto* target = runtime_index.find(target_pid);
                 if (target == nullptr)
                     return darwin::error::no_such_process;
-                const auto error = target->kernel->deliver_signal(signal);
+                const auto error = target->kernel->deliver_signal(signal,
+                    runtime_ptr->kernel->process().pid,
+                    runtime_ptr->kernel->process().uid);
                 if (error == 0 && target->kernel->process().exited) {
                     scheduler.remove_process(target_pid);
                     guest_execution_policy.forget_process(target_pid);
