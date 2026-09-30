@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../transport/kernel_reply.hpp"
+#include "statistics.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
 #include "mach/mach_host_mig_ids.hpp"
 #include "kernel/mach_host_statistics_abi.hpp"
@@ -20,6 +21,7 @@ public:
         using namespace xnu::mig::mach_host;
         return identifier == id(Routine::host_info) ||
                identifier == id(Routine::host_statistics) ||
+               identifier == id(Routine::host_statistics64) ||
                identifier == id(Routine::host_page_size);
     }
     static std::optional<std::uint32_t> dispatch_locked(
@@ -72,24 +74,11 @@ public:
             !memory.accessible(receive_address, reply_size, MemoryPermission::Write))
             return std::nullopt;
         state.mach_port_objects.make_send_once(*reply);
-        return mach_ipc::copyout_kernel_reply_locked<32>(memory, state, receive_address,
+        return mach_ipc::copyout_kernel_reply_locked<InformationResult::maximum_words>(memory, state, receive_address,
             reply_name, *reply, read_little_word(bytes, 20U), result.payload());
     }
 private:
-    struct Result {
-        std::array<std::uint32_t, 32> words { 0U, 1U };
-        std::size_t count { 3U };
-        explicit Result(std::uint32_t error = 0U) { words[2] = error; }
-        std::span<const std::uint32_t> payload() const { return std::span { words }.first(count); }
-        static Result counted(std::span<const std::uint32_t> values)
-        {
-            Result result;
-            result.words[3] = static_cast<std::uint32_t>(values.size());
-            std::copy(values.begin(), values.end(), result.words.begin() + 4);
-            result.count = 4U + values.size();
-            return result;
-        }
-    };
+    using Result = InformationResult;
     static Result evaluate(AddressSpace& memory, const KernelSharedState& state,
         std::uint32_t processor_count, std::uint64_t usable_ram,
         std::uint32_t host, std::span<const std::byte> bytes)
@@ -97,12 +86,17 @@ private:
         using namespace mach_support;
         using namespace darwin::mach::xnu;
         const auto identifier = read_little_word(bytes, 20U);
+        const auto wide_statistics = identifier == routine::host_statistics64;
+        if (wide_statistics && !host_statistics::Contract { state.darwin_abi.abi_epoch }
+                                    .supports_wide_statistics())
+            return Result { darwin::mig::bad_id };
         const auto page_size = identifier == routine::host_page_size;
         if (bytes.size() != (page_size ? 24U : 40U) ||
             (read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit) != 0U)
             return Result { darwin::mig::bad_arguments };
         if (host != mach_task_identity::initial_host_self_name)
-            return Result { darwin::mach::invalid_argument };
+            return Result { identifier == routine::host_statistics || wide_statistics
+                                ? darwin::mach::invalid_host : darwin::mach::invalid_argument };
         if (page_size) {
             Result result;
             result.words[3] = AddressSpace::page_size;
@@ -162,49 +156,11 @@ private:
             }
             return Result { darwin::mach::failure };
         }
-        if (identifier == routine::host_statistics) {
-            const auto flavor =
-                read_little_word(bytes, message::flavor_offset);
-            const auto requested_count =
-                read_little_word(bytes, message::count_inout_request_offset);
-            if (flavor == host_statistics::load_flavor &&
-                requested_count >= host_statistics::load_word_count) {
-                const std::array<std::uint32_t, host_statistics::load_word_count>
-                    info { };
-                return Result::counted(info);
-            }
-            if (flavor == host_statistics::vm_flavor &&
-                requested_count >= host_statistics::vm_rev0_word_count) {
-                const auto total_pages = std::min<std::uint64_t>(
-                    state.device_ram_bytes / AddressSpace::page_size +
-                        (state.device_ram_bytes % AddressSpace::page_size !=
-                                0),
-                    std::numeric_limits<std::uint32_t>::max());
-                const auto resident_pages = std::min<std::uint64_t>(
-                    memory.resident_page_count(), total_pages);
-                std::array<std::uint32_t, host_statistics::vm_rev2_word_count>
-                    info { };
-                // vm_statistics free count includes speculative pages. The
-                // emulator has no separate global VM queues, so project the
-                // address space's resident pages into active memory and keep the
-                // total-page invariant visible to host consumers.
-                info[0] = static_cast<std::uint32_t>(total_pages - resident_pages);
-                info[1] = static_cast<std::uint32_t>(resident_pages);
-                const auto count = requested_count >= host_statistics::vm_rev2_word_count
-                                       ? host_statistics::vm_rev2_word_count
-                                       : requested_count >= host_statistics::vm_rev1_word_count
-                                       ? host_statistics::vm_rev1_word_count
-                                       : host_statistics::vm_rev0_word_count;
-                return Result::counted(std::span { info }.first(count));
-            }
-            if (flavor == host_statistics::cpu_load_flavor &&
-                requested_count >= host_statistics::cpu_load_word_count) {
-                const std::array<std::uint32_t, host_statistics::cpu_load_word_count>
-                    info { };
-                return Result::counted(info);
-            }
-            return Result { darwin::mach::failure };
-        }
+        if (identifier == routine::host_statistics || wide_statistics)
+            return Statistics::evaluate(memory, state,
+                read_little_word(bytes, message::flavor_offset),
+                read_little_word(bytes, message::count_inout_request_offset),
+                wide_statistics);
         return Result { darwin::mig::bad_id };
     }
 };

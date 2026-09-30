@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include "network/darwin_abi_route.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -22,6 +24,7 @@ namespace routine {
     inline constexpr std::uint32_t host_info = 200;
     inline constexpr std::uint32_t host_page_size = 202;
     inline constexpr std::uint32_t host_statistics = 216;
+    inline constexpr std::uint32_t host_statistics64 = 219;
 } // namespace routine
 
 namespace message {
@@ -48,6 +51,35 @@ namespace host_statistics {
     inline constexpr std::size_t vm_rev1_word_count = 14;
     inline constexpr std::size_t vm_rev2_word_count = 15;
     inline constexpr std::size_t cpu_load_word_count = 4;
+    inline constexpr std::uint32_t vm64_flavor = 4;
+    inline constexpr std::uint32_t extmod64_flavor = 5;
+    inline constexpr std::size_t vm64_rev0_word_count = 24;
+    inline constexpr std::size_t vm64_rev1_word_count = 38;
+    inline constexpr std::size_t extmod64_word_count = 12;
+
+    // XNU1456 adds wide events; XNU1699 adds extmod; XNU2422 adds
+    // compression/page-class counters. Counts remain integer_t words.
+    class Contract {
+    public:
+        explicit constexpr Contract(DarwinAbiEpoch epoch) : epoch_(epoch) { }
+        constexpr bool supports_wide_statistics() const
+        {
+            return epoch_ >= DarwinAbiEpoch::IphoneOs3;
+        }
+        constexpr bool supports_external_modifications() const
+        {
+            return epoch_ >= DarwinAbiEpoch::Darwin11;
+        }
+        constexpr std::size_t wide_vm_count(std::uint32_t capacity) const
+        {
+            if (!supports_wide_statistics() || capacity < vm64_rev0_word_count)
+                return 0U;
+            return epoch_ == DarwinAbiEpoch::Later && capacity >= vm64_rev1_word_count
+                       ? vm64_rev1_word_count : vm64_rev0_word_count;
+        }
+    private:
+        DarwinAbiEpoch epoch_;
+    };
 } // namespace host_statistics
 
 } // namespace ilemu::darwin::mach::xnu

@@ -160,7 +160,9 @@ namespace mach {
     inline constexpr std::uint32_t user_references_overflow = 19;
     inline constexpr std::uint32_t invalid_capability = 20;
     inline constexpr std::uint32_t right_exists = 21;
+    inline constexpr std::uint32_t invalid_host = 22;
     inline constexpr std::uint32_t terminated = 37;
+    inline constexpr std::uint32_t not_supported = 46;
     inline constexpr std::uint32_t operation_timed_out = 49;
     inline constexpr std::uint32_t vm_flags_anywhere = 1;
     inline constexpr std::uint32_t vm_flags_overwrite = 0x4000U;

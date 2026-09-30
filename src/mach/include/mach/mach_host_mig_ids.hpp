@@ -43,6 +43,7 @@ enum class Routine : std::uint32_t {
     host_statistics = 216U,
     host_request_notification = 217U,
     host_lockgroup_info = 218U,
+    host_statistics64 = 219U,
     // Darwin 14 adds voucher creation after the host statistics/zone slots.
     host_create_mach_voucher = 222U,
 };
@@ -159,13 +160,20 @@ inline constexpr std::array<ArgumentInfo, 2> host_lockgroup_info_arguments{{
     {"lockgroup_info", "lockgroup_info_array_t, Dealloc", "", ArgumentDirection::Out, WireType::OutOfLine, 0U, 0U, 252U, 4294967295U, 28U, 4294967295U, 48U},
 }};
 
+// XNU1456+ mach_host.defs: host_info64_t contains at most256 integer_t words.
+inline constexpr std::array<ArgumentInfo, 3> host_statistics64_arguments{{
+    {"host_priv", "host_t", "", ArgumentDirection::In, WireType::Port, 4U, 0U, 0U, 8U, 4294967295U, 4294967295U, 4294967295U},
+    {"flavor", "host_flavor_t", "", ArgumentDirection::In, WireType::Scalar, 4U, 0U, 0U, 32U, 4294967295U, 4294967295U, 4294967295U},
+    {"host_info64_out", "host_info64_t, CountInOut", "", ArgumentDirection::Out, WireType::VariableInline, 1024U, 0U, 4U, 4294967295U, 40U, 36U, 36U},
+}};
+
 struct Descriptor {
     Routine routine;
     std::string_view name;
     std::span<const ArgumentInfo> arguments;
 };
 
-inline constexpr std::array<Descriptor, 19> routines{{
+inline constexpr std::array<Descriptor, 20> routines{{
     {Routine::host_info, "host_info", std::span<const ArgumentInfo>{host_info_arguments}},
     {Routine::host_kernel_version, "host_kernel_version", std::span<const ArgumentInfo>{host_kernel_version_arguments}},
     {Routine::host_page_size, "host_page_size", std::span<const ArgumentInfo>{host_page_size_arguments}},
@@ -185,6 +193,7 @@ inline constexpr std::array<Descriptor, 19> routines{{
     {Routine::host_statistics, "host_statistics", std::span<const ArgumentInfo>{host_statistics_arguments}},
     {Routine::host_request_notification, "host_request_notification", std::span<const ArgumentInfo>{host_request_notification_arguments}},
     {Routine::host_lockgroup_info, "host_lockgroup_info", std::span<const ArgumentInfo>{host_lockgroup_info_arguments}},
+    {Routine::host_statistics64, "host_statistics64", std::span<const ArgumentInfo>{host_statistics64_arguments}},
 }};
 
 constexpr std::uint32_t id(Routine routine) {
