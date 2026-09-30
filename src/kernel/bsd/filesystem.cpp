@@ -111,6 +111,11 @@ namespace {
 
 } // namespace
 
+bool bsd_support::is_virtual_character_device(std::string_view descriptor_kind)
+{
+    return virtual_character_device_minor(descriptor_kind).has_value();
+}
+
 void CompatibilityKernel::dispatch_bsd_filesystem(
     Cpu& cpu, std::uint32_t number)
 {

@@ -80,11 +80,13 @@ public:
         return permanent_file_id_;
     }
     [[nodiscard]] int host_descriptor() const { return host_descriptor_; }
+    [[nodiscard]] bool is_regular_file() const { return regular_file_; }
 
 private:
     std::uint64_t identifier_ { };
     std::uint32_t permanent_file_id_ { };
     int host_descriptor_ { -1 };
+    bool regular_file_ { false };
     std::weak_ptr<AdvisoryFileLockRegistry> lock_registry_;
 };
 

@@ -5,6 +5,7 @@
 #include "../support.hpp"
 #include "protection.hpp"
 #include "mapping_range.hpp"
+#include "mapping_options.hpp"
 #include "foundation/host_file_mapping.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
@@ -50,7 +51,8 @@ void CompatibilityKernel::complete_bsd_mapping(
         (static_cast<std::uint64_t>(mapping.arguments[6]) << 32U);
     const auto range = bsd_vm::MappingRange::from_request(address, size, offset,
         (flags & darwin::map_flag::fixed) != 0U);
-    if (!range) {
+    const bsd_vm::MappingOptions options { shared_state_->darwin_abi.abi_epoch };
+    if (!range || !options.valid(flags, fd)) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return;
     }
@@ -66,7 +68,13 @@ void CompatibilityKernel::complete_bsd_mapping(
         if (!mapping.preparation) {
             const auto found = file_descriptors_.find(fd);
             if (found == file_descriptors_.end()) {
-                bsd_error(cpu, bsd_support::bad_file_descriptor);
+                const auto device = virtual_descriptors_.find(fd);
+                const auto character = bpf_descriptors_.contains(fd) ||
+                    (device != virtual_descriptors_.end() &&
+                        bsd_support::is_virtual_character_device(device->second));
+                bsd_error(cpu, character ? 19U /* ENODEV */
+                    : descriptor_valid(fd) ? bsd_support::invalid_argument
+                                           : bsd_support::bad_file_descriptor);
                 return;
             }
             mapping.path = found->second;
@@ -88,12 +96,35 @@ void CompatibilityKernel::complete_bsd_mapping(
                 }
                 preparer = shared_state_->file_mapping_preparer;
             }
+            // posix_shm.c returns before checking sharing or permissions.
+            if (posix_shared_memory && mapped_size == 0U) {
+                bsd_success(cpu, 0U);
+                return;
+            }
+            if (!posix_shared_memory) {
+                const auto block = virtual_block_descriptors_.find(fd);
+                if (block != virtual_block_descriptors_.end()) {
+                    bsd_error(cpu, block->second.second ? 19U : 22U);
+                    return;
+                }
+                const auto description = ensure_regular_file_open_description(fd);
+                if (!description || !description->is_regular_file()) {
+                    bsd_error(cpu, bsd_support::invalid_argument);
+                    return;
+                }
+            }
             const auto access = contract.file_mapping(permissions, descriptor_flags,
                 shared, posix_shared_memory
                     ? bsd_vm::Protection::Object::PosixSharedMemory
                     : bsd_vm::Protection::Object::File);
             if (access.error != 0U) {
                 bsd_error(cpu, access.error);
+                return;
+            }
+            // kern_mman.c validates a vnode and its access mode before the
+            // empty-range no-op, but does not prepare pages or replace memory.
+            if (mapped_size == 0U) {
+                bsd_success(cpu, 0U);
                 return;
             }
             // Retain the descriptor's limits across asynchronous preparation;
@@ -129,6 +160,10 @@ void CompatibilityKernel::complete_bsd_mapping(
                                : darwin::error::no_memory);
             return;
         }
+    }
+    if (mapped_size == 0U) {
+        bsd_success(cpu, 0U);
+        return;
     }
     constexpr auto address_space_end = std::uint64_t { 1 } << 32U;
     const auto overlaps = [&](std::uint32_t candidate) {

@@ -14,9 +14,12 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 namespace ilemu::bsd_support {
+
+[[nodiscard]] bool is_virtual_character_device(std::string_view descriptor_kind);
 
 inline constexpr std::uint32_t carry_flag = 1U << 29U;
 inline constexpr std::uint32_t bad_file_descriptor = 9;

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <dynarmic/interface/A32/a32.h>
@@ -51,6 +52,11 @@ RegularFileOpenDescription::RegularFileOpenDescription(std::uint64_t identifier,
     , host_descriptor_ { host_descriptor }
     , lock_registry_ { std::move(lock_registry) }
 {
+    // An open object's type is immutable, even after rename or unlink.
+    // Cache it once so mmap validation needs no host filesystem operation.
+    struct stat status { };
+    regular_file_ = host_descriptor_ >= 0 &&
+        ::fstat(host_descriptor_, &status) == 0 && S_ISREG(status.st_mode);
 }
 
 RegularFileOpenDescription::~RegularFileOpenDescription()

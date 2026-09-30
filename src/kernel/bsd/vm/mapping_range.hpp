@@ -24,7 +24,7 @@ struct MappingRange {
         constexpr auto mask = std::uint64_t { AddressSpace::page_size - 1U };
         const auto page_offset = static_cast<std::uint32_t>(offset & mask);
         const auto extent = (std::uint64_t { size } + page_offset + mask) & ~mask;
-        if (size == 0U || extent > UINT32_MAX ||
+        if (extent > UINT32_MAX ||
             offset > (UINT64_MAX & ~mask) - size)
             return std::nullopt;
         if (fixed) {
