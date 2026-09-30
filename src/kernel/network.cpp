@@ -230,7 +230,7 @@ bool CompatibilityKernel::receive_socket_message(
             std::min(*name_capacity, actual_name_length);
         if (copied_name_length != 0 &&
             (*name_address == 0 ||
-                !memory_.copy_in(*name_address,
+                !GuestSocketReceiveTarget {memory_, *name_address, copied_name_length}.copy(
                     std::span<const std::byte> { received->source_address }
                         .first(copied_name_length)))) {
             bsd_error(cpu, efault);
@@ -276,7 +276,8 @@ bool CompatibilityKernel::receive_socket_message(
             message_flags |= message_control_truncated;
         if (copied_control != 0 &&
             (*control_address == 0 ||
-                !memory_.copy_in(*control_address,
+                !GuestSocketReceiveTarget {memory_, *control_address,
+                    static_cast<std::uint32_t>(copied_control)}.copy(
                     std::span<const std::byte> { control }.first(
                         copied_control)))) {
             bsd_error(cpu, efault);
@@ -316,7 +317,7 @@ bool CompatibilityKernel::receive_socket_message(
             std::min(*name_capacity, actual_name_length);
         if (copied_name_length != 0 &&
             (*name_address == 0 ||
-                !memory_.copy_in(*name_address,
+                !GuestSocketReceiveTarget {memory_, *name_address, copied_name_length}.copy(
                     std::span<const std::byte> { received.address }.first(
                         copied_name_length)))) {
             bsd_error(cpu, efault);
@@ -462,7 +463,8 @@ bool CompatibilityKernel::receive_socket_message(
         }
         if (copied_control != 0 &&
             (*control_address == 0 ||
-                !memory_.copy_in(*control_address,
+                !GuestSocketReceiveTarget {memory_, *control_address,
+                    static_cast<std::uint32_t>(copied_control)}.copy(
                     std::span<const std::byte> { guest_control }.first(
                         copied_control)))) {
             bsd_error(cpu, efault);
@@ -795,7 +797,8 @@ bool CompatibilityKernel::copy_socket_address(std::uint32_t address,
         return false;
     const auto copied = std::min<std::size_t>(*capacity, socket_address.size());
     return (copied == 0 ||
-               memory_.copy_in(address, socket_address.first(copied))) &&
+               GuestSocketReceiveTarget {memory_, address,
+                   static_cast<std::uint32_t>(copied)}.copy(socket_address.first(copied))) &&
            memory_.write32(length_address,
                static_cast<std::uint32_t>(socket_address.size()));
 }
