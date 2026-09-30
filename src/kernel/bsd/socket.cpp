@@ -17,6 +17,7 @@
 #include "kernel/darwin_resource_abi.hpp"
 #include "network/darwin_route_socket.hpp"
 #include "kernel/kernel_network.hpp"
+#include <kernel/local_socket_control.hpp>
 
 #include <algorithm>
 #include <array>
@@ -125,6 +126,20 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
+        const auto control_address = memory_.read32(
+            message + darwin::socket::arm32_message::control_offset);
+        const auto control_size_value = memory_.read32(
+            message + darwin::socket::arm32_message::control_length_offset);
+        if (!control_address || !control_size_value) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        const auto control_size = *control_size_value;
+        LocalSocketControl control;
+        if (const auto error = control.copy_from(memory_, *control_address, control_size)) {
+            bsd_error(cpu, error);
+            return;
+        }
         std::uint32_t total = 0;
         std::vector<std::byte> outgoing;
         for (std::uint32_t index = 0; index < *iov_count; ++index) {
@@ -144,73 +159,22 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             outgoing.insert(outgoing.end(), bytes->begin(), bytes->end());
             total += *size;
         }
-        const auto control_address = memory_.read32(message + 16);
-        const auto control_size_value = memory_.read32(message + 20);
-        if (!control_address || !control_size_value) {
-            bsd_error(cpu, bsd_support::bad_address);
+        if (const auto error = control.validate()) {
+            bsd_error(cpu, error);
             return;
         }
-        const auto control_size = *control_size_value;
         std::vector<KernelSharedState::DescriptorTransfer> transfers;
-        if (control_size != 0) {
-            if (control_size > bsd_support::maximum_io) {
-                bsd_error(cpu, bsd_support::invalid_argument);
+        transfers.reserve(control.descriptor_count());
+        for (std::size_t index = 0; index < control.descriptor_count(); ++index) {
+            const auto passed_fd = control.descriptor(index);
+            if (reject_guarded_descriptor(cpu, passed_fd, DarwinFileGuard::socket_ipc))
+                return;
+            const auto transfer = export_descriptor(passed_fd);
+            if (!transfer) {
+                bsd_error(cpu, bsd_support::bad_file_descriptor);
                 return;
             }
-            if (*control_address == 0 ||
-                !memory_.accessible(
-                    *control_address, control_size, MemoryPermission::Read)) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            for (std::uint32_t offset = 0; offset < control_size;) {
-                const auto cmsg_length =
-                    memory_.read32(*control_address + offset);
-                const auto cmsg_level =
-                    memory_.read32(*control_address + offset + 4U);
-                const auto cmsg_type =
-                    memory_.read32(*control_address + offset + 8U);
-                if (!cmsg_length || !cmsg_level || !cmsg_type) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-                if (*cmsg_length < 12U ||
-                    *cmsg_length > control_size - offset) {
-                    bsd_error(cpu, bsd_support::invalid_argument);
-                    return;
-                }
-                if (*cmsg_level == 0xffffU && *cmsg_type == 1U) {
-                    const auto descriptor_bytes = *cmsg_length - 12U;
-                    if ((descriptor_bytes % 4U) != 0) {
-                        bsd_error(cpu, bsd_support::invalid_argument);
-                        return;
-                    }
-                    for (std::uint32_t descriptor_offset = 0;
-                        descriptor_offset < descriptor_bytes;
-                        descriptor_offset += 4U) {
-                        const auto passed_fd =
-                            memory_.read32(*control_address + offset + 12U +
-                                           descriptor_offset);
-                        if (!passed_fd) {
-                            bsd_error(cpu, bsd_support::bad_address);
-                            return;
-                        }
-                        if (reject_guarded_descriptor(cpu, *passed_fd, DarwinFileGuard::socket_ipc))
-                            return;
-                        const auto transfer = export_descriptor(*passed_fd);
-                        if (!transfer) {
-                            bsd_error(cpu, bsd_support::bad_file_descriptor);
-                            return;
-                        }
-                        transfers.push_back(*transfer);
-                    }
-                }
-                const auto aligned_length = (*cmsg_length + 3U) & ~3U;
-                if (aligned_length == 0 ||
-                    aligned_length > control_size - offset)
-                    break;
-                offset += aligned_length;
-            }
+            transfers.push_back(*transfer);
         }
         const auto transfer_count = transfers.size();
         {
@@ -230,7 +194,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 lifetime->read_offsets[destination_side] + destination.size();
             destination.insert(
                 destination.end(), outgoing.begin(), outgoing.end());
-            if (!transfers.empty()) {
+            if (control.present()) {
                 shared_state_
                     ->socket_pair_ancillary[endpoint->second.pair]
                                            [destination_side]
