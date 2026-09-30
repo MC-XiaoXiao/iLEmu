@@ -13,6 +13,7 @@
 #include "kernel/darwin_abi.hpp"
 #include "../../mach/support.hpp"
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -43,7 +44,9 @@ void CompatibilityKernel::dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t numbe
 {
     const auto& registers = cpu.registers();
     const auto processor = cpu.processor_id();
-    const auto previous = signal_masks_.mask(processor);
+    const auto previous = signal_state_.mask(processor);
+    const bool broadcast = registers[1] != 0 &&
+                           number != darwin::syscall::pthread_sigmask;
     if (registers[1] != 0) {
         // XNU reads the new mask before touching an aliased old-mask output.
         const auto requested = memory_.read32(registers[1]);
@@ -52,9 +55,9 @@ void CompatibilityKernel::dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t numbe
             return;
         }
         const auto scope = number == darwin::syscall::pthread_sigmask
-                               ? DarwinSignalMasks::Scope::Thread
-                               : DarwinSignalMasks::Scope::Process;
-        if (!signal_masks_.update(processor, registers[0], *requested, scope)) {
+                               ? DarwinSignalState::Scope::Thread
+                               : DarwinSignalState::Scope::Process;
+        if (!signal_state_.update(processor, registers[0], *requested, scope)) {
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
@@ -63,14 +66,39 @@ void CompatibilityKernel::dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t numbe
     if (registers[2] != 0)
         static_cast<void>(memory_.write32(registers[2], previous));
     bsd_success(cpu, 0);
+    if (broadcast)
+        signal_state_.for_each_ready([&](std::size_t target) {
+            if (process_pending_signals(target))
+                cpu.request_guest_preemption();
+        });
+}
+
+void CompatibilityKernel::discard_ignored_signal(std::uint32_t signal)
+{
+    const auto handler = signal_actions_[signal][0];
+    if (handler == darwin::signal::ignore_action ||
+        (handler == darwin::signal::default_action && default_signal_is_ignored(signal)))
+        signal_state_.discard(1U << (signal - 1U));
+}
+
+void CompatibilityKernel::reset_signal_actions_for_exec()
+{
+    for (std::size_t signal = 1; signal < signal_actions_.size(); ++signal) {
+        auto& action = signal_actions_[signal];
+        if (action[0] != darwin::signal::default_action &&
+            action[0] != darwin::signal::ignore_action) {
+            action = { };
+            discard_ignored_signal(static_cast<std::uint32_t>(signal));
+        }
+    }
 }
 
 void CompatibilityKernel::apply_spawn_signal_attributes(
     const SpawnSignalAttributes& attributes)
 {
     if (attributes.mask)
-        static_cast<void>(signal_masks_.update(0, 3, *attributes.mask,
-            DarwinSignalMasks::Scope::Process));
+        static_cast<void>(signal_state_.update(0, 3, *attributes.mask,
+            DarwinSignalState::Scope::Process));
     for (std::size_t signal = 1; signal < signal_actions_.size(); ++signal) {
         if ((attributes.defaults & (1U << (signal - 1U))) != 0U)
             signal_actions_[signal] = { };
@@ -82,96 +110,97 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
     return deliver_signal_to_thread(signal, std::nullopt);
 }
 
+bool CompatibilityKernel::transition_signal_stop(bool stopped)
+{
+    bool changed = false;
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        const auto record = shared_state_->processes.find(process_.pid);
+        if (record != shared_state_->processes.end() && !record->second.exited &&
+            record->second.signal_stopped != stopped) {
+            record->second.signal_stopped = stopped;
+            changed = true;
+        }
+    }
+    if (changed && process_runnable_handler_)
+        process_runnable_handler_(process_.pid, !stopped);
+    return changed;
+}
+
 std::uint32_t CompatibilityKernel::deliver_signal_to_thread(
     std::uint32_t signal, std::optional<std::size_t> processor)
 {
-    if (signal == 0 || signal >= darwin::signal::count) {
+    if (signal == 0 || signal >= darwin::signal::count)
         return signal == 0 ? 0U : darwin::error::invalid_argument;
-    }
+    if (process_.exited)
+        return 0;
 
-    const auto transition_job_control_stop = [this](bool stopped) {
-        bool changed = false;
-        {
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto record = shared_state_->processes.find(process_.pid);
-            if (record != shared_state_->processes.end() &&
-                !record->second.exited &&
-                record->second.signal_stopped != stopped) {
-                record->second.signal_stopped = stopped;
-                changed = true;
-            }
-        }
-        if (changed && process_runnable_handler_)
-            process_runnable_handler_(process_.pid, !stopped);
-        return changed;
-    };
-
-    // POSIX job control resumes a stopped task even when SIGCONT is ignored,
-    // caught, or masked. Handler disposition is evaluated only after the
-    // independent scheduler hold has been released.
-    if (signal == darwin::signal::resume &&
-        transition_job_control_stop(false)) {
-        output_.write(
-            "[signal] continued pid=" + std::to_string(process_.pid) + "\n");
-    }
-
+    // SIGCONT releases the job-control hold independently of mask/disposition.
+    if (signal == darwin::signal::resume)
+        transition_signal_stop(false);
     const auto handler = signal_actions_[signal][0];
-    const bool unmaskable =
-        signal == darwin::signal::kill || signal == darwin::signal::stop;
-    const auto suspended = std::find_if(pending_signal_suspends_.begin(),
-        pending_signal_suspends_.end(), [&](const auto& pending) {
-            return (!processor || pending.first == *processor) &&
-                   (unmaskable ||
-                       (signal_masks_.mask(pending.first) &
-                           (1U << (signal - 1U))) == 0);
-        });
-    if (!unmaskable && handler == darwin::signal::ignore_action) {
-        output_.write("[signal] ignored pid=" + std::to_string(process_.pid) +
-                      " signal=" + std::to_string(signal) + "\n");
+    if (signal != darwin::signal::resume &&
+        (handler == darwin::signal::ignore_action ||
+            (handler == darwin::signal::default_action &&
+                default_signal_is_ignored(signal))))
         return 0;
-    }
-    if (!unmaskable && handler != darwin::signal::default_action) {
-        // A complete ARM signal frame/trampoline is a later signal-subsystem
-        // milestone. Preserve the accepted delivery without applying the
-        // default action; this is also the observable result for a masked
-        // pending signal.
-        output_.write(
-            "[signal] caught-pending pid=" + std::to_string(process_.pid) +
-            " signal=" + std::to_string(signal) + "\n");
-        if (suspended != pending_signal_suspends_.end()) {
-            suspended->second.interrupted = true;
-            shared_state_->note_io_event_transition();
-        }
-        return 0;
-    }
-    const auto bit = 1U << (signal - 1U);
-    const bool blocked = processor
-                             ? (signal_masks_.mask(*processor) & bit) != 0
-                             : signal_masks_.all_blocked(bit);
-    if (!unmaskable && blocked) {
-        output_.write(
-            "[signal] masked-pending pid=" + std::to_string(process_.pid) +
-            " signal=" + std::to_string(signal) + "\n");
-        return 0;
-    }
-    if (default_signal_is_ignored(signal)) {
-        return 0;
-    }
-    if (default_signal_stops(signal)) {
-        const auto changed = transition_job_control_stop(true);
-        output_.write("[signal] " +
-                      std::string { changed ? "stopped" : "already-stopped" } +
-                      " pid=" + std::to_string(process_.pid) +
-                      " signal=" + std::to_string(signal) + "\n");
-        return 0;
-    }
 
-    exit_process(0, signal);
+    const auto bit = 1U << (signal - 1U);
+    if (!processor)
+        processor = signal_state_.select(bit, [this](std::size_t candidate) {
+            return !disabled_thread_signals_.contains(candidate);
+        });
+    if (!processor)
+        return 0;
+    // XNU psignal selects one uthread, coalesces duplicates, and cancels
+    // opposing stop/continue bits on that uthread, even when held.
+    signal_state_.queue(*processor, bit);
+    static_cast<void>(process_pending_signals(*processor));
     return 0;
+}
+
+bool CompatibilityKernel::process_pending_signals(std::size_t processor)
+{
+    auto ready = signal_state_.ready(processor);
+    while (ready && !process_.exited) {
+        const auto signal = static_cast<std::uint32_t>(std::countr_zero(ready)) + 1U;
+        const auto bit = 1U << (signal - 1U);
+        ready &= ~bit;
+        const auto handler = signal_actions_[signal][0];
+        if (handler != darwin::signal::default_action &&
+            handler != darwin::signal::ignore_action) {
+            // Keep the bit until a real ARM signal frame consumes it. A caught
+            // signal still interrupts the existing sigsuspend continuation.
+            if (const auto suspended = pending_signal_suspends_.find(processor);
+                suspended != pending_signal_suspends_.end() &&
+                !suspended->second.interrupted) {
+                suspended->second.interrupted = true;
+                shared_state_->note_io_event_transition();
+            }
+            continue;
+        }
+        signal_state_.consume(processor, bit);
+        if (handler == darwin::signal::ignore_action || default_signal_is_ignored(signal))
+            continue;
+        if (default_signal_stops(signal)) {
+            transition_signal_stop(true);
+            return true;
+        }
+        exit_process(0, signal);
+    }
+    return false;
 }
 
 void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
 {
+    if (number == 52U) { // sigpending reports this uthread's list, including held signals.
+        // XNU kern_sig.c intentionally ignores copyout failure here.
+        if (cpu.registers()[0] != 0)
+            static_cast<void>(memory_.write32(cpu.registers()[0],
+                signal_state_.pending(cpu.processor_id())));
+        bsd_success(cpu, 0);
+        return;
+    }
     if (number == darwin::syscall::alternate_signal_stack) {
         const auto new_address = cpu.registers()[0];
         const auto old_address = cpu.registers()[1];
@@ -238,7 +267,7 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
         return;
     }
     if (number == 111U) { // sigsuspend
-        signal_masks_.suspend(cpu.processor_id(), cpu.registers()[0]);
+        signal_state_.suspend(cpu.processor_id(), cpu.registers()[0]);
         pending_signal_suspends_[cpu.processor_id()] =
             PendingSignalSuspend { false };
         process_.waiting_for_events = true;

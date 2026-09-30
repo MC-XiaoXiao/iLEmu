@@ -159,6 +159,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(darwin::syscall::alternate_signal_stack, "alternate_signal_stack",
         Handler::BsdSignal);
     add(111, "sigsuspend", Handler::BsdSignal);
+    add(52, "sigpending", Handler::BsdSignal);
     add(darwin::syscall::pthread_kill, "pthread_kill", Handler::BsdSignal);
     add(darwin::syscall::kill, "kill", Handler::BsdSignal);
     add(darwin::syscall::get_host_uuid, "get_host_uuid", Handler::BsdPlatform);

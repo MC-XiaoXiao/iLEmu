@@ -94,7 +94,7 @@ CompatibilityKernel::create_guest_thread(
         return std::nullopt;
     }
 
-    signal_masks_.initialize(*processor, initial_signal_mask);
+    signal_state_.initialize(*processor, initial_signal_mask);
     thread_ports_[*processor] = port_name;
     kernel_error = darwin::mach::success;
     return CreatedGuestThread { *processor, port_name };

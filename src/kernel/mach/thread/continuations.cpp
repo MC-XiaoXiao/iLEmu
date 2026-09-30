@@ -37,7 +37,7 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     clear_thread_pthread_state(processor);
     disabled_thread_signals_.erase(processor);
     alternate_signal_stacks_.erase(processor);
-    signal_masks_.retire(processor);
+    signal_state_.retire(processor);
     last_delivered_graphics_inputs_.erase(processor);
     scheduler_yields_.erase(processor);
     scheduler_handoffs_.erase(processor);

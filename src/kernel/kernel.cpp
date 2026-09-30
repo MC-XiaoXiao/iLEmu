@@ -227,6 +227,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             configuration->identity.operating_system_release, configuration->abi_name);
     }() }
     , task_syscalls_ { std::make_shared<TaskSyscallCounters>() }
+    , signal_state_ { shared_state_->darwin_abi.abi_epoch }
 {
     memory_.set_file_generation_registry(
         shared_state_->guest_file_generation_registry);
@@ -900,7 +901,7 @@ bool CompatibilityKernel::owns_display_scanout() const
 
 void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 {
-    signal_masks_.reset(processor_id, signal_masks_.mask(processor_id));
+    signal_state_.exec(processor_id);
     note_timer_deadline_transition();
     release_close_on_exec_descriptors();
     std::erase_if(thread_working_directories_, [processor_id](const auto& entry) {
@@ -921,10 +922,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     next_display_scanout_deadline_.reset();
     // execsigs resets caught handlers. Ignored dispositions and the caller's
     // signal mask survive replacement of its address space.
-    for (auto& action : signal_actions_) {
-        if (action[0] != darwin::signal::ignore_action)
-            action = { };
-    }
+    reset_signal_actions_for_exec();
     alternate_signal_stacks_.clear();
     reset_pthread_runtime();
     shared_state_->psynch_runtime->clear_process(process_.pid);
@@ -1492,6 +1490,11 @@ bool CompatibilityKernel::deliver_pending_io(Cpu& cpu)
     if (delivered) {
         pending_io_poll_cache_.erase(cpu.processor_id());
         note_timer_deadline_transition();
+        if (signal_state_.ready(cpu.processor_id()) &&
+            process_pending_signals(cpu.processor_id()))
+            cpu.request_guest_preemption();
+        if (process_.exited)
+            cpu.halt(Dynarmic::HaltReason::UserDefined1);
     }
     refresh_pending_event_processor_locked(cpu.processor_id());
     return delivered;
@@ -1538,6 +1541,11 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
     }
     if (!pending_thread_aborts_.empty())
         delivered = complete_thread_abort(cpu) || delivered;
+    if (delivered && signal_state_.ready(processor) &&
+        process_pending_signals(processor))
+        cpu.request_guest_preemption();
+    if (process_.exited)
+        cpu.halt(Dynarmic::HaltReason::UserDefined1);
     refresh_pending_event_processor_locked(processor);
     return delivered;
 }
@@ -1902,7 +1910,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         pending != pending_signal_suspends_.end() &&
         pending->second.interrupted) {
         bsd_error(cpu, darwin::error::interrupted);
-        signal_masks_.resume(cpu.processor_id());
+        signal_state_.resume(cpu.processor_id());
         pending_signal_suspends_.erase(pending);
         process_.waiting_for_events = false;
         cpu.clear_halt();
@@ -2752,7 +2760,7 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline)
                       std::to_string(process_.pid) + "\n");
         return;
     }
-    signal_masks_.initialize(*processor, 0);
+    signal_state_.initialize(*processor, 0);
     core_audio_hle_.io_proc_thread_scheduled(callback->process_id,
         callback->native, callback->io_proc_id, *processor);
 }
@@ -2761,7 +2769,7 @@ void CompatibilityKernel::reap_stopped_audio_threads()
 {
     for (const auto processor :
         core_audio_hle_.take_retired_io_proc_threads()) {
-        signal_masks_.retire(processor);
+        signal_state_.retire(processor);
         userland_hle_.unbind_thread_callback(processor);
         if (thread_terminate_handler_) {
             static_cast<void>(
@@ -2929,7 +2937,7 @@ void CompatibilityKernel::inherit_process_state(
     // A fresh spawn address space still inherits signal state; explicit
     // spawn attributes override it after exec has reset caught handlers.
     signal_actions_ = parent.signal_actions_;
-    signal_masks_.reset(0, parent.signal_masks_.inherited_mask(parent_processor));
+    signal_state_.reset(0, parent.signal_state_.inherited_mask(parent_processor));
     kqueues_ = parent.kqueues_;
     // Descriptors with FD_CLOFORK close in the child. Other guarded
     // descriptors inherit their guard along with the descriptor.
@@ -3039,6 +3047,11 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
     }
     if (!pending_thread_aborts_.empty())
         static_cast<void>(complete_thread_abort(cpu));
+    if (signal_state_.ready(cpu.processor_id()) &&
+        process_pending_signals(cpu.processor_id()))
+        cpu.request_guest_preemption();
+    if (process_.exited)
+        cpu.halt(Dynarmic::HaltReason::UserDefined1);
     refresh_pending_event_processor_locked(cpu.processor_id());
 }
 

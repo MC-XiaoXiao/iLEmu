@@ -109,7 +109,7 @@ bool CompatibilityKernel::complete_thread_abort(Cpu& cpu)
         }
     }
     if (completed) {
-        signal_masks_.resume(processor);
+        signal_state_.resume(processor);
         cpu.clear_halt();
         pending_io_poll_cache_.erase(processor);
         note_timer_deadline_transition();

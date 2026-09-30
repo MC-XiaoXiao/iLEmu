@@ -518,6 +518,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         if (registers[1] != 0) {
             // The input ABI is struct __sigaction and additionally contains
             // the userspace signal trampoline.
+            auto requested = action;
             for (std::size_t index = 0; index < action.size(); ++index) {
                 const auto value = memory_.read32(
                     registers[1] + static_cast<std::uint32_t>(index * 4U));
@@ -525,8 +526,10 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
-                action[index] = *value;
+                requested[index] = *value;
             }
+            action = requested;
+            discard_ignored_signal(signal);
         }
         bsd_success(cpu, 0);
         return;

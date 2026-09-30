@@ -9,7 +9,7 @@
 #include "kernel/task_memory_statistics.hpp"
 
 #include "kernel/darwin_file_guard.hpp"
-#include "kernel/darwin_signal_masks.hpp"
+#include "kernel/darwin_signal_state.hpp"
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -617,6 +617,10 @@ private:
     void dispatch_bsd_fileport(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t number);
+    void reset_signal_actions_for_exec();
+    void discard_ignored_signal(std::uint32_t signal);
+    bool process_pending_signals(std::size_t processor);
+    bool transition_signal_stop(bool stopped);
     [[nodiscard]] std::uint32_t deliver_signal_to_thread(
         std::uint32_t signal, std::optional<std::size_t> processor);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
@@ -1045,7 +1049,6 @@ private:
     std::map<std::uint32_t, std::uint32_t> vm_purgable_states_;
     std::set<std::size_t> disabled_thread_signals_;
     std::array<std::array<std::uint32_t, 4>, 32> signal_actions_ { };
-    DarwinSignalMasks signal_masks_;
     struct AlternateSignalStack {
         std::uint32_t address { };
         std::uint32_t size { };
@@ -1057,6 +1060,7 @@ private:
         std::make_shared<KernelSharedState>()
     };
     std::shared_ptr<TaskSyscallCounters> task_syscalls_;
+    DarwinSignalState signal_state_;
     ThreadCreateHandler thread_create_handler_;
     ThreadTerminateHandler thread_terminate_handler_;
     ThreadStateQuery thread_state_query_;
