@@ -507,7 +507,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 *fd, registers[0] == darwin::network::address_family_inet
                          ? "inet-dgram"
                          : "inet6-dgram");
-            auto udp = shared_state_->virtual_udp_network->create(registers[0]);
+            const auto uid_sharing =
+                shared_state_->darwin_abi.abi_epoch >= DarwinAbiEpoch::IphoneOs2
+                    ? bsd::SocketUidSharing::ExplicitOptIn
+                    : bsd::SocketUidSharing::OwnerOnly;
+            auto udp = shared_state_->virtual_udp_network->create(
+                registers[0], process_.effective_uid, uid_sharing);
             if (!udp) {
                 virtual_descriptors_.erase(*fd);
                 bsd_error(cpu, 47); // EAFNOSUPPORT
@@ -933,11 +938,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             }
         }
         if (const auto udp = virtual_udp_sockets_.find(fd);
-            udp != virtual_udp_sockets_.end() && !defunct_option &&
-            udp->second->set_option(registers[1], registers[2], value) !=
-                bsd::VirtualUdpStatus::Success) {
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return;
+            udp != virtual_udp_sockets_.end() && !defunct_option) {
+            const auto result = udp->second->set_option(registers[1], registers[2], value);
+            if (result != bsd::VirtualUdpStatus::Success) {
+                bsd_error(cpu, virtual_udp_error(result));
+                return;
+            }
         }
         socket_options_[fd][{ registers[1], registers[2] }] = std::move(value);
         output_.write(

@@ -30,7 +30,11 @@ enum class VirtualUdpStatus {
     AlreadyConnected,
     BadFileDescriptor,
     AddressNotAvailable,
+    AddressInUse,
+    OptionUnsupported,
 };
+
+enum class SocketUidSharing { OwnerOnly, ExplicitOptIn };
 
 struct VirtualUdpDatagram {
     std::vector<std::byte> bytes;
@@ -59,7 +63,8 @@ class VirtualUdpNetwork final
     : public std::enable_shared_from_this<VirtualUdpNetwork> {
 public:
     [[nodiscard]] std::shared_ptr<VirtualUdpSocket> create(
-        std::uint32_t family);
+        std::uint32_t family, std::uint32_t owner_uid = 0,
+        SocketUidSharing uid_sharing = SocketUidSharing::ExplicitOptIn);
 
 private:
     friend class VirtualUdpSocket;
@@ -67,8 +72,10 @@ private:
     [[nodiscard]] VirtualUdpStatus bind(
         VirtualUdpSocket& socket, std::span<const std::byte> address);
     [[nodiscard]] VirtualUdpStatus allocate_port_locked(
-        std::uint32_t family, std::span<std::byte> address);
+        const VirtualUdpSocket& socket, std::span<std::byte> address);
     [[nodiscard]] VirtualUdpStatus ensure_bound_locked(VirtualUdpSocket& socket);
+    [[nodiscard]] std::shared_ptr<VirtualUdpSocket> binding_match_locked(
+        std::uint32_t family, std::span<const std::byte> address, bool wildcard) const;
     [[nodiscard]] VirtualUdpStatus set_option(VirtualUdpSocket& socket,
         std::uint32_t level, std::uint32_t option,
         std::span<const std::byte> value);
@@ -85,6 +92,7 @@ private:
 
     mutable std::mutex mutex_;
     std::vector<std::weak_ptr<VirtualUdpSocket>> sockets_;
+    std::uint64_t next_binding_order_ {};
     static constexpr std::uint16_t first_ephemeral_port = 49'152;
     std::uint16_t next_ephemeral_port_ { first_ephemeral_port };
 };
@@ -114,14 +122,22 @@ private:
     friend class VirtualUdpNetwork;
 
     VirtualUdpSocket(
-        std::shared_ptr<VirtualUdpNetwork> network, std::uint32_t family)
+        std::shared_ptr<VirtualUdpNetwork> network, std::uint32_t family,
+        std::uint32_t owner_uid, SocketUidSharing uid_sharing)
         : network_ { std::move(network) }
         , family_ { family }
+        , owner_uid_ { owner_uid }
+        , uid_sharing_ { uid_sharing }
     {
     }
 
     std::weak_ptr<VirtualUdpNetwork> network_;
     std::uint32_t family_ { };
+    std::uint32_t owner_uid_ {};
+    SocketUidSharing uid_sharing_;
+    std::uint32_t reuse_options_ {};
+    bool share_uid_ {};
+    std::uint64_t binding_order_ {};
     std::vector<std::byte> bound_address_;
     std::vector<std::byte> connected_address_;
     std::set<std::vector<std::byte>> multicast_groups_;

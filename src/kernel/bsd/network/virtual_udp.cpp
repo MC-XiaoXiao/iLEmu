@@ -8,6 +8,7 @@
 #include "network/virtual_udp.hpp"
 
 #include "network/darwin_network_abi.hpp"
+#include <network/darwin_socket_abi.hpp>
 
 #include <algorithm>
 #include <array>
@@ -200,12 +201,12 @@ std::vector<std::byte> make_virtual_udp_ancillary(std::uint32_t family,
 }
 
 std::shared_ptr<VirtualUdpSocket> VirtualUdpNetwork::create(
-    std::uint32_t family)
+    std::uint32_t family, std::uint32_t owner_uid, SocketUidSharing uid_sharing)
 {
     if (address_size(family) == 0)
         return { };
     auto socket = std::shared_ptr<VirtualUdpSocket> { new VirtualUdpSocket {
-        shared_from_this(), family } };
+        shared_from_this(), family, owner_uid, uid_sharing } };
     std::lock_guard lock { mutex_ };
     sockets_.push_back(socket);
     return socket;
@@ -221,17 +222,67 @@ VirtualUdpStatus VirtualUdpNetwork::bind(
         return VirtualUdpStatus::InvalidArgument;
     auto bound = normalize_address(address, socket.family_);
     if (zero_port(bound)) {
-        const auto status = allocate_port_locked(socket.family_, bound);
+        const auto status = allocate_port_locked(socket, bound);
         if (status != VirtualUdpStatus::Success)
             return status;
+    } else {
+        using namespace darwin::socket;
+        const bool multicast = multicast_address(bound, socket.family_);
+        // XNU checks ownership using wildcard lookup before option-based
+        // matching. The owner is captured at socket creation, not bind time.
+        if (socket.owner_uid_ != 0 && !multicast) {
+            const auto other = binding_match_locked(socket.family_, bound, true);
+            if (other && socket.owner_uid_ != other->owner_uid_ &&
+                !other->share_uid_ &&
+                (!wildcard_address(bound, socket.family_) ||
+                    !wildcard_address(other->bound_address_, socket.family_) ||
+                    !(other->reuse_options_ & option_reuse_port)))
+                return VirtualUdpStatus::AddressInUse;
+        }
+        const auto other = binding_match_locked(
+            socket.family_, bound, socket.reuse_options_ == 0);
+        auto reuse = socket.reuse_options_ & option_reuse_port;
+        if (multicast && (socket.reuse_options_ & option_reuse_address))
+            reuse = option_reuse_address | option_reuse_port;
+        if (other && !(reuse & other->reuse_options_))
+            return VirtualUdpStatus::AddressInUse;
     }
     socket.bound_address_ = std::move(bound);
+    socket.binding_order_ = ++next_binding_order_;
     return VirtualUdpStatus::Success;
 }
 
-VirtualUdpStatus VirtualUdpNetwork::allocate_port_locked(
-    std::uint32_t family, std::span<std::byte> address)
+std::shared_ptr<VirtualUdpSocket> VirtualUdpNetwork::binding_match_locked(
+    std::uint32_t family, std::span<const std::byte> address, bool wildcard) const
 {
+    std::shared_ptr<VirtualUdpSocket> best;
+    unsigned best_score = 3;
+    for (const auto& weak : sockets_) {
+        auto other = weak.lock();
+        if (!other || other->defunct() || other->family_ != family ||
+            other->bound_address_.empty() || !same_port(address, other->bound_address_))
+            continue;
+        const bool exact = same_ip(address, other->bound_address_, family);
+        if (!exact && !wildcard_address(address, family) &&
+            !wildcard_address(other->bound_address_, family))
+            continue;
+        const auto score = static_cast<unsigned>(!exact) +
+            static_cast<unsigned>(!other->connected_address_.empty());
+        if ((!wildcard && score != 0) || score > best_score)
+            continue;
+        // Native PCB lists put the most recently bound equal match first.
+        if (!best || score < best_score || other->binding_order_ > best->binding_order_) {
+            best_score = score;
+            best = std::move(other);
+        }
+    }
+    return best;
+}
+
+VirtualUdpStatus VirtualUdpNetwork::allocate_port_locked(
+    const VirtualUdpSocket& socket, std::span<std::byte> address)
+{
+    const auto family = socket.family_;
     // Native in_pcbbind/in6_pcbsetport searches a bounded ephemeral range.
     // Build occupancy once, rather than rescanning every socket for every
     // candidate when the range is full. No heap allocation or extra lock.
@@ -245,6 +296,9 @@ VirtualUdpStatus VirtualUdpNetwork::allocate_port_locked(
             other->bound_address_.empty())
             continue;
         const auto& bound = other->bound_address_;
+        if (socket.reuse_options_ != 0 &&
+            (!other->connected_address_.empty() || !same_ip(address, bound, family)))
+            continue;
         if (!wildcard_address(address, family) &&
             !wildcard_address(bound, family) && !same_ip(address, bound, family))
             continue;
@@ -273,10 +327,11 @@ VirtualUdpStatus VirtualUdpNetwork::ensure_bound_locked(VirtualUdpSocket& socket
     std::vector<std::byte> bound(address_size(socket.family_), std::byte { 0 });
     bound[sockaddr_length_offset] = static_cast<std::byte>(bound.size());
     bound[sockaddr_family_offset] = static_cast<std::byte>(socket.family_);
-    const auto status = allocate_port_locked(socket.family_, bound);
+    const auto status = allocate_port_locked(socket, bound);
     if (status != VirtualUdpStatus::Success)
         return status;
     socket.bound_address_ = std::move(bound);
+    socket.binding_order_ = ++next_binding_order_;
     return VirtualUdpStatus::Success;
 }
 
@@ -284,6 +339,24 @@ VirtualUdpStatus VirtualUdpNetwork::set_option(VirtualUdpSocket& socket,
     std::uint32_t level, std::uint32_t option, std::span<const std::byte> value)
 {
     std::lock_guard lock { mutex_ };
+    if (level == darwin::socket::option_level &&
+        (option == darwin::socket::option_reuse_address ||
+            option == darwin::socket::option_reuse_port ||
+            option == darwin::socket::option_reuse_share_uid)) {
+        if (option == darwin::socket::option_reuse_share_uid &&
+            socket.uid_sharing_ == SocketUidSharing::OwnerOnly)
+            return VirtualUdpStatus::OptionUnsupported;
+        if (value.size() < sizeof(std::uint32_t))
+            return VirtualUdpStatus::InvalidArgument;
+        const bool enabled = enabled_value(value.first(sizeof(std::uint32_t)));
+        if (option == darwin::socket::option_reuse_share_uid)
+            socket.share_uid_ = enabled;
+        else if (enabled)
+            socket.reuse_options_ |= option;
+        else
+            socket.reuse_options_ &= ~option;
+        return VirtualUdpStatus::Success;
+    }
     const bool ipv4 =
         socket.family_ == address_family_inet && level == protocol_ip;
     const bool ipv6 =

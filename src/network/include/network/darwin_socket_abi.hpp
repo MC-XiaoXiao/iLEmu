@@ -48,6 +48,7 @@ namespace ilemu::darwin::socket {
     inline constexpr std::uint32_t option_accept_connection = 0x0002;
     inline constexpr std::uint32_t option_reuse_address = 0x0004;
     inline constexpr std::uint32_t option_reuse_port = 0x0200;
+    inline constexpr std::uint32_t option_reuse_share_uid = 0x1025;
     inline constexpr std::uint32_t option_error = 0x1007;
     inline constexpr std::uint32_t option_type = 0x1008;
     inline constexpr std::uint32_t option_pending_bytes = 0x1020; // SO_NREAD

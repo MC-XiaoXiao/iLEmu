@@ -18,6 +18,10 @@ namespace ilemu {
         return 22; // EINVAL
     case bsd::VirtualUdpStatus::AddressFamilyUnsupported:
         return 47; // EAFNOSUPPORT
+    case bsd::VirtualUdpStatus::OptionUnsupported:
+        return 42; // ENOPROTOOPT
+    case bsd::VirtualUdpStatus::AddressInUse:
+        return 48; // EADDRINUSE
     case bsd::VirtualUdpStatus::AddressNotAvailable:
         return 49; // EADDRNOTAVAIL: ephemeral range exhausted
     case bsd::VirtualUdpStatus::AlreadyConnected:
