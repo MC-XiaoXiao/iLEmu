@@ -467,7 +467,7 @@ namespace {
     }
 
     constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
-    constexpr std::uint32_t jit_artifact_backend_abi_version = 3U;
+    constexpr std::uint32_t jit_artifact_backend_abi_version = 4U;
     constexpr std::uint64_t jit_artifact_codegen_options = 1U;
     // Layout identity no longer contains host vnode metadata. Keep old records
     // safely unusable even if a caller happens to reconstruct the same key
