@@ -106,6 +106,8 @@ Information::Result Information::evaluate_locked(AddressSpace& memory,
             info[5] = calls.mach;
             info[6] = calls.unix_calls;
         }
+        if (const auto statistics = time_query ? time_query(pid, false) : std::nullopt)
+            info[7] = statistics->context_switches;
     } else if (flavor == dyld_info_flavor) {
         // The address may legitimately be zero before dyld publishes it.
         // Accept the pre-format-field count as well as the current count.

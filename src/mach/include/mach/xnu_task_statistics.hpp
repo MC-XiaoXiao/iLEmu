@@ -12,6 +12,7 @@ struct XnuTaskStatistics {
     std::uint64_t live_user_ticks { };
     std::uint64_t live_user_microseconds { };
     std::uint32_t ticks_per_second { };
+    std::uint32_t context_switches { };
 };
 using TaskStatisticsQuery =
     std::function<std::optional<XnuTaskStatistics>(std::uint32_t, bool)>;

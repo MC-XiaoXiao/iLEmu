@@ -57,6 +57,7 @@ XnuScheduler::XnuScheduler(std::uint64_t quantum_ticks,
     std::uint64_t scheduler_tick_ticks, std::size_t processor_count,
     std::uint32_t guest_ticks_per_second, std::int32_t minimum_user_priority)
     : processor_run_queues_(processor_count)
+    , processor_contexts_(processor_count)
     , quantum_ticks_ { quantum_ticks }
     , scheduler_tick_ticks_ { scheduler_tick_ticks }
     , guest_ticks_per_second_ { guest_ticks_per_second }
@@ -110,7 +111,7 @@ bool XnuScheduler::register_thread(
     record.info.scheduler_stamp = scheduler_tick_;
     process_threads_[thread.process].insert(thread);
     process_runnable_counts_.try_emplace(thread.process, 0);
-    terminated_user_ticks_.try_emplace(thread.process, 0);
+    task_history_.try_emplace(thread.process);
     if (runnable) {
         transition_state(thread, record, XnuThreadState::Runnable);
         ++active_timeshare_count_;
@@ -136,7 +137,8 @@ bool XnuScheduler::remove_thread(XnuThreadId thread, std::uint64_t pending_ticks
             --active_timeshare_count_;
         }
     }
-    auto& retired = terminated_user_ticks_[thread.process];
+    release_processor_context(iterator->second);
+    auto& retired = task_history_.at(thread.process).terminated_user_ticks;
     retired = saturating_add(retired,
         saturating_add(iterator->second.user_ticks, pending_ticks));
     remove_from_queue(thread, iterator->second);
@@ -150,7 +152,7 @@ std::size_t XnuScheduler::remove_process(std::uint32_t process)
 {
     const auto process_iterator = process_threads_.find(process);
     if (process_iterator == process_threads_.end()) {
-        terminated_user_ticks_.erase(process);
+        task_history_.erase(process);
         return 0;
     }
     const std::vector<XnuThreadId> process_threads {
@@ -159,7 +161,7 @@ std::size_t XnuScheduler::remove_process(std::uint32_t process)
     for (const auto thread : process_threads) {
         static_cast<void>(remove_thread(thread));
     }
-    terminated_user_ticks_.erase(process);
+    task_history_.erase(process);
     return process_threads.size();
 }
 
@@ -172,6 +174,8 @@ bool XnuScheduler::replace_process_threads(
         return false;
     // exec retains its caller's CPU history and retires the other threads.
     const auto user_ticks = current->second.user_ticks;
+    const auto processor = current->second.info.last_processor;
+    const bool installed = processor && processor_contexts_[*processor] == survivor;
     current->second.user_ticks = 0;
     const auto& owned = process_threads_.at(survivor.process);
     const std::vector<XnuThreadId> previous { owned.begin(), owned.end() };
@@ -180,6 +184,11 @@ bool XnuScheduler::replace_process_threads(
             thread != survivor && pending_ticks ? pending_ticks(thread) : 0));
     static_cast<void>(register_thread(survivor, base_priority));
     threads_.at(survivor).user_ticks = user_ticks;
+    // exec replaces the task image, not the current native thread context.
+    if (installed) {
+        threads_.at(survivor).info.last_processor = processor;
+        processor_contexts_[*processor] = survivor;
+    }
     return true;
 }
 
@@ -392,6 +401,8 @@ bool XnuScheduler::block(XnuThreadId thread)
     if (iterator == threads_.end())
         return false;
     auto& record = iterator->second;
+    if (!record.execution_pending)
+        release_processor_context(record);
     const auto was_waiting = record.info.state == XnuThreadState::Waiting;
     remove_from_queue(thread, record);
     record.enqueued_at = { };
@@ -426,6 +437,8 @@ bool XnuScheduler::suspend_thread(XnuThreadId thread, XnuThreadSuspension reason
     record.resume_runnable = record.info.state == XnuThreadState::Runnable ||
                              record.info.state == XnuThreadState::Running;
     if (record.info.state != XnuThreadState::Waiting) {
+        if (!record.execution_pending)
+            release_processor_context(record);
         remove_from_queue(thread, record);
         record.enqueued_at = { };
         transition_state(thread, record, XnuThreadState::Waiting);
@@ -728,6 +741,13 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
     transition_state(thread, record, XnuThreadState::Running);
     record.execution_pending = true;
     track_usage(record);
+    if (processor_contexts_[processor] != thread) {
+        // XNU thread_invoke charges the incoming thread, including returns
+        // from idle. Aggregate at task lifetime; avoid scanning retired threads.
+        ++task_history_.at(thread.process).context_switches;
+        release_processor_context(record);
+        processor_contexts_[processor] = thread;
+    }
     record.info.last_processor = processor;
     if (record.info.timeshare &&
         (record.info.remaining_timeslices == 0 ||
@@ -861,6 +881,8 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
         } else if (record.wake_pending) {
             make_runnable(thread);
         }
+        if (record.info.state == XnuThreadState::Waiting)
+            release_processor_context(record);
         record.wake_pending = false;
         return true;
     }
@@ -877,6 +899,7 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
             return true;
         }
         transition_state(thread, record, XnuThreadState::Waiting);
+        release_processor_context(record);
         ++waiting_count_;
         if (record.info.timeshare) {
             --active_timeshare_count_;
@@ -937,6 +960,13 @@ void XnuScheduler::advance_time(std::uint64_t elapsed_ticks)
     advance_scheduler_time(elapsed_ticks);
 }
 
+void XnuScheduler::release_processor_context(const ThreadRecord& record)
+{
+    if (const auto processor = record.info.last_processor;
+        processor && processor_contexts_[*processor] == record.id)
+        processor_contexts_[*processor].reset();
+}
+
 void XnuScheduler::synchronize_time(std::uint64_t elapsed_ticks)
 {
     if (elapsed_ticks <= elapsed_ticks_)
@@ -985,10 +1015,11 @@ std::optional<XnuTaskStatistics> XnuScheduler::task_statistics(
     std::uint32_t process, bool include_live,
     const PendingThreadTicksQuery& pending_ticks) const
 {
-    const auto retired = terminated_user_ticks_.find(process);
-    if (retired == terminated_user_ticks_.end())
+    const auto retired = task_history_.find(process);
+    if (retired == task_history_.end())
         return std::nullopt;
-    XnuTaskStatistics result { retired->second, 0, 0, guest_ticks_per_second_ };
+    XnuTaskStatistics result { retired->second.terminated_user_ticks, 0, 0,
+        guest_ticks_per_second_, retired->second.context_switches };
     if (!include_live)
         return result;
     const auto owned = process_threads_.find(process);

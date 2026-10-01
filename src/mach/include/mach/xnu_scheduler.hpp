@@ -397,6 +397,7 @@ private:
     [[nodiscard]] static bool is_runnable_state(XnuThreadState state);
     void transition_state(XnuThreadId thread, ThreadRecord& record,
         XnuThreadState state);
+    void release_processor_context(const ThreadRecord& record);
     void enqueue(ThreadRecord& record, QueuePosition position);
     void remove_from_queue(XnuThreadId thread, ThreadRecord& record);
     void index_depression(XnuThreadId thread, const ThreadRecord& record);
@@ -436,7 +437,15 @@ private:
     std::unordered_map<std::uint32_t,
         std::unordered_set<XnuThreadId, XnuThreadIdHash>>
         process_threads_;
-    std::unordered_map<std::uint32_t, std::uint64_t> terminated_user_ticks_;
+    struct TaskHistory {
+        std::uint64_t terminated_user_ticks { };
+        // Task lifetime aggregate: ordinary thread exit/exec cannot discard it.
+        std::uint32_t context_switches { };
+    };
+    std::unordered_map<std::uint32_t, TaskHistory> task_history_;
+    // Host slices do not imply a native context switch. Track the last guest
+    // context installed on each emulated processor until a real wait/hold.
+    std::vector<std::optional<XnuThreadId>> processor_contexts_;
     // Runnable/Running membership is a scheduler state-machine invariant.
     // Keep its per-task projection beside the run queues so host cooperation
     // and JIT policy observations do not rescan every thread on each turn.
