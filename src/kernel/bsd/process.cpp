@@ -13,6 +13,7 @@
 #include "kernel/kernel.hpp"
 #include "process/resource_monitor.hpp"
 #include "process/groups.hpp"
+#include "process/job_control.hpp"
 #include "process/uuid_policy.hpp"
 #include "security/extensions.hpp"
 
@@ -153,6 +154,19 @@ void CompatibilityKernel::release_process_descriptors()
     kqueues_.clear();
 }
 
+void CompatibilityKernel::notify_orphaned_process_groups(
+    std::span<const std::uint32_t> targets)
+{
+    for (const auto pid : targets) {
+        for (const auto signal : { 1U, 19U }) { // SIGHUP, SIGCONT
+            if (signal_delivery_handler_)
+                static_cast<void>(signal_delivery_handler_(pid, signal));
+            else if (pid == process_.pid)
+                static_cast<void>(deliver_signal(signal, 0U, 0U));
+        }
+    }
+}
+
 void CompatibilityKernel::exit_process(
     std::uint32_t status, std::uint32_t signal)
 {
@@ -162,12 +176,14 @@ void CompatibilityKernel::exit_process(
     hid_event_system_hle_.reset(process_.pid);
     process_.exit_status = status;
     process_.termination_signal = signal;
+    std::vector<std::uint32_t> orphaned;
     // Publish the dead identity before tearing down its ports. Mach/graphics
     // observers share this record and must stop routing work to the PID while
     // ipc_space termination is in progress. The shared record remains as a
     // lightweight zombie until its parent consumes it with wait_child().
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
+        const kernel_bsd::JobControlTransition job_control { *shared_state_ };
         if (auto record = shared_state_->processes.find(process_.pid);
             record != shared_state_->processes.end()) {
             record->second.exited = true;
@@ -184,6 +200,7 @@ void CompatibilityKernel::exit_process(
             signal != 0U ? signal & 0x7fU : (status & 0xffU) << 8U;
         shared_state_->mark_foreground_transition_cancelled_for_process_locked(
             process_.pid);
+        orphaned = job_control.orphaned(*shared_state_);
     }
     shared_state_->note_io_event_transition();
     kernel_bsd::interval_timer::retire_process(*shared_state_, process_.pid);
@@ -200,6 +217,7 @@ void CompatibilityKernel::exit_process(
     display_state_->clear_if_owner(process_.pid);
     release_process_mach_rights();
     process_.exited = true;
+    notify_orphaned_process_groups(orphaned);
     if (child_status_handler_)
         child_status_handler_(process_.parent_pid,
             { ChildStatus::Kind::Exit, process_.pid, process_.uid,
@@ -434,12 +452,13 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         bsd_success(cpu, process_.gid);
         return;
     case darwin::syscall::get_process_group:
-        bsd_success(cpu, process_.process_group);
+        bsd_success(cpu, process_.membership->group());
         return;
-    case darwin::syscall::get_process_group_id: {
+    case darwin::syscall::get_process_group_id:
+    case darwin::syscall::get_session_id: {
         const std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto result = kernel_bsd::ProcessGroups::query(*shared_state_,
-            process_.pid, registers[0]);
+            process_.pid, registers[0], number == darwin::syscall::get_session_id);
         if (result.error) bsd_error(cpu, result.error);
         else bsd_success(cpu, result.value);
         return;
@@ -480,14 +499,14 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         case darwin::resource::priority_user: {
             const auto selector =
                 who == 0 ? (which == darwin::resource::priority_process_group
-                                  ? process_.process_group
+                                  ? process_.membership->group()
                                   : process_.uid)
                          : who;
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             for (const auto& [pid, record] : shared_state_->processes) {
                 const auto matches =
                     which == darwin::resource::priority_process_group
-                        ? record.process_group == selector
+                        ? record.membership->group() == selector
                         : record.uid == selector;
                 if (record.exited || !matches)
                     continue;
@@ -809,10 +828,20 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         bsd_success(cpu, 0);
         return;
     }
+    case darwin::syscall::set_process_group:
     case 147: { // setsid
-        const std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto result = kernel_bsd::ProcessGroups::create_session(
-            *shared_state_, process_);
+        kernel_bsd::ProcessGroups::Result result;
+        std::vector<std::uint32_t> orphaned;
+        {
+            const std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const kernel_bsd::JobControlTransition job_control { *shared_state_ };
+            result = number == 147U
+                ? kernel_bsd::ProcessGroups::create_session(*shared_state_, process_)
+                : kernel_bsd::ProcessGroups::set_group(*shared_state_, process_.pid,
+                    registers[0], static_cast<std::int32_t>(registers[1]));
+            if (!result.error) orphaned = job_control.orphaned(*shared_state_);
+        }
+        notify_orphaned_process_groups(orphaned);
         if (result.error) bsd_error(cpu, result.error);
         else bsd_success(cpu, result.value);
         return;

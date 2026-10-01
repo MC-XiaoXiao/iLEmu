@@ -162,7 +162,7 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
             const auto& record = target->second;
             word(0, static_cast<std::uint32_t>(target_pid));
             word(4, record.parent_pid);
-            word(8, record.process_group);
+            word(8, record.membership->group());
             // BSD p_stat records job-control stops, independently of the
             // task suspension used by the host scheduler.
             word(12, record.exited ? 5U : record.signal_stopped ? 4U : 2U);
@@ -244,7 +244,7 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
                 const auto count = std::min<std::size_t>(record.command.size(), 15U);
                 for (std::size_t index = 0; index < count; ++index)
                     output[48U + index] = static_cast<std::byte>(record.command[index]);
-                integer(100, record.process_group);
+                integer(100, record.membership->group());
                 integer(108, UINT32_MAX); // NODEV: no controlling terminal.
                 integer(112, UINT32_MAX);
                 integer(116, static_cast<std::uint32_t>(record.nice_value));

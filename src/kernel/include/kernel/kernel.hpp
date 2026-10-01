@@ -200,6 +200,7 @@ public:
         std::size_t maximum_events);
     void clear_thread_io_policy(std::size_t processor_id);
     void exit_process(std::uint32_t status, std::uint32_t signal = 0);
+    void notify_orphaned_process_groups(std::span<const std::uint32_t> targets);
     [[nodiscard]] WaitChildResult wait_child(
         std::int32_t target_pid, bool reap,
         std::optional<std::size_t> waiter = std::nullopt);

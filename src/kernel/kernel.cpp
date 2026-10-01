@@ -453,7 +453,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     }
     shared_state_->processes[process_.pid] =
         KernelSharedState::ProcessRecord { process_.parent_pid,
-            process_.process_group, process_.uid, process_.effective_uid,
+            process_.membership, process_.uid, process_.effective_uid,
             process_.gid, process_.effective_gid, process_.groups, process_.nice_value,
             process_.exit_status,
             process_.termination_signal, process_.exited, false, false,
@@ -1225,7 +1225,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     const auto new_process_incarnation =
         record.incarnation == 0U || record.exited;
     record.parent_pid = process_.parent_pid;
-    record.process_group = process_.process_group;
+    record.membership = process_.membership;
     record.uid = process_.uid;
     record.effective_uid = process_.effective_uid;
     record.gid = process_.gid;
@@ -1248,6 +1248,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     }
     record.exited = false;
     record.in_vfork = false;
+    record.has_executed = true;
     record.executable_uuid = executable && executable->uuid()
         ? *executable->uuid() : std::array<std::byte, 16> { };
     record.audit_identity_version = shared_state_->next_audit_identity_version++;
@@ -2948,6 +2949,7 @@ void CompatibilityKernel::inherit_process_state(
     if (inherit_fork_state)
         process_image_ = parent.process_image_;
     process_ = parent.process_;
+    process_.membership = std::make_shared<ProcessMembership>(*parent.process_.membership);
     process_.parent_pid = parent.process_.pid;
     process_.pid = child_pid;
     process_.exited = false;
@@ -3030,7 +3032,7 @@ void CompatibilityKernel::inherit_process_state(
                             ? parent_record->second
                             : KernelSharedState::ProcessRecord { };
     child_record.parent_pid = process_.parent_pid;
-    child_record.process_group = process_.process_group;
+    child_record.membership = process_.membership;
     child_record.uid = process_.uid;
     child_record.effective_uid = process_.effective_uid;
     child_record.gid = process_.gid;
@@ -3040,6 +3042,7 @@ void CompatibilityKernel::inherit_process_state(
     child_record.nice_value = process_.nice_value;
     child_record.syscall_counters = task_syscalls_;
     child_record.in_vfork = false;
+    child_record.has_executed = false;
     child_record.importance_donor = false;
     child_record.memory_status = darwin::memorystatus::initial_state(
         shared_state_->darwin_abi.memory_status_priority);

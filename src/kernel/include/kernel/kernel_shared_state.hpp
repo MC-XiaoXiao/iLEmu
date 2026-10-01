@@ -93,11 +93,32 @@ class SurfaceTransportLease;
 class TaskSyscallCounters;
 namespace bsd::sandbox { class Extensions; }
 
+// Shared with the process table so remote setpgid is visible immediately.
+// Fork copies this membership; exec retains it.
+class ProcessMembership {
+public:
+    ProcessMembership() = default;
+    ProcessMembership(const ProcessMembership& source)
+        : session { source.session }, group_ { source.group() } { }
+    [[nodiscard]] std::uint32_t group() const
+    {
+        return group_.load(std::memory_order_relaxed);
+    }
+    void join(std::uint32_t group)
+    {
+        group_.store(group, std::memory_order_relaxed);
+    }
+    // Session changes only for the calling task, under mach_mutex. Remote
+    // group changes share that lock, but getpgrp needs no new lock or scan.
+    std::uint32_t session { };
+private:
+    std::atomic<std::uint32_t> group_ { };
+};
+
 struct ProcessContext {
     std::uint32_t pid { 1 };
     std::uint32_t parent_pid { };
-    std::uint32_t process_group { };
-    std::uint32_t session_id { };
+    std::shared_ptr<ProcessMembership> membership { std::make_shared<ProcessMembership>() };
     std::uint32_t audit_session_id { 1U };
     std::uint32_t uid { };
     std::uint32_t effective_uid { };
@@ -654,7 +675,7 @@ struct KernelSharedState {
     std::optional<PlatformTrustCache> platform_trust_cache;
     struct ProcessRecord {
         std::uint32_t parent_pid { };
-        std::uint32_t process_group { };
+        std::shared_ptr<ProcessMembership> membership { std::make_shared<ProcessMembership>() };
         std::uint32_t uid { };
         std::uint32_t effective_uid { };
         std::uint32_t gid { };
@@ -712,6 +733,7 @@ struct KernelSharedState {
         std::shared_ptr<TaskSyscallCounters> syscall_counters;
         // P_INVFORK/P_LINVFORK survives a failed exec attempt.
         bool in_vfork { };
+        bool has_executed { };
     };
     struct ProcessKeventState {
         std::uint64_t exec_generation { };

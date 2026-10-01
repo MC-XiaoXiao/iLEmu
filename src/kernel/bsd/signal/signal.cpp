@@ -367,7 +367,7 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
         targets.push_back(static_cast<std::uint32_t>(requested_pid));
     } else {
         const auto requested_group =
-            requested_pid == 0 ? process_.process_group
+            requested_pid == 0 ? process_.membership->group()
                                : static_cast<std::uint32_t>(
                                      -static_cast<std::int64_t>(requested_pid));
         for (const auto& [pid, record] : shared_state_->processes) {
@@ -378,7 +378,7 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
                 if (pid <= 1 || pid == process_.pid) {
                     continue;
                 }
-            } else if (record.process_group != requested_group) {
+            } else if (record.membership->group() != requested_group) {
                 continue;
             }
             targets.push_back(pid);

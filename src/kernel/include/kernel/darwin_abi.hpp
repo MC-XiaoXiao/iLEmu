@@ -241,7 +241,9 @@ namespace syscall {
     inline constexpr std::uint32_t kill = 37;
     inline constexpr std::uint32_t alternate_signal_stack = 53;
     inline constexpr std::uint32_t get_process_group = 81;
+    inline constexpr std::uint32_t set_process_group = 82;
     inline constexpr std::uint32_t get_process_group_id = 151;
+    inline constexpr std::uint32_t get_session_id = 310;
     // gettid(2) reports a thread's temporary credential override, rather than
     // returning a numeric thread identifier.
     inline constexpr std::uint32_t get_thread_identity = 286;

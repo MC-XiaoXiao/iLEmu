@@ -1852,7 +1852,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 for (std::uint32_t i = 0; i < record.groups.count(); ++i)
                     put32(312 + i * 4U, record.groups.at(i, record.effective_gid));
                 put32(416, record.parent_pid);
-                put32(420, record.process_group);
+                put32(420, record.membership->group());
                 return bytes;
             };
         const auto process_table_request =
@@ -1912,7 +1912,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     matches = pid == *selector_argument;
                     break;
                 case darwin::sysctl::kernel_process_pgrp:
-                    matches = record.process_group == *selector_argument;
+                    matches = record.membership->group() == *selector_argument;
                     break;
                 case darwin::sysctl::kernel_process_uid:
                     matches = record.effective_uid == *selector_argument;
