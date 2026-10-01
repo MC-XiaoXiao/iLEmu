@@ -147,7 +147,8 @@ VmMap::ProtectionResult VmMap::protect(std::uint32_t start, std::uint64_t end,
 bool VmMap::inherit(
     std::uint32_t start, std::uint64_t end, VmInheritance inheritance)
 {
-    if (!accessible(start, end, MemoryPermission::None))
+    // XNU vm_map_inherit updates entries and skips unmapped holes.
+    if (!valid_range(start, end))
         return false;
     split_at(start);
     split_at(end);

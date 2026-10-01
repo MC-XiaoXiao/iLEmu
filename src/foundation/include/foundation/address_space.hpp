@@ -208,7 +208,7 @@ public:
         bool set_maximum = false, bool copy = false);
     bool protect(std::uint32_t address, std::uint32_t size,
         MemoryPermission permissions);
-    // Applies Mach vm_inherit metadata to a fully mapped, page-rounded range.
+    // Applies Mach vm_inherit metadata in a page-rounded range, skipping holes.
     // clone() consumes it to select shared, copy-on-write, or absent child
     // mappings.
     bool inherit(std::uint32_t address, std::uint32_t size,

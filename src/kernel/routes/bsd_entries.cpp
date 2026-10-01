@@ -282,6 +282,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Handler::BsdDescriptorMemory);
     add(darwin::syscall::memory_unlock, "memory_unlock",
         Handler::BsdDescriptorMemory);
+    add(darwin::syscall::memory_inherit, "minherit", Handler::BsdDescriptorMemory);
     add(197, "mmap", Handler::BsdDescriptorMemory);
     add(266, "shm_open", Handler::BsdDescriptorMemory);
     add(267, "shm_unlink", Handler::BsdDescriptorMemory);

@@ -1309,6 +1309,27 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         bsd_success(cpu, 0);
         return;
     }
+    case darwin::syscall::memory_inherit: { // minherit
+        const auto address = registers[0];
+        const auto size = registers[1];
+        const auto inheritance = registers[2];
+        // kern_mman.c delegates to mach_vm_inherit: validate the unsigned
+        // policy even for zero length, then clip the wide endpoint to the
+        // map bounds (VM_MAP_RANGE_CHECK) without wrapping at 32 bits.
+        if (inheritance > static_cast<std::uint32_t>(VmInheritance::None)) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        const auto clipped_size = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(size, (std::uint64_t { 1 } << 32U) - address));
+        if (!memory_.inherit(address, clipped_size,
+                static_cast<VmInheritance>(inheritance))) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        bsd_success(cpu, 0);
+        return;
+    }
     case darwin::syscall::memory_advise: { // madvise
         const auto address = registers[0];
         const auto size = registers[1];
