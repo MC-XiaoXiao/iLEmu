@@ -17,6 +17,7 @@
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
+#include "kernel/mach_receive_wait_queue.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/kevent_timer.hpp"
@@ -1385,6 +1386,11 @@ struct KernelSharedState {
     TaskExceptionActions host_exception_actions { };
     using MachSendWaiters = MachSendWaitQueue<MachMessage>;
     MachSendWaiters mach_send_waiters;
+    using MachReceiveWaiters = MachReceiveWaitQueue<MachMessage, PendingMachReceive>;
+    MachReceiveWaiters mach_receive_waiters;
+    bool handoff_mach_message_locked(std::uint32_t destination, MachMessage& message);
+    void cancel_mach_receives_locked(std::uint32_t task,
+        std::optional<std::uint32_t> processor = std::nullopt);
     std::map<std::uint32_t, std::deque<MachMessage>> mach_queues;
     // Queue producers may run on host input/device threads while guest kernels
     // poll from the scheduler. Keep the cheap readiness snapshot lock-free;
@@ -1413,10 +1419,12 @@ struct KernelSharedState {
     void enqueue_mach_message_locked(
         std::uint32_t destination, MachMessage message)
     {
+        const bool handed_off = handoff_mach_message_locked(destination, message);
         auto& queue = mach_queues[destination];
         const auto was_empty = queue.empty();
-        queue.push_back(std::move(message));
-        if (was_empty) {
+        if (!handed_off)
+            queue.push_back(std::move(message));
+        if (!handed_off && was_empty) {
             if (const auto links =
                     mach_port_set_links_by_member.find(destination);
                 links != mach_port_set_links_by_member.end()) {

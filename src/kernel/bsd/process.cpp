@@ -68,6 +68,7 @@ void CompatibilityKernel::release_process_mach_rights()
     process_.waiting_for_events = false;
     std::lock_guard mach_lock { shared_state_->mach_mutex };
     shared_state_->cancel_mach_sends_locked(process_.pid);
+    shared_state_->cancel_mach_receives_locked(process_.pid);
     auto entries = shared_state_->mach_namespaces.entries(process_.pid);
 
     // An application can relinquish its receive right before calling exit, so

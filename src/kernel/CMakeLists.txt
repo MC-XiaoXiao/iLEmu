@@ -372,7 +372,8 @@ target_link_libraries(ilemu_kernel_iokit_power PRIVATE
 
 add_library(ilemu_kernel_mach_transport STATIC
     mach/transport/descriptor.cpp
-    mach/transport/kernel_mach_ipc.cpp)
+    mach/transport/kernel_mach_ipc.cpp
+    mach/transport/receive_wait.cpp)
 add_library(iLEmu::kernel_mach_transport ALIAS
     ilemu_kernel_mach_transport)
 ilemu_configure_module(ilemu_kernel_mach_transport)

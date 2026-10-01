@@ -50,6 +50,9 @@ bool CompatibilityKernel::interrupt_thread_wait(Cpu& cpu, bool restart)
     if (!completed && pending_mach_receives_.contains(processor)) {
         completed = deliver_pending_mach_if_ready_locked(cpu, true);
         if (!completed) {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            shared_state_->cancel_mach_receives_locked(process_.pid,
+                static_cast<std::uint32_t>(processor));
             pending_mach_receives_.erase(processor);
             cpu.registers()[0] = darwin::mach_message::receive_interrupted;
             completed = true;

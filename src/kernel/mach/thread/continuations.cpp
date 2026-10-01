@@ -21,6 +21,20 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         shared_state_->cancel_mach_sends_locked(process_.pid, slot);
+        if (const auto pending = pending_mach_receives_.find(processor);
+            pending != pending_mach_receives_.end()) {
+            const auto* ticket = shared_state_->mach_receive_waiters.find(
+                pending->second.wait_queue_sequence);
+            if (ticket && ticket->state != KernelSharedState::MachReceiveWaiters::State::Waiting) {
+                // Native termination runs its special handler after the
+                // in-progress receive continuation. A completed handoff
+                // therefore installs its rights even when the thread never
+                // returns to user instructions. Only unselected waits abort.
+                static_cast<void>(receive_mach_message_locked(
+                    pending->second, true, false));
+            }
+        }
+        shared_state_->cancel_mach_receives_locked(process_.pid, slot);
         const auto waiter = std::pair { process_.pid, slot };
         if (const auto pending = pending_semaphore_waits_.find(processor);
             pending != pending_semaphore_waits_.end()) {

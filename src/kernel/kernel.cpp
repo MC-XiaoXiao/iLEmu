@@ -975,6 +975,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         shared_state_->cancel_mach_sends_locked(process_.pid);
+        shared_state_->cancel_mach_receives_locked(process_.pid);
     }
     exception_delivery_.clear(*shared_state_);
     synchronous_exceptions_.clear();
@@ -1530,12 +1531,32 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
         delivered = complete_pending_mach_send(cpu);
         note_timer_deadline_transition();
     } else if (pending_mach_receives_.contains(processor) &&
+        [&] {
+            const auto& receive = pending_mach_receives_.at(processor);
+            if (!mach_receive_poll_required_locked(receive, shared_state_->clock.now()))
+                return false;
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto* ticket = shared_state_->mach_receive_waiters.find(
+                receive.wait_queue_sequence);
+            return ticket && ticket->state != KernelSharedState::MachReceiveWaiters::State::Waiting &&
+                   deliver_pending_mach_locked(cpu, true);
+        }()) {
+        // Post has already selected this receiver. Complete that invocation
+        // before a firmware callback can retire or retry its receive boundary.
+        note_timer_deadline_transition();
+        delivered = true;
+    } else if (pending_mach_receives_.contains(processor) &&
         hid_event_system_hle_.prepare_pending_event(
             cpu, process_.pid, 0x80U) &&
         userland_hle_.dispatch(cpu, process_.pid, 0x80U)) {
         // The firmware callback returns through a continuation that retries
         // this receive boundary. Retire the old blocked receive before making
         // the callback runnable so it cannot consume an unrelated message.
+        {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            shared_state_->cancel_mach_receives_locked(process_.pid,
+                static_cast<std::uint32_t>(processor));
+        }
         pending_mach_receives_.erase(processor);
         process_.waiting_for_events = !pending_mach_receives_.empty();
         cpu.clear_halt();

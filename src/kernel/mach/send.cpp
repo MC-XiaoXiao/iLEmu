@@ -114,6 +114,9 @@ void CompatibilityKernel::begin_mach_receive(
         process_.waiting_for_events = true;
         if (deliver_pending_mach_locked(cpu, false))
             return;
+        if (!timeout_enabled || timeout_milliseconds != 0)
+            shared_state_->mach_receive_waiters.wait(process_.pid,
+                pending_mach_receives_.at(cpu.processor_id()));
     }
     if (timeout_enabled && timeout_milliseconds == 0) {
         pending_mach_receives_.erase(cpu.processor_id());

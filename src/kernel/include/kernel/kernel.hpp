@@ -840,7 +840,7 @@ private:
     bool deliver_pending_mach_if_ready_locked(
         Cpu& cpu, bool waking_blocked_receiver);
     [[nodiscard]] std::optional<std::size_t>
-    preferred_pending_mach_receiver_locked(std::uint32_t queued_port);
+    preferred_pending_mach_receiver_locked(std::uint32_t queued_port, bool include_completed = true);
     bool deliver_pending_mach_locked(Cpu& cpu, bool waking_blocked_receiver);
     struct MachReceiveResult {
         std::uint32_t status { };

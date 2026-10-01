@@ -92,6 +92,13 @@ bool apply_receive_pointer_fixups(const KernelSharedState::MachMessage& message,
     return true;
 }
 
+std::size_t receive_buffer_size(std::size_t message_size,
+    std::uint32_t receive_options, DarwinMachVmAddressWidth context_width)
+{
+    return ((message_size + 3U) & ~std::size_t { 3U }) +
+           requested_trailer_size(receive_options, context_width);
+}
+
 std::optional<ReceivedMessage> prepare_received_message(
     const KernelSharedState::MachMessage& message,
     std::uint32_t destination_name, std::uint32_t receive_options,

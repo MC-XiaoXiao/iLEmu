@@ -297,7 +297,7 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(
 
 std::optional<std::size_t>
 CompatibilityKernel::preferred_pending_mach_receiver_locked(
-    std::uint32_t queued_port)
+    std::uint32_t queued_port, bool include_completed)
 {
     struct Candidate {
         std::uint64_t port_queue_sequence { };
@@ -320,8 +320,13 @@ CompatibilityKernel::preferred_pending_mach_receiver_locked(
     // the port walks those elements recursively and wakes the first receiver.
     // Reconstruct that choice here so host CPU polling order cannot redirect a
     // shared-port message to a later port set.
+    const auto eligible = [&](const PendingMachReceive& pending) {
+        const auto* ticket = shared_state_->mach_receive_waiters.find(pending.wait_queue_sequence);
+        return include_completed || !ticket ||
+               ticket->state == KernelSharedState::MachReceiveWaiters::State::Waiting;
+    };
     for (auto& [processor, pending] : pending_mach_receives_) {
-        if (!pending.receive_is_port_set &&
+        if (eligible(pending) && !pending.receive_is_port_set &&
             pending.receive_object == queued_port &&
             pending_mach_receive_is_usable_locked(
                 *shared_state_, process_.pid, pending)) {
@@ -336,7 +341,7 @@ CompatibilityKernel::preferred_pending_mach_receiver_locked(
         for (const auto& link : links->second) {
             std::optional<Candidate> set_receiver;
             for (const auto& [processor, pending] : pending_mach_receives_) {
-                if (!pending.receive_is_port_set || !pending.receive_object ||
+                if (!eligible(pending) || !pending.receive_is_port_set || !pending.receive_object ||
                     *pending.receive_object != link.set_object) {
                     continue;
                 }
@@ -372,6 +377,19 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     if (!outcome)
         return false;
     cpu.registers()[0] = outcome->status;
+    const auto sequence = pending->second.wait_queue_sequence;
+    if (auto* ticket = shared_state_->mach_receive_waiters.find(sequence);
+        ticket && ticket->message) {
+        auto discarded = std::move(*ticket->message);
+        shared_state_->mach_receive_waiters.retire(sequence);
+        if (discarded.destination_send_once_object) {
+            shared_state_->mach_port_objects.release_send_once(*discarded.destination_send_once_object);
+            discarded.destination_send_once_object.reset();
+        }
+        discard_mach_message_rights_locked(*shared_state_, discarded);
+    } else {
+        shared_state_->mach_receive_waiters.retire(sequence);
+    }
     pending_mach_receives_.erase(pending);
     process_.waiting_for_events =
         outcome->status == darwin::mach_message::receive_port_changed &&
@@ -385,12 +403,31 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
     bool queued_receiver, bool waking_blocked_receiver)
 {
     MachReceiveResult outcome;
-    if (!pending_mach_receive_is_usable_locked(
+    using ReceiveState = KernelSharedState::MachReceiveWaiters::State;
+    auto* delivery = shared_state_->mach_receive_waiters.find(receive.wait_queue_sequence);
+    if (delivery && delivery->state == ReceiveState::Waiting)
+        delivery = nullptr;
+    if (delivery && delivery->state != ReceiveState::MessageReady) {
+        if (delivery->state == ReceiveState::TooLarge) {
+            outcome.message_size = delivery->message_size;
+            outcome.status = darwin::mach_message::receive_too_large;
+            if (receive.receive_size >= darwin::mig_wire::header_remote_port_offset &&
+                !memory_.write32(receive.message_address + darwin::mig_wire::header_size_offset,
+                    delivery->message_size))
+                outcome.status = darwin::mach_message::receive_invalid_data;
+        } else {
+            outcome.status = delivery->state == ReceiveState::TimedOut
+                ? darwin::mach_message::receive_timed_out
+                : darwin::mach_message::receive_port_changed;
+        }
+        return outcome;
+    }
+    if (!delivery && !pending_mach_receive_is_usable_locked(
             *shared_state_, process_.pid, receive)) {
         outcome.status = darwin::mach_message::receive_port_changed;
         return outcome;
     }
-    auto queued_port = *receive.receive_object;
+    auto queued_port = delivery ? delivery->destination : *receive.receive_object;
     auto queue = shared_state_->mach_queues.end();
     bool has_visible_message = false;
     std::optional<std::uint32_t> selected_port_set;
@@ -402,7 +439,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         }
         has_visible_message = true;
         const auto receiver =
-            preferred_pending_mach_receiver_locked(candidate_port);
+            preferred_pending_mach_receiver_locked(candidate_port, false);
         if (queued_receiver ? (!receiver || *receiver != receive.processor)
                             : receiver.has_value())
             return false;
@@ -411,7 +448,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         return true;
     };
 
-    if (!select_queue(queued_port)) {
+    if (!delivery && !select_queue(queued_port)) {
         const auto port_set_object = queued_port;
         if (const auto port_set =
                 shared_state_->mach_port_set_preposts.find(port_set_object);
@@ -424,7 +461,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             }
         }
     }
-    if (queue == shared_state_->mach_queues.end() || queue->second.empty()) {
+    if (!delivery && (queue == shared_state_->mach_queues.end() || queue->second.empty())) {
         if (receive.deadline &&
             shared_state_->clock.now() >= *receive.deadline) {
             outcome.status = darwin::mach_message::receive_timed_out;
@@ -442,7 +479,17 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         return std::nullopt;
     }
 
-    auto& pending_message = queue->second.front();
+    if (!delivery)
+        shared_state_->mach_receive_waiters.retire(receive.wait_queue_sequence);
+    auto& pending_message = delivery ? *delivery->message : queue->second.front();
+    const auto remove_selected = [&] {
+        if (delivery)
+            delivery->message.reset();
+        else {
+            queue->second.pop_front();
+            shared_state_->note_mach_message_dequeued_locked(queued_port);
+        }
+    };
     if (selected_port_set) {
         // XNU's prepost linkage is a FIFO. Keep the selected member at the
         // tail while the message is being copied out so the next receive on
@@ -460,7 +507,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             }
         }
     }
-    const auto sequence_number =
+    const auto sequence_number = delivery ? delivery->sequence_number :
         shared_state_->mach_port_objects.sequence_number(queued_port)
             .value_or(0);
     const auto context = shared_state_->mach_port_contexts.find(queued_port);
@@ -469,13 +516,11 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         context != shared_state_->mach_port_contexts.end() ? context->second : 0U,
         shared_state_->darwin_abi.mach_port_context);
     if (!received) {
-        static_cast<void>(
-            shared_state_->mach_port_objects.increment_sequence_number(
-                queued_port));
+        if (!delivery)
+            static_cast<void>(shared_state_->mach_port_objects.increment_sequence_number(queued_port));
 
-        auto discarded = std::move(queue->second.front());
-        queue->second.pop_front();
-        shared_state_->note_mach_message_dequeued_locked(queued_port);
+        auto discarded = std::move(pending_message);
+        remove_selected();
         if (discarded.destination_send_once_object) {
             shared_state_->mach_port_objects.release_send_once(
                 *discarded.destination_send_once_object);
@@ -510,12 +555,10 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             // Without MACH_RCV_LARGE XNU consumes and destroys the oversized
             // message, returning only the receive error. Leaving it queued
             // would make a caller retry forever with the same capacity.
-            static_cast<void>(
-                shared_state_->mach_port_objects.increment_sequence_number(
-                    queued_port));
-            auto discarded = std::move(queue->second.front());
-            queue->second.pop_front();
-            shared_state_->note_mach_message_dequeued_locked(queued_port);
+            if (!delivery)
+                static_cast<void>(shared_state_->mach_port_objects.increment_sequence_number(queued_port));
+            auto discarded = std::move(pending_message);
+            remove_selected();
             if (discarded.destination_send_once_object) {
                 shared_state_->mach_port_objects.release_send_once(
                     *discarded.destination_send_once_object);
@@ -530,17 +573,15 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
     // XNU assigns the receive sequence when it removes a message, even if
     // subsequent right or user-buffer copyout fails. LARGE probing above
     // does not consume the message and therefore keeps the sequence.
-    static_cast<void>(
-        shared_state_->mach_port_objects.increment_sequence_number(
-            queued_port));
+    if (!delivery)
+        static_cast<void>(shared_state_->mach_port_objects.increment_sequence_number(queued_port));
 
     const mach_transport::PortCopyout copyout_received_right {
         *shared_state_, process_.pid };
 
     const auto discard_queued_message = [&] {
-        auto discarded = std::move(queue->second.front());
-        queue->second.pop_front();
-        shared_state_->note_mach_message_dequeued_locked(queued_port);
+        auto discarded = std::move(pending_message);
+        remove_selected();
         if (discarded.destination_send_once_object) {
             shared_state_->mach_port_objects.release_send_once(
                 *discarded.destination_send_once_object);
@@ -554,7 +595,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         return outcome;
     };
 
-    if (!shared_state_->mach_port_objects.contains(queued_port)) {
+    if (!delivery && !shared_state_->mach_port_objects.contains(queued_port)) {
         // A stale queue entry must not be copied out through a dead
         // destination.
         return fail_receive(0x10004008U); // MACH_RCV_INVALID_DATA
@@ -596,9 +637,17 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         }
     }
 
-    const auto destination_name =
-        shared_state_->mach_namespaces.copyout(process_.pid, queued_port,
-            xnu::ipc::type_mask(xnu::ipc::Right::Receive));
+    // A committed receive survives destruction or transfer of its port.
+    // Destination copyout reports DEAD or NULL; it must never recreate a
+    // receive capability in a task that no longer owns the port.
+    const auto destination_name = delivery &&
+            !shared_state_->mach_port_objects.contains(queued_port)
+        ? std::optional { xnu::ipc::dead_name }
+        : delivery && !shared_state_->mach_namespaces.owns_right(
+              process_.pid, queued_port, xnu::ipc::Right::Receive)
+        ? std::optional { xnu::ipc::null_name }
+        : shared_state_->mach_namespaces.copyout(process_.pid, queued_port,
+              xnu::ipc::type_mask(xnu::ipc::Right::Receive));
     if (!destination_name) {
         outcome.status = 0x10004008U;
         return outcome;
@@ -625,6 +674,10 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             if (*reply_right == xnu::ipc::Right::Send) {
                 release_inflight_send_right_locked(
                     *shared_state_, *reply_object);
+            }
+            if (delivery) {
+                pending_message.reply_object.reset();
+                pending_message.reply_right.reset();
             }
         }
     }
@@ -760,6 +813,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
                                 xnu::ipc::Right::Receive)));
                 }
             }
+            if (delivery && captured != pending_message.port_transfers.end())
+                captured->right = xnu::ipc::Right::DeadName;
         }
     }
 
@@ -780,7 +835,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             write_little_word(names, element * darwin::mig_wire::word_size,
                 xnu::ipc::dead_name);
         }
-        for (const auto& transfer : pending_message.port_transfers) {
+        for (auto& transfer : pending_message.port_transfers) {
             if (transfer.descriptor_offset != array.descriptor_offset ||
                 !transfer.array_index) {
                 continue;
@@ -809,6 +864,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
                     shared_state_->mach_port_objects.set_receive_owner(
                         transfer.object, process_.pid));
             }
+            if (delivery)
+                transfer.right = xnu::ipc::Right::DeadName;
         }
         const auto descriptor_word =
             read_little_word(received->bytes, array.descriptor_offset + 8U);
@@ -862,9 +919,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
 
     if (!mach_ipc::apply_receive_pointer_fixups(pending_message,
             receive.message_address, received->bytes)) {
-        auto discarded = std::move(queue->second.front());
-        queue->second.pop_front();
-        shared_state_->note_mach_message_dequeued_locked(queued_port);
+        auto discarded = std::move(pending_message);
+        remove_selected();
         if (discarded.destination_send_once_object) {
             shared_state_->mach_port_objects.release_send_once(
                 *discarded.destination_send_once_object);
@@ -906,8 +962,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         performance_counters().record_latency(
             PerfLatencyKind::MachMessageSendToReceive, elapsed);
     }
-    queue->second.pop_front();
-    shared_state_->note_mach_message_dequeued_locked(queued_port);
+    remove_selected();
     if (delivered_destination_send_once_object)
         shared_state_->mach_port_objects.release_send_once(
             *delivered_destination_send_once_object);

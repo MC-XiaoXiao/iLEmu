@@ -37,6 +37,10 @@ struct ReceivedMessage {
     const KernelSharedState::MachMessage& message,
     std::uint32_t receive_address, std::vector<std::byte>& received_bytes);
 
+// Allocation-free counterpart used when assigning a message to a waiter.
+[[nodiscard]] std::size_t receive_buffer_size(std::size_t message_size,
+    std::uint32_t receive_options, DarwinMachVmAddressWidth context_width);
+
 // Converts a sender-form Mach header into receiver form and appends the
 // format-0 trailer requested through MACH_RCV_TRAILER_ELEMENTS.
 [[nodiscard]] std::optional<ReceivedMessage> prepare_received_message(
