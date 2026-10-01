@@ -1247,6 +1247,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         record.signal_stopped = false;
     }
     record.exited = false;
+    record.in_vfork = false;
     record.executable_uuid = executable && executable->uuid()
         ? *executable->uuid() : std::array<std::byte, 16> { };
     record.audit_identity_version = shared_state_->next_audit_identity_version++;
@@ -3038,6 +3039,7 @@ void CompatibilityKernel::inherit_process_state(
     child_record.audit_session_id = process_.audit_session_id;
     child_record.nice_value = process_.nice_value;
     child_record.syscall_counters = task_syscalls_;
+    child_record.in_vfork = false;
     child_record.importance_donor = false;
     child_record.memory_status = darwin::memorystatus::initial_state(
         shared_state_->darwin_abi.memory_status_priority);

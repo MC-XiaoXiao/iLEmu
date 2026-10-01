@@ -12,6 +12,7 @@
 
 #include "kernel/kernel.hpp"
 #include "process/resource_monitor.hpp"
+#include "process/groups.hpp"
 #include "process/uuid_policy.hpp"
 #include "security/extensions.hpp"
 
@@ -330,6 +331,10 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
             return;
         }
         performance_counters().record_fork();
+        {
+            const std::lock_guard mach_lock { shared_state_->mach_mutex };
+            shared_state_->processes.at(*child).in_vfork = true;
+        }
         output_.write("[process] vfork parent=" + std::to_string(process_.pid) +
                       " child=" + std::to_string(*child) + " bootstrap=" +
                       std::to_string(process_.bootstrap_port) + "\n");
@@ -431,6 +436,14 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::get_process_group:
         bsd_success(cpu, process_.process_group);
         return;
+    case darwin::syscall::get_process_group_id: {
+        const std::lock_guard mach_lock { shared_state_->mach_mutex };
+        const auto result = kernel_bsd::ProcessGroups::query(*shared_state_,
+            process_.pid, registers[0]);
+        if (result.error) bsd_error(cpu, result.error);
+        else bsd_success(cpu, result.value);
+        return;
+    }
     case darwin::syscall::get_priority: {
         const auto which = registers[0];
         const auto who = registers[1];
@@ -796,11 +809,14 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         bsd_success(cpu, 0);
         return;
     }
-    case 147: // setsid
-        process_.process_group = process_.pid;
-        process_.session_id = process_.pid;
-        bsd_success(cpu, process_.pid);
+    case 147: { // setsid
+        const std::lock_guard mach_lock { shared_state_->mach_mutex };
+        const auto result = kernel_bsd::ProcessGroups::create_session(
+            *shared_state_, process_);
+        if (result.error) bsd_error(cpu, result.error);
+        else bsd_success(cpu, result.value);
         return;
+    }
     case darwin::syscall::get_resource_limit: {
         const auto resource = darwin::resource::selector(registers[0]);
         if (resource >= process_.resource_limits.size()) {

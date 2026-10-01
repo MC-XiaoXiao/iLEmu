@@ -95,6 +95,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(59, "execve", Handler::BsdProcess);
     add(darwin::syscall::get_process_group, "get_process_group",
         Handler::BsdProcess);
+    add(darwin::syscall::get_process_group_id, "getpgid", Handler::BsdProcess);
     add(darwin::syscall::get_thread_identity, "gettid", Handler::BsdProcess);
     add(kernel_bsd::interval_timer::set_syscall, "set_syscall",
         Handler::BsdProcess);

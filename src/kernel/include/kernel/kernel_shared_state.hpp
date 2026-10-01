@@ -710,6 +710,8 @@ struct KernelSharedState {
         std::uint32_t task_legacy_stop_count { };
         std::uint32_t task_resume_port { };
         std::shared_ptr<TaskSyscallCounters> syscall_counters;
+        // P_INVFORK/P_LINVFORK survives a failed exec attempt.
+        bool in_vfork { };
     };
     struct ProcessKeventState {
         std::uint64_t exec_generation { };
