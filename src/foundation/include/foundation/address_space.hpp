@@ -235,6 +235,10 @@ public:
     // backed pages are detached at most once per touched page and executable
     // generation/JIT write bookkeeping is coalesced across the batch.
     bool copy_in_batch(std::span<const CopyInOperation> operations);
+    // Checked kernel-to-user transfer. Retains the copied prefix on EFAULT;
+    // loaders continue to use the permission-bypassing copy_in APIs.
+    [[nodiscard]] bool copy_to_user(std::uint32_t address,
+        std::span<const std::byte> data, std::size_t* transferred = nullptr);
     [[nodiscard]] bool copy_out(
         std::uint32_t address, std::span<std::byte> data) const;
     // Installs page-aligned immutable file backing. A guest write automatically
@@ -422,6 +426,8 @@ public:
     [[nodiscard]] std::unique_ptr<AddressSpace> clone() const;
 
 private:
+    bool copy_in_batch_locked(std::span<const CopyInOperation> operations,
+        bool guest_write);
     struct ParallelView {
         JitPageTableStorage reads;
         JitPageTableStorage writes;

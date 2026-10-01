@@ -844,18 +844,55 @@ bool AddressSpace::copy_in_batch(std::span<const CopyInOperation> operations)
 {
     if (operations.empty())
         return true;
+    auto lock = write_lock();
+    return copy_in_batch_locked(operations, false);
+}
+
+bool AddressSpace::copy_to_user(std::uint32_t address,
+    std::span<const std::byte> data, std::size_t* transferred)
+{
+    if (transferred)
+        *transferred = 0;
+    if (data.empty())
+        return true;
+    auto lock = write_lock();
+    std::size_t copied = 0;
+    while (copied < data.size()) {
+        const auto current = static_cast<std::uint64_t>(address) + copied;
+        if (current > UINT32_MAX)
+            return false;
+        const auto chunk = std::min<std::size_t>(data.size() - copied,
+            page_size - (current & (page_size - 1U)));
+        const CopyInOperation operation { static_cast<std::uint32_t>(current),
+            data.subspan(copied, chunk) };
+        if (!copy_in_batch_locked({ &operation, 1U }, true))
+            return false;
+        copied += chunk;
+        if (transferred)
+            *transferred = copied;
+    }
+    return true;
+}
+
+bool AddressSpace::copy_in_batch_locked(
+    std::span<const CopyInOperation> operations, bool guest_write)
+{
+    if (operations.empty())
+        return true;
     const bool collect_stats = performance_counters().enabled();
     if (collect_stats) {
         write_batch_calls.fetch_add(1, std::memory_order_relaxed);
         write_batch_operations.fetch_add(
             operations.size(), std::memory_order_relaxed);
     }
-    auto lock = write_lock();
     for (const auto& operation : operations) {
+        if (guest_write)
+            account_vm_access_locked(operation.address, operation.data.size(),
+                MemoryPermission::Write);
         if (operation.data.size() > std::numeric_limits<std::uint32_t>::max() ||
             range_overflows(operation.address, operation.data.size()) ||
             !range_accessible_locked(operation.address, operation.data.size(),
-                MemoryPermission::None)) {
+                guest_write ? MemoryPermission::Write : MemoryPermission::None)) {
             if (collect_stats)
                 write_batch_failures.fetch_add(1, std::memory_order_relaxed);
             return false;
@@ -875,7 +912,7 @@ bool AddressSpace::copy_in_batch(std::span<const CopyInOperation> operations)
             auto& page = resident != nullptr && resident->backing
                              ? *resident
                              : ensure_page_locked(operation.address);
-            auto& backing = writable_backing_locked(page);
+            auto& backing = writable_backing_locked(page, nullptr, guest_write);
             std::copy(operation.data.begin(), operation.data.end(),
                 backing.bytes.begin() + offset);
             mark_shared_backing_written_locked(
@@ -905,7 +942,7 @@ bool AddressSpace::copy_in_batch(std::span<const CopyInOperation> operations)
             const auto offset = current & (page_size - 1U);
             const auto chunk = std::min<std::size_t>(
                 page_size - offset, operation.data.size() - copied);
-            auto& backing = writable_backing_locked(page);
+            auto& backing = writable_backing_locked(page, nullptr, guest_write);
             std::copy_n(
                 operation.data.begin() + static_cast<std::ptrdiff_t>(copied),
                 chunk, backing.bytes.begin() + offset);

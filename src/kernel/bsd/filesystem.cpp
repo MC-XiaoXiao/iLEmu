@@ -119,6 +119,7 @@ bool bsd_support::is_virtual_character_device(std::string_view descriptor_kind)
 void CompatibilityKernel::dispatch_bsd_filesystem(
     Cpu& cpu, std::uint32_t number)
 {
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     service_completed_file_renames();
     if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0 &&
         filesystem_dispatch_conflicts_with_rename(cpu, number) &&
@@ -211,7 +212,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, 28U); // ENOSPC, as build_path reports
             return;
         }
-        if (!memory_.copy_in(registers[0], std::as_bytes(
+        if (!memory_.copy_to_user(registers[0], std::as_bytes(
                 std::span { path.c_str(), path.size() + 1U }))) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
@@ -808,7 +809,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         std::transform(target.begin(),
             target.begin() + static_cast<std::ptrdiff_t>(count), bytes.begin(),
             [](char character) { return static_cast<std::byte>(character); });
-        if (!memory_.copy_in(registers[1], bytes)) {
+        if (!memory_.copy_to_user(registers[1], bytes)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
@@ -931,7 +932,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 random_state_ ^= random_state_ << 17U;
                 byte = static_cast<std::byte>(random_state_ & 0xffU);
             }
-            if (!memory_.copy_in(registers[1], bytes)) {
+            if (!memory_.copy_to_user(registers[1], bytes)) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
@@ -966,7 +967,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         bytes.resize(static_cast<std::size_t>(result));
-        if (!memory_.copy_in(registers[1], bytes)) {
+        if (!memory_.copy_to_user(registers[1], bytes)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
@@ -1348,7 +1349,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                                     static_cast<std::uint64_t>(entry_index))
                               : memory_.write32(registers[3],
                                     static_cast<std::uint32_t>(initial_index)));
-        if (!memory_.copy_in(registers[1], bytes) || !position_written) {
+        if (!memory_.copy_to_user(registers[1], bytes) || !position_written) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
@@ -1505,7 +1506,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                     static_cast<std::byte>(reported_size >> (byte * 8U));
             }
         }
-        if (!memory_.copy_in(registers[2], result)) {
+        if (!memory_.copy_to_user(registers[2], result)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
@@ -1750,7 +1751,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 bsd_error(cpu, darwin::error::result_too_large);
                 return;
             }
-            if (!memory_.copy_in(buffer, packed)) {
+            if (!memory_.copy_to_user(buffer, packed)) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
@@ -1799,7 +1800,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 bsd_error(cpu, darwin::error::result_too_large);
                 return;
             }
-            if (!memory_.copy_in(
+            if (!memory_.copy_to_user(
                     value, std::span { *existing }.subspan(position, count))) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;

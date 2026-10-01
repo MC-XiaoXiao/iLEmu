@@ -59,44 +59,29 @@ public:
     bool copy(AddressSpace& memory, std::span<const std::byte> bytes,
         std::size_t* transferred = nullptr) const
     {
+        // Deferred reads resume outside the syscall dispatcher. Their copyout
+        // still executes on behalf of the reading task.
+        const TaskVmEvents::Scope user_access { memory.task_vm_events() };
         std::size_t copied = 0;
         const auto finish = [&](bool result) {
             if (transferred) *transferred = copied;
             return result;
         };
-        if (vectors_.empty()) {
-            const auto ok = memory.copy_in(address_, bytes);
-            if (ok) copied = bytes.size();
-            return finish(ok);
-        }
+        if (vectors_.empty())
+            return memory.copy_to_user(address_, bytes, transferred);
         if (bytes.empty()) return finish(true);
         for (const auto& vector : vectors_) {
             const auto count = std::min<std::size_t>(vector.length, bytes.size() - copied);
-            if (count && memory.accessible(vector.address, count, MemoryPermission::Write)) {
-                if (!memory.copy_in(vector.address, bytes.subspan(copied, count)))
-                    return finish(false);
-                copied += count;
-            } else {
-                // AddressSpace::copy_in is a loader/internal write primitive.
-                // Check guest protection and preserve a prefix before EFAULT.
-                std::size_t offset = 0;
-                while (offset < count) {
-                    const auto address = static_cast<std::uint64_t>(vector.address) + offset;
-                    if (address >= (std::uint64_t {1} << 32U)) return finish(false);
-                    const auto current = static_cast<std::uint32_t>(address);
-                    const auto chunk = std::min<std::size_t>(count - offset,
-                        AddressSpace::page_size - (current & (AddressSpace::page_size - 1U)));
-                    if (!memory.accessible(current, chunk, MemoryPermission::Write) ||
-                        !memory.copy_in(current, bytes.subspan(copied, chunk)))
-                        return finish(false);
-                    offset += chunk;
-                    copied += chunk;
-                }
-            }
+            std::size_t written = 0;
+            const auto ok = memory.copy_to_user(vector.address,
+                bytes.subspan(copied, count), &written);
+            copied += written;
+            if (!ok) return finish(false);
             if (copied == bytes.size()) return finish(true);
         }
         return finish(false);
     }
+
 private:
     std::uint32_t address_;
     std::span<const GuestReadVector> vectors_;

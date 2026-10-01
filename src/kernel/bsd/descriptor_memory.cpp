@@ -59,6 +59,7 @@ namespace {
 void CompatibilityKernel::dispatch_bsd_descriptor_memory(
     Cpu& cpu, std::uint32_t number)
 {
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     service_completed_file_renames();
     if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0) {
         const auto needs_namespace = [&] {
@@ -1273,7 +1274,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 [](char character) {
                     return static_cast<std::byte>(character);
                 });
-            if (!memory_.copy_in(registers[2], bytes)) {
+            if (!memory_.copy_to_user(registers[2], bytes)) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
