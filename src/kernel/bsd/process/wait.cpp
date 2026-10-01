@@ -52,6 +52,13 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
             bsd_error(cpu, darwin::error::bad_address);
             return true;
         }
+        if (request.resource_usage_address != 0 &&
+            !record.exit_resource_usage.copyout(memory_, request.resource_usage_address)) {
+            bsd_error(cpu, darwin::error::bad_address);
+            return true;
+        }
+        shared_state_->processes.at(process_.pid).children_resource_usage.add(
+            record.exit_resource_usage);
         shared_state_->processes.erase(child);
         // Reaping the final child wakes other waiters to return ECHILD.
         const bool no_children = std::none_of(shared_state_->processes.begin(),
@@ -84,7 +91,7 @@ void CompatibilityKernel::dispatch_wait(Cpu& cpu)
     // transition must not retarget a sleeping invocation.
     if (target == 0)
         target = static_cast<std::int32_t>(0U - process_.membership->group());
-    PendingWait request { target, registers[1], registers[2],
+    PendingWait request { target, registers[1], registers[3], registers[2],
         cpu.processor_id(), std::nullopt };
     if (try_wait(cpu, request))
         return;

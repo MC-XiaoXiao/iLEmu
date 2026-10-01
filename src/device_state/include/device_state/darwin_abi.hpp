@@ -279,6 +279,10 @@ enum class DarwinTaskTraceMemoryAbi : std::uint8_t {
     Unsupported, Registration, ProcessInspection,
 };
 
+// Native calcru refreshes only CPU time in early kernels. Peak accounting
+// is a separate contract from support for the task_info resident flavor.
+enum class DarwinResourceAccounting : std::uint8_t { CpuTime, ResidentPeak };
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -286,6 +290,7 @@ struct DarwinAbi {
     };
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
     DarwinTaskInformationAbi task_information { DarwinTaskInformationAbi::Basic };
+    DarwinResourceAccounting resource_accounting { DarwinResourceAccounting::CpuTime };
     DarwinTaskTraceMemoryAbi task_trace_memory { DarwinTaskTraceMemoryAbi::Unsupported };
     DarwinTaskSpecialPortsAbi task_special_ports { DarwinTaskSpecialPortsAbi::Ledger };
     DarwinMachPortRequestAbi mach_port_requests { DarwinMachPortRequestAbi::DeadNameRequests };

@@ -17,6 +17,7 @@
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/child_wait_status.hpp"
+#include "kernel/process_resource_usage.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
 #include "kernel/mach_receive_wait_queue.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
@@ -186,6 +187,7 @@ struct KeventRegistration {
 struct PendingWait {
     std::int32_t target_pid { -1 };
     std::uint32_t status_address { };
+    std::uint32_t resource_usage_address { };
     std::uint32_t options { };
     std::size_t processor { };
     std::optional<std::uint64_t> wake_generation;
@@ -721,6 +723,8 @@ struct KernelSharedState {
         std::uint64_t incarnation { };
         std::uint64_t parent_incarnation { };
         std::uint64_t child_wait_generation { };
+        ProcessResourceUsage children_resource_usage;
+        ProcessResourceUsage exit_resource_usage;
         std::uint64_t start_wall_nanoseconds { };
         std::array<std::byte, 16> executable_uuid { };
         // Audit tokens distinguish both PID reuse and replacement by exec.

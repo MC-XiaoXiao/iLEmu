@@ -171,6 +171,7 @@ void CompatibilityKernel::exit_process(
 {
     if (process_.exited)
         return;
+    const auto usage = collect_resource_usage();
     note_timer_deadline_transition();
     hid_event_system_hle_.reset(process_.pid);
     process_.exit_status = status;
@@ -185,6 +186,8 @@ void CompatibilityKernel::exit_process(
         const kernel_bsd::JobControlTransition job_control { *shared_state_ };
         if (auto record = shared_state_->processes.find(process_.pid);
             record != shared_state_->processes.end()) {
+            record->second.exit_resource_usage = usage;
+            record->second.exit_resource_usage.add(record->second.children_resource_usage);
             record->second.exited = true;
             record->second.exit_status = status;
             record->second.termination_signal = signal;
@@ -642,30 +645,21 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         return;
     }
     case darwin::syscall::get_resource_usage: { // getrusage
-        // Darwin's 32-bit user ABI is two {time_t, suseconds_t} pairs
-        // followed by fourteen 32-bit long values: 72 bytes total. The
-        // accounting fields are intentionally zero until the scheduler has a
-        // per-process CPU accounting source; the ABI still requires the
-        // complete structure to be copied out so callers cannot receive
-        // SIGSYS merely while collecting migration or launch statistics.
         if (registers[0] != darwin::resource::rusage_self &&
             registers[0] != darwin::resource::rusage_children) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
-        if (registers[1] > std::numeric_limits<std::uint32_t>::max() -
-                               darwin::resource::rusage_arm32_size + 1U) {
+        ProcessResourceUsage usage;
+        if (registers[0] == darwin::resource::rusage_self) {
+            usage = collect_resource_usage();
+        } else {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            usage = shared_state_->processes.at(process_.pid).children_resource_usage;
+        }
+        if (!usage.copyout(memory_, registers[1])) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
-        }
-        for (std::size_t index = 0;
-            index < darwin::resource::rusage_arm32_word_count; ++index) {
-            const auto address = registers[1] +
-                static_cast<std::uint32_t>(index * sizeof(std::uint32_t));
-            if (!memory_.write32(address, 0)) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
         }
         bsd_success(cpu, 0);
         return;

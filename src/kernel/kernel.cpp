@@ -1247,6 +1247,8 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         record.signal_stopped = false;
         record.child_wait_status = { };
         record.child_wait_generation = 0;
+        record.children_resource_usage = { };
+        record.exit_resource_usage = { };
     }
     record.exited = false;
     record.in_vfork = false;
@@ -3026,6 +3028,8 @@ void CompatibilityKernel::inherit_process_state(
     child_record.signal_stopped = false;
     child_record.child_wait_status = { };
     child_record.child_wait_generation = 0;
+    child_record.children_resource_usage = { };
+    child_record.exit_resource_usage = { };
     child_record.incarnation = shared_state_->next_process_incarnation++;
     child_record.parent_incarnation =
         shared_state_->processes[parent.process_.pid].incarnation;
