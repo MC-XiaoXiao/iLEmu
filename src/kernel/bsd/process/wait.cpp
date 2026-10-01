@@ -22,6 +22,7 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
     // does not wake that channel; unrelated scheduler polling must not do so.
     if (request.wake_generation == generation)
         return false;
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     request.wake_generation = generation;
     const bool information = request.information_selector.has_value();
     const bool observe = information && (request.options & 0x20U); // WNOWAIT
@@ -33,7 +34,7 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
         info.pid = pid;
         info.code = code;
         info.status = status;
-        return memory_.copy_in(request.status_address, std::as_bytes(std::span { &info, 1 }));
+        return memory_.copy_to_user(request.status_address, std::as_bytes(std::span { &info, 1 }));
     };
     bool has_child = false;
     for (auto child = shared_state_->processes.begin();

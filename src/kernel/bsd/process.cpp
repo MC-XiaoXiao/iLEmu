@@ -499,6 +499,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         dispatch_bsd_signal_mask(cpu, number);
         return;
     case 49: { // getlogin
+        const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
         if (registers[1] == 0 ||
             process_.login_name.size() + 1 > registers[1]) {
             bsd_error(cpu, 34); // ERANGE
@@ -509,7 +510,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
             ++index) {
             bytes[index] = static_cast<std::byte>(process_.login_name[index]);
         }
-        if (!memory_.copy_in(registers[0], bytes)) {
+        if (!memory_.copy_to_user(registers[0], bytes)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
@@ -653,6 +654,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
+        const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
         ProcessResourceUsage usage;
         if (registers[0] == darwin::resource::rusage_self) {
             usage = collect_resource_usage();

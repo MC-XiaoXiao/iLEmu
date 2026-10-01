@@ -50,6 +50,7 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
     if (number != darwin::proc_info::syscall_number)
         return false;
 
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     const auto& registers = cpu.registers();
     const auto call = registers[0];
     const auto target_pid = static_cast<std::int32_t>(registers[1]);
@@ -181,7 +182,7 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
             word(52, record.effective_uid);
             word(56, record.effective_gid);
         }
-        if (output_address == 0 || !memory_.copy_in(output_address, output)) {
+        if (output_address == 0 || !memory_.copy_to_user(output_address, output)) {
             bsd_error(cpu, darwin::error::bad_address);
             return true;
         }
@@ -252,7 +253,7 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
                 integer(128, record.start_wall_nanoseconds / 1'000ULL % 1'000'000ULL, 8U);
             }
         }
-        if (output_address == 0 || !memory_.copy_in(output_address, output)) {
+        if (output_address == 0 || !memory_.copy_to_user(output_address, output)) {
             bsd_error(cpu, darwin::error::bad_address);
             return true;
         }
@@ -298,7 +299,7 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
         output[index] = static_cast<std::byte>(
             static_cast<unsigned char>(executable_path[index]));
     }
-    if (output_address == 0 || !memory_.copy_in(output_address, output)) {
+    if (output_address == 0 || !memory_.copy_to_user(output_address, output)) {
         bsd_error(cpu, darwin::error::bad_address);
         return true;
     }
