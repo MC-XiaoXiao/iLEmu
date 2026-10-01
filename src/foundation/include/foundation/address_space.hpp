@@ -21,6 +21,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include "foundation/task_vm_events.hpp"
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 
@@ -76,6 +77,14 @@ public:
 
     AddressSpace();
     ~AddressSpace();
+
+    // Bind before execution. The task owns history across address-space
+    // replacement; current actor scopes may charge a different task.
+    void set_task_vm_events(std::shared_ptr<TaskVmEvents> events);
+    [[nodiscard]] TaskVmEvents* task_vm_events() const noexcept
+    {
+        return task_vm_events_.get();
+    }
 
     // VFS and lazy file-backed mappings share one generation registry so a
     // writeback or pathname mutation cannot leave another mapping on a stale
@@ -154,6 +163,10 @@ public:
     // Tables remain valid for this AddressSpace's lifetime. Re-select the
     // tables at each execution entry: parallel lanes use checked tables,
     // while an exclusive serialized scope may expose guarded private accesses.
+    // Stable demand-backed table: non-null entries denote installed execute
+    // translations. Entries are presence tokens, never executable host bytes.
+    [[nodiscard]] std::uint8_t** jit_instruction_page_table();
+    [[nodiscard]] bool prepare_instruction_fetch(std::uint32_t address, std::size_t size);
     [[nodiscard]] std::uint8_t** jit_read_page_table();
     [[nodiscard]] std::uint8_t** jit_write_page_table();
     // Debug watchpoints can require every access to pass through callbacks.
@@ -525,7 +538,8 @@ private:
     [[nodiscard]] static std::byte read_byte_locked(
         const Page* page, std::uint32_t offset);
     [[nodiscard]] GuestPageBacking& writable_backing_locked(
-        Page& page, bool* jit_eligibility_changed = nullptr);
+        Page& page, bool* jit_eligibility_changed = nullptr,
+        bool guest_write = false);
     [[nodiscard]] bool reservation_invalidation_required_locked(
         const Page& page) const noexcept;
     void release_exclusive_write_tracking_locked(
@@ -565,6 +579,17 @@ private:
     // COW replacement does not change residency. Never update per load/store.
     ResidentPageStatistics resident_pages_;
     void record_resident_page_locked();
+    void account_vm_access_locked(std::uint32_t address, std::size_t size,
+        MemoryPermission access, bool execution = false);
+    std::shared_ptr<TaskVmEvents> task_vm_events_;
+    // The emulated pmap is local to this address space. Fork shares VM
+    // permission chunks and physical bytes, never installed translations.
+    std::array<std::unique_ptr<PagePermissionChunk>,
+        page_permission_chunk_count> vm_translations_ { };
+    [[nodiscard]] std::uint8_t vm_translation_locked(std::size_t index) const;
+    void set_vm_translation_locked(std::size_t index, std::uint8_t permissions);
+    void trim_vm_translations_locked(std::uint32_t address, std::uint64_t end,
+        std::uint8_t permissions);
     std::shared_ptr<PageMap> pages_ { std::make_shared<PageMap>() };
     // File-backed vm_map entries remain range metadata until a guest access
     // faults an individual page into pages_. This mirrors XNU's vnode pager and
@@ -581,6 +606,7 @@ private:
     std::array<std::shared_ptr<PagePermissionChunk>,
         page_permission_chunk_count>
         page_permissions_ { };
+    std::unique_ptr<JitPageTableStorage> jit_instruction_page_table_;
     std::unique_ptr<JitPageTableStorage> jit_read_page_table_;
     std::unique_ptr<JitPageTableStorage> jit_write_page_table_;
     // Only pages with a live direct-write entry can need invalidation when a

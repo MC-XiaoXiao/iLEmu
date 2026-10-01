@@ -1094,6 +1094,7 @@ private:
         std::make_shared<KernelSharedState>()
     };
     std::shared_ptr<TaskSyscallCounters> task_syscalls_;
+    std::shared_ptr<TaskVmEvents> task_vm_events_;
     DarwinSignalState signal_state_;
     MachExceptionDelivery exception_delivery_;
     std::map<std::size_t, MachExceptionDelivery::Exception> synchronous_exceptions_;

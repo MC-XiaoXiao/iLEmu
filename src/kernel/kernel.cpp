@@ -227,6 +227,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             configuration->identity.operating_system_release, configuration->abi_name);
     }() }
     , task_syscalls_ { std::make_shared<TaskSyscallCounters>() }
+    , task_vm_events_ { std::make_shared<TaskVmEvents>() }
     , signal_state_ { shared_state_->darwin_abi.abi_epoch }
 {
     memory_.set_file_generation_registry(
@@ -465,6 +466,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->processes[process_.pid].memory_status =
         darwin::memorystatus::initial_state(shared_state_->darwin_abi.memory_status_priority);
     shared_state_->processes[process_.pid].syscall_counters = task_syscalls_;
+    shared_state_->processes[process_.pid].vm_events = task_vm_events_;
+    memory_.set_task_vm_events(task_vm_events_);
     install_commpage();
 }
 
@@ -1248,6 +1251,12 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         record.child_wait_status = { };
         record.child_wait_generation = 0;
         record.voluntary_context_switches = 0;
+        // A reused PID denotes a new task. Ordinary exec retains its history.
+        if (record.exited) {
+            task_vm_events_ = std::make_shared<TaskVmEvents>();
+            memory_.set_task_vm_events(task_vm_events_);
+        }
+        record.vm_events = task_vm_events_;
         record.children_resource_usage = { };
         record.exit_resource_usage = { };
     }
@@ -3014,6 +3023,7 @@ void CompatibilityKernel::inherit_process_state(
     child_record.audit_session_id = process_.audit_session_id;
     child_record.nice_value = process_.nice_value;
     child_record.syscall_counters = task_syscalls_;
+    child_record.vm_events = task_vm_events_;
     child_record.in_vfork = false;
     child_record.has_executed = false;
     child_record.importance_donor = false;

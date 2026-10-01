@@ -467,7 +467,7 @@ namespace {
     }
 
     constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
-    constexpr std::uint32_t jit_artifact_backend_abi_version = 2U;
+    constexpr std::uint32_t jit_artifact_backend_abi_version = 3U;
     constexpr std::uint64_t jit_artifact_codegen_options = 1U;
     // Layout identity no longer contains host vnode metadata. Keep old records
     // safely unusable even if a caller happens to reconstruct the same key
@@ -621,9 +621,17 @@ public:
         process_id_ = process_id;
     }
 
-    bool PreCodeReadHook(bool, Dynarmic::A32::VAddr address,
+    bool PreCodeReadHook(bool thumb, Dynarmic::A32::VAddr address,
         Dynarmic::A32::IREmitter& ir) override
     {
+        const auto start = Dynarmic::A32::LocationDescriptor { ir.block.Location() }.PC();
+        if (ir.block.CycleCount() != 0 &&
+            ((start / AddressSpace::page_size != address / AddressSpace::page_size) ||
+                (thumb && address % AddressSpace::page_size == AddressSpace::page_size - 2))) {
+            // Do not fault a following page before earlier instructions run.
+            ir.SetTerm(Dynarmic::IR::Term::LinkBlockFast { ir.current_location });
+            return false;
+        }
         if (ir.block.CycleCount() == 0) {
             performance_counters().record_translation_block();
             translation_block_ = &ir.block;
@@ -1269,55 +1277,48 @@ public:
 
     std::optional<std::uint32_t> MemoryReadCode(std::uint32_t address) override
     {
-        const auto value = memory_.read32(address, MemoryPermission::Execute);
-        if (!value) {
-            memory_fault(address, 4, MemoryPermission::Execute);
-        }
-        return value;
+        const TaskVmEvents::Scope observation { nullptr };
+        return memory_.read32(address, MemoryPermission::Execute);
+    }
+
+    bool InstructionFetch(std::uint32_t address, std::size_t size) override
+    {
+        const TaskVmEvents::Scope execution { memory_.task_vm_events() };
+        if (memory_.prepare_instruction_fetch(address, size))
+            return true;
+        memory_fault(address, size, MemoryPermission::Execute);
+        return false;
     }
 
     std::uint8_t MemoryRead8(std::uint32_t address) override
     {
-        const auto value = memory_.read8(address, MemoryPermission::Read);
-        if (!value) {
-            memory_fault(address, sizeof(std::uint8_t), MemoryPermission::Read);
-            return 0;
-        }
-        record_constant_dependency(address, 1U, *value);
-        return *value;
+        return read<std::uint8_t>(address, &AddressSpace::read8);
     }
+
     std::uint16_t MemoryRead16(std::uint32_t address) override
     {
-        const auto value = memory_.read16(address, MemoryPermission::Read);
-        if (!value) {
-            memory_fault(
-                address, sizeof(std::uint16_t), MemoryPermission::Read);
-            return 0;
-        }
-        record_constant_dependency(address, 2U, *value);
-        return *value;
+        return read<std::uint16_t>(address, &AddressSpace::read16);
     }
+
     std::uint32_t MemoryRead32(std::uint32_t address) override
     {
-        const auto value = memory_.read32(address, MemoryPermission::Read);
-        if (!value) {
-            memory_fault(
-                address, sizeof(std::uint32_t), MemoryPermission::Read);
-            return 0;
-        }
-        record_constant_dependency(address, 4U, *value);
-        return *value;
+        return read<std::uint32_t>(address, &AddressSpace::read32);
     }
+
     std::uint64_t MemoryRead64(std::uint32_t address) override
     {
-        const auto value = memory_.read64(address, MemoryPermission::Read);
-        if (!value) {
-            memory_fault(
-                address, sizeof(std::uint64_t), MemoryPermission::Read);
-            return 0;
+        return read<std::uint64_t>(address, &AddressSpace::read64);
+    }
+
+    std::uint64_t MemoryReadConstant(std::uint32_t address,
+        std::size_t width) override
+    {
+        switch (width) {
+        case 1: return read<std::uint8_t>(address, &AddressSpace::read8, false);
+        case 2: return read<std::uint16_t>(address, &AddressSpace::read16, false);
+        case 4: return read<std::uint32_t>(address, &AddressSpace::read32, false);
+        default: return read<std::uint64_t>(address, &AddressSpace::read64, false);
         }
-        record_constant_dependency(address, 8U, *value);
-        return *value;
     }
 
     void MemoryWrite8(std::uint32_t address, std::uint8_t value) override
@@ -1471,8 +1472,19 @@ public:
         case Exception::NoExecuteFault:
             // A cached no-execute block need not call MemoryReadCode again.
             // Preserve the execute-fault category and address on every run.
-            if (!fault_)
-                memory_fault(pc, sizeof(std::uint32_t), MemoryPermission::Execute);
+            if (!fault_) {
+                std::size_t size = sizeof(std::uint32_t);
+                if ((jit_->Cpsr() & 0x20U) != 0) {
+                    const TaskVmEvents::Scope observation { nullptr };
+                    const auto first = memory_.read16(pc, MemoryPermission::Execute);
+                    size = first && (*first & 0xf800U) >= 0xe800U ? 4U : 2U;
+                }
+                // A Thumb-32 decode can stop before its second halfword. The
+                // entry guard then covers only the first page; fault the rest
+                // here, at execution time, without counting that page twice.
+                if (InstructionFetch(pc, size))
+                    memory_fault(pc, size, MemoryPermission::Execute);
+            }
             owner_->registers()[15] = pc;
             return;
         default:
@@ -1551,6 +1563,10 @@ public:
     [[nodiscard]] std::uint8_t** jit_read_page_table()
     {
         return memory_.jit_read_page_table();
+    }
+    [[nodiscard]] std::uint8_t** jit_instruction_page_table()
+    {
+        return memory_.jit_instruction_page_table();
     }
     [[nodiscard]] std::uint8_t** jit_write_page_table()
     {
@@ -1911,20 +1927,30 @@ private:
     }
 
     template <typename T, typename Member>
-    T read(std::uint32_t address, Member member)
+    T read(std::uint32_t address, Member member, bool executing = true)
     {
+        const TaskVmEvents::Scope actor {
+            executing ? memory_.task_vm_events() : nullptr };
         const auto value = (memory_.*member)(address, MemoryPermission::Read);
         if (!value) {
             memory_fault(address, sizeof(T), MemoryPermission::Read);
             return 0;
         }
+        record_constant_dependency(address, sizeof(T), *value);
         return *value;
+    }
+
+    template <typename Member, typename... Args>
+    auto guest_memory(Member member, Args... args)
+    {
+        const TaskVmEvents::Scope actor { memory_.task_vm_events() };
+        return (memory_.*member)(args...);
     }
 
     template <typename T, typename Member>
     void write(std::uint32_t address, T value, Member member)
     {
-        if (!(memory_.*member)(address, value)) {
+        if (!guest_memory(member, address, value)) {
             memory_fault(address, sizeof(T), MemoryPermission::Write);
         } else {
             notify_memory_write(address, sizeof(T), value);
@@ -1934,7 +1960,7 @@ private:
     template <typename T, typename Member>
     T swap(std::uint32_t address, T value, Member member)
     {
-        const auto previous = (memory_.*member)(address, value);
+        const auto previous = guest_memory(member, address, value);
         if (!previous) {
             memory_fault(address, sizeof(T),
                 MemoryPermission::Read | MemoryPermission::Write);
@@ -1948,7 +1974,7 @@ private:
     bool write_exclusive(
         std::uint32_t address, T value, T expected, Member member)
     {
-        const auto written = (memory_.*member)(address, expected, value);
+        const auto written = guest_memory(member, address, expected, value);
         if (written)
             notify_memory_write(address, sizeof(T), value);
         return written;
@@ -3092,6 +3118,8 @@ private:
             Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
         static_assert(AddressSpace::page_count ==
                       Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES);
+        config.instruction_page_table = reinterpret_cast<DynarmicPageTable*>(
+            callbacks_->jit_instruction_page_table());
         auto** read_table = callbacks_->jit_read_page_table();
         auto** write_table = callbacks_->jit_write_page_table();
         if (read_table || write_table) {

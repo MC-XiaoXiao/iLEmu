@@ -1,3 +1,4 @@
+#include <foundation/task_vm_events.hpp>
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
@@ -101,6 +102,12 @@ Information::Result Information::evaluate_locked(AddressSpace& memory,
         const auto token = process->second.audit_token(pid);
         std::copy(token.begin(), token.end(), info.begin());
     } else if (flavor == events_flavor) {
+        if (const auto& counters = process->second.vm_events) {
+            const auto events = counters->snapshot();
+            info[0] = events.faults;
+            info[1] = events.pageins;
+            info[2] = events.cow_faults;
+        }
         if (const auto& counters = process->second.syscall_counters) {
             const auto calls = counters->snapshot();
             info[5] = calls.mach;

@@ -43,6 +43,13 @@ void ProcessResourceUsage::set_context_switches(std::uint32_t voluntary,
         std::bit_cast<std::int32_t>(*task_total - voluntary))) : 0U;
 }
 
+void ProcessResourceUsage::set_vm_events(TaskVmEvents::Snapshot events)
+{
+    // calcru uses natural_t subtraction, including native wraparound.
+    words_[8] = events.faults - events.pageins;
+    words_[9] = events.pageins;
+}
+
 void ProcessResourceUsage::add(const ProcessResourceUsage& other)
 {
     for (const auto offset : { 0U, 2U }) {
@@ -93,6 +100,9 @@ ProcessResourceUsage CompatibilityKernel::collect_resource_usage() const
         statistics && shared_state_->darwin_abi.resource_accounting ==
                 DarwinResourceAccounting::ResidentPeak
             ? std::optional { statistics->context_switches } : std::nullopt);
+    if (shared_state_->darwin_abi.resource_accounting ==
+            DarwinResourceAccounting::ResidentPeak)
+        usage.set_vm_events(task_vm_events_->snapshot());
     return usage;
 }
 } // namespace ilemu

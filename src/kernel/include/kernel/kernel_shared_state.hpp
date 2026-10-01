@@ -93,6 +93,7 @@ class HostSocket;
 class KeyStore;
 class SurfaceTransportLease;
 class TaskSyscallCounters;
+class TaskVmEvents;
 namespace bsd::sandbox { class Extensions; }
 
 // Shared with the process table so remote setpgid is visible immediately.
@@ -760,6 +761,7 @@ struct KernelSharedState {
         std::uint32_t task_legacy_stop_count { };
         std::uint32_t task_resume_port { };
         std::shared_ptr<TaskSyscallCounters> syscall_counters;
+        std::shared_ptr<TaskVmEvents> vm_events;
         // P_INVFORK/P_LINVFORK survives a failed exec attempt.
         bool in_vfork { };
         bool has_executed { };

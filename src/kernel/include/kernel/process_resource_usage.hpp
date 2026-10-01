@@ -4,6 +4,7 @@
 #pragma once
 
 #include <optional>
+#include <foundation/task_vm_events.hpp>
 
 #include "kernel/darwin_resource_abi.hpp"
 #include "mach/xnu_task_statistics.hpp"
@@ -19,6 +20,7 @@ public:
         std::uint32_t maximum_resident_bytes);
     void set_context_switches(std::uint32_t voluntary,
         std::optional<std::uint32_t> task_total);
+    void set_vm_events(TaskVmEvents::Snapshot events);
     void add(const ProcessResourceUsage& other);
     [[nodiscard]] bool copyout(AddressSpace& memory, std::uint32_t address) const;
 

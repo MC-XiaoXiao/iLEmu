@@ -138,6 +138,90 @@ AddressSpace::~AddressSpace()
             1U);
 }
 
+void AddressSpace::set_task_vm_events(std::shared_ptr<TaskVmEvents> events)
+{
+    auto lock = write_lock();
+    task_vm_events_ = std::move(events);
+    clear_jit_page_table_locked();
+    for (const auto& [address, page] : *pages_) {
+        static_cast<void>(page);
+        refresh_jit_page_locked(address);
+    }
+}
+
+std::uint8_t AddressSpace::vm_translation_locked(std::size_t index) const
+{
+    const auto& chunk = vm_translations_[index / page_permission_chunk_size];
+    return chunk ? (*chunk)[index % page_permission_chunk_size] : 0U;
+}
+
+void AddressSpace::set_vm_translation_locked(
+    std::size_t index, std::uint8_t permissions)
+{
+    auto& chunk = vm_translations_[index / page_permission_chunk_size];
+    if (!chunk)
+        chunk = std::make_unique<PagePermissionChunk>();
+    (*chunk)[index % page_permission_chunk_size] = permissions;
+}
+
+void AddressSpace::trim_vm_translations_locked(std::uint32_t address,
+    std::uint64_t end, std::uint8_t permissions)
+{
+    for (auto index = static_cast<std::size_t>(address / page_size);
+         index < end / page_size;) {
+        const auto begin = index % page_permission_chunk_size;
+        const auto count = std::min(page_permission_chunk_size - begin,
+            static_cast<std::size_t>(end / page_size) - index);
+        if (auto& chunk = vm_translations_[index / page_permission_chunk_size]) {
+            if (permissions == 0 && begin == 0 && count == page_permission_chunk_size)
+                chunk.reset();
+            else
+                for (auto i = begin; i < begin + count; ++i)
+                    (*chunk)[i] &= permissions;
+        }
+        index += count;
+    }
+}
+
+void AddressSpace::account_vm_access_locked(std::uint32_t address,
+    std::size_t size, MemoryPermission access, bool execution)
+{
+    auto* actor = TaskVmEvents::current();
+    if ((!actor && !execution) || size == 0 || access == MemoryPermission::None)
+        return;
+    if (range_overflows(address, size)) {
+        if (actor) actor->fault();
+        return;
+    }
+    const auto end = page_range_end(address, size);
+    const auto required = permission_bits(access);
+    for (std::uint64_t base = page_base(address); base < end; base += page_size) {
+        const auto index = static_cast<std::size_t>(base / page_size);
+        const auto flags = page_permission_locked(index);
+        if ((flags & mapped_page_flag) == 0U || (flags & required) != required) {
+            if (actor) actor->fault();
+            return;
+        }
+        const auto translation = vm_translation_locked(index);
+        if ((translation & required) == required)
+            continue;
+        if (actor) actor->fault();
+        const auto* page = find_page_locked(static_cast<std::uint32_t>(base));
+        auto installed = static_cast<std::uint8_t>(flags & 7U);
+        const auto* file = find_file_mapping_locked(static_cast<std::uint32_t>(base));
+        const bool copy_protected =
+            (page && !page->shared_writable &&
+                (page->file_cached || page->copy_on_write_possible)) ||
+            ((!page || !page->backing) && file &&
+                (file->mode == PageMappingMode::CopyOnWrite || file->needs_copy));
+        if ((required & permission_bits(MemoryPermission::Write)) == 0U && copy_protected)
+            installed &= static_cast<std::uint8_t>(
+                ~permission_bits(MemoryPermission::Write));
+        set_vm_translation_locked(index, installed);
+        refresh_jit_page_locked(static_cast<std::uint32_t>(base));
+    }
+}
+
 void AddressSpace::set_file_generation_registry(
     std::shared_ptr<GuestFileGenerationRegistry> generation_registry)
 {
@@ -224,6 +308,32 @@ void AddressSpace::set_exclusive_write_observer(std::function<void()> observer)
 }
 
 std::uint8_t** AddressSpace::jit_page_table() { return jit_write_page_table(); }
+
+std::uint8_t** AddressSpace::jit_instruction_page_table()
+{
+    auto lock = write_lock();
+    if (!jit_instruction_page_table_) {
+        jit_instruction_page_table_ = std::make_unique<JitPageTableStorage>();
+        for (const auto& [address, page] : *pages_) {
+            static_cast<void>(page);
+            refresh_jit_page_locked(address);
+        }
+    }
+    return jit_instruction_page_table_->entries();
+}
+
+bool AddressSpace::prepare_instruction_fetch(std::uint32_t address, std::size_t size)
+{
+    {
+        auto lock = write_lock();
+        account_vm_access_locked(address, size, MemoryPermission::Execute, true);
+        if (!range_accessible_locked(address, size, MemoryPermission::Execute))
+            return false;
+        if (!range_needs_file_fault_locked(address, size))
+            return true;
+    }
+    return fault_file_pages(address, size);
+}
 
 std::uint8_t** AddressSpace::jit_read_page_table()
 {
@@ -665,6 +775,8 @@ void AddressSpace::clear()
         chunk.reset();
     for (auto& chunk : page_permissions_)
         chunk.reset();
+    for (auto& chunk : vm_translations_)
+        chunk.reset();
     clear_jit_page_table_locked();
     exclusive_write_tracked_pages_.clear();
     exclusive_write_backings_.clear();
@@ -829,6 +941,8 @@ bool AddressSpace::copy_out(
     for (;;) {
         {
             auto lock = read_lock();
+            const_cast<AddressSpace*>(this)->account_vm_access_locked(
+                address, data.size(), MemoryPermission::Read);
             if (!range_accessible_locked(
                     address, data.size(), MemoryPermission::Read)) {
                 return false;
@@ -1114,6 +1228,8 @@ std::optional<std::vector<std::byte>> AddressSpace::read_bytes(
     for (;;) {
         {
             auto lock = read_lock();
+            const_cast<AddressSpace*>(this)->account_vm_access_locked(
+                address, size, MemoryPermission::Read);
             if (!range_accessible_locked(
                     address, size, MemoryPermission::Read)) {
                 return std::nullopt;
@@ -1162,6 +1278,8 @@ std::optional<std::string> AddressSpace::read_c_string(
         bool needs_fault = false;
         {
             auto lock = read_lock();
+            const_cast<AddressSpace*>(this)->account_vm_access_locked(
+                current, 1, MemoryPermission::Read);
             if (!range_accessible_locked(current, 1, MemoryPermission::Read)) {
                 return std::nullopt;
             }
@@ -1481,9 +1599,16 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
         if (page != nullptr && page->backing)
             exclusive_write_backings_.insert(page->backing.get());
     }
+    const auto base = page_base(address);
+    if (jit_instruction_page_table_) {
+        static std::uint8_t present;
+        const auto rights = page_permission_locked(base / page_size) &
+            vm_translation_locked(base / page_size);
+        jit_instruction_page_table_->entries()[base / page_size] =
+            (rights & permission_bits(MemoryPermission::Execute)) ? &present : nullptr;
+    }
     if (!jit_read_page_table_ && !jit_write_page_table_)
         return;
-    const auto base = page_base(address);
     auto* read_entry = jit_read_page_table_
                            ? &jit_read_page_table_->entries()[base / page_size]
                            : nullptr;
@@ -1512,7 +1637,9 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
     const bool direct_read_safe = !parallel_access_ ||
         (page != nullptr && !page->shared_writable && page->backing &&
             !page->backing->shared_write_tracking_enabled());
+    const auto translation = task_vm_events_ ? vm_translation_locked(base / page_size) : 7U;
     if (read_entry && direct_read_safe &&
+        (translation & permission_bits(MemoryPermission::Read)) != 0U &&
         (flags & read_required) == read_required && page != nullptr &&
         page->backing) {
         *read_entry = jit_page_pointer(*page->backing, base);
@@ -1522,6 +1649,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
         mapped_page_flag | permission_bits(MemoryPermission::Read) |
         permission_bits(MemoryPermission::Write));
     if (!jit_write_page_table_enabled_ || !write_entry ||
+        (translation & permission_bits(MemoryPermission::Write)) == 0U ||
         (parallel_access_ && page != nullptr && page->shared_writable) ||
         (flags & write_required) != write_required ||
         tracks_write_locked(base, page_size) ||
@@ -1544,7 +1672,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
 void AddressSpace::refresh_jit_page_range_locked(
     std::uint32_t address, std::uint64_t end)
 {
-    if ((!jit_read_page_table_ && !jit_write_page_table_) || end <= address) {
+    if ((!jit_read_page_table_ && !jit_write_page_table_ && !jit_instruction_page_table_) || end <= address) {
         return;
     }
     const auto first = page_base(address);
@@ -1590,6 +1718,8 @@ void AddressSpace::finish_shared_write_tracking_locked(
 
 void AddressSpace::clear_jit_page_table_locked()
 {
+    if (jit_instruction_page_table_)
+        jit_instruction_page_table_->clear();
     if (jit_read_page_table_)
         jit_read_page_table_->clear();
     if (jit_write_page_table_)
@@ -1607,7 +1737,7 @@ std::byte AddressSpace::read_byte_locked(const Page* page, std::uint32_t offset)
 }
 
 GuestPageBacking& AddressSpace::writable_backing_locked(
-    Page& page, bool* jit_eligibility_changed)
+    Page& page, bool* jit_eligibility_changed, bool guest_write)
 {
     const bool eligibility_changed =
         !page.backing || page.file_cached || page.copy_on_write_possible;
@@ -1622,6 +1752,9 @@ GuestPageBacking& AddressSpace::writable_backing_locked(
                 write_copy_on_write_detaches.fetch_add(
                     1, std::memory_order_relaxed);
             page.backing = std::make_shared<GuestPageBacking>(*page.backing);
+            if (guest_write)
+                if (auto* actor = TaskVmEvents::current())
+                    actor->copy_on_write();
         }
     }
     page.file_cached = false;
@@ -1753,6 +1886,8 @@ std::optional<T> AddressSpace::read_integer(
     for (;;) {
         {
             auto lock = scalar_access_lock(address, sizeof(T), false);
+            const_cast<AddressSpace*>(this)->account_vm_access_locked(
+                address, sizeof(T), access);
             if (!range_accessible_locked(address, sizeof(T), access)) {
                 return std::nullopt;
             }
@@ -1798,6 +1933,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
 {
     static_assert(std::is_unsigned_v<T>);
     auto lock = scalar_access_lock(address, sizeof(T), true);
+    account_vm_access_locked(address, sizeof(T), MemoryPermission::Write);
     if (!range_accessible_locked(address, sizeof(T), MemoryPermission::Write)) {
         return false;
     }
@@ -1809,7 +1945,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
                          ? *resident
                          : ensure_page_locked(address);
         bool jit_eligibility_changed = false;
-        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
@@ -1834,7 +1970,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
                          ? *resident
                          : ensure_page_locked(current);
         bool jit_eligibility_changed = false;
-        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] =
@@ -1853,6 +1989,7 @@ bool AddressSpace::compare_exchange_integer(
 {
     static_assert(std::is_unsigned_v<T>);
     auto lock = write_lock();
+    account_vm_access_locked(address, sizeof(T), MemoryPermission::Read);
     if (!range_accessible_locked(address, sizeof(T),
             MemoryPermission::Read | MemoryPermission::Write)) {
         release_exclusive_write_tracking_locked(address, sizeof(T));
@@ -1876,8 +2013,9 @@ bool AddressSpace::compare_exchange_integer(
             release_exclusive_write_tracking_locked(address, sizeof(T));
             return false;
         }
+        account_vm_access_locked(address, sizeof(T), MemoryPermission::Write);
         bool jit_eligibility_changed = false;
-        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
@@ -1906,6 +2044,7 @@ bool AddressSpace::compare_exchange_integer(
         release_exclusive_write_tracking_locked(address, sizeof(T));
         return false;
     }
+    account_vm_access_locked(address, sizeof(T), MemoryPermission::Write);
     for (std::size_t i = 0; i < sizeof(T); ++i) {
         const auto current = address + static_cast<std::uint32_t>(i);
         auto* resident = find_page_locked(current);
@@ -1913,7 +2052,7 @@ bool AddressSpace::compare_exchange_integer(
                          ? *resident
                          : ensure_page_locked(current);
         bool jit_eligibility_changed = false;
-        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] =
@@ -1931,6 +2070,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
 {
     static_assert(std::is_unsigned_v<T>);
     auto lock = write_lock();
+    account_vm_access_locked(address, sizeof(T), MemoryPermission::Read | MemoryPermission::Write);
     if (!range_accessible_locked(address, sizeof(T),
             MemoryPermission::Read | MemoryPermission::Write)) {
         return std::nullopt;
@@ -1950,7 +2090,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
                                << (index * 8U));
         }
         bool jit_eligibility_changed = false;
-        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
@@ -1982,7 +2122,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
                          ? *resident
                          : ensure_page_locked(current);
         bool jit_eligibility_changed = false;
-        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] = static_cast<std::byte>(
@@ -2494,6 +2634,9 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
                 VmInheritance::None;
         if (!absent_from_child && page.backing && !page.shared_writable) {
             page.copy_on_write_possible = true;
+            const_cast<AddressSpace*>(this)->trim_vm_translations_locked(
+                address, static_cast<std::uint64_t>(address) + page_size,
+                static_cast<std::uint8_t>(7U & ~static_cast<unsigned>(permission_bits(MemoryPermission::Write))));
             const_cast<AddressSpace*>(this)->refresh_jit_page_locked(address);
         }
     }
@@ -2572,6 +2715,7 @@ void AddressSpace::set_page_permissions_locked(
 {
     const auto flags = static_cast<std::uint8_t>(
         mapped_page_flag | permission_bits(permissions));
+    trim_vm_translations_locked(address, end, permission_bits(permissions));
     const auto first_page = static_cast<std::size_t>(address / page_size);
     const auto after_page = static_cast<std::size_t>(end / page_size);
     for (auto page = first_page; page < after_page;) {
@@ -2596,6 +2740,7 @@ void AddressSpace::set_page_permissions_locked(
 void AddressSpace::clear_page_permissions_locked(
     std::uint32_t address, std::uint64_t end)
 {
+    trim_vm_translations_locked(address, end, 0U);
     const auto first_page = static_cast<std::size_t>(address / page_size);
     const auto after_page = static_cast<std::size_t>(end / page_size);
     for (auto page = first_page; page < after_page;) {
