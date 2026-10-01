@@ -16,6 +16,7 @@
 #include <kernel/guest_read_buffer.hpp>
 
 #include "kernel/unix_socket_node.hpp"
+#include "kernel/child_wait_status.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
 #include "kernel/mach_receive_wait_queue.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
@@ -187,6 +188,7 @@ struct PendingWait {
     std::uint32_t status_address { };
     std::uint32_t options { };
     std::size_t processor { };
+    std::optional<std::uint64_t> wake_generation;
 
     [[nodiscard]] bool matches(std::uint32_t pid, std::uint32_t group) const noexcept
     {
@@ -702,6 +704,7 @@ struct KernelSharedState {
         // Job-control suspension is an independent scheduler hold. SIGCONT
         // must release this hold without undoing a concurrent pid_suspend.
         bool signal_stopped { };
+        ChildWaitStatus child_wait_status;
         std::string command;
         std::string executable_path;
         std::vector<std::string> arguments;
@@ -717,6 +720,7 @@ struct KernelSharedState {
         // join facts from two different processes that share a PID.
         std::uint64_t incarnation { };
         std::uint64_t parent_incarnation { };
+        std::uint64_t child_wait_generation { };
         std::uint64_t start_wall_nanoseconds { };
         std::array<std::byte, 16> executable_uuid { };
         // Audit tokens distinguish both PID reuse and replacement by exec.

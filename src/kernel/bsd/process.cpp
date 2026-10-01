@@ -188,6 +188,9 @@ void CompatibilityKernel::exit_process(
             record->second.exited = true;
             record->second.exit_status = status;
             record->second.termination_signal = signal;
+            if (const auto parent = shared_state_->processes.find(record->second.parent_pid);
+                parent != shared_state_->processes.end())
+                ++parent->second.child_wait_generation;
         }
         if (shared_state_->sandbox_extensions)
             shared_state_->sandbox_extensions->exit_process(process_.pid);

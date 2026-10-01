@@ -456,7 +456,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             process_.membership, process_.uid, process_.effective_uid,
             process_.gid, process_.effective_gid, process_.groups, process_.nice_value,
             process_.exit_status,
-            process_.termination_signal, process_.exited, false, false,
+            process_.termination_signal, process_.exited, false, false, { },
             "launchd", "/sbin/launchd", { "/sbin/launchd" },
             { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
                 "SHELL=/bin/sh" },
@@ -1245,6 +1245,8 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
             record.incarnation = shared_state_->next_process_incarnation++;
         record.pid_suspended = false;
         record.signal_stopped = false;
+        record.child_wait_status = { };
+        record.child_wait_generation = 0;
     }
     record.exited = false;
     record.in_vfork = false;
@@ -3022,6 +3024,8 @@ void CompatibilityKernel::inherit_process_state(
     child_record.task_legacy_stop_count = 0;
     child_record.task_resume_port = 0;
     child_record.signal_stopped = false;
+    child_record.child_wait_status = { };
+    child_record.child_wait_generation = 0;
     child_record.incarnation = shared_state_->next_process_incarnation++;
     child_record.parent_incarnation =
         shared_state_->processes[parent.process_.pid].incarnation;

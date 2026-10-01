@@ -115,15 +115,29 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal,
 bool CompatibilityKernel::transition_signal_stop(bool stopped, std::uint32_t signal)
 {
     bool changed = false;
+    bool notified = false;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto record = shared_state_->processes.find(process_.pid);
-        if (record != shared_state_->processes.end() && !record->second.exited &&
-            record->second.signal_stopped != stopped) {
-            record->second.signal_stopped = stopped;
-            changed = true;
+        if (record != shared_state_->processes.end() && !record->second.exited) {
+            auto& state = record->second;
+            changed = state.signal_stopped != stopped;
+            state.signal_stopped = stopped;
+            if (stopped && changed) {
+                state.child_wait_status.stopped(signal);
+                const auto parent = shared_state_->processes.find(state.parent_pid);
+                if (parent != shared_state_->processes.end() &&
+                    !parent->second.signal_stopped) {
+                    ++parent->second.child_wait_generation;
+                    notified = true;
+                }
+            } else if (!stopped && (changed || signal == darwin::signal::resume)) {
+                state.child_wait_status.continued();
+            }
         }
     }
+    if (notified)
+        shared_state_->note_io_event_transition();
     if (changed && process_runnable_handler_)
         process_runnable_handler_(process_.pid, !stopped);
     if (changed && stopped && child_status_handler_)
@@ -141,9 +155,6 @@ std::uint32_t CompatibilityKernel::deliver_signal_to_thread(
     if (process_.exited)
         return 0;
 
-    // SIGCONT releases the job-control hold independently of mask/disposition.
-    if (signal == darwin::signal::resume)
-        transition_signal_stop(false);
     const auto handler = signal_actions_[signal][0];
     if (signal != darwin::signal::resume &&
         (handler == darwin::signal::ignore_action ||
@@ -156,8 +167,19 @@ std::uint32_t CompatibilityKernel::deliver_signal_to_thread(
         processor = signal_state_.select(bit, [this](std::size_t candidate) {
             return !disabled_thread_signals_.contains(candidate);
         });
-    if (!processor)
+    if (!processor) {
+        if (signal == darwin::signal::resume)
+            transition_signal_stop(false);
         return 0;
+    }
+    if (signal == darwin::signal::resume) {
+        // kern_sig.c: a held SIGCONT still resumes a stopped task, but a
+        // held signal on an already running task does not set P_CONTINUED.
+        // sigwait selection precedes the mask check in native psignal.
+        const bool selected = (signal_state_.waiting_for(*processor) & bit) != 0;
+        const bool held = (signal_state_.mask(*processor) & bit) != 0;
+        transition_signal_stop(false, (!held || selected) ? signal : 0U);
+    }
     // XNU psignal selects one uthread, coalesces duplicates, and cancels
     // opposing stop/continue bits on that uthread, even when held.
     signal_state_.queue(*processor, bit);

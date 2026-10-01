@@ -33,6 +33,8 @@ void CompatibilityKernel::notify_child_status(const ChildStatus& status)
                     const auto init = shared_state_->processes.find(1);
                     record->second.parent_incarnation = init == shared_state_->processes.end()
                         ? 0U : init->second.incarnation;
+                    if (init != shared_state_->processes.end())
+                        ++init->second.child_wait_generation;
                     reparented = true;
                 } else {
                     shared_state_->processes.erase(record);
