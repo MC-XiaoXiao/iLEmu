@@ -60,7 +60,11 @@ inline std::optional<TaskRpcDestination> validate_kernel_rpc_locked(
         state.mach_port_set_links_by_member.contains(*reply))
         return std::nullopt;
     const auto queue = state.mach_queues.find(*reply);
-    if (queue == state.mach_queues.end() || !queue->second.empty())
+    // Only this reply port can contend with the immediate receive. A waiter
+    // on an unrelated port must not disable RPCs for the entire task. Port
+    // sets are excluded above; selected tickets have already left the index.
+    if (queue == state.mach_queues.end() || !queue->second.empty() ||
+        state.mach_receive_waiters.first(*reply))
         return std::nullopt;
     return TaskRpcDestination { *object, *reply };
 }

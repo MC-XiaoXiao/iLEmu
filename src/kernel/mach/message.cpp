@@ -238,7 +238,7 @@ void CompatibilityKernel::dispatch_mach_message(
     const bool vm_memory_request = vm_mig::Allocation::handles(*message_id) ||
                                    vm_mig::Deallocation::handles(*message_id) ||
                                    vm_mig::Protection::handles(*message_id);
-    if (vm_memory_request && pending_mach_receives_.empty()) {
+    if (vm_memory_request) {
         const std::lock_guard lock { shared_state_->mach_mutex };
         const auto result = vm_mig::Allocation::handles(*message_id)
             ? vm_mig::Allocation::try_synchronous_locked(memory_, *shared_state_,
@@ -368,7 +368,7 @@ void CompatibilityKernel::dispatch_mach_message(
         }
     }
     const bool task_information_request = task_mig::Information::handles(*message_id);
-    if (task_information_request && pending_mach_receives_.empty()) {
+    if (task_information_request) {
         const std::lock_guard lock { shared_state_->mach_mutex };
         const auto result = task_mig::Information::try_synchronous_locked(memory_,
             *shared_state_, process_, registers, *bits, *local_port,
