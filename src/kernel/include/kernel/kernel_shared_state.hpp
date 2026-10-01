@@ -187,6 +187,16 @@ struct PendingWait {
     std::uint32_t status_address { };
     std::uint32_t options { };
     std::size_t processor { };
+
+    [[nodiscard]] bool matches(std::uint32_t pid, std::uint32_t group) const noexcept
+    {
+        if (target_pid == -1)
+            return true;
+        if (target_pid > 0)
+            return static_cast<std::uint32_t>(target_pid) == pid;
+        // Unsigned negation also handles INT_MIN without signed overflow.
+        return 0U - static_cast<std::uint32_t>(target_pid) == group;
+    }
 };
 
 struct PendingMachReceive {

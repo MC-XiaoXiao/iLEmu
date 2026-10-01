@@ -236,6 +236,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/guarded_file.cpp
     bsd/fileport.cpp
     bsd/process.cpp
+    bsd/process/wait.cpp
     bsd/posix_semaphore.cpp
     bsd/filesystem.cpp
     bsd/filesystem/directory.cpp

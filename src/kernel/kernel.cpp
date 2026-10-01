@@ -1335,38 +1335,6 @@ void CompatibilityKernel::set_process_arguments(
     record.environment = environment;
 }
 
-bool CompatibilityKernel::complete_wait(
-    Cpu& cpu, std::uint32_t child_pid, std::uint32_t wait_status)
-{
-    const auto pending = pending_waits_.find(cpu.processor_id());
-    if (pending == pending_waits_.end())
-        return false;
-    if (pending->second.status_address != 0 &&
-        !memory_.write32(pending->second.status_address, wait_status)) {
-        bsd_error(cpu, efault);
-    } else {
-        bsd_success(cpu, child_pid);
-    }
-    pending_waits_.erase(pending);
-    pending_bsd_entries_.erase(cpu.processor_id());
-    process_.waiting_for_events = !pending_waits_.empty();
-    output_.write("[process] reap parent=" + std::to_string(process_.pid) +
-                  " child=" + std::to_string(child_pid) + "\n");
-    return true;
-}
-
-bool CompatibilityKernel::fail_wait(Cpu& cpu, std::uint32_t error)
-{
-    const auto pending = pending_waits_.find(cpu.processor_id());
-    if (pending == pending_waits_.end())
-        return false;
-    bsd_error(cpu, error);
-    pending_waits_.erase(pending);
-    pending_bsd_entries_.erase(cpu.processor_id());
-    process_.waiting_for_events = !pending_waits_.empty();
-    return true;
-}
-
 std::optional<KernelSharedState::DescriptorTransfer>
 CompatibilityKernel::export_descriptor(std::uint32_t fd) const
 {

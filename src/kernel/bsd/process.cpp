@@ -17,7 +17,6 @@
 #include "process/uuid_policy.hpp"
 #include "security/extensions.hpp"
 
-#include "foundation/application_path.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "../mach/task/suspension.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
@@ -180,7 +179,7 @@ void CompatibilityKernel::exit_process(
     // Publish the dead identity before tearing down its ports. Mach/graphics
     // observers share this record and must stop routing work to the PID while
     // ipc_space termination is in progress. The shared record remains as a
-    // lightweight zombie until its parent consumes it with wait_child().
+    // lightweight zombie until its parent consumes it with wait4.
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const kernel_bsd::JobControlTransition job_control { *shared_state_ };
@@ -229,41 +228,6 @@ void CompatibilityKernel::exit_process(
         " status=" + std::to_string(status) +
         (signal != 0 ? " signal=" + std::to_string(signal) : std::string { }) +
         "\n");
-}
-
-CompatibilityKernel::WaitChildResult CompatibilityKernel::wait_child(
-    std::int32_t target_pid, bool reap, std::optional<std::size_t> waiter)
-{
-    WaitChildResult result;
-    std::lock_guard mach_lock { shared_state_->mach_mutex };
-    for (auto child = shared_state_->processes.begin();
-        child != shared_state_->processes.end(); ++child) {
-        const auto child_pid = child->first;
-        const auto& record = child->second;
-        if (record.parent_pid != process_.pid ||
-            (target_pid != -1 &&
-                static_cast<std::uint32_t>(target_pid) != child_pid)) {
-            continue;
-        }
-        result.has_child = true;
-        if (!record.exited)
-            continue;
-        result.child_pid = child_pid;
-        result.status = record.termination_signal != 0
-                            ? record.termination_signal & 0x7fU
-                            : (record.exit_status & 0xffU) << 8U;
-        if (reap) {
-            shared_state_->processes.erase(child);
-            if (waiter && signal_state_.needs_last_child_check(*waiter) &&
-                std::none_of(shared_state_->processes.begin(),
-                    shared_state_->processes.end(), [this](const auto& entry) {
-                        return entry.second.parent_pid == process_.pid;
-                    }))
-                signal_state_.reaped_last_child(*waiter);
-        }
-        break;
-    }
-    return result;
 }
 
 void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
@@ -363,69 +327,9 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         }
         return;
     }
-    case 7: { // wait4
-        const auto target_pid = static_cast<std::int32_t>(registers[0]);
-        const auto options = registers[2];
-        if (target_pid == 0 || target_pid < -1) {
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return;
-        }
-        // SpringBoard launches an application and then waits for its process
-        // object. That wait is an implementation detail, not a reason to stop
-        // servicing the system event port: Home/Lock must remain interruptible
-        // while Weather/Stocks are still loading. Mirror XNU's EINTR boundary
-        // for an application child and keep the run-loop thread schedulable.
-        if (target_pid > 0 &&
-            process_image_.ends_with("/SpringBoard.app/SpringBoard")) {
-            bool application_child = false;
-            {
-                std::lock_guard mach_lock { shared_state_->mach_mutex };
-                const auto child = shared_state_->processes.find(
-                    static_cast<std::uint32_t>(target_pid));
-                application_child = child != shared_state_->processes.end() &&
-                                    !child->second.exited &&
-                                    is_application_executable_path(
-                                        child->second.executable_path);
-            }
-            if (application_child) {
-                bsd_error(cpu, darwin::error::interrupted);
-                return;
-            }
-        }
-        if ((options & 1U) != 0) { // WNOHANG
-            const auto result = wait_child(target_pid, false);
-            if (!result.has_child) {
-                bsd_error(cpu, darwin::error::no_child_process);
-                return;
-            }
-            if (!result.child_pid) {
-                bsd_success(cpu, 0);
-                return;
-            }
-            if (registers[1] != 0 &&
-                !memory_.write32(registers[1], result.status)) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            static_cast<void>(
-                wait_child(static_cast<std::int32_t>(*result.child_pid), true,
-                    cpu.processor_id()));
-            output_.write(
-                "[process] reap-nohang parent=" + std::to_string(process_.pid) +
-                " child=" + std::to_string(*result.child_pid) + "\n");
-            bsd_success(cpu, *result.child_pid);
-            return;
-        }
-        pending_waits_.insert_or_assign(
-            cpu.processor_id(), PendingWait { target_pid, registers[1], options,
-                                    cpu.processor_id() });
-        output_.write("[process] wait pid=" + std::to_string(process_.pid) +
-                      " target=" + std::to_string(target_pid) + "\n");
-        process_.waiting_for_events = true;
-        bsd_success(cpu, 0);
-        cpu.halt(Dynarmic::HaltReason::UserDefined5);
+    case 7: // wait4
+        dispatch_wait(cpu);
         return;
-    }
     case 20: // getpid
         bsd_success(cpu, process_.pid);
         return;

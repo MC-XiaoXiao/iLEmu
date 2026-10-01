@@ -3338,25 +3338,15 @@ void EmulatorSession::run()
             }
         }
         for (auto& parent : runtimes) {
-            const auto pending_waits = parent->kernel->pending_waits();
-            for (const auto& [processor, pending] : pending_waits) {
-                const auto child =
-                    parent->kernel->wait_child(pending.target_pid, false);
-                if (child.child_pid &&
-                    parent->kernel->complete_wait(parent->cpus->cpu(processor),
-                        *child.child_pid, child.status)) {
-                    static_cast<void>(parent->kernel->wait_child(
-                        static_cast<std::int32_t>(*child.child_pid), true, processor));
+            const auto& pending_waits = parent->kernel->pending_waits();
+            for (auto wait = pending_waits.begin(); wait != pending_waits.end();) {
+                // Completion erases only this invocation. Advance first so
+                // scheduler polling need not allocate a copy of the map.
+                const auto processor = (wait++)->first;
+                if (parent->kernel->complete_wait(parent->cpus->cpu(processor))) {
                     static_cast<void>(scheduler.make_runnable(
                         XnuThreadId { parent->kernel->process().pid,
                             static_cast<std::uint32_t>(processor) }));
-                } else if (!child.has_child) {
-                    if (parent->kernel->fail_wait(
-                            parent->cpus->cpu(processor), 10)) {
-                        static_cast<void>(scheduler.make_runnable(
-                            XnuThreadId { parent->kernel->process().pid,
-                                static_cast<std::uint32_t>(processor) }));
-                    }
                 }
             }
         }

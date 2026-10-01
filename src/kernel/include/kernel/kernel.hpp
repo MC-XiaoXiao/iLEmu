@@ -95,11 +95,6 @@ public:
         bool depress { };
         std::uint32_t duration_milliseconds { };
     };
-    struct WaitChildResult {
-        bool has_child { };
-        std::optional<std::uint32_t> child_pid;
-        std::uint32_t status { };
-    };
     struct ChildStatus {
         enum class Kind { Exit, Stop };
         Kind kind;
@@ -201,9 +196,6 @@ public:
     void clear_thread_io_policy(std::size_t processor_id);
     void exit_process(std::uint32_t status, std::uint32_t signal = 0);
     void notify_orphaned_process_groups(std::span<const std::uint32_t> targets);
-    [[nodiscard]] WaitChildResult wait_child(
-        std::int32_t target_pid, bool reap,
-        std::optional<std::size_t> waiter = std::nullopt);
     void notify_child_status(const ChildStatus& status);
     void set_child_status_handler(ChildStatusHandler handler)
     {
@@ -512,9 +504,7 @@ public:
     {
         return pending_waits_;
     }
-    bool complete_wait(
-        Cpu& cpu, std::uint32_t child_pid, std::uint32_t wait_status);
-    bool fail_wait(Cpu& cpu, std::uint32_t error);
+    bool complete_wait(Cpu& cpu);
     bool deliver_pending_mach(Cpu& cpu);
     bool deliver_pending_io(Cpu& cpu);
     [[nodiscard]] std::optional<std::size_t> pending_mach_receiver_processor(
@@ -653,6 +643,8 @@ private:
         std::uint32_t signal, std::optional<std::size_t> processor,
         std::uint32_t sender_pid, std::uint32_t sender_uid);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
+    void dispatch_wait(Cpu& cpu);
+    bool try_wait(Cpu& cpu, const PendingWait& request);
     void dispatch_bsd_posix_semaphore(Cpu& cpu, std::uint32_t number);
     void release_process_mach_rights();
     void release_process_descriptors();
