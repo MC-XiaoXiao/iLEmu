@@ -73,7 +73,7 @@ public:
         if (end > UINT32_MAX)
             return error::bad_address;
         // Reuse typed guest writes for the terminator. A single payload
-        // span takes copy_in's existing fast path without batch vectors.
+        // span uses copy_to_user's existing fast path without batch vectors.
         if (!copy_to_user(output_,
                 std::as_bytes(std::span { value.data(), value.size() })))
             return error::bad_address;
@@ -156,11 +156,7 @@ private:
     [[nodiscard]] bool copy_to_user(
         std::uint32_t address, std::span<const std::byte> bytes)
     {
-        // copy_in also serves the loader and intentionally bypasses write
-        // permissions; syscall copyout must check the guest mapping first.
-        return bytes.empty() ||
-            (memory_.accessible(address, bytes.size(), MemoryPermission::Write) &&
-                memory_.copy_in(address, bytes));
+        return memory_.copy_to_user(address, bytes);
     }
 
     AddressSpace& memory_;

@@ -116,6 +116,7 @@ namespace ilemu {
 
 void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
 {
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     auto& registers = cpu.registers();
     switch (number) {
     case 54: { // ioctl
@@ -366,7 +367,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                         argument +
                             darwin::tty::arm32_attributes_offset::local_flags,
                         attributes.local_flags) ||
-                    !memory_.copy_in(argument +
+                    !memory_.copy_to_user(argument +
                                          darwin::tty::arm32_attributes_offset::
                                              control_characters,
                         control_characters) ||
@@ -468,7 +469,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                         argument +
                             darwin::tty::arm32_attributes_offset::local_flags,
                         attributes.local_flags) ||
-                    !memory_.copy_in(argument +
+                    !memory_.copy_to_user(argument +
                                          darwin::tty::arm32_attributes_offset::
                                              control_characters,
                         control_characters) ||
@@ -576,7 +577,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             if (request == darwin::tty::ioaos_status_query) {
                 std::array<std::byte, darwin::tty::ioaos_status_size>
                     status { };
-                if (!memory_.copy_in(argument, status)) {
+                if (!memory_.copy_to_user(argument, status)) {
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
@@ -589,7 +590,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             if (request == darwin::tty::ioaos_general_data_query) {
                 std::array<std::byte, darwin::tty::ioaos_general_data_size>
                     data { };
-                if (!memory_.copy_in(argument, data)) {
+                if (!memory_.copy_to_user(argument, data)) {
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
@@ -769,7 +770,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, darwin::error::invalid_argument);
                     return;
                 }
-                if (!memory_.copy_in(argument, *payload) ||
+                if (!memory_.copy_to_user(argument, *payload) ||
                     !memory_.write32(argument, 0U) ||
                     !memory_.write32(
                         argument + sizeof(std::uint32_t), channel_unit)) {
@@ -777,7 +778,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     return;
                 }
                 if (carries_channel_path &&
-                    (!memory_.copy_in(
+                    (!memory_.copy_to_user(
                          argument + static_cast<std::uint32_t>(
                                         darwin::tty::asm_new_dlci_path_offset),
                          std::as_bytes(std::span {
@@ -1693,7 +1694,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, darwin::error::no_memory);
                     return;
                 }
-                if (!memory_.copy_in(registers[2], records)) {
+                if (!memory_.copy_to_user(registers[2], records)) {
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
@@ -1744,7 +1745,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, 12); // ENOMEM
                     return;
                 }
-                if (!memory_.copy_in(registers[2], records)) {
+                if (!memory_.copy_to_user(registers[2], records)) {
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
@@ -1791,7 +1792,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             }
             const auto copied = std::min(*old_size, required);
             if (copied == 0 ||
-                !memory_.copy_in(registers[2],
+                !memory_.copy_to_user(registers[2],
                     std::span<const std::byte> { bytes }.first(copied)) ||
                 !memory_.write32(registers[3], copied)) {
                 bsd_error(cpu, copied == 0 ? bsd_support::invalid_argument
@@ -1971,7 +1972,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             for (std::size_t index = 0; index < record_count; ++index) {
                 const auto [pid, record] = matching_processes[index];
                 const auto bytes = encode_process_info(pid, *record);
-                if (!memory_.copy_in(destination, bytes)) {
+                if (!memory_.copy_to_user(destination, bytes)) {
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
