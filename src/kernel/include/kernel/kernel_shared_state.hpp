@@ -95,6 +95,7 @@ class SurfaceTransportLease;
 class TaskSyscallCounters;
 class TaskVmEvents;
 namespace bsd::sandbox { class Extensions; }
+namespace bsd::kernel_control { struct Endpoint; }
 
 // Shared with the process table so remote setpgid is visible immediately.
 // Fork copies this membership; exec retains it.
@@ -688,6 +689,8 @@ struct KernelSharedState {
         std::shared_ptr<UnixListener> unix_listener_state;
         std::shared_ptr<RouteSocketState> route_socket_state;
         std::shared_ptr<bsd::VirtualUdpSocket> virtual_udp_socket;
+        std::shared_ptr<HostSocket> host_socket;
+        std::shared_ptr<bsd::kernel_control::Endpoint> kernel_control_endpoint;
         std::string bound_name;
         bool listening { };
         std::vector<KeventRegistration> kqueue_registrations;

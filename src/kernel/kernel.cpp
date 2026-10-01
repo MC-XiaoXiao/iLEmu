@@ -1404,6 +1404,15 @@ CompatibilityKernel::export_descriptor(std::uint32_t fd) const
         socket != virtual_udp_sockets_.end()) {
         transfer.virtual_udp_socket = socket->second;
     }
+    // Passing a descriptor retains its open socket, including queued rights
+    // after the sender closes the original fd. Import must share this state.
+    if (const auto socket = host_sockets_.find(fd); socket != host_sockets_.end()) {
+        transfer.host_socket = socket->second;
+    }
+    if (const auto endpoint = kernel_control_endpoints_.find(fd);
+        endpoint != kernel_control_endpoints_.end()) {
+        transfer.kernel_control_endpoint = endpoint->second;
+    }
     if (const auto bound = bound_socket_names_.find(fd);
         bound != bound_socket_names_.end()) {
         transfer.bound_name = bound->second;
@@ -1457,6 +1466,12 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
         }
         if (transfer.virtual_udp_socket) {
             virtual_udp_sockets_[*fd] = transfer.virtual_udp_socket;
+        }
+        if (transfer.host_socket) {
+            host_sockets_[*fd] = transfer.host_socket;
+        }
+        if (transfer.kernel_control_endpoint) {
+            kernel_control_endpoints_[*fd] = transfer.kernel_control_endpoint;
         }
         if (transfer.unix_listener_state) {
             unix_listener_states_[*fd] = transfer.unix_listener_state;
