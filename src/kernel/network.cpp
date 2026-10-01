@@ -153,6 +153,8 @@ std::vector<darwin::route::Entry> CompatibilityKernel::route_snapshot() const
 bool CompatibilityKernel::receive_socket_message(
     Cpu& cpu, std::uint32_t fd, std::uint32_t message_address)
 {
+    // Pending receives complete outside the BSD syscall dispatcher.
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     using namespace darwin::socket;
     if (!memory_.accessible(message_address, arm32_message::size,
             MemoryPermission::Read | MemoryPermission::Write)) {
@@ -760,6 +762,7 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
 bool CompatibilityKernel::copy_socket_address(std::uint32_t address,
     std::uint32_t length_address, std::span<const std::byte> socket_address)
 {
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     if (address == 0 && length_address == 0)
         return true;
     if (address == 0 || length_address == 0)

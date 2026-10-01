@@ -62,6 +62,7 @@ namespace {
 
 void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
 {
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     auto& registers = cpu.registers();
     switch (number) {
     case 27: { // recvmsg
@@ -432,7 +433,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         const auto copied = std::min(*capacity, address_size);
         if ((copied != 0 &&
-                !memory_.copy_in(registers[1],
+                !memory_.copy_to_user(registers[1],
                     std::span<const std::byte> { address.data(), copied })) ||
             !memory_.write32(registers[2], copied)) {
             bsd_error(cpu, bsd_support::bad_address);
@@ -1156,7 +1157,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         const auto copied_size = std::min<std::uint32_t>(
             capacity, static_cast<std::uint32_t>(value.size()));
-        if ((copied_size != 0 && !memory_.copy_in(value_address,
+        if ((copied_size != 0 && !memory_.copy_to_user(value_address,
                                      std::span<const std::byte> {
                                          value.data(), copied_size })) ||
             // sooptcopyout reports bytes copied, not the available size. A
@@ -1449,6 +1450,10 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             "," + std::to_string(*second) + "\n");
         if (!memory_.write32(registers[3], *first) ||
             !memory_.write32(registers[3] + 4, *second)) {
+            // XNU socketpair frees both fileprocs even after a partial copyout.
+            static_cast<void>(release_file_descriptor(*second));
+            static_cast<void>(release_file_descriptor(*first));
+            shared_state_->socket_pair_buffers.erase(pair);
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
