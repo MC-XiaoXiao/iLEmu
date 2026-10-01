@@ -42,6 +42,7 @@ void CompatibilityKernel::dispatch_bsd_signal_wait(Cpu& cpu)
         return_waited_signal(cpu, *signal, output_address);
         return;
     }
+    record_bsd_sleep();
     signal_state_.begin_wait(processor, signals);
     pending_signal_waits_[processor] = { signals, output_address, std::nullopt, std::nullopt };
     process_.waiting_for_events = true;

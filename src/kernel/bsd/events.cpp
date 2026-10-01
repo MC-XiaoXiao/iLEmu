@@ -1400,6 +1400,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     : now + duration;
         }
         process_.waiting_for_events = true;
+        record_bsd_sleep();
         pending_selects_[cpu.processor_id()] = PendingSelect { descriptor_count,
             registers[1], registers[2], registers[3],
             std::move(requested_read_words), std::move(requested_write_words),

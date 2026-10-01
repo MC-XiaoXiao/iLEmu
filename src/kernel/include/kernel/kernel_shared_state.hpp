@@ -733,6 +733,7 @@ struct KernelSharedState {
         std::uint64_t incarnation { };
         std::uint64_t parent_incarnation { };
         std::uint64_t child_wait_generation { };
+        std::uint32_t voluntary_context_switches { };
         ProcessResourceUsage children_resource_usage;
         ProcessResourceUsage exit_resource_usage;
         std::uint64_t start_wall_nanoseconds { };

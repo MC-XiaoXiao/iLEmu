@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
 
+#include <optional>
+
 #include "kernel/darwin_resource_abi.hpp"
 #include "mach/xnu_task_statistics.hpp"
 
@@ -15,6 +17,8 @@ class ProcessResourceUsage {
 public:
     static ProcessResourceUsage from_task(const XnuTaskStatistics& statistics,
         std::uint32_t maximum_resident_bytes);
+    void set_context_switches(std::uint32_t voluntary,
+        std::optional<std::uint32_t> task_total);
     void add(const ProcessResourceUsage& other);
     [[nodiscard]] bool copyout(AddressSpace& memory, std::uint32_t address) const;
 

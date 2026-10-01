@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <bit>
 #include <limits>
+#include <mutex>
 
 namespace ilemu {
 ProcessResourceUsage ProcessResourceUsage::from_task(
@@ -28,9 +29,18 @@ ProcessResourceUsage ProcessResourceUsage::from_task(
         result.add(live);
     }
     result.words_[4] = maximum_resident_bytes;
-    // HLE host duration is not guest kernel CPU time. Event counters remain
+    // HLE host duration is not guest kernel CPU time. Other event counters remain
     // zero until the corresponding native task accounting source exists.
     return result;
+}
+
+void ProcessResourceUsage::set_context_switches(std::uint32_t voluntary,
+    std::optional<std::uint32_t> task_total)
+{
+    words_[16] = voluntary;
+    // calcru stores the native long subtraction, then clamps negative results.
+    words_[17] = task_total ? static_cast<std::uint32_t>(std::max(0,
+        std::bit_cast<std::int32_t>(*task_total - voluntary))) : 0U;
 }
 
 void ProcessResourceUsage::add(const ProcessResourceUsage& other)
@@ -59,6 +69,14 @@ bool ProcessResourceUsage::copyout(AddressSpace& memory, std::uint32_t address) 
     return true;
 }
 
+void CompatibilityKernel::record_bsd_sleep()
+{
+    // XNU _sleep charges entry, even if a signal or wake races the block.
+    // Host polling and Mach thread_block paths must not call this hook.
+    std::lock_guard lock { shared_state_->mach_mutex };
+    ++shared_state_->processes.at(process_.pid).voluntary_context_switches;
+}
+
 ProcessResourceUsage CompatibilityKernel::collect_resource_usage() const
 {
     const auto statistics = task_statistics_query_
@@ -67,6 +85,14 @@ ProcessResourceUsage CompatibilityKernel::collect_resource_usage() const
             DarwinResourceAccounting::ResidentPeak
         ? static_cast<std::uint32_t>(memory_.resident_page_statistics().maximum *
               AddressSpace::page_size) : 0U;
-    return ProcessResourceUsage::from_task(statistics.value_or(XnuTaskStatistics { }), peak);
+    auto usage = ProcessResourceUsage::from_task(
+        statistics.value_or(XnuTaskStatistics { }), peak);
+    std::lock_guard lock { shared_state_->mach_mutex };
+    usage.set_context_switches(
+        shared_state_->processes.at(process_.pid).voluntary_context_switches,
+        statistics && shared_state_->darwin_abi.resource_accounting ==
+                DarwinResourceAccounting::ResidentPeak
+            ? std::optional { statistics->context_switches } : std::nullopt);
+    return usage;
 }
 } // namespace ilemu

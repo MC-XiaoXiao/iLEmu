@@ -77,6 +77,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::would_block);
             return;
         }
+        record_bsd_sleep();
         pending_recvmsgs_[cpu.processor_id()] =
             PendingRecvmsg { fd, registers[1], cpu.processor_id() };
         process_.waiting_for_events = true;
@@ -242,6 +243,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::would_block);
             return;
         }
+        record_bsd_sleep();
         pending_socket_reads_[cpu.processor_id()] =
             PendingSocketRead { fd, registers[1], registers[2], registers[4],
                 registers[5], cpu.processor_id(), std::nullopt };
@@ -267,6 +269,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, bsd_support::would_block);
                     return;
                 }
+                record_bsd_sleep();
                 pending_host_accepts_[cpu.processor_id()] =
                     PendingHostAccept { listener_fd, registers[1], registers[2],
                         cpu.processor_id() };
@@ -306,6 +309,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::would_block);
             return;
         }
+        record_bsd_sleep();
         pending_unix_accepts_[cpu.processor_id()] =
             PendingUnixAccept { listener_fd, registers[1], registers[2],
                 cpu.processor_id() };
@@ -606,6 +610,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                     0) {
                     bsd_error(cpu, connected.darwin_error);
                 } else {
+                    record_bsd_sleep();
                     pending_host_connects_[cpu.processor_id()] =
                         PendingHostConnect { fd, cpu.processor_id() };
                     process_.waiting_for_events = true;

@@ -645,6 +645,7 @@ private:
         std::uint32_t sender_pid, std::uint32_t sender_uid);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
     void dispatch_wait(Cpu& cpu, bool information = false);
+    void record_bsd_sleep();
     [[nodiscard]] ProcessResourceUsage collect_resource_usage() const;
     bool try_wait(Cpu& cpu, PendingWait& request);
     void dispatch_bsd_posix_semaphore(Cpu& cpu, std::uint32_t number);

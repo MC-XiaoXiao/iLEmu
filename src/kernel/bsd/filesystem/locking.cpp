@@ -522,6 +522,7 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
         return true;
     }
 
+    record_bsd_sleep();
     pending_record_locks_[cpu.processor_id()] =
         PendingRecordLock { fd, permanent_file_id, range, cpu.processor_id(),
             owner, description, deadline };
@@ -583,6 +584,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_locking(
         return true;
     }
 
+    record_bsd_sleep();
     pending_flocks_[cpu.processor_id()] =
         PendingFlock { fd, *kind, description, cpu.processor_id() };
     process_.waiting_for_events = true;

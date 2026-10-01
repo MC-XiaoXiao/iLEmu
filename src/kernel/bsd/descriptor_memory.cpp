@@ -161,6 +161,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             const auto deadline = shared_state_->clock.now() +
                                   static_cast<std::uint64_t>(timeout) *
                                       nanoseconds_per_decisecond;
+            record_bsd_sleep();
             pending_socket_reads_[cpu.processor_id()] = PendingSocketRead { fd,
                 registers[1], static_cast<std::uint32_t>(size), 0, 0,
                 cpu.processor_id(), deadline, std::move(vectors) };
@@ -191,6 +192,13 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 bsd_error(cpu, bsd_support::would_block);
                 return;
             }
+            // Socket sbwait and BPF reads enter BSD _sleep. Device-specific
+            // IOKit waits need their own verified accounting source.
+            if (!baseband_descriptor &&
+                (virtual_descriptor == virtual_descriptors_.end() ||
+                    virtual_descriptor->second != darwin::network::
+                        apple80211_driver::event_descriptor_kind))
+                record_bsd_sleep();
             pending_socket_reads_[cpu.processor_id()] = PendingSocketRead { fd,
                 registers[1], static_cast<std::uint32_t>(size), 0, 0,
                 cpu.processor_id(), std::nullopt, std::move(vectors) };

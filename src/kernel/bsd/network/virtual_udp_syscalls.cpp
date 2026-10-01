@@ -40,6 +40,7 @@ bool CompatibilityKernel::send_host_socket_bytes(Cpu& cpu, std::uint32_t fd,
             return true;
         }
         const auto processor = cpu.processor_id();
+        record_bsd_sleep();
         pending_host_writes_.insert_or_assign(
             processor, PendingHostWrite { fd, host->second, std::move(bytes),
                            std::move(destination) });

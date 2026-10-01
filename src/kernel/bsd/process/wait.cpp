@@ -125,6 +125,8 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
         bsd_success(cpu, 0);
         return true;
     }
+    // Native msleep0 entry counts; the generation guard excludes host polling.
+    ++shared_state_->processes.at(process_.pid).voluntary_context_switches;
     return false;
 }
 

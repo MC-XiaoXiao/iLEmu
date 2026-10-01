@@ -332,6 +332,7 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
         return;
     }
     if (number == 111U) { // sigsuspend
+        record_bsd_sleep();
         signal_state_.suspend(cpu.processor_id(), cpu.registers()[0]);
         pending_signal_suspends_[cpu.processor_id()] =
             PendingSignalSuspend { false };
