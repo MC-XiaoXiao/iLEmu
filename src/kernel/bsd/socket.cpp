@@ -323,8 +323,11 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
     case 32: { // getsockname
         const auto fd = registers[0];
         const auto socket = virtual_descriptors_.find(fd);
-        if (socket == virtual_descriptors_.end()) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
+        const auto type = socket_type(fd);
+        if (!type) {
+            bsd_error(cpu, socket != virtual_descriptors_.end() ||
+                    file_descriptors_.contains(fd) || duplicated_descriptors_.contains(fd)
+                ? 38U : bsd_support::bad_file_descriptor); // ENOTSOCK / EBADF
             return;
         }
         const bool peer = number == 31;
@@ -894,20 +897,31 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
     }
     case 105: { // setsockopt
         const auto fd = registers[0];
-        if (!virtual_descriptors_.contains(fd)) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
-            return;
-        }
         const auto value_address = registers[3];
         const auto value_size = registers[4];
+        if (value_address == 0 && value_size != 0) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        if (!socket_type(fd)) {
+            bsd_error(cpu, virtual_descriptors_.contains(fd) ||
+                    file_descriptors_.contains(fd) || duplicated_descriptors_.contains(fd)
+                ? 38U : bsd_support::bad_file_descriptor); // ENOTSOCK / EBADF
+            return;
+        }
         if (value_size > bsd_support::maximum_io ||
             value_size > static_cast<std::uint32_t>(
                              std::numeric_limits<std::int32_t>::max())) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
-        if (value_address == 0 && value_size != 0) {
-            bsd_error(cpu, bsd_support::bad_address);
+        // These are native sogetopt queries, never mutable socket options.
+        // Reject before copyin, as sosetopt does for an unsupported option.
+        if (registers[1] == darwin::socket::option_level &&
+            (registers[2] == darwin::socket::option_type ||
+             registers[2] == darwin::socket::option_error ||
+             registers[2] == darwin::socket::option_pending_bytes)) {
+            bsd_error(cpu, darwin::error::no_protocol_option);
             return;
         }
         std::vector<std::byte> value;
@@ -1029,8 +1043,11 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
     case 118: { // getsockopt
         const auto fd = registers[0];
         const auto socket = virtual_descriptors_.find(fd);
-        if (socket == virtual_descriptors_.end()) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
+        const auto type = socket_type(fd);
+        if (!type) {
+            bsd_error(cpu, socket != virtual_descriptors_.end() ||
+                    file_descriptors_.contains(fd) || duplicated_descriptors_.contains(fd)
+                ? 38U : bsd_support::bad_file_descriptor); // ENOTSOCK / EBADF
             return;
         }
         const auto value_address = registers[3];
@@ -1048,7 +1065,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
 
         std::vector<std::byte> value;
-        if (registers[1] == darwin::socket::local_option_level &&
+        if (registers[1] == darwin::socket::option_level &&
+            registers[2] == darwin::socket::option_type) {
+            value.resize(sizeof(*type));
+            for (std::size_t byte = 0; byte < value.size(); ++byte)
+                value[byte] = static_cast<std::byte>(*type >> (byte * 8U));
+        } else if (registers[1] == darwin::socket::local_option_level &&
             registers[2] == darwin::socket::local_peer_credentials &&
             (socket->second.starts_with("unix-") ||
                 socket->second == "socketpair")) {
@@ -1122,17 +1144,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         if (value.empty() && registers[1] == darwin::socket::option_level) {
             std::uint32_t default_value = 0;
-            if (registers[2] == darwin::socket::option_type) {
-                if (const auto host = host_sockets_.find(fd);
-                    host != host_sockets_.end()) {
-                    default_value = host->second->darwin_type();
-                } else {
-                    default_value = socket->second == "unix-stream"      ? 1U
-                                    : socket->second == "unix-dgram"     ? 2U
-                                    : socket->second == "unix-seqpacket" ? 5U
-                                                                         : 3U;
-                }
-            } else if (registers[2] ==
+            if (registers[2] ==
                        darwin::socket::option_accept_connection) {
                 default_value = listening_sockets_.contains(fd) ? 1U : 0U;
             } else if (registers[2] == darwin::socket::option_defunct_ok) {
@@ -1433,7 +1445,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         file_status_flags_[*second] = darwin::open_flag::read_write;
         descriptor_flags_[*second] = 0;
         const auto pair = shared_state_->next_socket_pair++;
-        auto endpoints = make_socket_pair_endpoints(pair);
+        auto endpoints = make_socket_pair_endpoints(pair, registers[1]);
         if (registers[1] == darwin::socket::stream) {
             endpoints.first.peer_credentials.emplace(
                 process_.effective_uid, process_.effective_gid);

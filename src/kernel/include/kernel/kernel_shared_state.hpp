@@ -404,6 +404,11 @@ struct PendingTimer {
 // fork(2), and SCM_RIGHTS all retain the same description; the peer observes
 // close/EOF only after the final reference has gone away.
 struct SocketPairLifetime {
+    explicit SocketPairLifetime(std::uint32_t type = darwin::socket::stream)
+        : socket_type { type } {}
+
+    const std::uint32_t socket_type;
+
     std::array<std::atomic_bool, 2> read_open { true, true };
     std::array<std::atomic_bool, 2> write_open { true, true };
     // Absolute receive positions are protected by KernelSharedState's socket
@@ -482,9 +487,10 @@ struct SocketPairEndpoint {
 };
 
 [[nodiscard]] inline std::pair<SocketPairEndpoint, SocketPairEndpoint>
-make_socket_pair_endpoints(std::uint32_t pair)
+make_socket_pair_endpoints(std::uint32_t pair,
+    std::uint32_t type = darwin::socket::stream)
 {
-    auto lifetime = std::make_shared<SocketPairLifetime>();
+    auto lifetime = std::make_shared<SocketPairLifetime>(type);
     return { SocketPairEndpoint { pair, 0,
                  std::make_shared<SocketPairOpenDescription>(lifetime, 0) },
         SocketPairEndpoint { pair, 1,

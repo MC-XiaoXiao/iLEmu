@@ -901,6 +901,8 @@ private:
         std::uint32_t size, std::uint32_t source_address = 0,
         std::uint32_t source_length_address = 0,
         std::span<const GuestReadVector> vectors = {});
+    [[nodiscard]] std::optional<std::uint32_t> socket_type(
+        std::uint32_t descriptor) const;
     bool copy_socket_address(std::uint32_t address,
         std::uint32_t length_address,
         std::span<const std::byte> socket_address);

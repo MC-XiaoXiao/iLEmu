@@ -17,6 +17,7 @@
 #include "network/darwin_network_abi.hpp"
 #include "network/darwin_route_socket.hpp"
 #include "kernel/kernel_network.hpp"
+#include "kernel/kernel_control.hpp"
 #include "kernel/offline_serial_device.hpp"
 
 #include <algorithm>
@@ -757,6 +758,40 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
     output_.write("[network] read fd=" + std::to_string(fd) +
                   " bytes=" + std::to_string(received.transferred) + "\n");
     return true;
+}
+
+std::optional<std::uint32_t> CompatibilityKernel::socket_type(
+    std::uint32_t descriptor) const
+{
+    const auto found = virtual_descriptors_.find(descriptor);
+    if (found == virtual_descriptors_.end())
+        return std::nullopt;
+    const auto& kind = found->second;
+    using namespace darwin::socket;
+    if (kind == "unix-stream" || kernel_network::is_isolated_stream_descriptor(kind))
+        return stream;
+    if (kind == "unix-dgram" || kind == "inet-dgram" || kind == "inet6-dgram")
+        return datagram;
+    if (kind == "unix-seqpacket")
+        return sequenced_packet;
+    if (kind == "route-socket" || kind == "system-event-socket")
+        return raw;
+    if (kind == "socketpair") {
+        const auto endpoint = socket_pair_endpoints_.find(descriptor);
+        if (endpoint != socket_pair_endpoints_.end() && endpoint->second.description &&
+            endpoint->second.description->lifetime)
+            return endpoint->second.description->lifetime->socket_type;
+        return std::nullopt;
+    }
+    if (kind == bsd::kernel_control::descriptor_kind) {
+        const auto endpoint = kernel_control_endpoints_.find(descriptor);
+        if (endpoint != kernel_control_endpoints_.end() && endpoint->second)
+            return endpoint->second->socket_type;
+        return std::nullopt;
+    }
+    if (const auto host = host_sockets_.find(descriptor); host != host_sockets_.end())
+        return host->second->darwin_type();
+    return std::nullopt;
 }
 
 bool CompatibilityKernel::copy_socket_address(std::uint32_t address,
