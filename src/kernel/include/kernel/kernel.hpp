@@ -638,12 +638,13 @@ private:
     bool complete_cpu_exception(Cpu& cpu, const MachExceptionDelivery::Completion& completion);
     bool caught_signal_ready(std::size_t processor) const;
     bool interrupt_thread_wait(Cpu& cpu, bool restart);
-    bool transition_signal_stop(bool stopped, std::uint32_t signal = 0);
+    bool transition_signal_stop(bool stopped, std::uint32_t signal = 0,
+        std::optional<std::uint32_t> continuation_pid = std::nullopt);
     [[nodiscard]] std::uint32_t deliver_signal_to_thread(
         std::uint32_t signal, std::optional<std::size_t> processor,
         std::uint32_t sender_pid, std::uint32_t sender_uid);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
-    void dispatch_wait(Cpu& cpu);
+    void dispatch_wait(Cpu& cpu, bool information = false);
     [[nodiscard]] ProcessResourceUsage collect_resource_usage() const;
     bool try_wait(Cpu& cpu, PendingWait& request);
     void dispatch_bsd_posix_semaphore(Cpu& cpu, std::uint32_t number);

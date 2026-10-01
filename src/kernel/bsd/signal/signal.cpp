@@ -112,7 +112,8 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal,
     return deliver_signal_to_thread(signal, std::nullopt, sender_pid, sender_uid);
 }
 
-bool CompatibilityKernel::transition_signal_stop(bool stopped, std::uint32_t signal)
+bool CompatibilityKernel::transition_signal_stop(bool stopped, std::uint32_t signal,
+    std::optional<std::uint32_t> continuation_pid)
 {
     bool changed = false;
     bool notified = false;
@@ -132,7 +133,7 @@ bool CompatibilityKernel::transition_signal_stop(bool stopped, std::uint32_t sig
                     notified = true;
                 }
             } else if (!stopped && (changed || signal == darwin::signal::resume)) {
-                state.child_wait_status.continued();
+                state.child_wait_status.continued(continuation_pid);
             }
         }
     }
@@ -178,7 +179,12 @@ std::uint32_t CompatibilityKernel::deliver_signal_to_thread(
         // sigwait selection precedes the mask check in native psignal.
         const bool selected = (signal_state_.waiting_for(*processor) & bit) != 0;
         const bool held = (signal_state_.mask(*processor) & bit) != 0;
-        transition_signal_stop(false, (!held || selected) ? signal : 0U);
+        // sigwait records the sender; the default/held path records the
+        // resumed process. A caught SIGCONT preserves native p_contproc.
+        const auto actor = selected ? std::optional { sender_pid }
+            : (handler <= darwin::signal::ignore_action || held)
+                ? std::optional { process_.pid } : std::nullopt;
+        transition_signal_stop(false, (!held || selected) ? signal : 0U, actor);
     }
     // XNU psignal selects one uthread, coalesces duplicates, and cancels
     // opposing stop/continue bits on that uthread, even when held.

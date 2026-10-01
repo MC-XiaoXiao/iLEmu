@@ -4,6 +4,7 @@
 
 #include "kernel/kernel.hpp"
 #include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_signal_context.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -22,6 +23,18 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
     if (request.wake_generation == generation)
         return false;
     request.wake_generation = generation;
+    const bool information = request.information_selector.has_value();
+    const bool observe = information && (request.options & 0x20U); // WNOWAIT
+    const auto contract = shared_state_->darwin_abi.child_wait;
+    const auto copy_information = [&](std::uint32_t pid, std::uint32_t code,
+                                      std::uint32_t status) {
+        darwin::signal_context::SignalInfo info { };
+        info.signal = darwin::signal::child;
+        info.pid = pid;
+        info.code = code;
+        info.status = status;
+        return memory_.copy_in(request.status_address, std::as_bytes(std::span { &info, 1 }));
+    };
     bool has_child = false;
     for (auto child = shared_state_->processes.begin();
         child != shared_state_->processes.end(); ++child) {
@@ -32,6 +45,27 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
             continue;
         has_child = true;
         if (!record.exited) {
+            if (information) {
+                const auto stop_mask = contract == DarwinChildWaitAbi::StopOption ? 8U : 0x7fU;
+                const auto event = record.child_wait_status.peek(record.signal_stopped,
+                    (request.options & stop_mask) != 0, (request.options & 0x10U) != 0);
+                if (!event)
+                    continue;
+                const bool continued = *event == ChildWaitStatus::Kind::Continue;
+                const bool identified = contract == DarwinChildWaitAbi::ChildIdentity;
+                const auto event_pid = continued ? record.child_wait_status.continuation_pid()
+                    : identified ? pid : 0U;
+                const auto code = continued ? 6U : identified ? 5U : 0U;
+                if (!copy_information(event_pid, code, record.child_wait_status.stop_signal()))
+                    bsd_error(cpu, darwin::error::bad_address);
+                else {
+                    // waitid consumes only after successful copyout.
+                    if (!observe)
+                        record.child_wait_status.consume(*event);
+                    bsd_success(cpu, 0);
+                }
+                return true;
+            }
             const auto status = record.child_wait_status.take(record.signal_stopped,
                 request.options);
             if (status) {
@@ -44,12 +78,23 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
             }
             continue;
         }
+        if (information && !(request.options & 4U)) // WEXITED
+            continue;
         const auto status = record.termination_signal != 0
                                 ? record.termination_signal & 0x7fU
                                 : (record.exit_status & 0xffU) << 8U;
-        if (request.status_address != 0 &&
-            !memory_.write32(request.status_address, status)) {
+        const bool identified = contract == DarwinChildWaitAbi::ChildIdentity;
+        const bool copied = information
+            ? copy_information(identified ? pid : 0U,
+                  identified ? (record.termination_signal != 0 ? 2U : 1U) : 0U,
+                  status >> 8U)
+            : request.status_address == 0 || memory_.write32(request.status_address, status);
+        if (!copied) {
             bsd_error(cpu, darwin::error::bad_address);
+            return true;
+        }
+        if (observe) {
+            bsd_success(cpu, 0);
             return true;
         }
         if (request.resource_usage_address != 0 &&
@@ -69,7 +114,7 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
             ++generation;
         if (no_children && signal_state_.needs_last_child_check(request.processor))
             signal_state_.reaped_last_child(request.processor);
-        bsd_success(cpu, pid);
+        bsd_success(cpu, information ? 0U : pid);
         return true;
     }
     if (!has_child) {
@@ -83,16 +128,27 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
     return false;
 }
 
-void CompatibilityKernel::dispatch_wait(Cpu& cpu)
+void CompatibilityKernel::dispatch_wait(Cpu& cpu, bool information)
 {
     const auto& registers = cpu.registers();
-    auto target = static_cast<std::int32_t>(registers[0]);
+    auto target = static_cast<std::int32_t>(registers[information ? 1 : 0]);
+    if (information) {
+        const auto option_mask = shared_state_->darwin_abi.child_wait ==
+                DarwinChildWaitAbi::StopOption ? 0x3fU : 0x7fU;
+        if (registers[3] == 0 || (registers[3] & ~option_mask) != 0 ||
+            ((registers[0] == 1U || registers[0] == 2U) && target < 0)) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+    }
     // wait4(pid=0) snapshots the calling group at entry. A later group
     // transition must not retarget a sleeping invocation.
-    if (target == 0)
+    if (!information && target == 0)
         target = static_cast<std::int32_t>(0U - process_.membership->group());
-    PendingWait request { target, registers[1], registers[3], registers[2],
-        cpu.processor_id(), std::nullopt };
+    PendingWait request { target, registers[information ? 2 : 1],
+        information ? 0U : registers[3], registers[information ? 3 : 2],
+        cpu.processor_id(), std::nullopt,
+        information ? std::optional { registers[0] } : std::nullopt };
     if (try_wait(cpu, request))
         return;
     pending_waits_.insert_or_assign(cpu.processor_id(), request);

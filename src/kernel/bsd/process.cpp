@@ -336,6 +336,9 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
     case 7: // wait4
         dispatch_wait(cpu);
         return;
+    case 173: // waitid
+        dispatch_wait(cpu, true);
+        return;
     case 20: // getpid
         bsd_success(cpu, process_.pid);
         return;

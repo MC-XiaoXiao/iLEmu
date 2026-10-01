@@ -283,6 +283,13 @@ enum class DarwinTaskTraceMemoryAbi : std::uint8_t {
 // is a separate contract from support for the task_info resident flavor.
 enum class DarwinResourceAccounting : std::uint8_t { CpuTime, ResidentPeak };
 
+// Native waitid contracts are independent of public XNU source tags.
+// ExpandedStopMask accepts the kernel WSTOPPED mask (0177); ChildIdentity
+// additionally fills si_pid and CLD_EXITED/KILLED/STOPPED reason codes.
+enum class DarwinChildWaitAbi : std::uint8_t {
+    StopOption, ExpandedStopMask, ChildIdentity,
+};
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -291,6 +298,7 @@ struct DarwinAbi {
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
     DarwinTaskInformationAbi task_information { DarwinTaskInformationAbi::Basic };
     DarwinResourceAccounting resource_accounting { DarwinResourceAccounting::CpuTime };
+    DarwinChildWaitAbi child_wait { DarwinChildWaitAbi::StopOption };
     DarwinTaskTraceMemoryAbi task_trace_memory { DarwinTaskTraceMemoryAbi::Unsupported };
     DarwinTaskSpecialPortsAbi task_special_ports { DarwinTaskSpecialPortsAbi::Ledger };
     DarwinMachPortRequestAbi mach_port_requests { DarwinMachPortRequestAbi::DeadNameRequests };

@@ -35,6 +35,7 @@ void bind_alias_entries(Table& table)
     alias(405, darwin::syscall::memory_synchronize, "msync_nocancel");
     alias(406, darwin::syscall::fcntl, "fcntl_nocancel");
     alias(407, darwin::syscall::select, "select_nocancel");
+    alias(416, 173U, "waitid_nocancel");
     alias(417, darwin::syscall::poll, "poll_nocancel");
     alias(420, darwin::syscall::posix_semaphore_wait, "sem_wait_nocancel");
     alias(408, darwin::syscall::synchronize_file, "fsync_nocancel");

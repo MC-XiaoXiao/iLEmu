@@ -75,6 +75,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(2, "fork", Handler::BsdProcess);
     add(66, "vfork", Handler::BsdProcess);
     add(7, "wait4", Handler::BsdProcess);
+    add(173, "waitid", Handler::BsdProcess);
     add(20, "getpid", Handler::BsdProcess);
     add(CredentialGroups::get_syscall, "getgroups", Handler::BsdProcess);
     add(darwin::syscall::get_priority, "get_priority", Handler::BsdProcess);

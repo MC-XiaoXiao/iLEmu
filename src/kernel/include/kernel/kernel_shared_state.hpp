@@ -191,9 +191,19 @@ struct PendingWait {
     std::uint32_t options { };
     std::size_t processor { };
     std::optional<std::uint64_t> wake_generation;
+    // wait4 uses signed pid/group selection; waitid preserves literal zero
+    // IDs and treats unrecognized id types as P_ALL, as native XNU does.
+    std::optional<std::uint32_t> information_selector;
 
     [[nodiscard]] bool matches(std::uint32_t pid, std::uint32_t group) const noexcept
     {
+        if (information_selector) {
+            if (*information_selector == 1U)
+                return static_cast<std::uint32_t>(target_pid) == pid;
+            if (*information_selector == 2U)
+                return static_cast<std::uint32_t>(target_pid) == group;
+            return true;
+        }
         if (target_pid == -1)
             return true;
         if (target_pid > 0)
