@@ -303,6 +303,9 @@ enum class DarwinSocketAcceptFailureAbi : std::uint8_t { Requeue, Discard };
 // Persistent flags gain O_DSYNC before atomic O_CLOEXEC support.
 enum class DarwinFileOpenAbi : std::uint8_t { Legacy, DataSynchronized, CloseOnExec };
 
+// Later unp_internalize restricts SCM_RIGHTS using filetype_issendable.
+enum class DarwinDescriptorPassingAbi : std::uint8_t { AnyFile, SendableFileTypes };
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -324,6 +327,7 @@ struct DarwinAbi {
     DarwinSocketAcceptFlagsAbi socket_accept_flags { DarwinSocketAcceptFlagsAbi::CommonOptions };
     DarwinSocketAcceptFailureAbi socket_accept_failure { DarwinSocketAcceptFailureAbi::Requeue };
     DarwinFileOpenAbi file_open { DarwinFileOpenAbi::Legacy };
+    DarwinDescriptorPassingAbi descriptor_passing { DarwinDescriptorPassingAbi::AnyFile };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers

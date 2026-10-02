@@ -38,10 +38,8 @@ void CompatibilityKernel::dispatch_bsd_fileport(
             bsd_error(cpu, bsd_support::bad_file_descriptor);
             return;
         }
-        // XNU does not allow a kqueue's event registrations to escape through
-        // fileport_makeport. Other descriptor kinds already have a complete
-        // DescriptorTransfer representation and share the existing HLE state.
-        if (transfer->virtual_type == "kqueue") {
+        // Fileports always use the native filetype_issendable contract.
+        if (!transfer->sendable_file_type()) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }

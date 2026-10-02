@@ -40,6 +40,7 @@ namespace {
         .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
         .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
         .file_open = DarwinFileOpenAbi::CloseOnExec,
+        .descriptor_passing = DarwinDescriptorPassingAbi::SendableFileTypes,
         .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi =
@@ -110,6 +111,7 @@ namespace {
         .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
         .socket_accept_failure = DarwinSocketAcceptFailureAbi::Discard,
         .file_open = DarwinFileOpenAbi::CloseOnExec,
+        .descriptor_passing = DarwinDescriptorPassingAbi::SendableFileTypes,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
@@ -221,6 +223,7 @@ namespace {
                 .child_wait = DarwinChildWaitAbi::ExpandedStopMask,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .file_open = DarwinFileOpenAbi::DataSynchronized,
+                .descriptor_passing = DarwinDescriptorPassingAbi::SendableFileTypes,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
@@ -247,6 +250,7 @@ namespace {
                 .child_wait = DarwinChildWaitAbi::ExpandedStopMask,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .file_open = DarwinFileOpenAbi::DataSynchronized,
+                .descriptor_passing = DarwinDescriptorPassingAbi::SendableFileTypes,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
@@ -273,6 +277,7 @@ namespace {
                 .child_wait = DarwinChildWaitAbi::ExpandedStopMask,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .file_open = DarwinFileOpenAbi::DataSynchronized,
+                .descriptor_passing = DarwinDescriptorPassingAbi::SendableFileTypes,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1TsdBase,
                 .apple80211_ioctl =
@@ -302,6 +307,7 @@ namespace {
                 .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
                 .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
                 .file_open = DarwinFileOpenAbi::CloseOnExec,
+                .descriptor_passing = DarwinDescriptorPassingAbi::SendableFileTypes,
                 .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi =

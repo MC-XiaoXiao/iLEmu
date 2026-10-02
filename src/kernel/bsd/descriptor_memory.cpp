@@ -854,6 +854,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             file_status_flags_[allocated] = file_status_flags_[source];
             duplicated_descriptors_.erase(allocated);
         }
+        if (const auto semaphore = posix_semaphore_descriptors_.find(source);
+            semaphore != posix_semaphore_descriptors_.end()) {
+            posix_semaphore_descriptors_[allocated] = semaphore->second;
+        }
         copy_kqueue_descriptor_state(source, allocated);
         bsd_success(cpu, allocated);
         return;
@@ -1085,6 +1089,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 file_status_flags_[source] = darwin::open_flag::read_write;
             file_status_flags_[destination] = file_status_flags_[source];
             duplicated_descriptors_.erase(destination);
+        }
+        if (const auto semaphore = posix_semaphore_descriptors_.find(source);
+            semaphore != posix_semaphore_descriptors_.end()) {
+            posix_semaphore_descriptors_[destination] = semaphore->second;
         }
         copy_kqueue_descriptor_state(source, destination);
         bsd_success(cpu, destination);

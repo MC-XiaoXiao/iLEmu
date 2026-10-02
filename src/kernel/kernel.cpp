@@ -1384,6 +1384,10 @@ CompatibilityKernel::export_descriptor(std::uint32_t fd) const
     KernelSharedState::DescriptorTransfer transfer;
     transfer.kind = KernelSharedState::DescriptorTransfer::Kind::Virtual;
     transfer.virtual_type = virtual_descriptor->second;
+    if (const auto semaphore = posix_semaphore_descriptors_.find(fd);
+        semaphore != posix_semaphore_descriptors_.end()) {
+        transfer.posix_semaphore = semaphore->second;
+    }
     if (const auto flags = file_status_flags_.find(fd);
         flags != file_status_flags_.end())
         transfer.file_status_flags = flags->second;
@@ -1456,6 +1460,9 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
         }
     } else {
         virtual_descriptors_[*fd] = transfer.virtual_type;
+        if (transfer.posix_semaphore) {
+            posix_semaphore_descriptors_[*fd] = *transfer.posix_semaphore;
+        }
         file_status_flags_[*fd] = transfer.file_status_flags;
         if (transfer.baseband_open_description) {
             baseband_open_descriptions_[*fd] =

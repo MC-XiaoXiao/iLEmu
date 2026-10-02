@@ -102,11 +102,11 @@ void CompatibilityKernel::dispatch_bsd_posix_semaphore(
 
     if (number == darwin::syscall::posix_semaphore_close) {
         const auto descriptor = registers[0];
-        if (!posix_semaphore_descriptors_.contains(descriptor)) {
+        // Native sem_close uses fp_lookup/closef without a semaphore type check.
+        if (!release_file_descriptor(descriptor)) {
             bsd_error(cpu, darwin::error::bad_file_descriptor);
             return;
         }
-        static_cast<void>(release_file_descriptor(descriptor));
         bsd_success(cpu, 0);
         return;
     }

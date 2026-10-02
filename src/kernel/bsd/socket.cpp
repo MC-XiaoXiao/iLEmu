@@ -183,6 +183,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::bad_file_descriptor);
                 return;
             }
+            if (shared_state_->darwin_abi.descriptor_passing ==
+                    DarwinDescriptorPassingAbi::SendableFileTypes &&
+                !transfer->sendable_file_type()) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
             transfers.push_back(*transfer);
         }
         const auto transfer_count = transfers.size();

@@ -691,6 +691,7 @@ struct KernelSharedState {
             regular_file_open_description;
         std::optional<std::pair<std::uint32_t, bool>> block_device;
         std::string virtual_type;
+        std::optional<std::uint32_t> posix_semaphore;
         std::shared_ptr<bsd::baseband_device::OpenDescription>
             baseband_open_description;
         std::optional<SocketPairEndpoint> socket_endpoint;
@@ -704,6 +705,12 @@ struct KernelSharedState {
         std::string bound_name;
         bool listening { };
         std::vector<KeventRegistration> kqueue_registrations;
+
+        [[nodiscard]] bool sendable_file_type() const
+        {
+            // Other represented descriptions are vnode, socket, pipe or shm.
+            return !posix_semaphore && virtual_type != "kqueue";
+        }
     };
     struct SocketAncillaryRecord {
         std::uint64_t byte_offset { };
