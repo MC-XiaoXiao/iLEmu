@@ -666,11 +666,16 @@ struct KernelSharedState {
         std::uint32_t reply_object { };
         xnu::ipc::Right reply_right { xnu::ipc::Right::SendOnce };
     };
+    struct PendingUnixConnection {
+        SocketPairEndpoint endpoint;
+        std::shared_ptr<SocketOptions> options;
+    };
     struct UnixListener {
         std::uint32_t owner_pid { };
         std::uint32_t owner_fd { };
-        std::deque<SocketPairEndpoint> pending_endpoints;
+        std::deque<PendingUnixConnection> pending_endpoints;
         std::optional<bsd::LocalSocketCredentials> credentials { };
+        std::shared_ptr<SocketOptions> options;
     };
     struct DescriptorTransfer {
         enum class Kind : std::uint8_t { File, Virtual };

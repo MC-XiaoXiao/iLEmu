@@ -726,7 +726,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         shared_state_->socket_pair_buffers.emplace(
             pair, std::array<std::deque<std::byte>, 2> { });
         socket_pair_endpoints_[fd] = std::move(endpoints.first);
-        listener->pending_endpoints.push_back(std::move(endpoints.second));
+        listener->pending_endpoints.push_back(
+            { std::move(endpoints.second),
+                listener->options->accepted_snapshot() });
         shared_state_->note_io_event_transition();
         output_.write("[network] connected pair=" + std::to_string(pair) +
                       " listener-pid=" + std::to_string(listener->owner_pid) +
@@ -1049,8 +1051,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                     existing =
                         std::make_shared<KernelSharedState::UnixListener>(
                             KernelSharedState::UnixListener {
-                                process_.pid, registers[0], { } });
+                                process_.pid, registers[0], { }, { }, { } });
                 }
+                existing->options = socket_options_.at(registers[0]);
                 existing->credentials.emplace(
                     process_.effective_uid, process_.effective_gid);
                 // unlink after bind but before listen leaves an unnamed

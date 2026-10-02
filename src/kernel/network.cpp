@@ -742,12 +742,12 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
         bsd_error(cpu, 24); // EMFILE
         return true;
     }
-    auto accepted_endpoint =
+    auto accepted =
         std::move(listener->second->pending_endpoints.front());
     listener->second->pending_endpoints.pop_front();
-    const auto pair = accepted_endpoint.pair;
+    const auto pair = accepted.endpoint.pair;
     virtual_descriptors_[*accepted_fd] = "unix-stream";
-    socket_pair_endpoints_[*accepted_fd] = std::move(accepted_endpoint);
+    socket_pair_endpoints_[*accepted_fd] = std::move(accepted.endpoint);
     file_status_flags_[*accepted_fd] = darwin::open_flag::read_write;
     descriptor_flags_[*accepted_fd] = 0;
 
@@ -765,7 +765,7 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
                   " listener-fd=" + std::to_string(listener_fd) +
                   " fd=" + std::to_string(*accepted_fd) +
                   " pair=" + std::to_string(pair) + "\n");
-    socket_options_[*accepted_fd] = std::make_shared<SocketOptions>();
+    socket_options_[*accepted_fd] = std::move(accepted.options);
     bsd_success(cpu, *accepted_fd);
     return true;
 }
