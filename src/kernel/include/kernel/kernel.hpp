@@ -1047,7 +1047,7 @@ private:
     std::map<std::uint32_t, OpenFileOffset> file_offsets_;
     std::map<std::filesystem::path, std::vector<DirectoryEntry>>
         directory_entries_cache_;
-    std::map<std::uint32_t, std::uint32_t> file_status_flags_;
+    std::map<std::uint32_t, OpenFileStatusFlags> file_status_flags_;
     std::map<std::uint32_t, std::uint32_t> descriptor_flags_;
     std::map<std::uint32_t, DarwinFileGuard> descriptor_guards_;
     std::map<std::uint32_t, AioCompletion> aio_completions_;

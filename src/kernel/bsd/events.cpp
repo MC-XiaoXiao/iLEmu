@@ -188,11 +188,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
-            auto& flags = file_status_flags_[fd];
-            if (*enabled != 0)
-                flags |= darwin::open_flag::non_block;
-            else
-                flags &= ~darwin::open_flag::non_block;
+            file_status_flags_[fd].replace(darwin::open_flag::non_block,
+                *enabled != 0 ? darwin::open_flag::non_block : 0);
             bsd_success(cpu, 0);
             return;
         }

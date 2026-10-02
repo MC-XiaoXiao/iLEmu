@@ -13,6 +13,7 @@
 #include <mach/xnu_mig_reference.hpp>
 #include <kernel/credential_groups.hpp>
 #include <kernel/open_file_offset.hpp>
+#include <kernel/open_file_status.hpp>
 #include <kernel/socket_options.hpp>
 #include <kernel/guest_read_buffer.hpp>
 #include <kernel/guest_receive_message.hpp>
@@ -685,7 +686,7 @@ struct KernelSharedState {
         Kind kind { Kind::Virtual };
         std::filesystem::path file_path;
         OpenFileOffset file_offset;
-        std::uint32_t file_status_flags { };
+        OpenFileStatusFlags file_status_flags;
         std::shared_ptr<bsd::RegularFileOpenDescription>
             regular_file_open_description;
         std::optional<std::pair<std::uint32_t, bool>> block_device;

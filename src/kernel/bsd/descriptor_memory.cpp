@@ -848,9 +848,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             baseband_open_descriptions_[allocated] = baseband;
             virtual_descriptors_[allocated] =
                 bsd::baseband_device::descriptor_kind;
-            file_status_flags_[allocated] = file_status_flags_.contains(source)
-                                                ? file_status_flags_.at(source)
-                                                : darwin::open_flag::read_write;
+            if (!file_status_flags_.contains(source))
+                file_status_flags_[source] = darwin::open_flag::read_write;
+            file_status_flags_[allocated] = file_status_flags_[source];
             duplicated_descriptors_.erase(allocated);
         }
         copy_kqueue_descriptor_state(source, allocated);
@@ -1080,10 +1080,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             baseband_open_descriptions_[destination] = baseband;
             virtual_descriptors_[destination] =
                 bsd::baseband_device::descriptor_kind;
-            file_status_flags_[destination] =
-                file_status_flags_.contains(source)
-                    ? file_status_flags_.at(source)
-                    : darwin::open_flag::read_write;
+            if (!file_status_flags_.contains(source))
+                file_status_flags_[source] = darwin::open_flag::read_write;
+            file_status_flags_[destination] = file_status_flags_[source];
             duplicated_descriptors_.erase(destination);
         }
         copy_kqueue_descriptor_state(source, destination);
@@ -1167,9 +1166,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             if (file_status_flags_.contains(fd)) {
                 constexpr std::uint32_t mutable_status_flags =
                     darwin::open_flag::append | darwin::open_flag::non_block;
-                file_status_flags_[fd] =
-                    (file_status_flags_[fd] & ~mutable_status_flags) |
-                    (registers[2] & mutable_status_flags);
+                file_status_flags_[fd].replace(mutable_status_flags, registers[2]);
             }
             bsd_success(cpu, 0);
             return;

@@ -748,7 +748,8 @@ bool CompatibilityKernel::complete_host_accept(Cpu& cpu,
         bsd_error(cpu, 24); // EMFILE
         return true;
     }
-    file_status_flags_[*fd] = file_status_flags_[listener_fd];
+    file_status_flags_[*fd] =
+        static_cast<std::uint32_t>(file_status_flags_[listener_fd]);
     if (!output.copy_optional(memory_, accepted.address)) {
         host_sockets_.erase(*fd);
         virtual_descriptors_.erase(*fd);
@@ -821,7 +822,8 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
     const auto pair = accepted.endpoint.pair;
     virtual_descriptors_[*accepted_fd] = "unix-stream";
     socket_pair_endpoints_[*accepted_fd] = std::move(accepted.endpoint);
-    file_status_flags_[*accepted_fd] = file_status_flags_[listener_fd];
+    file_status_flags_[*accepted_fd] =
+        static_cast<std::uint32_t>(file_status_flags_[listener_fd]);
     descriptor_flags_[*accepted_fd] = 0;
 
     constexpr std::array<std::byte, 2> unnamed_peer { std::byte { 2 },

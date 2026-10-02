@@ -1365,8 +1365,9 @@ CompatibilityKernel::export_descriptor(std::uint32_t fd) const
         transfer.file_path = file->second;
         if (const auto offset = file_offsets_.find(fd); offset != file_offsets_.end())
             transfer.file_offset = offset->second;
-        transfer.file_status_flags =
-            file_status_flags_.contains(fd) ? file_status_flags_.at(fd) : 0;
+        if (const auto flags = file_status_flags_.find(fd);
+            flags != file_status_flags_.end())
+            transfer.file_status_flags = flags->second;
         if (const auto description = regular_file_open_descriptions_.find(fd);
             description != regular_file_open_descriptions_.end()) {
             transfer.regular_file_open_description = description->second;
@@ -1383,9 +1384,11 @@ CompatibilityKernel::export_descriptor(std::uint32_t fd) const
     KernelSharedState::DescriptorTransfer transfer;
     transfer.kind = KernelSharedState::DescriptorTransfer::Kind::Virtual;
     transfer.virtual_type = virtual_descriptor->second;
-    transfer.file_status_flags = file_status_flags_.contains(fd)
-                                     ? file_status_flags_.at(fd)
-                                     : darwin::open_flag::read_write;
+    if (const auto flags = file_status_flags_.find(fd);
+        flags != file_status_flags_.end())
+        transfer.file_status_flags = flags->second;
+    else
+        transfer.file_status_flags = darwin::open_flag::read_write;
     if (const auto baseband = baseband_open_description(fd))
         transfer.baseband_open_description = baseband;
     if (const auto endpoint = socket_pair_endpoints_.find(fd);
