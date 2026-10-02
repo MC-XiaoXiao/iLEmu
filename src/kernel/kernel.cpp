@@ -1417,6 +1417,10 @@ CompatibilityKernel::export_descriptor(std::uint32_t fd) const
         bound != bound_socket_names_.end()) {
         transfer.bound_name = bound->second;
     }
+    if (const auto options = socket_options_.find(fd);
+        options != socket_options_.end()) {
+        transfer.socket_options = options->second;
+    }
     transfer.listening = listening_sockets_.contains(fd);
     if (const auto queue = kqueues_.find(fd); queue != kqueues_.end()) {
         transfer.kqueue_registrations = queue->second;
@@ -1466,6 +1470,9 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
         }
         if (transfer.virtual_udp_socket) {
             virtual_udp_sockets_[*fd] = transfer.virtual_udp_socket;
+        }
+        if (transfer.socket_options) {
+            socket_options_[*fd] = transfer.socket_options;
         }
         if (transfer.host_socket) {
             host_sockets_[*fd] = transfer.host_socket;

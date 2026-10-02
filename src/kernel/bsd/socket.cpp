@@ -478,6 +478,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                                                            : "unix-seqpacket");
             file_status_flags_[*fd] = darwin::open_flag::read_write;
             descriptor_flags_[*fd] = 0;
+            socket_options_[*fd] = std::make_shared<SocketOptions>();
             bsd_success(cpu, *fd);
             return;
         }
@@ -498,6 +499,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                              : kernel_network::isolated_ipv6_stream_descriptor);
                 file_status_flags_[*fd] = darwin::open_flag::read_write;
                 descriptor_flags_[*fd] = 0;
+                socket_options_[*fd] = std::make_shared<SocketOptions>();
                 bsd_success(cpu, *fd);
                 return;
             }
@@ -546,6 +548,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             virtual_udp_sockets_[*fd] = std::move(udp);
             file_status_flags_[*fd] = darwin::open_flag::read_write;
             descriptor_flags_[*fd] = 0;
+            socket_options_[*fd] = std::make_shared<SocketOptions>();
             bsd_success(cpu, *fd);
             return;
         }
@@ -562,6 +565,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             virtual_descriptors_.emplace(*fd, "route-socket");
             file_status_flags_[*fd] = darwin::open_flag::read_write;
             descriptor_flags_[*fd] = 0;
+            socket_options_[*fd] = std::make_shared<SocketOptions>();
             {
                 std::lock_guard route_lock {
                     shared_state_->route_socket_mutex
@@ -590,6 +594,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             virtual_descriptors_.emplace(*fd, "system-event-socket");
             file_status_flags_[*fd] = darwin::open_flag::read_write;
             descriptor_flags_[*fd] = 0;
+            socket_options_[*fd] = std::make_shared<SocketOptions>();
             {
                 std::lock_guard socket_lock { shared_state_->socket_mutex };
                 system_event_next_identifiers_[*fd] =
@@ -965,24 +970,29 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 return;
             }
         }
-        if (const auto host = host_sockets_.find(fd);
-            host != host_sockets_.end() && !defunct_option) {
-            const auto result =
-                host->second->set_option(registers[1], registers[2], value);
-            if (result.status == HostSocketStatus::Error) {
-                bsd_error(cpu, result.darwin_error);
-                return;
-            }
+        const auto error = socket_options_.at(fd)->update(
+            registers[1], registers[2], std::move(value),
+            [&](const SocketOptions::Value& bytes) -> std::uint32_t {
+                if (const auto host = host_sockets_.find(fd);
+                    host != host_sockets_.end() && !defunct_option) {
+                    const auto result = host->second->set_option(
+                        registers[1], registers[2], bytes);
+                    if (result.status == HostSocketStatus::Error)
+                        return result.darwin_error;
+                }
+                if (const auto udp = virtual_udp_sockets_.find(fd);
+                    udp != virtual_udp_sockets_.end() && !defunct_option) {
+                    const auto result = udp->second->set_option(
+                        registers[1], registers[2], bytes);
+                    if (result != bsd::VirtualUdpStatus::Success)
+                        return virtual_udp_error(result);
+                }
+                return 0;
+            });
+        if (error != 0) {
+            bsd_error(cpu, error);
+            return;
         }
-        if (const auto udp = virtual_udp_sockets_.find(fd);
-            udp != virtual_udp_sockets_.end() && !defunct_option) {
-            const auto result = udp->second->set_option(registers[1], registers[2], value);
-            if (result != bsd::VirtualUdpStatus::Success) {
-                bsd_error(cpu, virtual_udp_error(result));
-                return;
-            }
-        }
-        socket_options_[fd][{ registers[1], registers[2] }] = std::move(value);
         output_.write(
             "[network] setsockopt pid=" + std::to_string(process_.pid) +
             " fd=" + std::to_string(fd) +
@@ -1152,10 +1162,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         if (value.empty()) {
             if (const auto descriptor = socket_options_.find(fd);
                 descriptor != socket_options_.end()) {
-                if (const auto option =
-                        descriptor->second.find({ registers[1], registers[2] });
-                    option != descriptor->second.end()) {
-                    value = option->second;
+                if (auto option =
+                        descriptor->second->get(registers[1], registers[2])) {
+                    value = std::move(*option);
                 }
             }
         }
@@ -1463,6 +1472,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         descriptor_flags_[*second] = 0;
         const auto pair = shared_state_->next_socket_pair++;
         auto endpoints = make_socket_pair_endpoints(pair, registers[1]);
+        socket_options_[*first] = std::make_shared<SocketOptions>();
+        socket_options_[*second] = std::make_shared<SocketOptions>();
         if (registers[1] == darwin::socket::stream) {
             endpoints.first.peer_credentials.emplace(
                 process_.effective_uid, process_.effective_gid);

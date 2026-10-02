@@ -1065,9 +1065,7 @@ private:
     std::set<std::uint32_t> listening_sockets_;
     std::map<std::uint32_t, std::shared_ptr<KernelSharedState::UnixListener>>
         unix_listener_states_;
-    std::map<std::uint32_t, std::map<std::pair<std::uint32_t, std::uint32_t>,
-                                std::vector<std::byte>>>
-        socket_options_;
+    std::map<std::uint32_t, std::shared_ptr<SocketOptions>> socket_options_;
     std::map<std::uint32_t, std::uint32_t> duplicated_descriptors_;
     std::map<std::uint32_t, std::array<std::uint32_t, 3>> system_event_filters_;
     std::set<std::uint32_t> apple80211_scan_delivered_;

@@ -13,6 +13,7 @@
 #include <mach/xnu_mig_reference.hpp>
 #include <kernel/credential_groups.hpp>
 #include <kernel/open_file_offset.hpp>
+#include <kernel/socket_options.hpp>
 #include <kernel/guest_read_buffer.hpp>
 #include <kernel/guest_receive_message.hpp>
 #include <kernel/guest_socket_address_output.hpp>
@@ -689,6 +690,7 @@ struct KernelSharedState {
         std::shared_ptr<RouteSocketState> route_socket_state;
         std::shared_ptr<bsd::VirtualUdpSocket> virtual_udp_socket;
         std::shared_ptr<HostSocket> host_socket;
+        std::shared_ptr<SocketOptions> socket_options;
         std::shared_ptr<bsd::kernel_control::Endpoint> kernel_control_endpoint;
         std::string bound_name;
         bool listening { };

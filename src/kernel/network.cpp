@@ -189,11 +189,7 @@ bool CompatibilityKernel::receive_socket_message(
             const auto descriptor = socket_options_.find(fd);
             if (descriptor == socket_options_.end())
                 return false;
-            const auto found = descriptor->second.find({ level, option });
-            if (found == descriptor->second.end())
-                return false;
-            return std::any_of(found->second.begin(), found->second.end(),
-                [](std::byte value) { return value != std::byte { 0 }; });
+            return descriptor->second->enabled(level, option);
         };
         const auto family = udp->second->family();
         bsd::VirtualUdpAncillaryOptions options;
@@ -263,19 +259,9 @@ bool CompatibilityKernel::receive_socket_message(
             const auto descriptor = socket_options_.find(fd);
             if (descriptor == socket_options_.end())
                 return false;
-            const auto found = descriptor->second.find({ level, option });
-            if (received.metadata_consumed ||
-                found == descriptor->second.end() || found->second.empty()) {
-                return false;
-            }
-            std::uint32_t enabled = 0;
-            for (std::size_t byte = 0;
-                byte < std::min(found->second.size(), sizeof(enabled));
-                ++byte) {
-                enabled |= std::to_integer<std::uint32_t>(found->second[byte])
-                           << (byte * 8U);
-            }
-            return enabled != 0;
+            return !received.metadata_consumed &&
+                   descriptor->second->enabled(
+                       level, option, sizeof(std::uint32_t));
         };
         std::vector<std::byte> guest_control;
         const auto append_u32 = [](std::vector<std::byte>& bytes,
@@ -779,6 +765,7 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
                   " listener-fd=" + std::to_string(listener_fd) +
                   " fd=" + std::to_string(*accepted_fd) +
                   " pair=" + std::to_string(pair) + "\n");
+    socket_options_[*accepted_fd] = std::make_shared<SocketOptions>();
     bsd_success(cpu, *accepted_fd);
     return true;
 }
@@ -797,6 +784,7 @@ std::optional<std::uint32_t> CompatibilityKernel::install_host_socket(
     virtual_descriptors_[*fd] = ipv6 ? (stream ? "inet6-stream" : "inet6-dgram")
                                      : (stream ? "inet-stream" : "inet-dgram");
     host_sockets_[*fd] = std::move(socket);
+    socket_options_[*fd] = std::make_shared<SocketOptions>();
     file_status_flags_[*fd] = darwin::open_flag::read_write;
     descriptor_flags_[*fd] = 0;
     return fd;

@@ -66,14 +66,11 @@ void CompatibilityKernel::shutdown_process_sockets(std::uint32_t level)
         auto eligible = !local;
         if (const auto options = socket_options_.find(fd);
             options != socket_options_.end()) {
-            const auto option =
-                options->second.find({ darwin::socket::option_level,
-                    darwin::socket::option_defunct_ok });
-            if (option != options->second.end() &&
-                option->second.size() == 4U) {
-                eligible =
-                    std::any_of(option->second.begin(), option->second.end(),
-                        [](std::byte byte) { return byte != std::byte { 0 }; });
+            const auto option = options->second->get(
+                darwin::socket::option_level, darwin::socket::option_defunct_ok);
+            if (option && option->size() == 4U) {
+                eligible = std::any_of(option->begin(), option->end(),
+                    [](std::byte byte) { return byte != std::byte { 0 }; });
             }
         }
         if (!eligible)

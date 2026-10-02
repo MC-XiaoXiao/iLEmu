@@ -44,6 +44,7 @@ bool CompatibilityKernel::create_kernel_control_socket(Cpu& cpu)
             bsd::kernel_control::Endpoint { registers[1], std::nullopt, 0 });
     file_status_flags_[*fd] = darwin::open_flag::read_write;
     descriptor_flags_[*fd] = 0;
+    socket_options_[*fd] = std::make_shared<SocketOptions>();
     output_.write(
         "[kernel-control] socket pid=" + std::to_string(process_.pid) +
         " fd=" + std::to_string(*fd) + "\n");
