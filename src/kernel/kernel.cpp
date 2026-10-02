@@ -2047,30 +2047,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     }
     if (const auto pending = pending_host_accepts_.find(cpu.processor_id());
         pending != pending_host_accepts_.end()) {
-        const auto host = host_sockets_.find(pending->second.fd);
-        if (host == host_sockets_.end()) {
-            bsd_error(cpu, ebadf);
-        } else {
-            const auto accepted = host->second->accept();
-            if (accepted.status == HostSocketStatus::WouldBlock)
-                return false;
-            if (accepted.status == HostSocketStatus::Error) {
-                bsd_error(cpu, accepted.darwin_error);
-            } else if (const auto fd =
-                           install_host_socket(accepted.accepted_socket)) {
-                if (!pending->second.output.copy_optional(memory_, accepted.address)) {
-                    host_sockets_.erase(*fd);
-                    virtual_descriptors_.erase(*fd);
-                    file_status_flags_.erase(*fd);
-                    descriptor_flags_.erase(*fd);
-                    bsd_error(cpu, efault);
-                } else {
-                    bsd_success(cpu, *fd);
-                }
-            } else {
-                bsd_error(cpu, 24); // EMFILE
-            }
-        }
+        if (!complete_host_accept(cpu, pending->second.fd, pending->second.output))
+            return false;
         pending_host_accepts_.erase(pending);
         process_.waiting_for_events = false;
         cpu.clear_halt();

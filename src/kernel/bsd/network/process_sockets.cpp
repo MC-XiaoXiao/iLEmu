@@ -69,17 +69,17 @@ void CompatibilityKernel::shutdown_process_sockets(std::uint32_t level)
                 if (const auto host = host_sockets_.find(fd);
                     host != host_sockets_.end()) {
                     const auto pending = host->second->socket_error();
+                    // Preserve completed peers before publishing terminal state,
+                    // so every alias observes a ready-to-consume accept queue.
+                    static_cast<void>(host->second->shutdown(
+                        darwin::socket::shutdown_read_write));
                     if (pending.status == HostSocketStatus::Success)
                         return pending.darwin_error;
                 }
                 return 0U;
             }))
             continue;
-        if (const auto host = host_sockets_.find(fd);
-            host != host_sockets_.end()) {
-            static_cast<void>(
-                host->second->shutdown(darwin::socket::shutdown_read_write));
-        } else if (const auto udp = virtual_udp_sockets_.find(fd);
+        if (const auto udp = virtual_udp_sockets_.find(fd);
             udp != virtual_udp_sockets_.end()) {
             udp->second->make_defunct();
         } else if (const auto stream = isolated_stream_sockets_.find(fd);

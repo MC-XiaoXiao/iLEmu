@@ -95,8 +95,9 @@ public:
 
     // Eligibility and the terminal flag belong to the shared socket, not an
     // fd. Claim the transition once, without allocating an option copy. The
-    // caller shuts down the transport after releasing this lock, avoiding
-    // inversion with connection-queue locks used by accepted_snapshot().
+    // capture callback may use the host transport, but must not acquire guest
+    // connection-queue locks used by accepted_snapshot(). Guest queue teardown
+    // follows after this lock is released.
     template <typename CaptureError>
     [[nodiscard]] bool begin_defunct(bool default_eligible, CaptureError&& capture_error)
     {
@@ -125,6 +126,22 @@ public:
     {
         return terminal_state_.fetch_and(defunct_bit, std::memory_order_relaxed) &
             ~defunct_bit;
+    }
+
+    // XNU accept checks an empty nonblocking queue before so_error, and
+    // consumes that error before removing any completed connection.
+    [[nodiscard]] std::optional<std::uint32_t> defunct_accept_error(
+        bool nonblocking, bool queued) noexcept
+    {
+        if (!defunct())
+            return std::nullopt;
+        if (nonblocking && !queued)
+            return 35; // EWOULDBLOCK
+        if (const auto error = take_defunct_error())
+            return error;
+        if (!queued)
+            return 53; // ECONNABORTED
+        return std::nullopt;
     }
 
     [[nodiscard]] std::optional<Value> get(

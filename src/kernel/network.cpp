@@ -713,6 +713,49 @@ bool CompatibilityKernel::copy_socket_address(std::uint32_t address,
     return output && output->copy(memory_, socket_address);
 }
 
+bool CompatibilityKernel::complete_host_accept(Cpu& cpu,
+    std::uint32_t listener_fd, const GuestSocketAddressOutput& output)
+{
+    const auto host = host_sockets_.find(listener_fd);
+    if (host == host_sockets_.end()) {
+        bsd_error(cpu, ebadf);
+        return true;
+    }
+    const auto& options = socket_options_.at(listener_fd);
+    if (options->defunct()) {
+        const bool nonblocking = (file_status_flags_[listener_fd] &
+            darwin::open_flag::non_block) != 0;
+        if (const auto error = options->defunct_accept_error(
+                nonblocking, host->second->preserved_accept_count() != 0)) {
+            bsd_error(cpu, *error);
+            return true;
+        }
+    }
+    const auto accepted = host->second->accept();
+    if (accepted.status == HostSocketStatus::WouldBlock)
+        return false;
+    if (accepted.status == HostSocketStatus::Error) {
+        bsd_error(cpu, accepted.darwin_error);
+        return true;
+    }
+    const auto fd = install_host_socket(accepted.accepted_socket);
+    if (!fd) {
+        bsd_error(cpu, 24); // EMFILE
+        return true;
+    }
+    if (!output.copy_optional(memory_, accepted.address)) {
+        host_sockets_.erase(*fd);
+        virtual_descriptors_.erase(*fd);
+        file_status_flags_.erase(*fd);
+        descriptor_flags_.erase(*fd);
+        socket_options_.erase(*fd);
+        bsd_error(cpu, efault);
+        return true;
+    }
+    bsd_success(cpu, *fd);
+    return true;
+}
+
 bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
     std::uint32_t listener_fd, const GuestSocketAddressOutput& output)
 {
@@ -731,12 +774,9 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
             kernel_network::is_isolated_stream_descriptor(descriptor->second)) {
             const auto nonblocking = (file_status_flags_[listener_fd] &
                 darwin::open_flag::non_block) != 0;
-            if (const auto error = isolated_stream_sockets_.at(listener_fd)->accept_error(nonblocking)) {
-                // Empty nonblocking accepts keep EWOULDBLOCK priority. A
-                // terminal blocking accept shares so_error with getsockopt.
-                const auto pending = *error == 53U
-                    ? socket_options_.at(listener_fd)->take_defunct_error() : 0U;
-                bsd_error(cpu, pending != 0 ? pending : *error);
+            if (const auto error = socket_options_.at(listener_fd)->
+                    defunct_accept_error(nonblocking, false)) {
+                bsd_error(cpu, *error);
                 return true;
             }
             // No route can produce a peer while isolated. A blocking accept
@@ -749,7 +789,15 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
     }
 
     std::lock_guard socket_lock { shared_state_->socket_mutex };
-    if (listener->second->pending_endpoints.empty())
+    const auto queued = !listener->second->pending_endpoints.empty();
+    const auto nonblocking = (file_status_flags_[listener_fd] &
+        darwin::open_flag::non_block) != 0;
+    if (const auto error = listener->second->options->
+            defunct_accept_error(nonblocking, queued)) {
+        bsd_error(cpu, *error);
+        return true;
+    }
+    if (!queued)
         return false;
     const auto accepted_fd = allocate_file_descriptor();
     if (!accepted_fd) {
@@ -1241,10 +1289,9 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         udp != virtual_udp_sockets_.end() && udp->second->readable()) {
         return true;
     }
-    if (const auto stream = isolated_stream_sockets_.find(fd);
-        stream != isolated_stream_sockets_.end() && stream->second->defunct()) {
+    // Receive shutdown/error remains readable even after SO_ERROR is cleared.
+    if (socket_defunct(fd))
         return true;
-    }
     if (socket_listening(fd)) {
         if (const auto listener = unix_listener_states_.find(fd);
             listener != unix_listener_states_.end()) {
@@ -1616,6 +1663,24 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             (darwin::kqueue::event_clear | darwin::kqueue::event_dispatch |
                 darwin::kqueue::event_one_shot));
         std::optional<std::uint32_t> ready_mach_name;
+        std::optional<std::uint32_t> terminal_listener_pending;
+        const auto descriptor = static_cast<std::uint32_t>(registration->ident);
+        if (registration->filter == darwin::kqueue::filter_read &&
+            socket_listening(descriptor) && socket_defunct(descriptor)) {
+            // filt_soread treats listeners separately: queued connections,
+            // not receive shutdown or so_error, determine read events.
+            terminal_listener_pending = 0;
+            if (const auto host = host_sockets_.find(descriptor);
+                host != host_sockets_.end()) {
+                terminal_listener_pending = static_cast<std::uint32_t>(
+                    host->second->preserved_accept_count());
+            } else if (const auto listener = unix_listener_states_.find(descriptor);
+                listener != unix_listener_states_.end()) {
+                std::lock_guard socket_lock { shared_state_->socket_mutex };
+                terminal_listener_pending = static_cast<std::uint32_t>(
+                    listener->second->pending_endpoints.size());
+            }
+        }
         if (registration->filter == darwin::kqueue::filter_process) {
             std::lock_guard lock { shared_state_->mach_mutex };
             const auto process =
@@ -1659,7 +1724,8 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         }
         const auto ready =
             registration->filter == darwin::kqueue::filter_read
-                ? descriptor_readable(static_cast<std::uint32_t>(registration->ident))
+                ? (terminal_listener_pending ? *terminal_listener_pending != 0
+                    : descriptor_readable(descriptor))
             : registration->filter == darwin::kqueue::filter_write
                 ? descriptor_writable(static_cast<std::uint32_t>(registration->ident))
             : registration->filter == darwin::kqueue::filter_process
@@ -1681,7 +1747,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             ++registration;
             continue;
         }
-        if (const auto endpoint =
+        if (terminal_listener_pending) {
+            available = *terminal_listener_pending;
+        } else if (const auto endpoint =
                 socket_pair_endpoints_.find(static_cast<std::uint32_t>(registration->ident));
             endpoint != socket_pair_endpoints_.end() &&
             (registration->filter == darwin::kqueue::filter_read ||

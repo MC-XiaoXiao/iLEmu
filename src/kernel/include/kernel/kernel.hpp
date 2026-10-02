@@ -910,6 +910,8 @@ private:
         std::span<const std::byte> socket_address);
     // Completes a local-stream accept when a connection is queued. A false
     // return means the blocking call must remain suspended.
+    bool complete_host_accept(Cpu& cpu, std::uint32_t listener_fd,
+        const GuestSocketAddressOutput& output);
     bool complete_unix_accept(Cpu& cpu, std::uint32_t listener_fd,
         const GuestSocketAddressOutput& output);
     [[nodiscard]] std::optional<std::uint32_t> install_host_socket(

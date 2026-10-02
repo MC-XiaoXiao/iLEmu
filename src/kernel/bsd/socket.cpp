@@ -274,42 +274,20 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                                : bsd_support::bad_file_descriptor);
             return;
         }
-        if (const auto host = host_sockets_.find(listener_fd);
-            host != host_sockets_.end()) {
-            const auto accepted = host->second->accept();
-            if (accepted.status == HostSocketStatus::WouldBlock) {
-                if ((file_status_flags_[listener_fd] &
-                        darwin::open_flag::non_block) != 0) {
-                    bsd_error(cpu, bsd_support::would_block);
-                    return;
-                }
-                record_bsd_sleep();
-                pending_host_accepts_[cpu.processor_id()] =
-                    PendingHostAccept { listener_fd, *output, cpu.processor_id() };
-                process_.waiting_for_events = true;
-                bsd_success(cpu, 0);
-                cpu.halt(Dynarmic::HaltReason::UserDefined5);
+        if (host_sockets_.contains(listener_fd)) {
+            if (complete_host_accept(cpu, listener_fd, *output))
+                return;
+            if ((file_status_flags_[listener_fd] &
+                    darwin::open_flag::non_block) != 0) {
+                bsd_error(cpu, bsd_support::would_block);
                 return;
             }
-            if (accepted.status == HostSocketStatus::Error) {
-                bsd_error(cpu, accepted.darwin_error);
-                return;
-            }
-            const auto accepted_fd =
-                install_host_socket(accepted.accepted_socket);
-            if (!accepted_fd) {
-                bsd_error(cpu, 24); // EMFILE
-                return;
-            }
-            if (!output->copy_optional(memory_, accepted.address)) {
-                host_sockets_.erase(*accepted_fd);
-                virtual_descriptors_.erase(*accepted_fd);
-                file_status_flags_.erase(*accepted_fd);
-                descriptor_flags_.erase(*accepted_fd);
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            bsd_success(cpu, *accepted_fd);
+            record_bsd_sleep();
+            pending_host_accepts_[cpu.processor_id()] =
+                PendingHostAccept { listener_fd, *output, cpu.processor_id() };
+            process_.waiting_for_events = true;
+            bsd_success(cpu, 0);
+            cpu.halt(Dynarmic::HaltReason::UserDefined5);
             return;
         }
         if (complete_unix_accept(
@@ -962,6 +940,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::listen: {
         if (!virtual_descriptors_.contains(registers[0])) {
             bsd_error(cpu, bsd_support::bad_file_descriptor);
+        } else if (socket_defunct(registers[0])) {
+            bsd_error(cpu, bsd_support::invalid_argument);
         } else if (const auto host = host_sockets_.find(registers[0]);
             host != host_sockets_.end()) {
             const auto listened = host->second->listen(registers[1]);

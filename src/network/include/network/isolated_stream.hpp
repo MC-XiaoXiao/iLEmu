@@ -76,18 +76,6 @@ public:
         std::lock_guard lock { network_->mutex_ };
         return defunct_ || listening_ ? 45U : 51U; // EOPNOTSUPP / ENETUNREACH
     }
-    [[nodiscard]] std::optional<std::uint32_t> accept_error(bool nonblocking)
-    {
-        std::lock_guard lock { network_->mutex_ };
-        if (!listening_)
-            return 22; // EINVAL
-        // Native accept tests an empty nonblocking queue before so_error.
-        if (nonblocking)
-            return 35; // EWOULDBLOCK
-        if (defunct_)
-            return 53; // ECONNABORTED after the initial error was consumed
-        return std::nullopt;
-    }
     [[nodiscard]] bool listening() const
     {
         std::lock_guard lock { network_->mutex_ };

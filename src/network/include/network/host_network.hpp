@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -86,6 +87,7 @@ public:
         std::span<const std::byte> darwin_address);
     [[nodiscard]] HostSocketResult listen(std::uint32_t backlog);
     [[nodiscard]] HostSocketResult accept();
+    [[nodiscard]] std::size_t preserved_accept_count() const;
     [[nodiscard]] HostSocketResult send(std::span<const std::byte> bytes,
         std::span<const std::byte> darwin_destination = { });
     [[nodiscard]] HostSocketResult receive(
@@ -118,7 +120,12 @@ private:
 
     [[nodiscard]] HostSocketResult receive_locked(std::size_t capacity, int flags);
 
+    [[nodiscard]] HostSocketResult accept_locked();
+
     int descriptor_ { -1 };
+    mutable std::mutex accept_mutex_;
+    std::unique_ptr<std::deque<HostSocketResult>> preserved_accepts_;
+    bool listener_shutdown_ {};
     std::mutex receive_mutex_;
     bool receive_metadata_consumed_ {};
     HostNetworkPolicy policy_ { HostNetworkPolicy::Isolated };

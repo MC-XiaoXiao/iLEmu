@@ -643,6 +643,25 @@ HostSocketResult HostSocket::listen(std::uint32_t backlog)
 
 HostSocketResult HostSocket::accept()
 {
+    std::lock_guard lock { accept_mutex_ };
+    if (preserved_accepts_ && !preserved_accepts_->empty()) {
+        auto result = std::move(preserved_accepts_->front());
+        preserved_accepts_->pop_front();
+        if (preserved_accepts_->empty())
+            preserved_accepts_.reset();
+        return result;
+    }
+    return accept_locked();
+}
+
+std::size_t HostSocket::preserved_accept_count() const
+{
+    std::lock_guard lock { accept_mutex_ };
+    return preserved_accepts_ ? preserved_accepts_->size() : 0;
+}
+
+HostSocketResult HostSocket::accept_locked()
+{
     sockaddr_storage address { };
     socklen_t length = sizeof(address);
     const auto accepted =
@@ -1128,6 +1147,26 @@ HostSocketResult HostSocket::shutdown(std::uint32_t how)
 {
     if (how > 2) {
         return darwin_error_result(darwin_error_invalid_argument);
+    }
+    if (how == 2 && stream_state_.load(std::memory_order_relaxed) ==
+            StreamState::Listening) {
+        std::lock_guard lock { accept_mutex_ };
+        if (!listener_shutdown_) {
+            // Host shutdown discards the completed accept queue. XNU retains
+            // those independent sockets, so hold them before retiring the PCB.
+            for (;;) {
+                auto pending = accept_locked();
+                if (pending.status != HostSocketStatus::Success)
+                    break;
+                if (!preserved_accepts_)
+                    preserved_accepts_ =
+                        std::make_unique<std::deque<HostSocketResult>>();
+                preserved_accepts_->push_back(std::move(pending));
+            }
+            listener_shutdown_ = true;
+        }
+        return ::shutdown(descriptor_, static_cast<int>(how)) == 0
+            ? HostSocketResult {} : error_result(errno);
     }
     return ::shutdown(descriptor_, static_cast<int>(how)) == 0
                ? HostSocketResult { }
