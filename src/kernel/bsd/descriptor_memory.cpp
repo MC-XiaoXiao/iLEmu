@@ -297,7 +297,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         const auto address = registers[1];
         const auto size = static_cast<std::size_t>(registers[2]);
         if (const auto error = defunct_socket_send_error(fd, 0)) {
-            bsd_error(cpu, size > bsd_support::maximum_io
+            bsd_socket_write_error(cpu, fd, size > bsd_support::maximum_io
                 ? bsd_support::invalid_argument : *error);
             return;
         }
@@ -533,7 +533,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             }
             const auto sent = udp->second->send(*bytes);
             if (sent != bsd::VirtualUdpStatus::Success) {
-                bsd_error(cpu, virtual_udp_error(sent));
+                bsd_socket_write_error(cpu, fd, virtual_udp_error(sent));
             } else {
                 bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
             }
@@ -543,7 +543,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             endpoint != socket_pair_endpoints_.end()) {
             if (!endpoint->second.local_write_open() ||
                 !endpoint->second.peer_read_open()) {
-                bsd_error(cpu, darwin::error::broken_pipe);
+                bsd_socket_write_error(cpu, fd, darwin::error::broken_pipe);
                 return;
             }
             if (size > bsd_support::maximum_io) {
@@ -564,10 +564,11 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                     bsd_support::format_payload_prefix(*bytes) + "\n");
                 ++socket_payload_trace_count_;
             }
-            std::lock_guard socket_lock { shared_state_->socket_mutex };
+            std::unique_lock socket_lock { shared_state_->socket_mutex };
             const auto queue = endpoint->second.send_queue();
             if (!queue) {
-                bsd_error(cpu, darwin::error::broken_pipe);
+                socket_lock.unlock();
+                bsd_socket_write_error(cpu, fd, darwin::error::broken_pipe);
                 return;
             }
             auto& destination = queue->bytes;

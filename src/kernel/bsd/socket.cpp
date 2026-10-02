@@ -108,7 +108,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         if (!endpoint->second.local_write_open() ||
             !endpoint->second.peer_read_open()) {
-            bsd_error(cpu, darwin::error::broken_pipe);
+            bsd_socket_write_error(cpu, fd, darwin::error::broken_pipe);
             return;
         }
         const auto message = registers[1];
@@ -187,10 +187,11 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         const auto transfer_count = transfers.size();
         {
-            std::lock_guard socket_lock { shared_state_->socket_mutex };
+            std::unique_lock socket_lock { shared_state_->socket_mutex };
             const auto queue = endpoint->second.send_queue();
             if (!queue) {
-                bsd_error(cpu, darwin::error::broken_pipe);
+                socket_lock.unlock();
+                bsd_socket_write_error(cpu, fd, darwin::error::broken_pipe);
                 return;
             }
             auto& destination = queue->bytes;
@@ -1197,7 +1198,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             host_fd = duplicate->second;
         }
         if (const auto error = defunct_socket_send_error(host_fd, 0)) {
-            bsd_error(cpu, *error);
+            bsd_socket_write_error(cpu, host_fd, *error);
             return;
         }
         if (host_sockets_.contains(host_fd)) {
@@ -1270,7 +1271,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                     return;
                 }
             }
-            bsd_error(cpu, *error);
+            bsd_socket_write_error(cpu, fd, *error);
             return;
         }
         auto bytes = memory_.read_bytes(registers[1], size);
@@ -1314,13 +1315,14 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             endpoint != socket_pair_endpoints_.end()) {
             if (!endpoint->second.local_write_open() ||
                 !endpoint->second.peer_read_open()) {
-                bsd_error(cpu, darwin::error::broken_pipe);
+                bsd_socket_write_error(cpu, fd, darwin::error::broken_pipe);
                 return;
             }
-            std::lock_guard socket_lock { shared_state_->socket_mutex };
+            std::unique_lock socket_lock { shared_state_->socket_mutex };
             const auto queue = endpoint->second.send_queue();
             if (!queue) {
-                bsd_error(cpu, darwin::error::broken_pipe);
+                socket_lock.unlock();
+                bsd_socket_write_error(cpu, fd, darwin::error::broken_pipe);
                 return;
             }
             auto& destination = queue->bytes;
@@ -1347,7 +1349,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 sent = udp->second->send(*bytes, *destination);
             }
             if (sent != bsd::VirtualUdpStatus::Success) {
-                bsd_error(cpu, virtual_udp_error(sent));
+                bsd_socket_write_error(cpu, fd, virtual_udp_error(sent));
                 return;
             }
             bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));

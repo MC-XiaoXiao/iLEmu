@@ -36,7 +36,7 @@ public:
             return std::nullopt;
         if (is_linger(name))
             return 8;
-        if (is_option_bit(name) || name == defunct_option)
+        if (is_option_bit(name) || name == defunct_option || name == no_sigpipe_option)
             return 4;
         return std::nullopt;
     }
@@ -86,7 +86,7 @@ public:
             }
             if (is_option_bit(name))
                 write_word(value, 0, read_word(value, 0) != 0 ? name : 0U);
-            else if (name == defunct_option)
+            else if (name == defunct_option || name == no_sigpipe_option)
                 write_word(value, 0, read_word(value, 0) != 0 ? 1U : 0U);
         }
         values_[{ level, name }] = std::move(value);
@@ -184,6 +184,7 @@ private:
     static constexpr std::uint32_t linger_ticks = 0x80;
     static constexpr std::uint32_t linger_seconds = 0x1080;
     static constexpr std::uint32_t defunct_option = 0x1100;
+    static constexpr std::uint32_t no_sigpipe_option = 0x1022;
     // Native BSD hz, also exposed by kern.clockrate.
     static constexpr std::int32_t ticks_per_second = 100;
 

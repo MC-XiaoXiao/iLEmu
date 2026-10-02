@@ -767,6 +767,8 @@ private:
     void bsd_success(
         Cpu& cpu, std::uint32_t value, std::uint32_t second_value = 0);
     void bsd_error(Cpu& cpu, std::uint32_t error);
+    void bsd_socket_write_error(Cpu& cpu, std::uint32_t fd, std::uint32_t error);
+    void signal_socket_write_error(std::uint32_t error, const SocketOptions* options);
     [[nodiscard]] bool unmap_memory(
         Cpu& cpu, std::uint32_t address, std::uint32_t size);
     void trace_unknown(Cpu& cpu, std::string kind, std::uint32_t number);

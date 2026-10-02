@@ -304,6 +304,7 @@ struct PendingHostWrite {
     std::shared_ptr<HostSocket> socket;
     std::vector<std::byte> bytes;
     std::vector<std::byte> destination;
+    std::shared_ptr<SocketOptions> options;
 };
 
 struct PendingBasebandWrite {

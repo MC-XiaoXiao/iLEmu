@@ -23,6 +23,29 @@
 namespace ilemu {
 
 
+void CompatibilityKernel::signal_socket_write_error(
+    std::uint32_t error, const SocketOptions* options)
+{
+    // XNU soo_write/sendit use process-directed psignal, not a host signal.
+    // Call after releasing transport/queue locks: the default action exits.
+    if (error != darwin::error::broken_pipe || !options ||
+        options->enabled(darwin::socket::option_level,
+            darwin::socket::option_no_sigpipe, sizeof(std::uint32_t)))
+        return;
+    static_cast<void>(deliver_signal(darwin::signal::broken_pipe));
+}
+
+void CompatibilityKernel::bsd_socket_write_error(
+    Cpu& cpu, std::uint32_t fd, std::uint32_t error)
+{
+    bsd_error(cpu, error);
+    if (error != darwin::error::broken_pipe)
+        return;
+    const auto options = socket_options_.find(fd);
+    signal_socket_write_error(error,
+        options != socket_options_.end() ? options->second.get() : nullptr);
+}
+
 bool CompatibilityKernel::send_host_socket_bytes(Cpu& cpu, std::uint32_t fd,
     std::vector<std::byte> bytes, std::vector<std::byte> destination,
     bool nonblocking)
@@ -30,7 +53,7 @@ bool CompatibilityKernel::send_host_socket_bytes(Cpu& cpu, std::uint32_t fd,
     // Resumed host writes bypass the syscall dispatcher. A retained host
     // descriptor must obey the same guest terminal state after a wakeup.
     if (const auto error = defunct_socket_send_error(fd, 0)) {
-        bsd_error(cpu, *error);
+        bsd_socket_write_error(cpu, fd, *error);
         return true;
     }
     const auto host = host_sockets_.find(fd);
@@ -49,7 +72,7 @@ bool CompatibilityKernel::send_host_socket_bytes(Cpu& cpu, std::uint32_t fd,
         record_bsd_sleep();
         pending_host_writes_.insert_or_assign(
             processor, PendingHostWrite { fd, host->second, std::move(bytes),
-                           std::move(destination) });
+                           std::move(destination), socket_options_.at(fd) });
         process_.waiting_for_events = true;
         bsd_success(cpu, 0);
         output_.write(
@@ -59,7 +82,7 @@ bool CompatibilityKernel::send_host_socket_bytes(Cpu& cpu, std::uint32_t fd,
         return true;
     }
     if (result.status == HostSocketStatus::Error) {
-        bsd_error(cpu, result.darwin_error);
+        bsd_socket_write_error(cpu, fd, result.darwin_error);
         return true;
     }
 
@@ -154,7 +177,7 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
         payload.insert(payload.end(), bytes->begin(), bytes->end());
     }
     if (terminal_error) {
-        bsd_error(cpu, *terminal_error);
+        bsd_socket_write_error(cpu, fd, *terminal_error);
         return true;
     }
 
@@ -180,7 +203,7 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
                             ? socket->second->send(payload)
                             : socket->second->send(payload, destination);
     if (result != bsd::VirtualUdpStatus::Success) {
-        bsd_error(cpu, virtual_udp_error(result));
+        bsd_socket_write_error(cpu, fd, virtual_udp_error(result));
     } else {
         bsd_success(cpu, static_cast<std::uint32_t>(payload.size()));
         if (socket_payload_trace_count_ < 32U) {

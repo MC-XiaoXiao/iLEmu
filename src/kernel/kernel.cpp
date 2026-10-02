@@ -2064,15 +2064,19 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         return deliver_pending_file_sync(cpu);
     if (const auto pending = pending_host_writes_.find(cpu.processor_id());
         pending != pending_host_writes_.end()) {
+        const auto options = pending->second.options;
+        std::uint32_t error = 0;
         if (!pending->second.socket) {
-            bsd_error(cpu, ebadf);
+            error = ebadf;
+        } else if (options && options->defunct()) {
+            error = darwin::error::broken_pipe;
         } else {
             const auto sent = pending->second.socket->send(
                 pending->second.bytes, pending->second.destination);
             if (sent.status == HostSocketStatus::WouldBlock)
                 return false;
             if (sent.status == HostSocketStatus::Error) {
-                bsd_error(cpu, sent.darwin_error);
+                error = sent.darwin_error;
             } else {
                 bsd_success(cpu, static_cast<std::uint32_t>(sent.transferred));
                 output_.write(
@@ -2081,9 +2085,14 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
                     " bytes=" + std::to_string(sent.transferred) + "\n");
             }
         }
+        if (error != 0)
+            bsd_error(cpu, error);
         pending_host_writes_.erase(pending);
         process_.waiting_for_events = false;
         cpu.clear_halt();
+        // Release the pending operation before psignal can terminate the
+        // process. Its retained socket options survive fd closure/reuse.
+        signal_socket_write_error(error, options.get());
         return true;
     }
     if (const auto pending = pending_baseband_writes_.find(cpu.processor_id());
