@@ -72,6 +72,9 @@ void CompatibilityKernel::shutdown_process_sockets(std::uint32_t level)
         } else if (const auto udp = virtual_udp_sockets_.find(fd);
             udp != virtual_udp_sockets_.end()) {
             udp->second->make_defunct();
+        } else if (const auto stream = isolated_stream_sockets_.find(fd);
+            stream != isolated_stream_sockets_.end()) {
+            stream->second->make_defunct();
         } else if (const auto endpoint = socket_pair_endpoints_.find(fd);
             endpoint != socket_pair_endpoints_.end()) {
             std::lock_guard lock { shared_state_->socket_mutex };

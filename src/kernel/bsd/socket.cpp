@@ -652,7 +652,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         if (kernel_network::is_isolated_stream_descriptor(socket->second)) {
             // Isolation keeps the local endpoint model usable without
             // translating a guest destination onto the host loopback namespace.
-            bsd_error(cpu, darwin::error::network_unreachable);
+            // sockargs copies the address before soconnect checks socket state.
+            if (!memory_.read_bytes(registers[1], registers[2])) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            bsd_error(cpu, isolated_stream_sockets_.at(fd)->connect_error());
             return;
         }
         if (connect_kernel_control_socket(cpu))
@@ -798,14 +803,17 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             const auto expected_size =
                 ipv6 ? darwin::network::arm32_sockaddr_in6_size
                      : darwin::network::arm32_sockaddr_in_size;
-            if (registers[2] < expected_size) {
-                bsd_error(cpu, bsd_support::invalid_argument);
-                return;
-            }
             const auto address =
-                memory_.read_bytes(registers[1], expected_size);
+                memory_.read_bytes(registers[1], registers[2]);
             if (!address) {
                 bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            // sockargs copyin precedes sobind's terminal-state check, which
+            // itself precedes protocol-specific size and family validation.
+            const auto& stream = isolated_stream_sockets_.at(registers[0]);
+            if (stream->defunct() || registers[2] < expected_size) {
+                bsd_error(cpu, bsd_support::invalid_argument);
                 return;
             }
             if (std::to_integer<std::uint8_t>(
@@ -814,7 +822,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, 47); // EAFNOSUPPORT
                 return;
             }
-            const auto error = isolated_stream_sockets_.at(registers[0])->bind(*address);
+            const auto error = stream->bind(*address);
             if (error != 0)
                 bsd_error(cpu, error);
             else
@@ -1082,6 +1090,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                     return;
                 }
                 socket_error = queried.darwin_error;
+            } else if (const auto stream = isolated_stream_sockets_.find(fd);
+                stream != isolated_stream_sockets_.end()) {
+                socket_error = stream->second->take_error();
             }
             value.resize(sizeof(socket_error));
             for (std::size_t byte = 0; byte < sizeof(socket_error); ++byte) {

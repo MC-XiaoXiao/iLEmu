@@ -709,6 +709,12 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
         const auto descriptor = virtual_descriptors_.find(listener_fd);
         if (descriptor != virtual_descriptors_.end() &&
             kernel_network::is_isolated_stream_descriptor(descriptor->second)) {
+            const auto nonblocking = (file_status_flags_[listener_fd] &
+                darwin::open_flag::non_block) != 0;
+            if (const auto error = isolated_stream_sockets_.at(listener_fd)->accept_error(nonblocking)) {
+                bsd_error(cpu, *error);
+                return true;
+            }
             // No route can produce a peer while isolated. A blocking accept
             // therefore remains asleep, just as it would on an empty local
             // listener, instead of failing merely because no HostSocket exists.
@@ -1209,6 +1215,10 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
     }
     if (const auto udp = virtual_udp_sockets_.find(fd);
         udp != virtual_udp_sockets_.end() && udp->second->readable()) {
+        return true;
+    }
+    if (const auto stream = isolated_stream_sockets_.find(fd);
+        stream != isolated_stream_sockets_.end() && stream->second->defunct()) {
         return true;
     }
     if (socket_listening(fd)) {

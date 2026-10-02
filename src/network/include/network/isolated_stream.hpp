@@ -8,6 +8,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <utility>
 
 namespace ilemu::bsd {
 class IsolatedStreamSocket;
@@ -33,6 +35,8 @@ private:
 class IsolatedStreamSocket final
     : public std::enable_shared_from_this<IsolatedStreamSocket> {
 public:
+    IsolatedStreamSocket(const IsolatedStreamSocket&) = delete;
+    IsolatedStreamSocket& operator=(const IsolatedStreamSocket&) = delete;
     [[nodiscard]] std::uint32_t bind(std::span<const std::byte> address)
     {
         std::lock_guard lock { network_->mutex_ };
@@ -41,6 +45,8 @@ public:
     [[nodiscard]] std::uint32_t listen()
     {
         std::lock_guard lock { network_->mutex_ };
+        if (defunct_)
+            return 22; // EINVAL
         if (bound_address_.empty()) {
             const auto address = unnamed_address();
             if (const auto error = network_->bind_locked(*this, address))
@@ -48,6 +54,46 @@ public:
         }
         listening_ = true;
         return 0;
+    }
+    // sodefunct closes a pre-established TCP PCB even while descriptors
+    // still own the socket. Retain its name and SO_ACCEPTCONN, but exclude
+    // it from reservation lookup and wake waiters with the shared so_error.
+    void make_defunct()
+    {
+        std::lock_guard lock { network_->mutex_ };
+        if (defunct_)
+            return;
+        defunct_ = true;
+        error_ = 9; // EBADF
+    }
+    [[nodiscard]] bool defunct() const
+    {
+        std::lock_guard lock { network_->mutex_ };
+        return defunct_;
+    }
+    [[nodiscard]] std::uint32_t take_error()
+    {
+        std::lock_guard lock { network_->mutex_ };
+        return std::exchange(error_, 0);
+    }
+    [[nodiscard]] std::uint32_t connect_error() const
+    {
+        std::lock_guard lock { network_->mutex_ };
+        return defunct_ || listening_ ? 45U : 51U; // EOPNOTSUPP / ENETUNREACH
+    }
+    [[nodiscard]] std::optional<std::uint32_t> accept_error(bool nonblocking)
+    {
+        std::lock_guard lock { network_->mutex_ };
+        if (!listening_)
+            return 22; // EINVAL
+        // Native accept tests an empty nonblocking queue before so_error.
+        if (nonblocking)
+            return 35; // EWOULDBLOCK
+        if (error_ != 0)
+            return std::exchange(error_, 0);
+        if (defunct_)
+            return 53; // ECONNABORTED after the initial error was consumed
+        return std::nullopt;
     }
     [[nodiscard]] bool listening() const
     {
@@ -95,6 +141,8 @@ private:
     std::uint32_t reuse_options_ {};
     bool share_uid_ {};
     bool listening_ {};
+    bool defunct_ {};
+    std::uint32_t error_ {};
     std::vector<std::byte> bound_address_;
 };
 
@@ -115,7 +163,10 @@ inline std::shared_ptr<IsolatedStreamSocket> IsolatedStreamNetwork::match_locked
     if (entry == bindings_.end())
         return {};
     auto& candidates = entry->second;
-    std::erase_if(candidates, [](const auto& weak) { return weak.expired(); });
+    std::erase_if(candidates, [](const auto& weak) {
+        const auto socket = weak.lock();
+        return !socket || socket->defunct_;
+    });
     if (candidates.empty()) {
         bindings_.erase(entry);
         return {};
@@ -140,7 +191,8 @@ inline std::uint32_t IsolatedStreamNetwork::bind_locked(
 {
     using namespace inet_address;
     using namespace darwin::socket;
-    if (!socket.bound_address_.empty() || !valid_address(address, socket.family_))
+    if (socket.defunct_ || !socket.bound_address_.empty() ||
+        !valid_address(address, socket.family_))
         return 22; // EINVAL
     auto bound = normalize_address(address, socket.family_);
     if (zero_port(bound)) {
