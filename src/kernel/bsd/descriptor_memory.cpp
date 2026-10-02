@@ -559,9 +559,12 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 ++socket_payload_trace_count_;
             }
             std::lock_guard socket_lock { shared_state_->socket_mutex };
-            auto& destination =
-                shared_state_->socket_pair_buffers[endpoint->second.pair]
-                                                  [1U - endpoint->second.side];
+            const auto queue = endpoint->second.send_queue();
+            if (!queue) {
+                bsd_error(cpu, darwin::error::broken_pipe);
+                return;
+            }
+            auto& destination = queue->bytes;
             destination.insert(destination.end(), bytes->begin(), bytes->end());
             shared_state_->note_io_event_transition();
             bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
@@ -865,8 +868,6 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         descriptor_flags_[*write_fd] = 0;
         const auto pair = shared_state_->next_socket_pair++;
         auto endpoints = make_socket_pair_endpoints(pair);
-        shared_state_->socket_pair_buffers.emplace(
-            pair, std::array<std::deque<std::byte>, 2> { });
         socket_pair_endpoints_[*read_fd] = std::move(endpoints.first);
         socket_pair_endpoints_[*write_fd] = std::move(endpoints.second);
         output_.write("[network] pipe pid=" + std::to_string(process_.pid) +

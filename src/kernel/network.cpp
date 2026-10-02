@@ -409,23 +409,16 @@ bool CompatibilityKernel::receive_socket_message(
         return true;
     }
     std::lock_guard socket_lock { shared_state_->socket_mutex };
-    auto& source =
-        shared_state_
-            ->socket_pair_buffers[endpoint->second.pair][endpoint->second.side];
-    const auto lifetime = endpoint->second.description
-                              ? endpoint->second.description->lifetime
-                              : nullptr;
-    if (!lifetime) {
+    if (!endpoint->second.description) {
         bsd_error(cpu, ebadf);
         return true;
     }
+    auto& queue = endpoint->second.receive_queue();
     const bool end_of_stream = !endpoint->second.local_read_open() ||
                                !endpoint->second.peer_write_open();
-    const auto side = endpoint->second.side;
-    auto& ancillary = shared_state_->socket_pair_ancillary[endpoint->second.pair][side];
     SocketRightsControl control;
-    const auto received = LocalSocketReceive::read(source, ancillary,
-        lifetime->read_offsets[side], receive_capacity, end_of_stream,
+    const auto received = LocalSocketReceive::read(queue.bytes, queue.ancillary,
+        queue.read_offset, receive_capacity, end_of_stream,
         [&](std::span<const std::byte> bytes, std::size_t offset) {
             return target.copy_at(bytes, offset);
         },
@@ -621,23 +614,14 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
     LocalSocketReceive::Result received;
     {
         std::lock_guard socket_lock { shared_state_->socket_mutex };
-        const auto pair =
-            shared_state_->socket_pair_buffers.find(endpoint->second.pair);
-        if (pair == shared_state_->socket_pair_buffers.end())
+        if (!endpoint->second.description)
             return false;
-        auto& pending = pair->second[endpoint->second.side];
-        const auto lifetime = endpoint->second.description
-                                  ? endpoint->second.description->lifetime
-                                  : nullptr;
-        if (!lifetime)
-            return false;
+        auto& queue = endpoint->second.receive_queue();
         const bool end_of_stream = !endpoint->second.local_read_open() ||
                                    !endpoint->second.peer_write_open();
-        const auto side = endpoint->second.side;
-        auto& ancillary = shared_state_->socket_pair_ancillary[endpoint->second.pair][side];
         SocketRightsControl control;
-        received = LocalSocketReceive::read(pending, ancillary,
-            lifetime->read_offsets[side], size, end_of_stream,
+        received = LocalSocketReceive::read(queue.bytes, queue.ancillary,
+            queue.read_offset, size, end_of_stream,
             [&](std::span<const std::byte> bytes, std::size_t offset) {
                 return target.copy_at(bytes, offset);
             },
@@ -1241,10 +1225,8 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         if (endpoint == socket_pair_endpoints_.end())
             return false;
         std::lock_guard socket_lock { shared_state_->socket_mutex };
-        const auto pair =
-            shared_state_->socket_pair_buffers.find(endpoint->second.pair);
-        return pair != shared_state_->socket_pair_buffers.end() &&
-               (!pair->second[endpoint->second.side].empty() ||
+        return endpoint->second.description &&
+               (!endpoint->second.receive_queue().bytes.empty() ||
                    !endpoint->second.local_read_open() ||
                    !endpoint->second.peer_write_open());
     };
@@ -1538,10 +1520,7 @@ std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
         endpoint != socket_pair_endpoints_.end()) {
         std::lock_guard socket_lock { shared_state_->socket_mutex };
         return static_cast<std::uint32_t>(std::min<std::size_t>(
-            shared_state_
-                ->socket_pair_buffers[endpoint->second.pair]
-                                     [endpoint->second.side]
-                .size(),
+            endpoint->second.receive_queue().bytes.size(),
             std::numeric_limits<std::uint32_t>::max()));
     }
     if (kernel_control_endpoints_.contains(fd)) {
@@ -1674,10 +1653,8 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             (registration->filter == darwin::kqueue::filter_read ||
                 registration->filter == darwin::kqueue::filter_write)) {
             std::lock_guard socket_lock { shared_state_->socket_mutex };
-            available = static_cast<std::uint32_t>(shared_state_
-                    ->socket_pair_buffers[endpoint->second.pair]
-                                         [endpoint->second.side]
-                    .size());
+            available = static_cast<std::uint32_t>(
+                endpoint->second.receive_queue().bytes.size());
         } else if (registration->filter == darwin::kqueue::filter_read &&
                    listening_sockets_.contains(static_cast<std::uint32_t>(registration->ident))) {
             std::lock_guard socket_lock { shared_state_->socket_mutex };

@@ -404,6 +404,8 @@ struct PendingTimer {
 // A local stream endpoint is an open file description, not an fd.  dup(2),
 // fork(2), and SCM_RIGHTS all retain the same description; the peer observes
 // close/EOF only after the final reference has gone away.
+struct SocketReceiveQueue;
+
 struct SocketPairLifetime {
     explicit SocketPairLifetime(std::uint32_t type = darwin::socket::stream)
         : socket_type { type } {}
@@ -412,22 +414,18 @@ struct SocketPairLifetime {
 
     std::array<std::atomic_bool, 2> read_open { true, true };
     std::array<std::atomic_bool, 2> write_open { true, true };
-    // Absolute receive positions are protected by KernelSharedState's socket
-    // mutex. They bind SOCK_STREAM ancillary records to the byte that carried
-    // them even while ordinary and recvmsg reads are interleaved.
-    std::array<std::uint64_t, 2> read_offsets { };
+    // Only the receiving open description owns its queue. The peer must not
+    // keep unread data or SCM_RIGHTS alive after that description closes.
+    std::array<std::weak_ptr<SocketReceiveQueue>, 2> receive_queues;
 };
 
 struct SocketPairOpenDescription {
     std::shared_ptr<SocketPairLifetime> lifetime;
     std::uint32_t side { };
+    std::shared_ptr<SocketReceiveQueue> receive_queue;
 
     SocketPairOpenDescription(std::shared_ptr<SocketPairLifetime> pair_lifetime,
-        std::uint32_t endpoint_side)
-        : lifetime { std::move(pair_lifetime) }
-        , side { endpoint_side }
-    {
-    }
+        std::uint32_t endpoint_side);
     SocketPairOpenDescription(const SocketPairOpenDescription&) = delete;
     SocketPairOpenDescription& operator=(
         const SocketPairOpenDescription&) = delete;
@@ -471,12 +469,14 @@ struct SocketPairEndpoint {
                description->lifetime->write_open[1U - side].load(
                    std::memory_order_acquire);
     }
-    void shutdown_read() const
+    // The caller holds KernelSharedState::socket_mutex.
+    void shutdown_read() const;
+    [[nodiscard]] SocketReceiveQueue& receive_queue() const;
+    [[nodiscard]] std::shared_ptr<SocketReceiveQueue> send_queue() const
     {
-        if (description && description->lifetime) {
-            description->lifetime->read_open[side].store(
-                false, std::memory_order_release);
-        }
+        if (!local_write_open() || !peer_read_open())
+            return {};
+        return description->lifetime->receive_queues[1U - side].lock();
     }
     void shutdown_write() const
     {
@@ -1868,10 +1868,6 @@ struct KernelSharedState {
     std::vector<IOKitNotification> iokit_notifications;
     VirtualClock clock;
     std::uint32_t next_socket_pair { 1 };
-    std::map<std::uint32_t, std::array<std::deque<std::byte>, 2>>
-        socket_pair_buffers;
-    std::map<std::uint32_t, std::array<std::deque<SocketAncillaryRecord>, 2>>
-        socket_pair_ancillary;
     std::shared_ptr<bsd::VirtualUdpNetwork> virtual_udp_network {
         std::make_shared<bsd::VirtualUdpNetwork>()
     };
@@ -2244,6 +2240,46 @@ struct KernelSharedState {
     std::deque<std::shared_ptr<PendingFileRename>> file_rename_completions;
     std::shared_ptr<HostFileMappingPreparer> file_mapping_preparer;
 };
+
+// Queue mutations are protected by KernelSharedState::socket_mutex. Queue
+// destruction never reacquires it: disposing SCM_RIGHTS can close another
+// receiving description recursively while that mutex is already held.
+struct SocketReceiveQueue {
+    std::deque<std::byte> bytes;
+    std::deque<KernelSharedState::SocketAncillaryRecord> ancillary;
+    std::uint64_t read_offset {};
+
+    void flush()
+    {
+        read_offset += bytes.size();
+        bytes.clear();
+        ancillary.clear();
+    }
+};
+
+inline SocketPairOpenDescription::SocketPairOpenDescription(
+    std::shared_ptr<SocketPairLifetime> pair_lifetime,
+    std::uint32_t endpoint_side)
+    : lifetime { std::move(pair_lifetime) }
+    , side { endpoint_side }
+    , receive_queue { std::make_shared<SocketReceiveQueue>() }
+{
+    lifetime->receive_queues[side] = receive_queue;
+}
+
+inline SocketReceiveQueue& SocketPairEndpoint::receive_queue() const
+{
+    return *description->receive_queue;
+}
+
+inline void SocketPairEndpoint::shutdown_read() const
+{
+    if (description && description->lifetime) {
+        description->lifetime->read_open[side].store(
+            false, std::memory_order_release);
+        receive_queue().flush();
+    }
+}
 
 // The caller must hold mach_mutex. A remote application may own cached scene
 // state while suspended, and a prelaunched application may publish a scene

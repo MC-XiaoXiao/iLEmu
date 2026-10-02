@@ -74,13 +74,9 @@ void CompatibilityKernel::shutdown_process_sockets(std::uint32_t level)
             udp->second->make_defunct();
         } else if (const auto endpoint = socket_pair_endpoints_.find(fd);
             endpoint != socket_pair_endpoints_.end()) {
+            std::lock_guard lock { shared_state_->socket_mutex };
             endpoint->second.shutdown_read();
             endpoint->second.shutdown_write();
-            std::lock_guard lock { shared_state_->socket_mutex };
-            shared_state_
-                ->socket_pair_buffers[endpoint->second.pair]
-                                     [endpoint->second.side]
-                .clear();
         }
     }
     shared_state_->note_io_event_transition();

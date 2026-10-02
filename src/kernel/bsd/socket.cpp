@@ -188,26 +188,18 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         const auto transfer_count = transfers.size();
         {
             std::lock_guard socket_lock { shared_state_->socket_mutex };
-            const auto destination_side = 1U - endpoint->second.side;
-            auto& destination =
-                shared_state_->socket_pair_buffers[endpoint->second.pair]
-                                                  [destination_side];
-            const auto lifetime = endpoint->second.description
-                                      ? endpoint->second.description->lifetime
-                                      : nullptr;
-            if (!lifetime) {
-                bsd_error(cpu, bsd_support::bad_file_descriptor);
+            const auto queue = endpoint->second.send_queue();
+            if (!queue) {
+                bsd_error(cpu, darwin::error::broken_pipe);
                 return;
             }
+            auto& destination = queue->bytes;
             const auto ancillary_offset =
-                lifetime->read_offsets[destination_side] + destination.size();
+                queue->read_offset + destination.size();
             destination.insert(
                 destination.end(), outgoing.begin(), outgoing.end());
             if (control.present()) {
-                shared_state_
-                    ->socket_pair_ancillary[endpoint->second.pair]
-                                           [destination_side]
-                    .push_back(KernelSharedState::SocketAncillaryRecord {
+                queue->ancillary.push_back(KernelSharedState::SocketAncillaryRecord {
                         ancillary_offset, std::move(transfers) });
             }
         }
@@ -723,8 +715,6 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         endpoints.first.peer_credentials = listener->credentials;
         endpoints.second.peer_credentials.emplace(
             process_.effective_uid, process_.effective_gid);
-        shared_state_->socket_pair_buffers.emplace(
-            pair, std::array<std::deque<std::byte>, 2> { });
         socket_pair_endpoints_[fd] = std::move(endpoints.first);
         listener->pending_endpoints.push_back(
             { std::move(endpoints.second),
@@ -1364,9 +1354,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 return;
             }
             std::lock_guard socket_lock { shared_state_->socket_mutex };
-            auto& destination =
-                shared_state_->socket_pair_buffers[endpoint->second.pair]
-                                                  [1U - endpoint->second.side];
+            const auto queue = endpoint->second.send_queue();
+            if (!queue) {
+                bsd_error(cpu, darwin::error::broken_pipe);
+                return;
+            }
+            auto& destination = queue->bytes;
             destination.insert(destination.end(), bytes->begin(), bytes->end());
             shared_state_->note_io_event_transition();
             bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
@@ -1427,12 +1420,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             }
             if (how == darwin::socket::shutdown_read ||
                 how == darwin::socket::shutdown_read_write) {
-                endpoint->second.shutdown_read();
                 std::lock_guard socket_lock { shared_state_->socket_mutex };
-                shared_state_
-                    ->socket_pair_buffers[endpoint->second.pair]
-                                         [endpoint->second.side]
-                    .clear();
+                endpoint->second.shutdown_read();
             }
             if (how == darwin::socket::shutdown_write ||
                 how == darwin::socket::shutdown_read_write) {
@@ -1483,8 +1472,6 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 process_.effective_uid, process_.effective_gid);
             endpoints.second.peer_credentials = endpoints.first.peer_credentials;
         }
-        shared_state_->socket_pair_buffers.emplace(
-            pair, std::array<std::deque<std::byte>, 2> { });
         socket_pair_endpoints_.emplace(*first, std::move(endpoints.first));
         socket_pair_endpoints_.emplace(*second, std::move(endpoints.second));
         output_.write(
@@ -1497,7 +1484,6 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             // XNU socketpair frees both fileprocs even after a partial copyout.
             static_cast<void>(release_file_descriptor(*second));
             static_cast<void>(release_file_descriptor(*first));
-            shared_state_->socket_pair_buffers.erase(pair);
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
