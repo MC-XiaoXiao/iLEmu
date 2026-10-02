@@ -63,7 +63,7 @@ void CompatibilityKernel::dispatch_bsd_posix_semaphore(
             return;
         }
 
-        std::uint32_t object = 0;
+        std::shared_ptr<SemaphoreState> object;
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto existing =
@@ -80,10 +80,8 @@ void CompatibilityKernel::dispatch_bsd_posix_semaphore(
                     bsd_error(cpu, darwin::error::no_entry);
                     return;
                 }
-                object = shared_state_->allocate_mach_object();
-                shared_state_->mach_semaphores.emplace(object,
-                    KernelSharedState::MachSemaphore {
-                        initial_value, 0U, { } });
+                object = std::make_shared<SemaphoreState>(
+                    SemaphoreState { initial_value, 0U, { } });
                 shared_state_->posix_named_semaphore_objects.emplace(
                     *name, object);
             }
@@ -148,27 +146,21 @@ void CompatibilityKernel::dispatch_bsd_posix_semaphore(
         // Darwin represents sem_t as the descriptor returned by sem_open().
         // Reuse the same scheduler-backed Mach semaphore that XNU's psem
         // implementation calls internally so waits block instead of polling.
-        wait_on_semaphore_object(cpu, semaphore_object, std::nullopt,
-            std::nullopt, true, descriptor);
+        wait_on_semaphore_object(cpu, 0, std::nullopt,
+            std::nullopt, true, descriptor, std::nullopt, semaphore_object);
         return;
     }
 
     if (number == darwin::syscall::posix_semaphore_try_wait) {
         bool acquired = false;
-        bool valid = false;
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto semaphore =
-                shared_state_->mach_semaphores.find(semaphore_object);
-            valid = semaphore != shared_state_->mach_semaphores.end();
-            if (valid && semaphore->second.count > 0) {
-                --semaphore->second.count;
+            if (semaphore_object->count > 0) {
+                --semaphore_object->count;
                 acquired = true;
             }
         }
-        if (!valid)
-            bsd_error(cpu, darwin::error::invalid_argument);
-        else if (!acquired)
+        if (!acquired)
             bsd_error(cpu, darwin::error::would_block);
         else
             bsd_success(cpu, 0);
@@ -180,8 +172,8 @@ void CompatibilityKernel::dispatch_bsd_posix_semaphore(
         std::uint32_t result = 0;
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
-            result = signal_semaphore_object_locked(
-                semaphore_object, false, true, &woken_thread);
+            result = signal_semaphore_state_locked(
+                *semaphore_object, false, true, &woken_thread);
         }
         wake_thread_and_maybe_preempt(cpu, woken_thread);
         if (result == 0)

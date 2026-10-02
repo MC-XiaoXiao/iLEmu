@@ -969,6 +969,12 @@ private:
         bool waking_blocked_receiver = false);
     void detach_kevents_for_descriptor(std::uint32_t fd);
     using WokenThread = std::pair<std::uint32_t, std::uint32_t>;
+    [[nodiscard]] SemaphoreState* pending_semaphore_state_locked(
+        const PendingSemaphoreWait& pending);
+    [[nodiscard]] std::uint32_t signal_semaphore_state_locked(
+        SemaphoreState& semaphore, bool all, bool prepost,
+        std::optional<WokenThread>* woken_thread = nullptr,
+        std::vector<WokenThread>* woken_threads = nullptr);
     [[nodiscard]] std::uint32_t signal_semaphore_object_locked(
         std::uint32_t object, bool all, bool prepost = true,
         std::optional<WokenThread>* woken_thread = nullptr,
@@ -991,7 +997,8 @@ private:
         std::optional<std::uint32_t> signal_object,
         std::optional<std::uint64_t> timeout_interval, bool bsd_result,
         std::uint32_t wait_trace_identifier,
-        std::optional<std::uint32_t> signal_trace_identifier = std::nullopt);
+        std::optional<std::uint32_t> signal_trace_identifier = std::nullopt,
+        std::shared_ptr<SemaphoreState> posix_semaphore = {});
     void schedule_due_audio_io(std::uint64_t deadline);
     void inject_wifi_driver_event(
         std::uint32_t descriptor, std::uint32_t event);
@@ -1052,7 +1059,7 @@ private:
     std::map<std::uint32_t, DarwinFileGuard> descriptor_guards_;
     std::map<std::uint32_t, AioCompletion> aio_completions_;
     std::unordered_map<std::uint32_t, std::string> virtual_descriptors_;
-    std::map<std::uint32_t, std::uint32_t> posix_semaphore_descriptors_;
+    std::map<std::uint32_t, std::shared_ptr<SemaphoreState>> posix_semaphore_descriptors_;
     std::map<std::uint32_t,
         std::shared_ptr<bsd::baseband_device::OpenDescription>>
         baseband_open_descriptions_;

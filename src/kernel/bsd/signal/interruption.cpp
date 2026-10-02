@@ -73,10 +73,8 @@ bool CompatibilityKernel::interrupt_thread_wait(Cpu& cpu, bool restart)
                    pending != pending_semaphore_waits_.end()) {
             {
                 std::lock_guard lock { shared_state_->mach_mutex };
-                if (auto semaphore = shared_state_->mach_semaphores.find(
-                        pending->second.semaphore);
-                    semaphore != shared_state_->mach_semaphores.end())
-                    std::erase(semaphore->second.waiters,
+                if (auto* semaphore = pending_semaphore_state_locked(pending->second))
+                    std::erase(semaphore->waiters,
                         std::pair { process_.pid, static_cast<std::uint32_t>(processor) });
             }
             if (pending->second.bsd_result)

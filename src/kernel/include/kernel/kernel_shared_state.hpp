@@ -14,6 +14,7 @@
 #include <kernel/credential_groups.hpp>
 #include <kernel/open_file_offset.hpp>
 #include <kernel/open_file_status.hpp>
+#include <kernel/semaphore_state.hpp>
 #include <kernel/socket_options.hpp>
 #include <kernel/guest_read_buffer.hpp>
 #include <kernel/guest_receive_message.hpp>
@@ -364,6 +365,7 @@ struct PendingSemaphoreWait {
     std::size_t processor { };
     std::optional<std::uint64_t> deadline;
     bool bsd_result { };
+    std::shared_ptr<SemaphoreState> posix_semaphore;
 };
 
 struct PendingPsynchWait {
@@ -691,7 +693,7 @@ struct KernelSharedState {
             regular_file_open_description;
         std::optional<std::pair<std::uint32_t, bool>> block_device;
         std::string virtual_type;
-        std::optional<std::uint32_t> posix_semaphore;
+        std::shared_ptr<SemaphoreState> posix_semaphore;
         std::shared_ptr<bsd::baseband_device::OpenDescription>
             baseband_open_description;
         std::optional<SocketPairEndpoint> socket_endpoint;
@@ -1188,11 +1190,7 @@ struct KernelSharedState {
         };
         std::uint64_t sequence { };
     };
-    struct MachSemaphore {
-        std::int64_t count { };
-        std::uint32_t owner_pid { };
-        std::deque<std::pair<std::uint32_t, std::uint32_t>> waiters;
-    };
+    using MachSemaphore = SemaphoreState;
     struct MachTimer {
         std::uint32_t owner_pid { };
         std::optional<std::uint64_t> deadline;
@@ -1783,7 +1781,7 @@ struct KernelSharedState {
     std::map<std::uint32_t, MachSemaphore> mach_semaphores;
     // POSIX named semaphores use file descriptors in Darwin userland while
     // sharing the same kernel semaphore primitive underneath.
-    std::map<std::string, std::uint32_t> posix_named_semaphore_objects;
+    std::map<std::string, std::shared_ptr<SemaphoreState>> posix_named_semaphore_objects;
     std::map<std::uint32_t, MachTimer> mach_timers;
     std::map<std::uint32_t, ProcessIntervalTimer> process_interval_timers;
     // XNU named-memory entries are kernel ipc_port objects. The per-task Mach

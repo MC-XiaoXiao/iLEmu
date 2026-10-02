@@ -977,6 +977,15 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_bsd_entries_.clear();
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
+        for (const auto& [processor, pending] : pending_semaphore_waits_) {
+            const auto waiter = std::pair {
+                process_.pid, static_cast<std::uint32_t>(processor) };
+            if (auto* semaphore = pending_semaphore_state_locked(pending))
+                std::erase(semaphore->waiters, waiter);
+            shared_state_->semaphore_wakeups.erase(waiter);
+            shared_state_->semaphore_terminations.erase(waiter);
+        }
+        pending_semaphore_waits_.clear();
         shared_state_->cancel_mach_sends_locked(process_.pid);
         shared_state_->cancel_mach_receives_locked(process_.pid);
     }
@@ -1001,7 +1010,6 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_polls_.clear();
     pending_selects_.clear();
     pending_timers_.clear();
-    pending_semaphore_waits_.clear();
     pending_psynch_waits_.clear();
     pending_signal_suspends_.clear();
     pending_signal_waits_.clear();
@@ -1461,7 +1469,7 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
     } else {
         virtual_descriptors_[*fd] = transfer.virtual_type;
         if (transfer.posix_semaphore) {
-            posix_semaphore_descriptors_[*fd] = *transfer.posix_semaphore;
+            posix_semaphore_descriptors_[*fd] = transfer.posix_semaphore;
         }
         file_status_flags_[*fd] = transfer.file_status_flags;
         if (transfer.baseband_open_description) {
@@ -2163,10 +2171,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
             timed_out = !terminated && !awakened && pending->second.deadline &&
                         shared_state_->clock.now() >= *pending->second.deadline;
             if (timed_out) {
-                if (auto semaphore = shared_state_->mach_semaphores.find(
-                        pending->second.semaphore);
-                    semaphore != shared_state_->mach_semaphores.end()) {
-                    std::erase(semaphore->second.waiters, waiter);
+                if (auto* semaphore = pending_semaphore_state_locked(pending->second)) {
+                    std::erase(semaphore->waiters, waiter);
                 }
             }
         }

@@ -62,12 +62,17 @@ void CompatibilityKernel::release_process_mach_rights()
     synchronous_exceptions_.clear();
     pending_mach_sends_.clear();
     pending_mach_receives_.clear();
-    pending_semaphore_waits_.clear();
     pending_psynch_waits_.clear();
     pending_signal_suspends_.clear();
     shared_state_->psynch_runtime->clear_process(process_.pid);
     process_.waiting_for_events = false;
     std::lock_guard mach_lock { shared_state_->mach_mutex };
+    for (const auto& [processor, pending] : pending_semaphore_waits_) {
+        if (auto* semaphore = pending_semaphore_state_locked(pending))
+            std::erase(semaphore->waiters, std::pair {
+                process_.pid, static_cast<std::uint32_t>(processor) });
+    }
+    pending_semaphore_waits_.clear();
     shared_state_->cancel_mach_sends_locked(process_.pid);
     shared_state_->cancel_mach_receives_locked(process_.pid);
     auto entries = shared_state_->mach_namespaces.entries(process_.pid);

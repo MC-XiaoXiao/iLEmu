@@ -38,10 +38,8 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
         const auto waiter = std::pair { process_.pid, slot };
         if (const auto pending = pending_semaphore_waits_.find(processor);
             pending != pending_semaphore_waits_.end()) {
-            if (const auto semaphore = shared_state_->mach_semaphores.find(
-                    pending->second.semaphore);
-                semaphore != shared_state_->mach_semaphores.end()) {
-                std::erase(semaphore->second.waiters, waiter);
+            if (auto* semaphore = pending_semaphore_state_locked(pending->second)) {
+                std::erase(semaphore->waiters, waiter);
             }
         }
         shared_state_->semaphore_wakeups.erase(waiter);

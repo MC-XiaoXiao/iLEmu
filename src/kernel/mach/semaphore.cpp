@@ -85,7 +85,26 @@ std::uint32_t CompatibilityKernel::signal_semaphore_object_locked(
     if (semaphore == shared_state_->mach_semaphores.end()) {
         return 4; // KERN_INVALID_ARGUMENT
     }
-    auto& waiters = semaphore->second.waiters;
+    return signal_semaphore_state_locked(
+        semaphore->second, all, prepost, woken_thread, woken_threads);
+}
+
+SemaphoreState* CompatibilityKernel::pending_semaphore_state_locked(
+    const PendingSemaphoreWait& pending)
+{
+    if (pending.posix_semaphore)
+        return pending.posix_semaphore.get();
+    const auto semaphore = shared_state_->mach_semaphores.find(pending.semaphore);
+    return semaphore == shared_state_->mach_semaphores.end()
+        ? nullptr : &semaphore->second;
+}
+
+std::uint32_t CompatibilityKernel::signal_semaphore_state_locked(
+    SemaphoreState& semaphore, bool all, bool prepost,
+    std::optional<WokenThread>* woken_thread,
+    std::vector<WokenThread>* woken_threads)
+{
+    auto& waiters = semaphore.waiters;
     if (all) {
         if (woken_threads)
             woken_threads->reserve(waiters.size());
@@ -96,14 +115,14 @@ std::uint32_t CompatibilityKernel::signal_semaphore_object_locked(
         }
         waiters.clear();
         // semaphore_signal_all never leaves a prepost behind.
-        semaphore->second.count = 0;
+        semaphore.count = 0;
     } else if (!waiters.empty()) {
         shared_state_->semaphore_wakeups.insert(waiters.front());
         if (woken_thread)
             *woken_thread = waiters.front();
         waiters.pop_front();
     } else if (prepost) {
-        ++semaphore->second.count;
+        ++semaphore.count;
     }
     return 0;
 }
@@ -233,7 +252,8 @@ void CompatibilityKernel::wait_on_semaphore_object(Cpu& cpu,
     std::uint32_t wait_object, std::optional<std::uint32_t> signal_object,
     std::optional<std::uint64_t> timeout_interval, bool bsd_result,
     std::uint32_t wait_trace_identifier,
-    std::optional<std::uint32_t> signal_trace_identifier)
+    std::optional<std::uint32_t> signal_trace_identifier,
+    std::shared_ptr<SemaphoreState> posix_semaphore)
 {
     constexpr std::uint32_t kern_invalid_argument = 4;
     constexpr std::uint32_t kern_operation_timed_out = 49;
@@ -242,19 +262,24 @@ void CompatibilityKernel::wait_on_semaphore_object(Cpu& cpu,
     std::optional<WokenThread> woken_thread;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto wait = shared_state_->mach_semaphores.find(wait_object);
-        if (wait == shared_state_->mach_semaphores.end() ||
+        auto* wait = posix_semaphore.get();
+        if (!wait) {
+            const auto entry = shared_state_->mach_semaphores.find(wait_object);
+            if (entry != shared_state_->mach_semaphores.end())
+                wait = &entry->second;
+        }
+        if (!wait ||
             (signal_object &&
                 !shared_state_->mach_semaphores.contains(*signal_object))) {
             result = kern_invalid_argument;
-        } else if (wait->second.count > 0) {
-            --wait->second.count;
+        } else if (wait->count > 0) {
+            --wait->count;
         } else if (timeout_interval && *timeout_interval == 0) {
             result = kern_operation_timed_out;
         } else {
             const auto processor =
                 static_cast<std::uint32_t>(cpu.processor_id());
-            wait->second.waiters.emplace_back(process_.pid, processor);
+            wait->waiters.emplace_back(process_.pid, processor);
             pending_semaphore_waits_[cpu.processor_id()] =
                 PendingSemaphoreWait { wait_object, cpu.processor_id(),
                     timeout_interval
@@ -262,7 +287,7 @@ void CompatibilityKernel::wait_on_semaphore_object(Cpu& cpu,
                                                              .now() +
                                                          *timeout_interval }
                         : std::nullopt,
-                    bsd_result };
+                    bsd_result, std::move(posix_semaphore) };
             blocked = true;
         }
         // XNU first establishes/consumes the wait and only then performs the
