@@ -27,6 +27,12 @@ bool CompatibilityKernel::send_host_socket_bytes(Cpu& cpu, std::uint32_t fd,
     std::vector<std::byte> bytes, std::vector<std::byte> destination,
     bool nonblocking)
 {
+    // Resumed host writes bypass the syscall dispatcher. A retained host
+    // descriptor must obey the same guest terminal state after a wakeup.
+    if (const auto error = defunct_socket_send_error(fd, 0)) {
+        bsd_error(cpu, *error);
+        return true;
+    }
     const auto host = host_sockets_.find(fd);
     if (host == host_sockets_.end()) {
         bsd_error(cpu, bsd_support::bad_file_descriptor);
@@ -71,7 +77,8 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
 {
     const auto socket = virtual_udp_sockets_.find(fd);
     const auto host = host_sockets_.find(fd);
-    if (socket == virtual_udp_sockets_.end() && host == host_sockets_.end())
+    if (socket == virtual_udp_sockets_.end() && host == host_sockets_.end() &&
+        !socket_defunct(fd))
         return false;
 
     using namespace darwin::socket;
@@ -121,20 +128,23 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
         return true;
     }
 
+    const auto terminal_error = defunct_socket_send_error(fd, flags);
     std::vector<std::byte> payload;
+    std::size_t payload_size = 0;
     for (std::uint32_t index = 0; index < *iov_count; ++index) {
         const auto entry = *iov_address + index * arm32_iovec::size;
         const auto base = memory_.read32(entry + arm32_iovec::base_offset);
         const auto size = memory_.read32(entry + arm32_iovec::length_offset);
-        if (!base || !size || (*size != 0 && *base == 0) ||
+        if (!base || !size || (!terminal_error && *size != 0 && *base == 0) ||
             *size > bsd_support::maximum_io ||
-            payload.size() > bsd_support::maximum_io - *size) {
-            bsd_error(cpu, !base || !size || (*size != 0 && *base == 0)
+            payload_size > bsd_support::maximum_io - *size) {
+            bsd_error(cpu, !base || !size || (!terminal_error && *size != 0 && *base == 0)
                                ? bsd_support::bad_address
                                : bsd_support::invalid_argument);
             return true;
         }
-        if (*size == 0)
+        payload_size += *size;
+        if (*size == 0 || terminal_error)
             continue;
         const auto bytes = memory_.read_bytes(*base, *size);
         if (!bytes) {
@@ -142,6 +152,10 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
             return true;
         }
         payload.insert(payload.end(), bytes->begin(), bytes->end());
+    }
+    if (terminal_error) {
+        bsd_error(cpu, *terminal_error);
+        return true;
     }
 
     std::vector<std::byte> destination;

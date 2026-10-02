@@ -884,6 +884,9 @@ private:
     void refresh_pending_event_processor_locked(std::size_t processor,
         const BsdSyscallContext* entry = nullptr);
     void note_timer_deadline_transition() noexcept;
+    [[nodiscard]] bool socket_defunct(std::uint32_t fd) const;
+    [[nodiscard]] std::optional<std::uint32_t> defunct_socket_send_error(
+        std::uint32_t fd, std::uint32_t flags) const;
     bool receive_socket_message(
         Cpu& cpu, std::uint32_t fd, GuestReceiveMessage& message);
     bool send_socket_message(Cpu& cpu, std::uint32_t fd,

@@ -1199,7 +1199,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 entry + darwin::socket::arm32_iovec::base_offset);
             const auto size = memory_.read32(
                 entry + darwin::socket::arm32_iovec::length_offset);
-            if (!base || !size || (*size != 0U && *base == 0U)) {
+            if (!base || !size) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
@@ -1216,6 +1216,10 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         if (const auto duplicate = duplicated_descriptors_.find(host_fd);
             duplicate != duplicated_descriptors_.end()) {
             host_fd = duplicate->second;
+        }
+        if (const auto error = defunct_socket_send_error(host_fd, 0)) {
+            bsd_error(cpu, *error);
+            return;
         }
         if (host_sockets_.contains(host_fd)) {
             if (payload_size == 0) {
@@ -1271,6 +1275,23 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         const auto size = static_cast<std::size_t>(registers[2]);
         if (size > bsd_support::maximum_io) {
             bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
+        if (const auto error = defunct_socket_send_error(fd, registers[3])) {
+            // sendit imports a supplied destination before entering sosend.
+            // A bad payload pointer is not touched after terminal rejection.
+            if (registers[4] != 0) {
+                if (registers[5] < 2 ||
+                    registers[5] > bsd_support::maximum_socket_address_size) {
+                    bsd_error(cpu, bsd_support::invalid_argument);
+                    return;
+                }
+                if (!memory_.read_bytes(registers[4], registers[5])) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return;
+                }
+            }
+            bsd_error(cpu, *error);
             return;
         }
         auto bytes = memory_.read_bytes(registers[1], size);

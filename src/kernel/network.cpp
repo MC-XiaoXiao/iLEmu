@@ -151,11 +151,35 @@ std::vector<darwin::route::Entry> CompatibilityKernel::route_snapshot() const
     return shared_state_->route_table.snapshot();
 }
 
+bool CompatibilityKernel::socket_defunct(std::uint32_t fd) const
+{
+    const auto options = socket_options_.find(fd);
+    return options != socket_options_.end() && options->second->defunct();
+}
+
+std::optional<std::uint32_t> CompatibilityKernel::defunct_socket_send_error(
+    std::uint32_t fd, std::uint32_t flags) const
+{
+    if (!socket_defunct(fd))
+        return std::nullopt;
+    // sosend validates OOB/EOR before sosendcheck rejects SOF_DEFUNCT.
+    const auto stream = socket_type(fd) == darwin::socket::stream;
+    if (!stream && (flags & 0x1U)) // MSG_OOB
+        return 45; // EOPNOTSUPP
+    if (stream && (flags & 0x8U)) // MSG_EOR
+        return 22; // EINVAL
+    return darwin::error::broken_pipe;
+}
+
 bool CompatibilityKernel::receive_socket_message(
     Cpu& cpu, std::uint32_t fd, GuestReceiveMessage& message)
 {
     // Pending receives complete outside the BSD syscall dispatcher.
     const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
+    if (socket_defunct(fd)) {
+        bsd_error(cpu, bsd_support::not_connected);
+        return true;
+    }
     using namespace darwin::socket;
     const auto& iovecs = message.vectors();
     const auto receive_capacity = message.capacity();
@@ -166,10 +190,6 @@ bool CompatibilityKernel::receive_socket_message(
 
     if (const auto udp = virtual_udp_sockets_.find(fd);
         udp != virtual_udp_sockets_.end()) {
-        if (udp->second->defunct()) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
-            return true;
-        }
         const auto received = udp->second->receive(receive_capacity, &target);
         if (!received) {
             if (!target.failed()) return false;
@@ -466,6 +486,10 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
     std::uint32_t address, std::uint32_t size, const GuestSocketAddressOutput& source,
     std::span<const GuestReadVector> vectors)
 {
+    if (socket_defunct(fd)) {
+        bsd_error(cpu, bsd_support::not_connected);
+        return true;
+    }
     if (size == 0) {
         bsd_success(cpu, 0);
         return true;
@@ -526,10 +550,6 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
     }
     if (const auto udp = virtual_udp_sockets_.find(fd);
         udp != virtual_udp_sockets_.end()) {
-        if (udp->second->defunct()) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
-            return true;
-        }
         const auto received = udp->second->receive(size, &target);
         if (!received) {
             if (!target.failed()) return false;

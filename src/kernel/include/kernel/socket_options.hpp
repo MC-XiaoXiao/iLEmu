@@ -7,6 +7,7 @@
 #include "device_state/darwin_abi.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -65,7 +66,7 @@ public:
         std::lock_guard lock { mutex_ };
         // sosetopt checks SOF_DEFUNCT after fixed copyin, before privilege
         // checks. A retained socket cannot opt back in or out once defunct.
-        if (level == socket_level && name == defunct_option && defunct_)
+        if (level == socket_level && name == defunct_option && defunct())
             return 9; // EBADF
         // Serialize backend changes with the guest-visible cache, and do
         // not publish a value that the backend rejected.
@@ -99,15 +100,22 @@ public:
     [[nodiscard]] bool begin_defunct(bool default_eligible)
     {
         std::lock_guard lock { mutex_ };
-        if (defunct_)
+        if (defunct())
             return false;
         const auto option = values_.find({ socket_level, defunct_option });
         const auto eligible = option == values_.end()
             ? default_eligible : read_word(option->second, 0) != 0;
         if (!eligible)
             return false;
-        defunct_ = true;
+        defunct_.store(true, std::memory_order_relaxed);
         return true;
+    }
+
+    // Terminal I/O checks need no option map copy or mutex. The flag is
+    // monotonic; transport teardown follows the transition independently.
+    [[nodiscard]] bool defunct() const noexcept
+    {
+        return defunct_.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]] std::optional<Value> get(
@@ -189,7 +197,7 @@ private:
         std::int32_t ticks { };
     };
     Linger linger_;
-    bool defunct_ { };
+    std::atomic_bool defunct_ { false };
     mutable std::mutex mutex_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, Value> values_;
 };

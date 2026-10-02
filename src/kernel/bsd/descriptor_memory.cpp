@@ -178,6 +178,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bpf_descriptors_.contains(fd) ||
             kernel_control_endpoints_.contains(fd) ||
             socket_pair_endpoints_.contains(fd) || baseband_descriptor ||
+            socket_defunct(fd) ||
             (virtual_descriptor != virtual_descriptors_.end() &&
                 (virtual_descriptor->second == "system-event-socket" ||
                     virtual_descriptor->second == "route-socket" ||
@@ -295,6 +296,11 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         }
         const auto address = registers[1];
         const auto size = static_cast<std::size_t>(registers[2]);
+        if (const auto error = defunct_socket_send_error(fd, 0)) {
+            bsd_error(cpu, size > bsd_support::maximum_io
+                ? bsd_support::invalid_argument : *error);
+            return;
+        }
         if (bpf_descriptors_.contains(fd)) {
             static_cast<void>(write_bpf_bytes(
                 cpu, fd, address, static_cast<std::uint32_t>(size)));
