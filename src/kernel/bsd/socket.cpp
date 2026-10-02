@@ -933,12 +933,6 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 ? 38U : bsd_support::bad_file_descriptor); // ENOTSOCK / EBADF
             return;
         }
-        if (value_size > bsd_support::maximum_io ||
-            value_size > static_cast<std::uint32_t>(
-                             std::numeric_limits<std::int32_t>::max())) {
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return;
-        }
         // These are native sogetopt queries, never mutable socket options.
         // Reject before copyin, as sosetopt does for an unsupported option.
         if (registers[1] == darwin::socket::option_level &&
@@ -948,9 +942,23 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, darwin::error::no_protocol_option);
             return;
         }
+        auto copied_size = value_size;
+        if (const auto fixed_size = SocketOptions::input_size(registers[1], registers[2])) {
+            if (value_size < *fixed_size) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            copied_size = static_cast<std::uint32_t>(*fixed_size);
+        }
+        // Native socklen_t is unsigned, including the earliest ARM firmware.
+        // Fixed options consume only their prefix, regardless of tail length.
+        if (copied_size > bsd_support::maximum_io) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
         std::vector<std::byte> value;
-        if (value_size != 0) {
-            const auto bytes = memory_.read_bytes(value_address, value_size);
+        if (copied_size != 0) {
+            const auto bytes = memory_.read_bytes(value_address, copied_size);
             if (!bytes) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
@@ -1166,7 +1174,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             if (const auto descriptor = socket_options_.find(fd);
                 descriptor != socket_options_.end()) {
                 if (auto option =
-                        descriptor->second->get(registers[1], registers[2])) {
+                        descriptor->second->get(registers[1], registers[2],
+                            shared_state_->darwin_abi.socket_linger)) {
                     value = std::move(*option);
                 }
             }

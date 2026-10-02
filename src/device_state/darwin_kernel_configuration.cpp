@@ -103,6 +103,7 @@ namespace {
         .mach_port_status = DarwinMachPortStatusAbi::ImportanceAndGuards,
         .mach_message_header = DarwinMachMessageHeaderAbi::MaskedPortBytes,
         .thread_timeshare = DarwinThreadTimeshareAbi::CanonicalBoolean,
+        .socket_linger = DarwinSocketLingerAbi::CanonicalBoolean,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,

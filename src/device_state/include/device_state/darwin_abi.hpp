@@ -290,6 +290,10 @@ enum class DarwinChildWaitAbi : std::uint8_t {
     StopOption, ExpandedStopMask, ChildIdentity,
 };
 
+// XNU through 2050 exposes SO_LINGER in l_onoff; 2422 and later
+// expose a canonical boolean. Other so_options queries still return masks.
+enum class DarwinSocketLingerAbi : std::uint8_t { OptionMask, CanonicalBoolean };
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -307,6 +311,7 @@ struct DarwinAbi {
     DarwinMachPortStatusAbi mach_port_status { DarwinMachPortStatusAbi::ReservedFlags };
     DarwinMachMessageHeaderAbi mach_message_header { DarwinMachMessageHeaderAbi::CheckedPortBytes };
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
+    DarwinSocketLingerAbi socket_linger { DarwinSocketLingerAbi::OptionMask };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers

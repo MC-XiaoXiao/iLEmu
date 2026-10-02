@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "device_state/darwin_abi.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -24,6 +26,20 @@ class SocketOptions {
 public:
     using Value = std::vector<std::byte>;
 
+    // sooptcopyin rejects short fixed values before touching user memory
+    // and ignores bytes beyond the native scalar or linger structure.
+    [[nodiscard]] static std::optional<std::size_t> input_size(
+        std::uint32_t level, std::uint32_t name)
+    {
+        if (level != socket_level)
+            return std::nullopt;
+        if (is_linger(name))
+            return 8;
+        if (is_option_bit(name))
+            return 4;
+        return std::nullopt;
+    }
+
     // sonewconn copies socket option bits (except SO_ACCEPTCONN), linger
     // and buffer high-water marks before the child enters the accept queue.
     // Protocol options, low-water marks and send/receive timeouts are not
@@ -32,32 +48,12 @@ public:
     {
         auto child = std::make_shared<SocketOptions>();
         std::lock_guard lock { mutex_ };
+        child->linger_ = linger_;
         for (const auto& [key, value] : values_) {
-            if (key.first != 0xffffU)
-                continue;
-            switch (key.second) {
-            case 0x0001: // SO_DEBUG
-            case 0x0004: // SO_REUSEADDR
-            case 0x0008: // SO_KEEPALIVE
-            case 0x0010: // SO_DONTROUTE
-            case 0x0020: // SO_BROADCAST
-            case 0x0040: // SO_USELOOPBACK
-            case 0x0080: // SO_LINGER (ticks)
-            case 0x0100: // SO_OOBINLINE
-            case 0x0200: // SO_REUSEPORT
-            case 0x0400: // SO_TIMESTAMP
-            case 0x0800: // SO_TIMESTAMP_MONOTONIC, when set
-            case 0x2000: // SO_DONTTRUNC
-            case 0x4000: // SO_WANTMORE
-            case 0x8000: // SO_WANTOOBFLAG
-            case 0x1001: // SO_SNDBUF
-            case 0x1002: // SO_RCVBUF
-            case 0x1080: // SO_LINGER_SEC
+            if (key.first == socket_level &&
+                (is_option_bit(key.second) || key.second == 0x1001 ||
+                    key.second == 0x1002)) // buffer high-water marks
                 child->values_.emplace(key, value);
-                break;
-            default:
-                break;
-            }
         }
         return child;
     }
@@ -71,14 +67,40 @@ public:
         // not publish a value that the backend rejected.
         if (const auto error = apply(value); error != 0)
             return error;
+        if (level == socket_level) {
+            if (is_linger(name)) {
+                linger_.enabled = read_word(value, 0) != 0;
+                // Native so_linger is a signed short. Unsigned arithmetic
+                // preserves narrowing even when the seconds multiply wraps.
+                const auto ticks = read_word(value, 4) *
+                    (name == linger_seconds ? ticks_per_second : 1U);
+                linger_.ticks = static_cast<std::int32_t>(ticks & 0xffffU);
+                if (linger_.ticks >= 0x8000)
+                    linger_.ticks -= 0x10000;
+                return 0;
+            }
+            if (is_option_bit(name))
+                write_word(value, 0, read_word(value, 0) != 0 ? name : 0U);
+        }
         values_[{ level, name }] = std::move(value);
         return 0;
     }
 
     [[nodiscard]] std::optional<Value> get(
-        std::uint32_t level, std::uint32_t name) const
+        std::uint32_t level, std::uint32_t name,
+        DarwinSocketLingerAbi linger_abi = DarwinSocketLingerAbi::OptionMask) const
     {
         std::lock_guard lock { mutex_ };
+        if (level == socket_level && is_linger(name)) {
+            Value value(8);
+            const auto enabled = linger_abi == DarwinSocketLingerAbi::OptionMask
+                ? linger_ticks : 1U;
+            write_word(value, 0, linger_.enabled ? enabled : 0U);
+            write_word(value, 4, static_cast<std::uint32_t>(
+                name == linger_seconds ? linger_.ticks / ticks_per_second
+                                       : linger_.ticks));
+            return value;
+        }
         const auto found = values_.find({ level, name });
         if (found == values_.end())
             return std::nullopt;
@@ -100,6 +122,48 @@ public:
     }
 
 private:
+    static constexpr std::uint32_t socket_level = 0xffff;
+    static constexpr std::uint32_t linger_ticks = 0x80;
+    static constexpr std::uint32_t linger_seconds = 0x1080;
+    // Native BSD hz, also exposed by kern.clockrate.
+    static constexpr std::int32_t ticks_per_second = 100;
+
+    static bool is_linger(std::uint32_t name)
+    {
+        return name == linger_ticks || name == linger_seconds;
+    }
+
+    static bool is_option_bit(std::uint32_t name)
+    {
+        switch (name) {
+        case 0x0001: case 0x0004: case 0x0008: case 0x0010:
+        case 0x0020: case 0x0040: case 0x0100: case 0x0200:
+        case 0x0400: case 0x0800: case 0x2000: case 0x4000: case 0x8000:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static std::uint32_t read_word(const Value& value, std::size_t offset)
+    {
+        std::uint32_t word = 0;
+        for (std::size_t byte = 0; byte < 4; ++byte)
+            word |= std::to_integer<std::uint32_t>(value[offset + byte]) << (byte * 8U);
+        return word;
+    }
+
+    static void write_word(Value& value, std::size_t offset, std::uint32_t word)
+    {
+        for (std::size_t byte = 0; byte < 4; ++byte)
+            value[offset + byte] = static_cast<std::byte>(word >> (byte * 8U));
+    }
+
+    struct Linger {
+        bool enabled { };
+        std::int32_t ticks { };
+    };
+    Linger linger_;
     mutable std::mutex mutex_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, Value> values_;
 };
