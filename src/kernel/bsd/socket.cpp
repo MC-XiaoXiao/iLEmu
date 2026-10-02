@@ -216,6 +216,14 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         return;
     }
     case darwin::syscall::receive_from: {
+        // recvfrom imports a supplied length even when no source is requested.
+        auto source = std::optional {GuestSocketAddressOutput {}};
+        if (registers[5] != 0)
+            source = GuestSocketAddressOutput::capture(memory_, registers[4], registers[5]);
+        if (!source) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
         auto fd = registers[0];
         if (const auto duplicate = duplicated_descriptors_.find(fd);
             duplicate != duplicated_descriptors_.end()) {
@@ -236,7 +244,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             return;
         }
         if (receive_socket_bytes(cpu, fd, registers[1], registers[2],
-                registers[4], registers[5])) {
+                *source)) {
             return;
         }
         if ((registers[3] & darwin::socket::message_dont_wait) != 0 ||
@@ -246,14 +254,21 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         record_bsd_sleep();
         pending_socket_reads_[cpu.processor_id()] =
-            PendingSocketRead { fd, registers[1], registers[2], registers[4],
-                registers[5], cpu.processor_id(), std::nullopt };
+            PendingSocketRead { fd, registers[1], registers[2], *source,
+                cpu.processor_id(), std::nullopt };
         process_.waiting_for_events = true;
         bsd_success(cpu, 0);
         cpu.halt(Dynarmic::HaltReason::UserDefined5);
         return;
     }
     case darwin::syscall::accept: {
+        auto output = std::optional {GuestSocketAddressOutput {}};
+        if (registers[1] != 0)
+            output = GuestSocketAddressOutput::capture(memory_, registers[1], registers[2]);
+        if (!output) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
         const auto listener_fd = registers[0];
         if (!listening_sockets_.contains(listener_fd)) {
             bsd_error(cpu, virtual_descriptors_.contains(listener_fd)
@@ -272,8 +287,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 }
                 record_bsd_sleep();
                 pending_host_accepts_[cpu.processor_id()] =
-                    PendingHostAccept { listener_fd, registers[1], registers[2],
-                        cpu.processor_id() };
+                    PendingHostAccept { listener_fd, *output, cpu.processor_id() };
                 process_.waiting_for_events = true;
                 bsd_success(cpu, 0);
                 cpu.halt(Dynarmic::HaltReason::UserDefined5);
@@ -289,8 +303,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, 24); // EMFILE
                 return;
             }
-            if (registers[1] != 0 && !copy_socket_address(
-                    registers[1], registers[2], accepted.address)) {
+            if (!output->copy_optional(memory_, accepted.address)) {
                 host_sockets_.erase(*accepted_fd);
                 virtual_descriptors_.erase(*accepted_fd);
                 file_status_flags_.erase(*accepted_fd);
@@ -302,7 +315,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             return;
         }
         if (complete_unix_accept(
-                cpu, listener_fd, registers[1], registers[2])) {
+                cpu, listener_fd, *output)) {
             return;
         }
         if ((file_status_flags_[listener_fd] & darwin::open_flag::non_block) !=
@@ -312,8 +325,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         record_bsd_sleep();
         pending_unix_accepts_[cpu.processor_id()] =
-            PendingUnixAccept { listener_fd, registers[1], registers[2],
-                cpu.processor_id() };
+            PendingUnixAccept { listener_fd, *output, cpu.processor_id() };
         process_.waiting_for_events = true;
         bsd_success(cpu, 0);
         cpu.halt(Dynarmic::HaltReason::UserDefined5);
@@ -331,6 +343,18 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             return;
         }
         const bool peer = number == 31;
+        std::optional<GuestSocketAddressOutput> local_output;
+        if (!peer) {
+            local_output = GuestSocketAddressOutput::capture(memory_, registers[1], registers[2]);
+            if (!local_output) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+        }
+        const auto copy_name = [&](std::span<const std::byte> address) {
+            return peer ? copy_socket_address(registers[1], registers[2], address)
+                        : local_output->copy(memory_, address);
+        };
         if (name_kernel_control_socket(cpu, peer))
             return;
         if (const auto host = host_sockets_.find(fd);
@@ -339,8 +363,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                                       : host->second->local_address();
             if (address.status == HostSocketStatus::Error) {
                 bsd_error(cpu, address.darwin_error);
-            } else if (!copy_socket_address(
-                           registers[1], registers[2], address.address)) {
+            } else if (!copy_name(address.address)) {
                 bsd_error(cpu, bsd_support::bad_address);
             } else {
                 bsd_success(cpu, 0);
@@ -353,14 +376,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 const auto address = udp->second->peer_address();
                 if (!address) {
                     bsd_error(cpu, bsd_support::not_connected);
-                } else if (!copy_socket_address(
-                               registers[1], registers[2], *address)) {
+                } else if (!copy_name(*address)) {
                     bsd_error(cpu, bsd_support::bad_address);
                 } else {
                     bsd_success(cpu, 0);
                 }
-            } else if (!copy_socket_address(registers[1], registers[2],
-                           udp->second->local_address())) {
+            } else if (!copy_name(udp->second->local_address())) {
                 bsd_error(cpu, bsd_support::bad_address);
             } else {
                 bsd_success(cpu, 0);
@@ -391,7 +412,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                     reinterpret_cast<const std::byte*>(
                         bound->second.data() + bound->second.size()));
             }
-            if (!copy_socket_address(registers[1], registers[2], address)) {
+            if (!copy_name(address)) {
                 bsd_error(cpu, bsd_support::bad_address);
             } else {
                 bsd_success(cpu, 0);
@@ -428,7 +449,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             index < name.size() && index + 2 < address.size(); ++index) {
             address[index + 2] = static_cast<std::byte>(name[index]);
         }
-        if (!copy_socket_address(registers[1], registers[2], address)) {
+        if (!copy_name(address)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }

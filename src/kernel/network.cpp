@@ -564,8 +564,8 @@ bool CompatibilityKernel::receive_socket_message(
 }
 
 bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
-    std::uint32_t address, std::uint32_t size, std::uint32_t source_address,
-    std::uint32_t source_length_address, std::span<const GuestReadVector> vectors)
+    std::uint32_t address, std::uint32_t size, const GuestSocketAddressOutput& source,
+    std::span<const GuestReadVector> vectors)
 {
     if (size == 0) {
         bsd_success(cpu, 0);
@@ -618,8 +618,7 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             bsd_error(cpu, received.darwin_error);
             return true;
         }
-        if (source_address != 0 && !copy_socket_address(
-                source_address, source_length_address, received.address)) {
+        if (!source.copy_received(memory_, received.address)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
             bsd_success(cpu, static_cast<std::uint32_t>(received.transferred));
@@ -638,8 +637,7 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
             bsd_error(cpu, efault);
             return true;
         }
-        if (source_address != 0 && !copy_socket_address(source_address, source_length_address,
-                received->source_address)) {
+        if (!source.copy_received(memory_, received->source_address)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
             bsd_success(
@@ -754,6 +752,10 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
         bsd_error(cpu, received.error);
         return true;
     }
+    if (!source.copy_received(memory_, {})) {
+        bsd_error(cpu, efault);
+        return true;
+    }
     bsd_success(cpu, static_cast<std::uint32_t>(received.transferred));
     output_.write("[network] read fd=" + std::to_string(fd) +
                   " bytes=" + std::to_string(received.transferred) + "\n");
@@ -797,21 +799,12 @@ std::optional<std::uint32_t> CompatibilityKernel::socket_type(
 bool CompatibilityKernel::copy_socket_address(std::uint32_t address,
     std::uint32_t length_address, std::span<const std::byte> socket_address)
 {
-    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
-    const auto capacity = memory_.read32(length_address);
-    if (!capacity)
-        return false;
-    const auto copied = std::min<std::size_t>(*capacity, socket_address.size());
-    return (copied == 0 ||
-               GuestSocketReceiveTarget {memory_, address,
-                   static_cast<std::uint32_t>(copied)}.copy(socket_address.first(copied))) &&
-           memory_.write32(length_address,
-               static_cast<std::uint32_t>(socket_address.size()));
+    const auto output = GuestSocketAddressOutput::capture(memory_, address, length_address);
+    return output && output->copy(memory_, socket_address);
 }
 
 bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
-    std::uint32_t listener_fd, std::uint32_t address,
-    std::uint32_t length_address)
+    std::uint32_t listener_fd, const GuestSocketAddressOutput& output)
 {
     if (!virtual_descriptors_.contains(listener_fd)) {
         bsd_error(cpu, ebadf);
@@ -854,7 +847,7 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
 
     constexpr std::array<std::byte, 2> unnamed_peer { std::byte { 2 },
         static_cast<std::byte>(darwin::socket::local) };
-    if (address != 0 && !copy_socket_address(address, length_address, unnamed_peer)) {
+    if (!output.copy_optional(memory_, unnamed_peer)) {
         virtual_descriptors_.erase(*accepted_fd);
         socket_pair_endpoints_.erase(*accepted_fd);
         file_status_flags_.erase(*accepted_fd);

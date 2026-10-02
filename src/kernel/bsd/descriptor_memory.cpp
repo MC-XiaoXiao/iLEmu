@@ -164,7 +164,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                                       nanoseconds_per_decisecond;
             record_bsd_sleep();
             pending_socket_reads_[cpu.processor_id()] = PendingSocketRead { fd,
-                registers[1], static_cast<std::uint32_t>(size), 0, 0,
+                registers[1], static_cast<std::uint32_t>(size), {},
                 cpu.processor_id(), deadline, std::move(vectors) };
             process_.waiting_for_events = true;
             cpu.halt(Dynarmic::HaltReason::UserDefined5);
@@ -186,7 +186,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                             event_descriptor_kind));
         if (readable_socket) {
             if (receive_socket_bytes(
-                    cpu, fd, registers[1], static_cast<std::uint32_t>(size), 0, 0, vectors)) {
+                    cpu, fd, registers[1], static_cast<std::uint32_t>(size), {}, vectors)) {
                 return;
             }
             if ((file_status_flags_[fd] & darwin::open_flag::non_block) != 0) {
@@ -201,7 +201,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                         apple80211_driver::event_descriptor_kind))
                 record_bsd_sleep();
             pending_socket_reads_[cpu.processor_id()] = PendingSocketRead { fd,
-                registers[1], static_cast<std::uint32_t>(size), 0, 0,
+                registers[1], static_cast<std::uint32_t>(size), {},
                 cpu.processor_id(), std::nullopt, std::move(vectors) };
             process_.waiting_for_events = true;
             output_.write(std::string { baseband_descriptor ? "[baseband]"

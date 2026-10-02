@@ -14,6 +14,7 @@
 #include <kernel/credential_groups.hpp>
 #include <kernel/open_file_offset.hpp>
 #include <kernel/guest_read_buffer.hpp>
+#include <kernel/guest_socket_address_output.hpp>
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/child_wait_status.hpp"
@@ -261,8 +262,7 @@ struct PendingSocketRead {
     std::uint32_t fd { };
     std::uint32_t address { };
     std::uint32_t size { };
-    std::uint32_t source_address { };
-    std::uint32_t source_length_address { };
+    GuestSocketAddressOutput source;
     std::size_t processor { };
     std::optional<std::uint64_t> deadline;
     std::vector<GuestReadVector> vectors {};
@@ -275,8 +275,7 @@ struct PendingHostConnect {
 
 struct PendingHostAccept {
     std::uint32_t fd { };
-    std::uint32_t address { };
-    std::uint32_t length_address { };
+    GuestSocketAddressOutput output;
     std::size_t processor { };
 };
 
@@ -311,8 +310,7 @@ struct PendingBasebandWrite {
 
 struct PendingUnixAccept {
     std::uint32_t fd { };
-    std::uint32_t address { };
-    std::uint32_t length_address { };
+    GuestSocketAddressOutput output;
     std::size_t processor { };
 };
 

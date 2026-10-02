@@ -2044,9 +2044,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
                 bsd_error(cpu, accepted.darwin_error);
             } else if (const auto fd =
                            install_host_socket(accepted.accepted_socket)) {
-                if (pending->second.address != 0 &&
-                    !copy_socket_address(pending->second.address,
-                        pending->second.length_address, accepted.address)) {
+                if (!pending->second.output.copy_optional(memory_, accepted.address)) {
                     host_sockets_.erase(*fd);
                     virtual_descriptors_.erase(*fd);
                     file_status_flags_.erase(*fd);
@@ -2130,7 +2128,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     if (const auto pending = pending_unix_accepts_.find(cpu.processor_id());
         pending != pending_unix_accepts_.end()) {
         if (!complete_unix_accept(cpu, pending->second.fd,
-                pending->second.address, pending->second.length_address)) {
+                pending->second.output)) {
             return false;
         }
         pending_unix_accepts_.erase(pending);
@@ -2361,8 +2359,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         }
         if (!receive_socket_bytes(cpu, pending->second.fd,
                 pending->second.address, pending->second.size,
-                pending->second.source_address,
-                pending->second.source_length_address, pending->second.vectors)) {
+                pending->second.source, pending->second.vectors)) {
             return false;
         }
         pending_socket_reads_.erase(pending);

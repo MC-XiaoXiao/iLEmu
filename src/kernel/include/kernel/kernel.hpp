@@ -898,8 +898,7 @@ private:
         Cpu& cpu, std::uint32_t fd, std::uint32_t address, std::uint32_t size);
     [[nodiscard]] bool bpf_descriptor_readable(std::uint32_t fd) const;
     bool receive_socket_bytes(Cpu& cpu, std::uint32_t fd, std::uint32_t address,
-        std::uint32_t size, std::uint32_t source_address = 0,
-        std::uint32_t source_length_address = 0,
+        std::uint32_t size, const GuestSocketAddressOutput& source = {},
         std::span<const GuestReadVector> vectors = {});
     [[nodiscard]] std::optional<std::uint32_t> socket_type(
         std::uint32_t descriptor) const;
@@ -909,7 +908,7 @@ private:
     // Completes a local-stream accept when a connection is queued. A false
     // return means the blocking call must remain suspended.
     bool complete_unix_accept(Cpu& cpu, std::uint32_t listener_fd,
-        std::uint32_t address, std::uint32_t length_address);
+        const GuestSocketAddressOutput& output);
     [[nodiscard]] std::optional<std::uint32_t> install_host_socket(
         std::shared_ptr<HostSocket> socket);
     void dispatch_apple80211_ioctl(
