@@ -731,7 +731,7 @@ bool CompatibilityKernel::complete_host_accept(Cpu& cpu,
             return true;
         }
     }
-    const auto accepted = host->second->accept();
+    auto accepted = host->second->accept();
     if (accepted.status == HostSocketStatus::WouldBlock)
         return false;
     if (accepted.status == HostSocketStatus::Error) {
@@ -740,9 +740,15 @@ bool CompatibilityKernel::complete_host_accept(Cpu& cpu,
     }
     const auto fd = install_host_socket(accepted.accepted_socket);
     if (!fd) {
+        if (shared_state_->darwin_abi.socket_accept_failure ==
+            DarwinSocketAcceptFailureAbi::Requeue) {
+            host->second->restore_accept(std::move(accepted));
+            shared_state_->note_io_event_transition();
+        }
         bsd_error(cpu, 24); // EMFILE
         return true;
     }
+    file_status_flags_[*fd] = file_status_flags_[listener_fd];
     if (!output.copy_optional(memory_, accepted.address)) {
         host_sockets_.erase(*fd);
         virtual_descriptors_.erase(*fd);
@@ -801,6 +807,11 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
         return false;
     const auto accepted_fd = allocate_file_descriptor();
     if (!accepted_fd) {
+        if (shared_state_->darwin_abi.socket_accept_failure ==
+            DarwinSocketAcceptFailureAbi::Discard) {
+            listener->second->pending_endpoints.pop_front();
+            shared_state_->note_io_event_transition();
+        }
         bsd_error(cpu, 24); // EMFILE
         return true;
     }
@@ -810,7 +821,7 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
     const auto pair = accepted.endpoint.pair;
     virtual_descriptors_[*accepted_fd] = "unix-stream";
     socket_pair_endpoints_[*accepted_fd] = std::move(accepted.endpoint);
-    file_status_flags_[*accepted_fd] = darwin::open_flag::read_write;
+    file_status_flags_[*accepted_fd] = file_status_flags_[listener_fd];
     descriptor_flags_[*accepted_fd] = 0;
 
     constexpr std::array<std::byte, 2> unnamed_peer { std::byte { 2 },

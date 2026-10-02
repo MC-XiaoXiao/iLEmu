@@ -75,6 +75,7 @@ namespace {
     constexpr DarwinAbi darwin13_wide_vm_high_commpage_abi = [] {
         auto abi = darwin11_wide_vm_high_vectors_abi;
         abi.abi_epoch = DarwinAbiEpoch::Darwin13;
+        abi.socket_accept_failure = DarwinSocketAcceptFailureAbi::Discard;
         abi.task_suspension = DarwinTaskSuspensionAbi::ProtectedPidHold;
         abi.task_information = DarwinTaskInformationAbi::UnifiedBasic;
         abi.task_special_ports = DarwinTaskSpecialPortsAbi::Security;
@@ -106,6 +107,7 @@ namespace {
         .thread_timeshare = DarwinThreadTimeshareAbi::CanonicalBoolean,
         .socket_linger = DarwinSocketLingerAbi::CanonicalBoolean,
         .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
+        .socket_accept_failure = DarwinSocketAcceptFailureAbi::Discard,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,

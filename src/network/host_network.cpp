@@ -654,6 +654,14 @@ HostSocketResult HostSocket::accept()
     return accept_locked();
 }
 
+void HostSocket::restore_accept(HostSocketResult accepted)
+{
+    std::lock_guard lock { accept_mutex_ };
+    if (!preserved_accepts_)
+        preserved_accepts_ = std::make_unique<std::deque<HostSocketResult>>();
+    preserved_accepts_->push_front(std::move(accepted));
+}
+
 std::size_t HostSocket::preserved_accept_count() const
 {
     std::lock_guard lock { accept_mutex_ };
@@ -1175,6 +1183,9 @@ HostSocketResult HostSocket::shutdown(std::uint32_t how)
 
 bool HostSocket::readable() const
 {
+    if (stream_state_.load(std::memory_order_relaxed) == StreamState::Listening &&
+        preserved_accept_count() != 0)
+        return true;
     // Linux projects POLLHUP on a never-connected TCP stream. XNU does not
     // consider that initial connection-required state readable.
     if (darwin_type_ == darwin_socket_stream &&

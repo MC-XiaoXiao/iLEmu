@@ -87,6 +87,7 @@ public:
         std::span<const std::byte> darwin_address);
     [[nodiscard]] HostSocketResult listen(std::uint32_t backlog);
     [[nodiscard]] HostSocketResult accept();
+    void restore_accept(HostSocketResult accepted);
     [[nodiscard]] std::size_t preserved_accept_count() const;
     [[nodiscard]] HostSocketResult send(std::span<const std::byte> bytes,
         std::span<const std::byte> darwin_destination = { });

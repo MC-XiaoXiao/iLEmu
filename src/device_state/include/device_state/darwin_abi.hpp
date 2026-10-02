@@ -297,6 +297,9 @@ enum class DarwinSocketLingerAbi : std::uint8_t { OptionMask, CanonicalBoolean }
 // Extended listener flags in the audited Darwin 11 and later contracts.
 enum class DarwinSocketAcceptFlagsAbi : std::uint8_t { CommonOptions, ExtendedFlags };
 
+// XNU 2050 and later close the dequeued child when file allocation fails.
+enum class DarwinSocketAcceptFailureAbi : std::uint8_t { Requeue, Discard };
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -316,6 +319,7 @@ struct DarwinAbi {
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
     DarwinSocketLingerAbi socket_linger { DarwinSocketLingerAbi::OptionMask };
     DarwinSocketAcceptFlagsAbi socket_accept_flags { DarwinSocketAcceptFlagsAbi::CommonOptions };
+    DarwinSocketAcceptFailureAbi socket_accept_failure { DarwinSocketAcceptFailureAbi::Requeue };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers
