@@ -35,7 +35,7 @@ public:
             return std::nullopt;
         if (is_linger(name))
             return 8;
-        if (is_option_bit(name))
+        if (is_option_bit(name) || name == defunct_option)
             return 4;
         return std::nullopt;
     }
@@ -63,6 +63,10 @@ public:
         Value value, Apply&& apply)
     {
         std::lock_guard lock { mutex_ };
+        // sosetopt checks SOF_DEFUNCT after fixed copyin, before privilege
+        // checks. A retained socket cannot opt back in or out once defunct.
+        if (level == socket_level && name == defunct_option && defunct_)
+            return 9; // EBADF
         // Serialize backend changes with the guest-visible cache, and do
         // not publish a value that the backend rejected.
         if (const auto error = apply(value); error != 0)
@@ -81,9 +85,29 @@ public:
             }
             if (is_option_bit(name))
                 write_word(value, 0, read_word(value, 0) != 0 ? name : 0U);
+            else if (name == defunct_option)
+                write_word(value, 0, read_word(value, 0) != 0 ? 1U : 0U);
         }
         values_[{ level, name }] = std::move(value);
         return 0;
+    }
+
+    // Eligibility and the terminal flag belong to the shared socket, not an
+    // fd. Claim the transition once, without allocating an option copy. The
+    // caller shuts down the transport after releasing this lock, avoiding
+    // inversion with connection-queue locks used by accepted_snapshot().
+    [[nodiscard]] bool begin_defunct(bool default_eligible)
+    {
+        std::lock_guard lock { mutex_ };
+        if (defunct_)
+            return false;
+        const auto option = values_.find({ socket_level, defunct_option });
+        const auto eligible = option == values_.end()
+            ? default_eligible : read_word(option->second, 0) != 0;
+        if (!eligible)
+            return false;
+        defunct_ = true;
+        return true;
     }
 
     [[nodiscard]] std::optional<Value> get(
@@ -125,6 +149,7 @@ private:
     static constexpr std::uint32_t socket_level = 0xffff;
     static constexpr std::uint32_t linger_ticks = 0x80;
     static constexpr std::uint32_t linger_seconds = 0x1080;
+    static constexpr std::uint32_t defunct_option = 0x1100;
     // Native BSD hz, also exposed by kern.clockrate.
     static constexpr std::int32_t ticks_per_second = 100;
 
@@ -164,6 +189,7 @@ private:
         std::int32_t ticks { };
     };
     Linger linger_;
+    bool defunct_ { };
     mutable std::mutex mutex_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, Value> values_;
 };

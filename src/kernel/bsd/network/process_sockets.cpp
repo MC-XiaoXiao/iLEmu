@@ -11,8 +11,6 @@
 
 #include "kernel/darwin_abi.hpp"
 
-#include <algorithm>
-
 #include "../support.hpp"
 
 namespace ilemu {
@@ -63,17 +61,9 @@ void CompatibilityKernel::shutdown_process_sockets(std::uint32_t level)
             continue;
         // AF_UNIX defaults to SOF_NODEFUNCT. Native IPC clients opt in through
         // SO_DEFUNCTOK; do not tear down launchd or other protected IPC pairs.
-        auto eligible = !local;
-        if (const auto options = socket_options_.find(fd);
-            options != socket_options_.end()) {
-            const auto option = options->second->get(
-                darwin::socket::option_level, darwin::socket::option_defunct_ok);
-            if (option && option->size() == 4U) {
-                eligible = std::any_of(option->begin(), option->end(),
-                    [](std::byte byte) { return byte != std::byte { 0 }; });
-            }
-        }
-        if (!eligible)
+        const auto options = socket_options_.find(fd);
+        if (options == socket_options_.end() ||
+            !options->second->begin_defunct(!local))
             continue;
         if (const auto host = host_sockets_.find(fd);
             host != host_sockets_.end()) {

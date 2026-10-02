@@ -968,21 +968,13 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         const auto defunct_option =
             registers[1] == darwin::socket::option_level &&
             registers[2] == darwin::socket::option_defunct_ok;
-        if (defunct_option) {
-            if (value.size() != sizeof(std::uint32_t)) {
-                bsd_error(cpu, bsd_support::invalid_argument);
-                return;
-            }
-            const auto enabled = std::any_of(value.begin(), value.end(),
-                [](std::byte byte) { return byte != std::byte { 0 }; });
-            if (!enabled && process_.effective_uid != 0U) {
-                bsd_error(cpu, darwin::error::operation_not_permitted);
-                return;
-            }
-        }
         const auto error = socket_options_.at(fd)->update(
             registers[1], registers[2], std::move(value),
             [&](const SocketOptions::Value& bytes) -> std::uint32_t {
+                if (defunct_option && process_.effective_uid != 0U &&
+                    std::none_of(bytes.begin(), bytes.end(),
+                        [](std::byte byte) { return byte != std::byte { 0 }; }))
+                    return darwin::error::operation_not_permitted;
                 if (const auto host = host_sockets_.find(fd);
                     host != host_sockets_.end() && !defunct_option) {
                     const auto result = host->second->set_option(
