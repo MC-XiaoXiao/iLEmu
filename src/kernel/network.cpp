@@ -732,7 +732,11 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
             const auto nonblocking = (file_status_flags_[listener_fd] &
                 darwin::open_flag::non_block) != 0;
             if (const auto error = isolated_stream_sockets_.at(listener_fd)->accept_error(nonblocking)) {
-                bsd_error(cpu, *error);
+                // Empty nonblocking accepts keep EWOULDBLOCK priority. A
+                // terminal blocking accept shares so_error with getsockopt.
+                const auto pending = *error == 53U
+                    ? socket_options_.at(listener_fd)->take_defunct_error() : 0U;
+                bsd_error(cpu, pending != 0 ? pending : *error);
                 return true;
             }
             // No route can produce a peer while isolated. A blocking accept

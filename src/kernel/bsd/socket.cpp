@@ -1082,7 +1082,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         } else if (registers[1] == darwin::socket::option_level &&
                    registers[2] == darwin::socket::option_error) {
             std::uint32_t socket_error = 0;
-            if (const auto host = host_sockets_.find(fd);
+            if (socket_defunct(fd)) {
+                socket_error = socket_options_.at(fd)->take_defunct_error();
+            } else if (const auto host = host_sockets_.find(fd);
                 host != host_sockets_.end()) {
                 const auto queried = host->second->socket_error();
                 if (queried.status == HostSocketStatus::Error) {
@@ -1090,9 +1092,6 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                     return;
                 }
                 socket_error = queried.darwin_error;
-            } else if (const auto stream = isolated_stream_sockets_.find(fd);
-                stream != isolated_stream_sockets_.end()) {
-                socket_error = stream->second->take_error();
             }
             value.resize(sizeof(socket_error));
             for (std::size_t byte = 0; byte < sizeof(socket_error); ++byte) {

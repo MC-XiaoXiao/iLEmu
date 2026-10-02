@@ -97,7 +97,8 @@ public:
     // fd. Claim the transition once, without allocating an option copy. The
     // caller shuts down the transport after releasing this lock, avoiding
     // inversion with connection-queue locks used by accepted_snapshot().
-    [[nodiscard]] bool begin_defunct(bool default_eligible)
+    template <typename CaptureError>
+    [[nodiscard]] bool begin_defunct(bool default_eligible, CaptureError&& capture_error)
     {
         std::lock_guard lock { mutex_ };
         if (defunct())
@@ -107,15 +108,23 @@ public:
             ? default_eligible : read_word(option->second, 0) != 0;
         if (!eligible)
             return false;
-        defunct_.store(true, std::memory_order_relaxed);
+        const auto error = capture_error();
+        terminal_state_.store(defunct_bit | (error != 0 ? error : 9U),
+            std::memory_order_relaxed); // sodefunct preserves an existing so_error
         return true;
     }
 
-    // Terminal I/O checks need no option map copy or mutex. The flag is
-    // monotonic; transport teardown follows the transition independently.
+    // Publish the monotonic flag and pending error in one atomic word. Hot
+    // I/O checks remain a relaxed load; aliases consume the error only once.
     [[nodiscard]] bool defunct() const noexcept
     {
-        return defunct_.load(std::memory_order_relaxed);
+        return (terminal_state_.load(std::memory_order_relaxed) & defunct_bit) != 0;
+    }
+
+    [[nodiscard]] std::uint32_t take_defunct_error() noexcept
+    {
+        return terminal_state_.fetch_and(defunct_bit, std::memory_order_relaxed) &
+            ~defunct_bit;
     }
 
     [[nodiscard]] std::optional<Value> get(
@@ -197,7 +206,8 @@ private:
         std::int32_t ticks { };
     };
     Linger linger_;
-    std::atomic_bool defunct_ { false };
+    static constexpr std::uint32_t defunct_bit = 1U << 31U;
+    std::atomic<std::uint32_t> terminal_state_ { 0 };
     mutable std::mutex mutex_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, Value> values_;
 };

@@ -57,24 +57,19 @@ public:
     }
     // sodefunct closes a pre-established TCP PCB even while descriptors
     // still own the socket. Retain its name and SO_ACCEPTCONN, but exclude
-    // it from reservation lookup and wake waiters with the shared so_error.
+    // it from reservation lookup. Guest so_error belongs to the shared
+    // socket state above this transport and is consumed by the kernel.
     void make_defunct()
     {
         std::lock_guard lock { network_->mutex_ };
         if (defunct_)
             return;
         defunct_ = true;
-        error_ = 9; // EBADF
     }
     [[nodiscard]] bool defunct() const
     {
         std::lock_guard lock { network_->mutex_ };
         return defunct_;
-    }
-    [[nodiscard]] std::uint32_t take_error()
-    {
-        std::lock_guard lock { network_->mutex_ };
-        return std::exchange(error_, 0);
     }
     [[nodiscard]] std::uint32_t connect_error() const
     {
@@ -89,8 +84,6 @@ public:
         // Native accept tests an empty nonblocking queue before so_error.
         if (nonblocking)
             return 35; // EWOULDBLOCK
-        if (error_ != 0)
-            return std::exchange(error_, 0);
         if (defunct_)
             return 53; // ECONNABORTED after the initial error was consumed
         return std::nullopt;
@@ -142,7 +135,6 @@ private:
     bool share_uid_ {};
     bool listening_ {};
     bool defunct_ {};
-    std::uint32_t error_ {};
     std::vector<std::byte> bound_address_;
 };
 

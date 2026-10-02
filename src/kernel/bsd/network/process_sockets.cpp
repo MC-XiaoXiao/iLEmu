@@ -63,7 +63,17 @@ void CompatibilityKernel::shutdown_process_sockets(std::uint32_t level)
         // SO_DEFUNCTOK; do not tear down launchd or other protected IPC pairs.
         const auto options = socket_options_.find(fd);
         if (options == socket_options_.end() ||
-            !options->second->begin_defunct(!local))
+            !options->second->begin_defunct(!local, [&] {
+                // Preserve a pending transport error before host shutdown can
+                // change it. Ineligible/already-defunct sockets never query it.
+                if (const auto host = host_sockets_.find(fd);
+                    host != host_sockets_.end()) {
+                    const auto pending = host->second->socket_error();
+                    if (pending.status == HostSocketStatus::Success)
+                        return pending.darwin_error;
+                }
+                return 0U;
+            }))
             continue;
         if (const auto host = host_sockets_.find(fd);
             host != host_sockets_.end()) {
