@@ -39,6 +39,7 @@ namespace {
         .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
         .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
         .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
+        .file_open = DarwinFileOpenAbi::CloseOnExec,
         .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi =
@@ -108,6 +109,7 @@ namespace {
         .socket_linger = DarwinSocketLingerAbi::CanonicalBoolean,
         .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
         .socket_accept_failure = DarwinSocketAcceptFailureAbi::Discard,
+        .file_open = DarwinFileOpenAbi::CloseOnExec,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
@@ -218,6 +220,7 @@ namespace {
                 .resource_accounting = DarwinResourceAccounting::ResidentPeak,
                 .child_wait = DarwinChildWaitAbi::ExpandedStopMask,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
+                .file_open = DarwinFileOpenAbi::DataSynchronized,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
@@ -243,6 +246,7 @@ namespace {
                 .resource_accounting = DarwinResourceAccounting::ResidentPeak,
                 .child_wait = DarwinChildWaitAbi::ExpandedStopMask,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
+                .file_open = DarwinFileOpenAbi::DataSynchronized,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
@@ -268,6 +272,7 @@ namespace {
                 .resource_accounting = DarwinResourceAccounting::ResidentPeak,
                 .child_wait = DarwinChildWaitAbi::ExpandedStopMask,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
+                .file_open = DarwinFileOpenAbi::DataSynchronized,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1TsdBase,
                 .apple80211_ioctl =
@@ -296,6 +301,7 @@ namespace {
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
                 .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
+                .file_open = DarwinFileOpenAbi::CloseOnExec,
                 .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi =

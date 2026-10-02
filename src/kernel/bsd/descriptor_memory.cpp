@@ -16,6 +16,7 @@
 
 #include "kernel/baseband_device.hpp"
 #include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_file_flags.hpp"
 #include <kernel/virtual_udp_error.hpp>
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
@@ -1164,9 +1165,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             return;
         case darwin::fcntl_command::set_status_flags:
             if (file_status_flags_.contains(fd)) {
-                constexpr std::uint32_t mutable_status_flags =
-                    darwin::open_flag::append | darwin::open_flag::non_block;
-                file_status_flags_[fd].replace(mutable_status_flags, registers[2]);
+                const DarwinFileFlags flags { shared_state_->darwin_abi.file_open };
+                file_status_flags_[fd].replace(flags.mutable_status(), registers[2] + 1U);
             }
             bsd_success(cpu, 0);
             return;
@@ -1414,6 +1414,11 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
+        if ((registers[1] & darwin::open_flag::access_mode) ==
+            darwin::open_flag::access_mode) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
         constexpr std::uint32_t o_creat = 0x0200U;
         constexpr std::uint32_t o_trunc = 0x0400U;
         constexpr std::uint32_t o_excl = 0x0800U;
@@ -1487,8 +1492,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         }
         file_descriptors_[*fd] = backing;
         file_offsets_[*fd] = 0;
-        file_status_flags_[*fd] = registers[1];
-        descriptor_flags_[*fd] = 0;
+        const DarwinFileFlags flags { shared_state_->darwin_abi.file_open };
+        file_status_flags_[*fd] = flags.status(registers[1]);
+        descriptor_flags_[*fd] = 1U; // shm_open always sets UF_EXCLOSE.
         static_cast<void>(ensure_regular_file_open_description(*fd));
         output_.write("[vfs] shm_open " + object_name +
                       " fd=" + std::to_string(*fd) + "\n");

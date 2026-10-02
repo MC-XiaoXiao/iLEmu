@@ -11,6 +11,7 @@
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_file_flags.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -88,7 +89,8 @@ void CompatibilityKernel::dispatch_bsd_posix_semaphore(
             }
         }
         virtual_descriptors_[*descriptor] = std::string { descriptor_kind };
-        file_status_flags_[*descriptor] = flags;
+        const DarwinFileFlags file_flags { shared_state_->darwin_abi.file_open };
+        file_status_flags_[*descriptor] = file_flags.status(flags);
         posix_semaphore_descriptors_[*descriptor] = object;
         output_.write("[posix-semaphore] open pid=" +
                       std::to_string(process_.pid) + " fd=" +

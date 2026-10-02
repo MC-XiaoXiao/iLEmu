@@ -300,6 +300,9 @@ enum class DarwinSocketAcceptFlagsAbi : std::uint8_t { CommonOptions, ExtendedFl
 // XNU 2050 and later close the dequeued child when file allocation fails.
 enum class DarwinSocketAcceptFailureAbi : std::uint8_t { Requeue, Discard };
 
+// Persistent flags gain O_DSYNC before atomic O_CLOEXEC support.
+enum class DarwinFileOpenAbi : std::uint8_t { Legacy, DataSynchronized, CloseOnExec };
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -320,6 +323,7 @@ struct DarwinAbi {
     DarwinSocketLingerAbi socket_linger { DarwinSocketLingerAbi::OptionMask };
     DarwinSocketAcceptFlagsAbi socket_accept_flags { DarwinSocketAcceptFlagsAbi::CommonOptions };
     DarwinSocketAcceptFailureAbi socket_accept_failure { DarwinSocketAcceptFailureAbi::Requeue };
+    DarwinFileOpenAbi file_open { DarwinFileOpenAbi::Legacy };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers

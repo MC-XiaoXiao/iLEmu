@@ -12,6 +12,7 @@
 
 #include "kernel/baseband_device.hpp"
 #include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_file_flags.hpp"
 #include "kernel/darwin_bpf_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "kernel/darwin_packet_filter_device.hpp"
@@ -345,6 +346,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
+        if ((flags & darwin::open_flag::access_mode) ==
+            darwin::open_flag::access_mode) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        const DarwinFileFlags file_flags { shared_state_->darwin_abi.file_open };
         // The VFS exposes an unencrypted volume (F_GETPROTECTIONCLASS=0).
         // Raw reads therefore use the same bytes and descriptor lifecycle as
         // open; a requested creation class adds no encryption metadata.
@@ -390,8 +397,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             }
             virtual_descriptors_.emplace(*fd, "resolver-config");
             file_offsets_.emplace(*fd, 0);
-            file_status_flags_[*fd] = flags;
-            descriptor_flags_[*fd] = 0;
+            file_status_flags_[*fd] = file_flags.status(flags, true);
+            descriptor_flags_[*fd] = file_flags.descriptor(flags);
             bsd_success(cpu, *fd);
             return;
         }
@@ -422,8 +429,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             auto state = std::make_shared<darwin::bpf::DescriptorState>();
             state->minor = *minor;
             bpf_descriptors_.emplace(*fd, std::move(state));
-            file_status_flags_[*fd] = flags;
-            descriptor_flags_[*fd] = 0;
+            file_status_flags_[*fd] = file_flags.status(flags, true);
+            descriptor_flags_[*fd] = file_flags.descriptor(flags);
             bsd_success(cpu, *fd);
             return;
         }
@@ -437,8 +444,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 *fd, *minor == darwin::packet_filter::manager_minor
                          ? darwin::packet_filter::manager_descriptor_kind
                          : darwin::packet_filter::control_descriptor_kind);
-            file_status_flags_[*fd] = flags;
-            descriptor_flags_[*fd] = 0;
+            file_status_flags_[*fd] = file_flags.status(flags, true);
+            descriptor_flags_[*fd] = file_flags.descriptor(flags);
             bsd_success(cpu, *fd);
             return;
         }
@@ -453,8 +460,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             wifi_driver_event_streams_.emplace(
                 *fd, std::make_shared<
                          darwin::network::apple80211_driver::EventStream>());
-            file_status_flags_[*fd] = flags;
-            descriptor_flags_[*fd] = 0;
+            file_status_flags_[*fd] = file_flags.status(flags, true);
+            descriptor_flags_[*fd] = file_flags.descriptor(flags);
             bsd_success(cpu, *fd);
             return;
         }
@@ -482,7 +489,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             if (baseband_description)
                 baseband_open_descriptions_[*fd] =
                     std::move(baseband_description);
-            file_status_flags_[*fd] = flags;
+            file_status_flags_[*fd] = file_flags.status(flags, true);
+            descriptor_flags_[*fd] = file_flags.descriptor(flags);
             bsd_success(cpu, *fd);
             return;
         }
@@ -503,7 +511,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             }
             file_descriptors_.emplace(*fd, backing);
             file_offsets_.emplace(*fd, 0);
-            file_status_flags_[*fd] = flags;
+            file_status_flags_[*fd] = file_flags.status(flags, true);
+            descriptor_flags_[*fd] = file_flags.descriptor(flags);
             static_cast<void>(ensure_regular_file_open_description(*fd));
             const auto minor = path->ends_with("s1") ? 1U : 2U;
             virtual_block_descriptors_.emplace(
@@ -612,8 +621,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         file_descriptors_.emplace(*fd, host);
         file_offsets_.emplace(*fd, 0);
-        file_status_flags_[*fd] = flags;
-        descriptor_flags_[*fd] = 0;
+        file_status_flags_[*fd] = file_flags.status(flags, true);
+        descriptor_flags_[*fd] = file_flags.descriptor(flags);
         static_cast<void>(ensure_regular_file_open_description(*fd));
         bsd_success(cpu, *fd);
         return;

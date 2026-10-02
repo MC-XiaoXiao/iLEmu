@@ -67,6 +67,11 @@ namespace open_flag {
     inline constexpr std::uint32_t create = 0x0200;
     inline constexpr std::uint32_t truncate = 0x0400;
     inline constexpr std::uint32_t exclusive = 0x0800;
+    inline constexpr std::uint32_t asynchronous = 0x0040;
+    inline constexpr std::uint32_t synchronize = 0x0080;
+    inline constexpr std::uint32_t event_only = 0x8000;
+    inline constexpr std::uint32_t data_synchronize = 0x400000;
+    inline constexpr std::uint32_t close_on_exec = 0x1000000;
 } // namespace open_flag
 
 namespace path_configuration {
