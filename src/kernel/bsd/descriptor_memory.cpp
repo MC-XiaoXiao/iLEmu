@@ -781,6 +781,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 socket != virtual_udp_sockets_.end()) {
                 virtual_udp_sockets_[allocated] = socket->second;
             }
+            if (const auto socket = isolated_stream_sockets_.find(source);
+                socket != isolated_stream_sockets_.end()) {
+                isolated_stream_sockets_[allocated] = socket->second;
+            }
             if (const auto control = kernel_control_endpoints_.find(source);
                 control != kernel_control_endpoints_.end()) {
                 kernel_control_endpoints_[allocated] = control->second;
@@ -1006,6 +1010,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             if (const auto socket = virtual_udp_sockets_.find(source);
                 socket != virtual_udp_sockets_.end()) {
                 virtual_udp_sockets_[destination] = socket->second;
+            }
+            if (const auto socket = isolated_stream_sockets_.find(source);
+                socket != isolated_stream_sockets_.end()) {
+                isolated_stream_sockets_[destination] = socket->second;
             }
             if (const auto control = kernel_control_endpoints_.find(source);
                 control != kernel_control_endpoints_.end()) {

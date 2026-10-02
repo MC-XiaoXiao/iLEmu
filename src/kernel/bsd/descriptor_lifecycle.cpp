@@ -35,6 +35,7 @@ bool CompatibilityKernel::release_file_descriptor(std::uint32_t descriptor)
     host_sockets_.erase(descriptor);
     wifi_driver_event_streams_.erase(descriptor);
     virtual_udp_sockets_.erase(descriptor);
+    isolated_stream_sockets_.erase(descriptor);
     kernel_control_endpoints_.erase(descriptor);
     system_event_filters_.erase(descriptor);
     apple80211_scan_delivered_.erase(descriptor);

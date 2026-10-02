@@ -139,6 +139,7 @@ void CompatibilityKernel::release_process_descriptors()
     wifi_driver_event_streams_.clear();
     scheduled_wifi_driver_events_.clear();
     virtual_udp_sockets_.clear();
+    isolated_stream_sockets_.clear();
     kernel_control_endpoints_.clear();
     bound_socket_names_.clear();
     listening_sockets_.clear();

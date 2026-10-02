@@ -1062,6 +1062,15 @@ private:
     std::map<std::uint32_t, std::shared_ptr<bsd::kernel_control::Endpoint>>
         kernel_control_endpoints_;
     std::map<std::uint32_t, std::string> bound_socket_names_;
+    std::map<std::uint32_t, std::shared_ptr<bsd::IsolatedStreamSocket>>
+        isolated_stream_sockets_;
+    [[nodiscard]] bool socket_listening(std::uint32_t fd) const
+    {
+        if (const auto stream = isolated_stream_sockets_.find(fd);
+            stream != isolated_stream_sockets_.end())
+            return stream->second->listening();
+        return listening_sockets_.contains(fd);
+    }
     std::set<std::uint32_t> listening_sockets_;
     std::map<std::uint32_t, std::shared_ptr<KernelSharedState::UnixListener>>
         unix_listener_states_;

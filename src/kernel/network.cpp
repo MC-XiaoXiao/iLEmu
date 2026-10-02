@@ -700,7 +700,7 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
         bsd_error(cpu, ebadf);
         return true;
     }
-    if (!listening_sockets_.contains(listener_fd)) {
+    if (!socket_listening(listener_fd)) {
         bsd_error(cpu, einval);
         return true;
     }
@@ -1211,7 +1211,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         udp != virtual_udp_sockets_.end() && udp->second->readable()) {
         return true;
     }
-    if (listening_sockets_.contains(fd)) {
+    if (socket_listening(fd)) {
         if (const auto listener = unix_listener_states_.find(fd);
             listener != unix_listener_states_.end()) {
             std::lock_guard socket_lock { shared_state_->socket_mutex };
@@ -1656,7 +1656,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             available = static_cast<std::uint32_t>(
                 endpoint->second.receive_queue().bytes.size());
         } else if (registration->filter == darwin::kqueue::filter_read &&
-                   listening_sockets_.contains(static_cast<std::uint32_t>(registration->ident))) {
+                   socket_listening(static_cast<std::uint32_t>(registration->ident))) {
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             if (const auto listener =
                     unix_listener_states_.find(static_cast<std::uint32_t>(registration->ident));

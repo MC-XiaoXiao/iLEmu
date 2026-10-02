@@ -81,6 +81,7 @@
 #include "media/audio_output_gain.hpp"
 #include "network/virtual_network.hpp"
 #include "network/virtual_udp.hpp"
+#include "network/isolated_stream.hpp"
 #include "network/local_socket_credentials.hpp"
 #include "mach/xnu_scheduler.hpp"
 
@@ -694,6 +695,7 @@ struct KernelSharedState {
         std::shared_ptr<UnixListener> unix_listener_state;
         std::shared_ptr<RouteSocketState> route_socket_state;
         std::shared_ptr<bsd::VirtualUdpSocket> virtual_udp_socket;
+        std::shared_ptr<bsd::IsolatedStreamSocket> isolated_stream_socket;
         std::shared_ptr<HostSocket> host_socket;
         std::shared_ptr<SocketOptions> socket_options;
         std::shared_ptr<bsd::kernel_control::Endpoint> kernel_control_endpoint;
@@ -1870,6 +1872,9 @@ struct KernelSharedState {
     std::uint32_t next_socket_pair { 1 };
     std::shared_ptr<bsd::VirtualUdpNetwork> virtual_udp_network {
         std::make_shared<bsd::VirtualUdpNetwork>()
+    };
+    std::shared_ptr<bsd::IsolatedStreamNetwork> isolated_stream_network {
+        std::make_shared<bsd::IsolatedStreamNetwork>()
     };
     // A pathname is a registry entry, not an owner. The listening open file
     // description is retained by duplicated/inherited/transferred guest fds.

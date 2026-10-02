@@ -1404,6 +1404,10 @@ CompatibilityKernel::export_descriptor(std::uint32_t fd) const
         socket != virtual_udp_sockets_.end()) {
         transfer.virtual_udp_socket = socket->second;
     }
+    if (const auto socket = isolated_stream_sockets_.find(fd);
+        socket != isolated_stream_sockets_.end()) {
+        transfer.isolated_stream_socket = socket->second;
+    }
     // Passing a descriptor retains its open socket, including queued rights
     // after the sender closes the original fd. Import must share this state.
     if (const auto socket = host_sockets_.find(fd); socket != host_sockets_.end()) {
@@ -1470,6 +1474,9 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
         }
         if (transfer.virtual_udp_socket) {
             virtual_udp_sockets_[*fd] = transfer.virtual_udp_socket;
+        }
+        if (transfer.isolated_stream_socket) {
+            isolated_stream_sockets_[*fd] = transfer.isolated_stream_socket;
         }
         if (transfer.socket_options) {
             socket_options_[*fd] = transfer.socket_options;
@@ -2985,6 +2992,7 @@ void CompatibilityKernel::inherit_process_state(
     bpf_descriptors_ = parent.bpf_descriptors_;
     host_sockets_ = parent.host_sockets_;
     virtual_udp_sockets_ = parent.virtual_udp_sockets_;
+    isolated_stream_sockets_ = parent.isolated_stream_sockets_;
     kernel_control_endpoints_ = parent.kernel_control_endpoints_;
     host_network_policy_ = parent.host_network_policy_;
     bound_socket_names_ = parent.bound_socket_names_;
