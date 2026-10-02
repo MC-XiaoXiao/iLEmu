@@ -2044,7 +2044,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
                 bsd_error(cpu, accepted.darwin_error);
             } else if (const auto fd =
                            install_host_socket(accepted.accepted_socket)) {
-                if (!copy_socket_address(pending->second.address,
+                if (pending->second.address != 0 &&
+                    !copy_socket_address(pending->second.address,
                         pending->second.length_address, accepted.address)) {
                     host_sockets_.erase(*fd);
                     virtual_descriptors_.erase(*fd);

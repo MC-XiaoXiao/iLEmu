@@ -289,7 +289,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, 24); // EMFILE
                 return;
             }
-            if (!copy_socket_address(
+            if (registers[1] != 0 && !copy_socket_address(
                     registers[1], registers[2], accepted.address)) {
                 host_sockets_.erase(*accepted_fd);
                 virtual_descriptors_.erase(*accepted_fd);
@@ -402,12 +402,6 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::not_connected);
             return;
         }
-        const auto capacity = memory_.read32(registers[2]);
-        if (!capacity) {
-            bsd_error(cpu, bsd_support::bad_address);
-            return;
-        }
-
         std::uint8_t family = 1; // AF_UNIX
         if (socket->second == "inet-dgram")
             family = 2;
@@ -434,11 +428,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             index < name.size() && index + 2 < address.size(); ++index) {
             address[index + 2] = static_cast<std::byte>(name[index]);
         }
-        const auto copied = std::min(*capacity, address_size);
-        if ((copied != 0 &&
-                !memory_.copy_to_user(registers[1],
-                    std::span<const std::byte> { address.data(), copied })) ||
-            !memory_.write32(registers[2], copied)) {
+        if (!copy_socket_address(registers[1], registers[2], address)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
