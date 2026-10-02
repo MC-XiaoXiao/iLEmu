@@ -38,6 +38,7 @@ namespace {
         .child_wait = DarwinChildWaitAbi::ChildIdentity,
         .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
         .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
+        .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
         .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi =
@@ -104,6 +105,7 @@ namespace {
         .mach_message_header = DarwinMachMessageHeaderAbi::MaskedPortBytes,
         .thread_timeshare = DarwinThreadTimeshareAbi::CanonicalBoolean,
         .socket_linger = DarwinSocketLingerAbi::CanonicalBoolean,
+        .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
@@ -291,6 +293,7 @@ namespace {
                 .child_wait = DarwinChildWaitAbi::ExpandedStopMask,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
                 .mach_port_requests = DarwinMachPortRequestAbi::SendPossibleRequests,
+                .socket_accept_flags = DarwinSocketAcceptFlagsAbi::ExtendedFlags,
                 .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi =

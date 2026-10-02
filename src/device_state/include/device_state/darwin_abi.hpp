@@ -294,6 +294,9 @@ enum class DarwinChildWaitAbi : std::uint8_t {
 // expose a canonical boolean. Other so_options queries still return masks.
 enum class DarwinSocketLingerAbi : std::uint8_t { OptionMask, CanonicalBoolean };
 
+// Extended listener flags in the audited Darwin 11 and later contracts.
+enum class DarwinSocketAcceptFlagsAbi : std::uint8_t { CommonOptions, ExtendedFlags };
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -312,6 +315,7 @@ struct DarwinAbi {
     DarwinMachMessageHeaderAbi mach_message_header { DarwinMachMessageHeaderAbi::CheckedPortBytes };
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
     DarwinSocketLingerAbi socket_linger { DarwinSocketLingerAbi::OptionMask };
+    DarwinSocketAcceptFlagsAbi socket_accept_flags { DarwinSocketAcceptFlagsAbi::CommonOptions };
     DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers

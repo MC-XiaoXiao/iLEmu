@@ -36,7 +36,7 @@ public:
             return std::nullopt;
         if (is_linger(name))
             return 8;
-        if (is_option_bit(name) || name == defunct_option || name == no_sigpipe_option)
+        if (is_option_bit(name) || name == defunct_option || socket_flag_mask(name) != 0)
             return 4;
         return std::nullopt;
     }
@@ -44,8 +44,9 @@ public:
     // sonewconn copies socket option bits (except SO_ACCEPTCONN), linger
     // and buffer high-water marks before the child enters the accept queue.
     // Protocol options, low-water marks and send/receive timeouts are not
-    // copied by that operation. Extended so_flags need their own ABI policy.
-    [[nodiscard]] std::shared_ptr<SocketOptions> accepted_snapshot() const
+    // copied by that operation. The ABI policy adds supported extended flags;
+    // terminal state and pending errors always start fresh.
+    [[nodiscard]] std::shared_ptr<SocketOptions> accepted_snapshot(DarwinSocketAcceptFlagsAbi flags_abi) const
     {
         auto child = std::make_shared<SocketOptions>();
         std::lock_guard lock { mutex_ };
@@ -53,7 +54,9 @@ public:
         for (const auto& [key, value] : values_) {
             if (key.first == socket_level &&
                 (is_option_bit(key.second) || key.second == 0x1001 ||
-                    key.second == 0x1002)) // buffer high-water marks
+                    key.second == 0x1002 || // buffer high-water marks
+                    (flags_abi == DarwinSocketAcceptFlagsAbi::ExtendedFlags &&
+                        (socket_flag_mask(key.second) != 0 || key.second == defunct_option))))
                 child->values_.emplace(key, value);
         }
         return child;
@@ -86,8 +89,10 @@ public:
             }
             if (is_option_bit(name))
                 write_word(value, 0, read_word(value, 0) != 0 ? name : 0U);
-            else if (name == defunct_option || name == no_sigpipe_option)
+            else if (name == defunct_option)
                 write_word(value, 0, read_word(value, 0) != 0 ? 1U : 0U);
+            else if (const auto mask = socket_flag_mask(name))
+                write_word(value, 0, read_word(value, 0) != 0 ? mask : 0U);
         }
         values_[{ level, name }] = std::move(value);
         return 0;
@@ -187,6 +192,16 @@ private:
     static constexpr std::uint32_t no_sigpipe_option = 0x1022;
     // Native BSD hz, also exposed by kern.clockrate.
     static constexpr std::int32_t ticks_per_second = 100;
+
+    static std::uint32_t socket_flag_mask(std::uint32_t name)
+    {
+        switch (name) {
+        case no_sigpipe_option: return 0x1; // SOF_NOSIGPIPE
+        case 0x1023: return 0x2; // SOF_NOADDRAVAIL
+        case 0x1025: return 0x40; // SOF_REUSESHAREUID
+        default: return 0;
+        }
+    }
 
     static bool is_linger(std::uint32_t name)
     {
