@@ -2370,7 +2370,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     if (const auto pending = pending_recvmsgs_.find(cpu.processor_id());
         pending != pending_recvmsgs_.end()) {
         if (!receive_socket_message(
-                cpu, pending->second.fd, pending->second.message_address)) {
+                cpu, pending->second.fd, pending->second.message)) {
             return false;
         }
         pending_recvmsgs_.erase(pending);

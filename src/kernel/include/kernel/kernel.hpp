@@ -885,7 +885,7 @@ private:
         const BsdSyscallContext* entry = nullptr);
     void note_timer_deadline_transition() noexcept;
     bool receive_socket_message(
-        Cpu& cpu, std::uint32_t fd, std::uint32_t message_address);
+        Cpu& cpu, std::uint32_t fd, GuestReceiveMessage& message);
     bool send_socket_message(Cpu& cpu, std::uint32_t fd,
         std::uint32_t message_address, std::uint32_t flags);
     bool send_host_socket_bytes(Cpu& cpu, std::uint32_t fd,

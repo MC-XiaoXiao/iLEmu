@@ -33,13 +33,27 @@ public:
         return address_ == 0 || copy(memory, bytes);
     }
 
+    static bool copy_received_name(AddressSpace& memory, std::uint32_t address,
+        std::uint32_t& length, std::span<const std::byte> bytes)
+    {
+        if (address == 0) return true;
+        // ARM32 recvit/copyout_sa uses a signed native length. A missing
+        // source or nonpositive capacity reports zero (1A420 and XNU 1228+).
+        if (length == 0 || length > 0x7fffffffU) bytes = {};
+        const auto count = std::min<std::size_t>(length, bytes.size());
+        if (count != 0 && !GuestReadBuffer {address}.copy(memory, bytes.first(count)))
+            return false;
+        length = static_cast<std::uint32_t>(bytes.size());
+        return true;
+    }
+
     bool copy_received(AddressSpace& memory, std::span<const std::byte> bytes) const
     {
         if (address_ == 0 || length_address_ == 0) return true;
-        // ARM32 recvit/copyout_sa uses a signed native length and returns
-        // zero when no source address bytes were requested (XNU 1228+).
-        if (capacity_ == 0 || capacity_ > 0x7fffffffU) bytes = {};
-        return copy(memory, bytes);
+        const TaskVmEvents::Scope user_access { memory.task_vm_events() };
+        auto length = capacity_;
+        return copy_received_name(memory, address_, length, bytes) &&
+               memory.write32(length_address_, length);
     }
 
 private:

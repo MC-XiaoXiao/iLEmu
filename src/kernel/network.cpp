@@ -152,66 +152,15 @@ std::vector<darwin::route::Entry> CompatibilityKernel::route_snapshot() const
 }
 
 bool CompatibilityKernel::receive_socket_message(
-    Cpu& cpu, std::uint32_t fd, std::uint32_t message_address)
+    Cpu& cpu, std::uint32_t fd, GuestReceiveMessage& message)
 {
     // Pending receives complete outside the BSD syscall dispatcher.
     const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     using namespace darwin::socket;
-    if (!memory_.accessible(message_address, arm32_message::size,
-            MemoryPermission::Read | MemoryPermission::Write)) {
-        bsd_error(cpu, efault);
-        return true;
-    }
-    const auto name_address =
-        memory_.read32(message_address + arm32_message::name_offset);
-    const auto name_capacity =
-        memory_.read32(message_address + arm32_message::name_length_offset);
-    const auto iov_address =
-        memory_.read32(message_address + arm32_message::iov_offset);
-    const auto iov_count =
-        memory_.read32(message_address + arm32_message::iov_count_offset);
-    const auto control_address =
-        memory_.read32(message_address + arm32_message::control_offset);
-    const auto control_capacity =
-        memory_.read32(message_address + arm32_message::control_length_offset);
-    if (!name_address || !name_capacity || !iov_address || !iov_count ||
-        !control_address || !control_capacity) {
-        bsd_error(cpu, efault);
-        return true;
-    }
-    if (*iov_count > darwin::io::maximum_vector_count) {
-        bsd_error(cpu, einval);
-        return true;
-    }
-    const auto iovec_bytes =
-        static_cast<std::size_t>(*iov_count) * arm32_iovec::size;
-    if ((*iov_count != 0 &&
-            (*iov_address == 0 || !memory_.accessible(*iov_address, iovec_bytes,
-                                      MemoryPermission::Read))) ||
-        (*name_capacity != 0 && *name_address == 0)) {
-        bsd_error(cpu, efault);
-        return true;
-    }
-
-    std::vector<GuestReadVector> iovecs;
-    iovecs.reserve(*iov_count);
-    std::size_t receive_capacity = 0;
-    for (std::uint32_t index = 0; index < *iov_count; ++index) {
-        const auto entry = *iov_address + index * arm32_iovec::size;
-        const auto base = memory_.read32(entry + arm32_iovec::base_offset);
-        const auto capacity =
-            memory_.read32(entry + arm32_iovec::length_offset);
-        if (!base || !capacity || (*capacity != 0 && *base == 0) ||
-            *capacity > bsd_support::maximum_io ||
-            receive_capacity > bsd_support::maximum_io - *capacity) {
-            bsd_error(cpu, !base || !capacity || (*capacity != 0 && *base == 0)
-                               ? efault
-                               : einval);
-            return true;
-        }
-        iovecs.push_back(GuestReadVector { *base, *capacity });
-        receive_capacity += *capacity;
-    }
+    const auto& iovecs = message.vectors();
+    const auto receive_capacity = message.capacity();
+    const auto control_address = message.control_address();
+    const auto control_capacity = message.control_capacity();
 
     GuestSocketReceiveTarget target {memory_, 0, 0, iovecs};
 
@@ -228,22 +177,14 @@ bool CompatibilityKernel::receive_socket_message(
             return true;
         }
 
-        const auto actual_name_length =
-            static_cast<std::uint32_t>(received->source_address.size());
-        const auto copied_name_length =
-            std::min(*name_capacity, actual_name_length);
-        if (copied_name_length != 0 &&
-            (*name_address == 0 ||
-                !GuestSocketReceiveTarget {memory_, *name_address, copied_name_length}.copy(
-                    std::span<const std::byte> { received->source_address }
-                        .first(copied_name_length)))) {
+        if (!message.copy_name(memory_, received->source_address)) {
             bsd_error(cpu, efault);
             return true;
         }
 
         const auto option_enabled = [&](std::uint32_t level,
                                         std::uint32_t option) {
-            if (*control_address == 0)
+            if (control_address == 0)
                 return false; // recvit does not request ancillary output
             const auto descriptor = socket_options_.find(fd);
             if (descriptor == socket_options_.end())
@@ -276,28 +217,21 @@ bool CompatibilityKernel::receive_socket_message(
         const auto control =
             bsd::make_virtual_udp_ancillary(family, *received, options);
         const auto copied_control =
-            std::min<std::size_t>(*control_capacity, control.size());
+            std::min<std::size_t>(control_capacity, control.size());
         std::uint32_t message_flags = 0;
         if (copied_control < control.size())
             message_flags |= message_control_truncated;
         if (copied_control != 0 &&
-            (*control_address == 0 ||
-                !GuestSocketReceiveTarget {memory_, *control_address,
+            (control_address == 0 ||
+                !GuestSocketReceiveTarget {memory_, control_address,
                     static_cast<std::uint32_t>(copied_control)}.copy(
                     std::span<const std::byte> { control }.first(
                         copied_control)))) {
             bsd_error(cpu, efault);
             return true;
         }
-        if (!memory_.write32(
-                message_address + arm32_message::name_length_offset,
-                actual_name_length) ||
-            !memory_.write32(
-                message_address + arm32_message::control_length_offset,
-                *control_address != 0 ? static_cast<std::uint32_t>(copied_control)
-                                      : *control_capacity) ||
-            !memory_.write32(
-                message_address + arm32_message::flags_offset, message_flags)) {
+        if (!message.finish(memory_, static_cast<std::uint32_t>(copied_control),
+                message_flags)) {
             bsd_error(cpu, efault);
             return true;
         }
@@ -317,22 +251,14 @@ bool CompatibilityKernel::receive_socket_message(
             return true;
         }
 
-        const auto actual_name_length = static_cast<std::uint32_t>(
-            std::min<std::size_t>(received.address.size(),
-                std::numeric_limits<std::uint32_t>::max()));
-        const auto copied_name_length =
-            std::min(*name_capacity, actual_name_length);
-        if (copied_name_length != 0 &&
-            (*name_address == 0 ||
-                !GuestSocketReceiveTarget {memory_, *name_address, copied_name_length}.copy(
-                    std::span<const std::byte> { received.address }.first(
-                        copied_name_length)))) {
+        if (!message.copy_name(memory_, received.address)) {
             bsd_error(cpu, efault);
             return true;
         }
+
         const auto option_enabled = [&](std::uint32_t level,
                                         std::uint32_t option) {
-            if (*control_address == 0)
+            if (control_address == 0)
                 return false; // recvit does not request ancillary output
             const auto descriptor = socket_options_.find(fd);
             if (descriptor == socket_options_.end())
@@ -465,29 +391,22 @@ bool CompatibilityKernel::receive_socket_message(
             }
         }
         const auto copied_control =
-            std::min<std::size_t>(*control_capacity, guest_control.size());
+            std::min<std::size_t>(control_capacity, guest_control.size());
         std::uint32_t message_flags = 0;
         if (copied_control < guest_control.size()) {
             message_flags |= message_control_truncated;
         }
         if (copied_control != 0 &&
-            (*control_address == 0 ||
-                !GuestSocketReceiveTarget {memory_, *control_address,
+            (control_address == 0 ||
+                !GuestSocketReceiveTarget {memory_, control_address,
                     static_cast<std::uint32_t>(copied_control)}.copy(
                     std::span<const std::byte> { guest_control }.first(
                         copied_control)))) {
             bsd_error(cpu, efault);
             return true;
         }
-        if (!memory_.write32(
-                message_address + arm32_message::name_length_offset,
-                actual_name_length) ||
-            !memory_.write32(
-                message_address + arm32_message::control_length_offset,
-                *control_address != 0 ? static_cast<std::uint32_t>(copied_control)
-                                      : *control_capacity) ||
-            !memory_.write32(
-                message_address + arm32_message::flags_offset, message_flags)) {
+        if (!message.finish(memory_, static_cast<std::uint32_t>(copied_control),
+                message_flags)) {
             bsd_error(cpu, efault);
             return true;
         }
@@ -526,7 +445,7 @@ bool CompatibilityKernel::receive_socket_message(
         },
         [&](const auto& transfers) {
             return control.externalize(transfers, shared_state_->darwin_abi.abi_epoch,
-                *control_address != 0, file_descriptor_limit(),
+                control_address != 0, file_descriptor_limit(),
                 [&](std::uint32_t candidate) {
                     return !file_descriptors_.contains(candidate) &&
                            !virtual_descriptors_.contains(candidate) &&
@@ -541,18 +460,19 @@ bool CompatibilityKernel::receive_socket_message(
         return true;
     }
 
-    const auto copied_control = control.prefix(*control_capacity);
-    const auto actual_control = static_cast<std::uint32_t>(copied_control.size());
-    const auto message_flags = control.flags(*control_capacity);
-    if (!copied_control.empty() &&
-        !GuestSocketReceiveTarget {memory_, *control_address, actual_control}.copy(copied_control)) {
+    if (!message.copy_name(memory_, {})) {
         bsd_error(cpu, efault);
         return true;
     }
-    if (!memory_.write32(message_address + arm32_message::control_length_offset,
-            *control_address != 0 ? actual_control : *control_capacity) ||
-        !memory_.write32(
-            message_address + arm32_message::flags_offset, message_flags)) {
+    const auto copied_control = control.prefix(control_capacity);
+    const auto actual_control = static_cast<std::uint32_t>(copied_control.size());
+    const auto message_flags = control.flags(control_capacity);
+    if (!copied_control.empty() &&
+        !GuestSocketReceiveTarget {memory_, control_address, actual_control}.copy(copied_control)) {
+        bsd_error(cpu, efault);
+        return true;
+    }
+    if (!message.finish(memory_, actual_control, message_flags)) {
         bsd_error(cpu, efault);
         return true;
     }

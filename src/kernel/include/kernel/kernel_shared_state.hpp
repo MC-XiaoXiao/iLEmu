@@ -14,6 +14,7 @@
 #include <kernel/credential_groups.hpp>
 #include <kernel/open_file_offset.hpp>
 #include <kernel/guest_read_buffer.hpp>
+#include <kernel/guest_receive_message.hpp>
 #include <kernel/guest_socket_address_output.hpp>
 
 #include "kernel/unix_socket_node.hpp"
@@ -254,7 +255,7 @@ struct PendingKevent {
 
 struct PendingRecvmsg {
     std::uint32_t fd { };
-    std::uint32_t message_address { };
+    GuestReceiveMessage message;
     std::size_t processor { };
 };
 

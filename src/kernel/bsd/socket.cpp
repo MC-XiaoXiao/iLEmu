@@ -66,12 +66,18 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
     auto& registers = cpu.registers();
     switch (number) {
     case 27: { // recvmsg
+        GuestReceiveMessage message;
+        if (const auto error = message.import(memory_, registers[1], registers[2],
+                shared_state_->darwin_abi.abi_epoch, bsd_support::maximum_io)) {
+            bsd_error(cpu, error);
+            return;
+        }
         auto fd = registers[0];
         if (const auto duplicate = duplicated_descriptors_.find(fd);
             duplicate != duplicated_descriptors_.end()) {
             fd = duplicate->second;
         }
-        if (receive_socket_message(cpu, fd, registers[1]))
+        if (receive_socket_message(cpu, fd, message))
             return;
         if ((registers[2] & darwin::socket::message_dont_wait) != 0 ||
             (file_status_flags_[fd] & darwin::open_flag::non_block) != 0) {
@@ -80,7 +86,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         record_bsd_sleep();
         pending_recvmsgs_[cpu.processor_id()] =
-            PendingRecvmsg { fd, registers[1], cpu.processor_id() };
+            PendingRecvmsg { fd, std::move(message), cpu.processor_id() };
         process_.waiting_for_events = true;
         cpu.halt(Dynarmic::HaltReason::UserDefined5);
         return;
