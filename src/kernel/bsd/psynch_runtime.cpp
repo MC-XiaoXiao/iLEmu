@@ -511,12 +511,15 @@ void DarwinPsynchRuntime::cancel_wait(DarwinPsynchThread thread)
 {
     std::lock_guard lock { mutex_ };
     completed_results_.erase(thread);
+    // An empty RW wait list can still carry an unlock prepost or an overlap
+    // grant for a thread that has not entered the kernel yet. Cancellation
+    // must preserve that state even for private locks in other processes.
     for (auto queue = queues_.begin(); queue != queues_.end();) {
         std::erase_if(queue->second.waiters,
             [&](const auto& waiter) { return waiter.thread == thread; });
         if (queue->second.waiters.empty() &&
             ((queue->second.preposts.empty() &&
-                 (!queue->first.process_shared || !queue->second.rw)) ||
+                 !queue->second.rw) ||
                 (queue->first.process_shared &&
                     queue->first.shared_identity.backing.expired())))
             queue = queues_.erase(queue);
@@ -535,12 +538,14 @@ void DarwinPsynchRuntime::clear_process(std::uint32_t process_id)
         std::erase_if(queue->second.waiters, [&](const auto& waiter) {
             return waiter.thread.process_id == process_id;
         });
+        // Private RW state belongs to its process, not to whichever thread
+        // or unrelated process happens to exit while its wait list is empty.
         const auto private_process_queue = !queue->first.process_shared &&
                                            queue->first.process_id == process_id;
         if (private_process_queue ||
             (queue->second.waiters.empty() &&
             ((queue->second.preposts.empty() &&
-                 (!queue->first.process_shared || !queue->second.rw)) ||
+                 !queue->second.rw) ||
                 (queue->first.process_shared &&
                     queue->first.shared_identity.backing.expired())))) {
             queue = queues_.erase(queue);
