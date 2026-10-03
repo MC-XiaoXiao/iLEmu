@@ -2703,6 +2703,24 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 open_gles_guest_capabilities(context->guest_capabilities)
                     .maximum_texture_dimension;
             break;
+        case gles_abi::maximum_vertex_attributes_query:
+        case gles_abi::maximum_vertex_uniform_vectors:
+        case gles_abi::maximum_fragment_uniform_vectors:
+        case gles_abi::maximum_varying_vectors:
+        case gles_abi::maximum_vertex_texture_image_units:
+        case gles_abi::maximum_combined_texture_image_units: {
+            if (context->client_api < 2U) {
+                set_gl_error(call, gles_abi::invalid_enum);
+                return;
+            }
+            const auto limit = program_integer_limit(call, call.argument(0));
+            if (!limit) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+            values[0] = *limit;
+            break;
+        }
         case gles_abi::maximum_viewport_dimensions:
             count = 2;
             values[0] =

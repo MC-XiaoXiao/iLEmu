@@ -330,6 +330,30 @@ namespace {
                 return std::nullopt;
             return std::array<std::int32_t, 3> { range[0], range[1], bits };
         }
+        std::optional<Limits> limits() override
+        {
+            std::lock_guard lock { mutex_ };
+            Binding binding { *this };
+            if (!binding)
+                return std::nullopt;
+            constexpr std::array<GLenum, 6> parameters {
+                GL_MAX_VERTEX_ATTRIBS, GL_MAX_VERTEX_UNIFORM_VECTORS,
+                GL_MAX_FRAGMENT_UNIFORM_VECTORS, GL_MAX_VARYING_VECTORS,
+                GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS,
+                GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
+            };
+            std::array<std::uint32_t, parameters.size()> values { };
+            while (glGetError() != GL_NO_ERROR) { }
+            for (std::size_t index = 0; index < parameters.size(); ++index) {
+                GLint value { };
+                glGetIntegerv(parameters[index], &value);
+                if (value < 0 || glGetError() != GL_NO_ERROR)
+                    return std::nullopt;
+                values[index] = static_cast<std::uint32_t>(value);
+            }
+            return Limits { values[0], values[1], values[2], values[3],
+                values[4], values[5] };
+        }
         bool draw(DisplayFrame& frame, GlesRenderTargetKey key,
             const GlesProgramDraw& draw, std::uint32_t mode,
             const GlesRasterState& state) override

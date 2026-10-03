@@ -297,6 +297,10 @@ private:
     void register_framebuffers(UserlandHleRegistry& registry);
     void register_programmable_gles(UserlandHleRegistry& registry);
     void register_program_queries(UserlandHleRegistry& registry);
+    [[nodiscard]] bool ensure_program_renderer(
+        UserlandHleCall& call, std::string* error = nullptr);
+    [[nodiscard]] std::optional<std::uint32_t> program_integer_limit(
+        UserlandHleCall& call, std::uint32_t parameter);
     void unsupported(UserlandHleCall& call);
 
     std::map<std::size_t, ThreadState> threads_;
@@ -312,6 +316,7 @@ private:
     GlesResourceStore resources_;
     GlesProgramState programs_;
     std::unique_ptr<GlesProgramRenderer> program_renderer_;
+    std::optional<GlesProgramRenderer::Limits> program_limits_;
     std::optional<PendingProgramTarget> pending_program_target_;
     std::uint32_t next_context_ { 0x00010001U };
     std::uint32_t next_surface_ { 0x00020001U };

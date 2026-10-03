@@ -24,6 +24,49 @@ namespace {
                call.memory().write8(output, 0U);
     }
 }
+bool OpenGlesHle::ensure_program_renderer(
+    UserlandHleCall& call, std::string* error)
+{
+    if (!program_renderer_) {
+        program_renderer_ = create_gles_program_renderer(error);
+        if (program_renderer_)
+            call.output().marker("[gles] GLSL executor=" +
+                                 std::string { program_renderer_->name() });
+    }
+    return program_renderer_ != nullptr;
+}
+
+std::optional<std::uint32_t> OpenGlesHle::program_integer_limit(
+    UserlandHleCall& call, std::uint32_t parameter)
+{
+    if (!program_limits_ && ensure_program_renderer(call))
+        program_limits_ = program_renderer_->limits();
+    if (!program_limits_)
+        return std::nullopt;
+    const auto& limits = *program_limits_;
+    constexpr auto uniform_vectors = static_cast<std::uint32_t>(
+        GlesProgramState::maximum_uniform_components / 4U);
+    constexpr auto texture_units = static_cast<std::uint32_t>(
+        gles_abi::programmable_texture_unit_count);
+    switch (parameter) {
+    case gles_abi::maximum_vertex_attributes_query:
+        return std::min(limits.vertex_attributes,
+            static_cast<std::uint32_t>(gles_abi::maximum_vertex_attributes));
+    case gles_abi::maximum_vertex_uniform_vectors:
+        return std::min(limits.vertex_uniform_vectors, uniform_vectors);
+    case gles_abi::maximum_fragment_uniform_vectors:
+        return std::min(limits.fragment_uniform_vectors, uniform_vectors);
+    case gles_abi::maximum_varying_vectors:
+        return limits.varying_vectors;
+    case gles_abi::maximum_vertex_texture_image_units:
+        return std::min(limits.vertex_texture_units, texture_units);
+    case gles_abi::maximum_combined_texture_image_units:
+        return std::min(limits.combined_texture_units, texture_units);
+    default:
+        return std::nullopt;
+    }
+}
+
 void OpenGlesHle::register_program_queries(UserlandHleRegistry& registry)
 {
     const auto add = [&](std::string symbol,
@@ -201,14 +244,7 @@ void OpenGlesHle::register_program_queries(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_enum);
             return;
         }
-        if (!program_renderer_) {
-            std::string error;
-            program_renderer_ = create_gles_program_renderer(&error);
-            if (program_renderer_)
-                call.output().marker("[gles] GLSL executor=" +
-                                     std::string { program_renderer_->name() });
-        }
-        const auto result = program_renderer_
+        const auto result = ensure_program_renderer(call)
                                 ? program_renderer_->precision(shader, type)
                                 : std::nullopt;
         if (!result) {

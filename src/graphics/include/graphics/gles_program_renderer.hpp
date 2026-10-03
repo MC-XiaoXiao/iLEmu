@@ -45,6 +45,14 @@ struct GlesProgramDraw {
 
 class GlesProgramRenderer {
 public:
+    struct Limits {
+        std::uint32_t vertex_attributes { };
+        std::uint32_t vertex_uniform_vectors { };
+        std::uint32_t fragment_uniform_vectors { };
+        std::uint32_t varying_vectors { };
+        std::uint32_t vertex_texture_units { };
+        std::uint32_t combined_texture_units { };
+    };
     struct LinkResult {
         bool linked { };
         std::map<std::string, std::uint32_t, std::less<>> attributes;
@@ -53,6 +61,7 @@ public:
         std::vector<GlesProgramState::ActiveVariable> active_uniforms;
     };
     virtual ~GlesProgramRenderer() = default;
+    [[nodiscard]] virtual std::optional<Limits> limits() = 0;
     [[nodiscard]] virtual LinkResult link(std::uint32_t program,
         std::string_view vertex, std::string_view fragment,
         const std::map<std::string, std::uint32_t, std::less<>>& bindings) = 0;

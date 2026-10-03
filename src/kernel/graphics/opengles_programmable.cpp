@@ -502,14 +502,7 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
         if (!program->linked ||
             !program->interface_profile.requires_glsl_execution)
             return;
-        if (!program_renderer_) {
-            program_renderer_ =
-                create_gles_program_renderer(&program->info_log);
-            if (program_renderer_)
-                call.output().marker("[gles] GLSL executor=" +
-                                     std::string { program_renderer_->name() });
-        }
-        if (!program_renderer_) {
+        if (!ensure_program_renderer(call, &program->info_log)) {
             program->linked = false;
             call.output().marker(
                 "[gles] GLSL executor unavailable: " + program->info_log);
