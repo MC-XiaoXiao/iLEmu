@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "graphics/gles_pixel_unpack.hpp"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -49,6 +51,9 @@ struct OpenGlesGuestCapabilities {
     OpenGlesGuestCapabilitySet kind);
 
 [[nodiscard]] OpenGlesGuestCapabilitySet open_gles_framebuffer_capabilities(
+    OpenGlesGuestCapabilitySet kind);
+
+[[nodiscard]] GlesClientBitmapProfile open_gles_client_bitmap_profile(
     OpenGlesGuestCapabilitySet kind);
 
 // Shader capabilities follow the context API, not the firmware or host GPU.

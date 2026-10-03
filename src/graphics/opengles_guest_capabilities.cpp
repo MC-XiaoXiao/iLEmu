@@ -147,6 +147,14 @@ OpenGlesGuestCapabilitySet open_gles_framebuffer_capabilities(
     return OpenGlesGuestCapabilitySet::MbxLiteFramebufferObjects;
 }
 
+GlesClientBitmapProfile open_gles_client_bitmap_profile(
+    OpenGlesGuestCapabilitySet kind)
+{
+    return kind == OpenGlesGuestCapabilitySet::Sgx543
+               ? GlesClientBitmapProfile::Sgx543AlignedLuminanceAlpha
+               : GlesClientBitmapProfile::Standard;
+}
+
 std::string open_gles_extensions(
     OpenGlesGuestCapabilitySet kind, std::uint32_t client_api)
 {

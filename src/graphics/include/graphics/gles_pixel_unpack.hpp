@@ -23,4 +23,11 @@ struct GlesPixelUnpack {
     std::uint32_t row_bytes { };
 };
 
+// Source layout used only when the guest supplied no row layout and the
+// bitmap has no adjacent descriptor. Explicit GLES pixel-store state wins.
+enum class GlesClientBitmapProfile {
+    Standard,
+    Sgx543AlignedLuminanceAlpha,
+};
+
 } // namespace ilemu

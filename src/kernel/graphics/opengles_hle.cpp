@@ -3481,7 +3481,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             static_cast<std::uint32_t>(level), call.argument(2),
             static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height), call.argument(6),
-            call.argument(7), call.argument(8), context->unpack);
+            call.argument(7), call.argument(8), context->unpack,
+            open_gles_client_bitmap_profile(context->guest_capabilities));
         if (error != gles_abi::no_error) {
             set_gl_error(call, error);
         } else if (previous_render_target) {
@@ -3573,7 +3574,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             static_cast<std::uint32_t>(level), static_cast<std::uint32_t>(x),
             static_cast<std::uint32_t>(y), static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height), call.argument(6),
-            call.argument(7), call.argument(8), context->unpack);
+            call.argument(7), call.argument(8), context->unpack,
+            open_gles_client_bitmap_profile(context->guest_capabilities));
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     });

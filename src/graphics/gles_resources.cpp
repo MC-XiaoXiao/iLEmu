@@ -149,7 +149,8 @@ namespace {
 
     std::optional<std::vector<std::uint32_t>> decode_image(AddressSpace& memory,
         std::uint32_t width, std::uint32_t height, std::uint32_t format,
-        std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack)
+        std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack,
+        GlesClientBitmapProfile client_bitmap_profile)
     {
         const auto layout = pixel_layout(format, type);
         if (!layout || !valid_alignment(unpack.alignment))
@@ -171,13 +172,28 @@ namespace {
                 ? bitmap_backing_row_bytes(memory, pixels, width, height,
                       static_cast<std::uint32_t>(row_bytes))
                 : std::nullopt;
+        // The SGX543 client bitmap path uses 16-pixel (32-byte) rows for
+        // headerless luminance/alpha data. Some widths happen to be tightly
+        // packed; others need the same pitch as the producer's allocation.
+        // Keep explicit pixel-store state and firmware bitmap descriptors
+        // authoritative, and leave other source formats on GLES alignment.
+        const auto source_alignment =
+            client_bitmap_profile ==
+                    GlesClientBitmapProfile::Sgx543AlignedLuminanceAlpha &&
+                    format == gles_abi::luminance_alpha &&
+                    type == gles_abi::unsigned_byte &&
+                    unpack.alignment == 1U && unpack.row_length == 0U &&
+                    unpack.skip_rows == 0U && unpack.skip_pixels == 0U &&
+                    !backing_row_bytes
+                ? 32U
+                : unpack.alignment;
         const auto stride =
             unpack.row_bytes != 0U
                 ? static_cast<std::uint64_t>(unpack.row_bytes)
                 : backing_row_bytes
                     ? static_cast<std::uint64_t>(*backing_row_bytes)
-                    : (source_row_bytes + unpack.alignment - 1U) &
-                          ~static_cast<std::uint64_t>(unpack.alignment - 1U);
+                    : (source_row_bytes + source_alignment - 1U) &
+                          ~static_cast<std::uint64_t>(source_alignment - 1U);
         if (stride > gles_abi::maximum_resource_bytes)
             return std::nullopt;
         const auto start = static_cast<std::uint64_t>(pixels) +
@@ -735,7 +751,8 @@ bool GlesResourceStore::has_buffer(std::uint32_t name) const
 std::uint32_t GlesResourceStore::upload_texture_2d(AddressSpace& memory,
     std::uint32_t name, std::uint32_t level, std::uint32_t internal_format,
     std::uint32_t width, std::uint32_t height, std::uint32_t format,
-    std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack)
+    std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack,
+    GlesClientBitmapProfile client_bitmap_profile)
 {
     if (name == 0 || !textures_.contains(name)) {
         return gles_abi::invalid_operation;
@@ -749,7 +766,8 @@ std::uint32_t GlesResourceStore::upload_texture_2d(AddressSpace& memory,
     if (!pixel_layout(format, type))
         return gles_abi::invalid_enum;
     auto decoded =
-        decode_image(memory, width, height, format, type, pixels, unpack);
+        decode_image(memory, width, height, format, type, pixels, unpack,
+            client_bitmap_profile);
     if (!decoded)
         return gles_abi::invalid_value;
     textures_.at(name).levels.insert_or_assign(level,
@@ -805,7 +823,8 @@ std::uint32_t GlesResourceStore::upload_compressed_texture_2d(
 std::uint32_t GlesResourceStore::update_texture_2d(AddressSpace& memory,
     std::uint32_t name, std::uint32_t level, std::uint32_t x, std::uint32_t y,
     std::uint32_t width, std::uint32_t height, std::uint32_t format,
-    std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack)
+    std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack,
+    GlesClientBitmapProfile client_bitmap_profile)
 {
     auto texture = textures_.find(name);
     if (name == 0 || texture == textures_.end()) {
@@ -823,7 +842,8 @@ std::uint32_t GlesResourceStore::update_texture_2d(AddressSpace& memory,
     if (!pixel_layout(format, type))
         return gles_abi::invalid_enum;
     const auto decoded =
-        decode_image(memory, width, height, format, type, pixels, unpack);
+        decode_image(memory, width, height, format, type, pixels, unpack,
+            client_bitmap_profile);
     if (!decoded)
         return gles_abi::invalid_value;
     for (std::uint32_t row = 0; row < height; ++row) {
