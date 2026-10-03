@@ -13,6 +13,7 @@
 #include "kernel/kernel_shared_state.hpp"
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 
 namespace ilemu {
@@ -140,10 +141,12 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
     for (const auto symbol :
         { "_IOHIDEventCreateDigitizerEvent", "_IOHIDEventCreateKeyboardEvent",
             "_IOHIDEventAppendEvent", "__IOHIDEventSystemDispatchEvent",
-            "_IOHIDEventCreateAccelerometerEvent" }) {
+            "_IOHIDEventCreateAccelerometerEvent", "_IOHIDEventSetSenderID",
+            "_IOHIDEventSystemCopyService", "___IOHIDServiceEventCallback" }) {
         registry_.register_guest_function("/IOKit", symbol);
     }
     registry_.register_guest_function("/CoreFoundation", "_CFRelease");
+    registry_.register_guest_function("/CoreFoundation", "_CFNumberCreate");
 }
 
 void HidEventSystemHle::set_shared_state(
@@ -217,6 +220,14 @@ bool HidEventSystemHle::prepare_pending_event(
         static_cast<std::int32_t>(cpu.registers()[12]) != -31 ||
         cpu.registers()[2] != 0U || (cpu.registers()[1] & 2U) == 0U)
         return false;
+    // A native HID service is already published by the virtual digitizer.
+    // Associate its events with that registry entry so firmware can recover
+    // the service's usage and display properties during input routing.
+    std::uint64_t digitizer_sender_id;
+    {
+        std::lock_guard lock { state_->mach_mutex };
+        digitizer_sender_id = state_->multitouch_hid_service;
+    }
     if (auto observed =
             state_->hid_event_queue.take_observer(process, processor)) {
         delivering_processors_.insert(processor);
@@ -224,7 +235,8 @@ bool HidEventSystemHle::prepare_pending_event(
         const auto queued =
             HidEventTransaction::enqueue(registry_, observed->observer,
                 std::move(observed->event), state_->user_interface_geometry,
-                state_->darwin_abi.hid_digitizer, [this, processor] {
+                state_->darwin_abi.hid_digitizer, digitizer_sender_id,
+                [this, processor] {
                     delivering_processors_.erase(processor);
                     interactive_processors_.erase(processor);
                     if (state_)
@@ -252,7 +264,7 @@ bool HidEventSystemHle::prepare_pending_event(
         interactive_processors_.insert(processor);
     const auto queued = HidEventTransaction::enqueue(registry_, *consumer,
         *event, state_->user_interface_geometry,
-        state_->darwin_abi.hid_digitizer, [this, processor] {
+        state_->darwin_abi.hid_digitizer, digitizer_sender_id, [this, processor] {
             delivering_processors_.erase(processor);
             interactive_processors_.erase(processor);
             if (state_)

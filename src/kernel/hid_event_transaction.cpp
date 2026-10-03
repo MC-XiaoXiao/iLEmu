@@ -41,6 +41,9 @@ namespace {
     constexpr auto create_digitizer = "_IOHIDEventCreateDigitizerEvent";
     constexpr auto create_keyboard = "_IOHIDEventCreateKeyboardEvent";
     constexpr auto create_accelerometer = "_IOHIDEventCreateAccelerometerEvent";
+    constexpr auto dispatch_service = "___IOHIDServiceEventCallback";
+    constexpr auto copy_service = "_IOHIDEventSystemCopyService";
+    constexpr auto create_number = "_CFNumberCreate";
 
     void prepare_digitizer(UserlandHleCall& call,
         const HidEventQueue::Event& event, float width, float height,
@@ -101,11 +104,12 @@ namespace {
         using Completion = std::function<void()>;
         NativeEventTransaction(HidEventQueue::Event event, std::uint32_t system,
             DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
-            Completion completion)
+            std::uint64_t sender_id, Completion completion)
             : event_ { event }
             , system_ { system }
             , geometry_ { geometry }
             , digitizer_abi_ { digitizer_abi }
+            , sender_id_ { sender_id }
             , completion_ { std::move(completion) }
             , step_ { std::holds_alternative<TouchInput>(event.input)
                           ? Step::Hand
@@ -117,11 +121,13 @@ namespace {
         }
         NativeEventTransaction(HidEventQueue::Event event,
             HidEventQueue::Observer observer, DisplayGeometry geometry,
-            DarwinHidDigitizerAbi digitizer_abi, Completion completion)
+            DarwinHidDigitizerAbi digitizer_abi, std::uint64_t sender_id,
+            Completion completion)
             : event_ { event }
             , observer_ { observer }
             , geometry_ { geometry }
             , digitizer_abi_ { digitizer_abi }
+            , sender_id_ { sender_id }
             , completion_ { std::move(completion) }
             , step_ { Step::Hand }
         {
@@ -148,6 +154,12 @@ namespace {
             Finger,
             Append,
             ReleaseFinger,
+            SetSender,
+            CreateSenderNumber,
+            CopyService,
+            ReleaseSenderNumber,
+            DispatchService,
+            ReleaseService,
             Dispatch,
             Callback,
             ReleaseEvent
@@ -203,6 +215,42 @@ namespace {
             case Step::ReleaseFinger:
                 r[0] = finger_;
                 break;
+            case Step::SetSender:
+                // Darwin ARM32 packs the registry entry ID into r1/r2.
+                r[0] = root_event_;
+                r[1] = static_cast<std::uint32_t>(sender_id_);
+                r[2] = static_cast<std::uint32_t>(sender_id_ >> 32U);
+                break;
+            case Step::CreateSenderNumber:
+                r[13] -= 16U;
+                r[0] = 0U;
+                r[1] = 4U; // kCFNumberSInt64Type
+                r[2] = r[13];
+                static_cast<void>(call.memory().write32(r[13],
+                    static_cast<std::uint32_t>(sender_id_)));
+                static_cast<void>(call.memory().write32(r[13] + 4U,
+                    static_cast<std::uint32_t>(sender_id_ >> 32U)));
+                break;
+            case Step::CopyService:
+                r[0] = system_;
+                r[1] = sender_number_;
+                break;
+            case Step::ReleaseSenderNumber:
+                r[0] = sender_number_;
+                break;
+            case Step::DispatchService:
+                // Enter the firmware's hardware service callback. It owns
+                // device metadata, service filters and session routing.
+                r[13] -= 16U;
+                r[0] = service_;
+                r[1] = 0U;
+                r[2] = 0U;
+                r[3] = root_event_;
+                static_cast<void>(call.memory().write32(r[13], 0U));
+                break;
+            case Step::ReleaseService:
+                r[0] = service_;
+                break;
             case Step::Dispatch:
                 r[0] = system_;
                 r[1] = root_event_;
@@ -252,13 +300,46 @@ namespace {
                 symbol = "_CFRelease";
                 break;
             case Step::ReleaseFinger:
+                if (sender_id_ && call.symbol_address("_IOHIDEventSetSenderID")) {
+                    step_ = Step::SetSender;
+                    symbol = "_IOHIDEventSetSenderID";
+                    break;
+                }
+                [[fallthrough]];
+            case Step::SetSender:
                 if (observer_) {
                     step_ = Step::Callback;
+                } else if (sender_id_ && call.symbol_address(dispatch_service) &&
+                    call.symbol_address(copy_service) &&
+                    call.symbol_address(create_number)) {
+                    step_ = Step::CreateSenderNumber;
+                    symbol = create_number;
                 } else {
                     step_ = Step::Dispatch;
                     symbol = "__IOHIDEventSystemDispatchEvent";
                 }
                 break;
+            case Step::CreateSenderNumber:
+                sender_number_ = call.argument(0);
+                step_ = sender_number_ ? Step::CopyService : Step::Dispatch;
+                symbol = sender_number_ ? copy_service
+                                        : "__IOHIDEventSystemDispatchEvent";
+                break;
+            case Step::CopyService:
+                service_ = call.argument(0);
+                step_ = Step::ReleaseSenderNumber;
+                symbol = "_CFRelease";
+                break;
+            case Step::ReleaseSenderNumber:
+                step_ = service_ ? Step::DispatchService : Step::Dispatch;
+                symbol = service_ ? dispatch_service
+                                  : "__IOHIDEventSystemDispatchEvent";
+                break;
+            case Step::DispatchService:
+                step_ = Step::ReleaseService;
+                symbol = "_CFRelease";
+                break;
+            case Step::ReleaseService:
             case Step::Dispatch:
             case Step::Callback:
                 step_ = Step::ReleaseEvent;
@@ -290,10 +371,13 @@ namespace {
         std::optional<HidEventQueue::Observer> observer_;
         DisplayGeometry geometry_;
         DarwinHidDigitizerAbi digitizer_abi_;
+        std::uint64_t sender_id_ { };
         Completion completion_;
         Step step_;
         std::uint32_t root_event_ { };
         std::uint32_t finger_ { };
+        std::uint32_t sender_number_ { };
+        std::uint32_t service_ { };
     };
 
 } // namespace
@@ -301,20 +385,20 @@ namespace {
 bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
     DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
-    std::function<void()> completion)
+    std::uint64_t sender_id, std::function<void()> completion)
 {
     return std::make_shared<NativeEventTransaction>(std::move(event),
-        consumer.system, geometry, digitizer_abi, std::move(completion))
+        consumer.system, geometry, digitizer_abi, sender_id, std::move(completion))
         ->start(registry, consumer.processor);
 }
 
 bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Observer& observer, HidEventQueue::Event event,
     DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
-    std::function<void()> completion)
+    std::uint64_t sender_id, std::function<void()> completion)
 {
     return std::make_shared<NativeEventTransaction>(std::move(event), observer,
-        geometry, digitizer_abi, std::move(completion))
+        geometry, digitizer_abi, sender_id, std::move(completion))
         ->start(registry, observer.processor);
 }
 
