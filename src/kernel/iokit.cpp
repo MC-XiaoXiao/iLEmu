@@ -1312,6 +1312,33 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             memory, message_address, local_port, message_id, root_name);
     }
 
+    if (message_id ==
+        static_cast<std::uint32_t>(iokit_abi::Message::RegistryEntryGetId)) {
+        // XNU IOUserClient.cpp returns IORegistryEntry::getRegistryEntryID().
+        // Our registry objects have stable, globally unique identities; use
+        // the same identity already exposed by the IORegistryEntryID property.
+        constexpr std::uint32_t reply_size = 44U;
+        if (send_size != 24U || receive_size < reply_size)
+            return mach_rcv_invalid_data;
+        bool is_entry;
+        {
+            std::lock_guard mach_lock { shared_state.mach_mutex };
+            is_entry = remote_object != 0U &&
+                (shared_state.iokit_services.contains(remote_object) ||
+                    shared_state.iokit_registry_root_object == remote_object ||
+                    resolve_task_name_locked(shared_state, process.pid,
+                        process.io_registry_options_port) == remote_object);
+        }
+        if (!is_entry)
+            return write_status_reply(memory, message_address, local_port,
+                message_id, iokit_abi::bad_argument);
+        const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)>
+            reply { mach_reply_bits, reply_size, local_port, 0U, 0U,
+                message_id + mig_reply_id_delta, mach_ndr_native,
+                mach_ndr_little_endian, iokit_abi::success, remote_object, 0U };
+        return write_reply(memory, message_address, reply);
+    }
+
     if (message_id == static_cast<std::uint32_t>(
                           iokit_abi::Message::ServiceGetMatchingServices)) {
         // io_service_get_matching_services uses the Darwin 8 c_string wire

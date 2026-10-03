@@ -36,6 +36,7 @@ enum class Message : std::uint32_t {
     // Private iPhoneOS-era extension retained by the firmware IOKit client.
     // The request ID is loaded by _io_connect_method in the 1.0 IOKit image.
     ConnectMethod = 2865,
+    RegistryEntryGetId = 2871,
     // Darwin 11 private inline counterpart to the generated plural iterator
     // routine. The firmware wrapper returns the first matching service port.
     ServiceGetMatchingService = 2872,
