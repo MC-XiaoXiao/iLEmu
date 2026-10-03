@@ -473,6 +473,9 @@ std::uint32_t ensure_service_locked(KernelSharedState& state,
     properties.emplace("IOProviderClass", string_property("IOService"));
     properties.emplace("IOClass", string_property(service_class));
     properties.emplace("Transport", string_property("SPI"));
+    // MultitouchSupport uses this Boolean to distinguish an integrated
+    // touchscreen from an external touchpad when publishing HID usages.
+    properties.emplace("MT Built-In", boolean_property(true));
     properties.emplace("Max Packet Size", number_property(512U));
     properties.emplace("parser-type", number_property(1U));
     properties.emplace("forced-display-width",
