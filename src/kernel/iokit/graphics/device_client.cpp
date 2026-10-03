@@ -5,6 +5,8 @@
 #include "device_client.hpp"
 
 #include "foundation/address_space.hpp"
+#include "foundation/macho.hpp"
+#include "kernel/ioaccel_event_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "../../mach/support.hpp"
@@ -13,6 +15,24 @@
 #include <limits>
 #include <string_view>
 #include <utility>
+
+namespace ilemu {
+std::optional<IOAccelEventAbi> IOAccelEventAbi::detect(const MachOImage& image)
+{
+    const auto exports = [&](std::string_view name) {
+        return std::any_of(image.symbols().begin(), image.symbols().end(),
+            [&](const MachSymbol& symbol) {
+                return symbol.name == name && symbol.section != 0U &&
+                       symbol.value != 0U;
+            });
+    };
+    if (exports("_IOAccelDeviceTestEventBasic"))
+        return IOAccelEventAbi { "IOAccelDeviceTestEventBasic" };
+    if (exports("_IOAccelDeviceTestEventFast"))
+        return IOAccelEventAbi { "IOAccelDeviceTestEventFast" };
+    return std::nullopt;
+}
+} // namespace ilemu
 
 namespace ilemu::kernel_iokit::graphics {
 namespace {
@@ -87,7 +107,7 @@ std::optional<MethodResult> dispatch_device_method_locked(AddressSpace& memory,
         word(result, 0U, mapping->second.address);
         word(result, 8U, mapping->second.address + AddressSpace::page_size);
         word(result, 0x1cU, 1U);
-        string(result, 0x20U, "IOAccelDeviceTestEventBasic");
+        string(result, 0x20U, state.ioaccel_event_abi.predicate);
         break;
     case 0U: {
         if (inband_output_capacity != config_reply_size)

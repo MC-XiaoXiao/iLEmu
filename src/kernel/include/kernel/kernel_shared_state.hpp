@@ -21,6 +21,7 @@
 #include <kernel/guest_socket_address_output.hpp>
 
 #include "kernel/unix_socket_node.hpp"
+#include "kernel/ioaccel_event_abi.hpp"
 #include "kernel/child_wait_status.hpp"
 #include "kernel/process_resource_usage.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
@@ -538,6 +539,7 @@ struct KernelSharedState {
         GraphicsAcceleratorKind::MbxLite
     };
     std::string graphics_driver_bundle;
+    IOAccelEventAbi ioaccel_event_abi;
     AudioHardwareProfile audio_hardware_profile {
         AudioHardwareProfile::CodecBaseband
     };

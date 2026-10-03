@@ -1055,6 +1055,9 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
     constexpr std::string_view quartz_core_image {
         "/QuartzCore.framework/QuartzCore"
     };
+    constexpr std::string_view ioaccelerator_image {
+        "/IOAccelerator.framework/IOAccelerator"
+    };
     const auto apply_image_abi =
         [&](std::string_view logical_image_path,
             const std::filesystem::path& source_path,
@@ -1075,7 +1078,8 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
                 return;
             }
             if (!path.ends_with(graphics_services_image) &&
-                !path.ends_with(quartz_core_image)) {
+                !path.ends_with(quartz_core_image) &&
+                !path.ends_with(ioaccelerator_image)) {
                 return;
             }
 
@@ -1088,6 +1092,13 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
                           source_path, architecture, std::move(source_identity),
                           ImmutableSnapshotKind::RuntimeHot,
                           image_header_offset));
+            if (path.ends_with(ioaccelerator_image)) {
+                if (const auto profile = IOAccelEventAbi::detect(*image)) {
+                    std::lock_guard mach_lock { shared_state_->mach_mutex };
+                    shared_state_->ioaccel_event_abi = *profile;
+                }
+                return;
+            }
             if (path.ends_with(graphics_services_image)) {
                 const auto profile =
                     GraphicsServicesInputAbi::detect(*image);
@@ -1159,7 +1170,8 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
             const auto& source = *source_file;
             const auto profile_relevant =
                 image.path.ends_with(graphics_services_image) ||
-                image.path.ends_with(quartz_core_image);
+                image.path.ends_with(quartz_core_image) ||
+                image.path.ends_with(ioaccelerator_image);
             std::shared_ptr<const MachOImage> parsed_image;
             if (profile_relevant) {
                 parsed_image = cache->parse_image(image.index, architecture);
