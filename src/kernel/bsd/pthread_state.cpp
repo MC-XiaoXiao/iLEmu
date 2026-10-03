@@ -85,11 +85,26 @@ bool DarwinPthreadRuntime::should_create_worker(
     std::size_t active_worker_count) const noexcept
 {
     if (!workqueue_open_ || priority >= workqueue_priority_count_ ||
-        workers_.size() >= maximum_workqueue_workers)
+        workers_.size() >= maximum_workqueue_workers ||
+        !can_schedule_workitem(overcommit))
+        return false;
+    return overcommit || active_worker_count < target_concurrency_[priority];
+}
+
+bool DarwinPthreadRuntime::can_schedule_workitem(bool overcommit,
+    std::optional<std::uint32_t> returning_processor) const noexcept
+{
+    if (!workqueue_open_)
         return false;
     if (overcommit)
         return true;
-    return active_worker_count < target_concurrency_[priority];
+    const auto constrained = std::count_if(workers_.begin(), workers_.end(),
+        [returning_processor](const auto& entry) {
+            return !entry.second.idle && !entry.second.overcommit &&
+                   (!returning_processor || entry.first != *returning_processor);
+        });
+    return static_cast<std::size_t>(constrained) <
+           maximum_constrained_workqueue_workers;
 }
 
 bool DarwinPthreadRuntime::add_worker(DarwinWorkqueueWorker worker)
@@ -128,11 +143,12 @@ DarwinPthreadRuntime::active_worker_processors() const
 }
 
 void DarwinPthreadRuntime::mark_worker_running(
-    std::uint32_t processor, std::uint32_t priority)
+    std::uint32_t processor, std::uint32_t priority, bool overcommit)
 {
     if (const auto found = workers_.find(processor); found != workers_.end()) {
         found->second.idle = false;
         found->second.priority = priority;
+        found->second.overcommit = overcommit;
     }
 }
 

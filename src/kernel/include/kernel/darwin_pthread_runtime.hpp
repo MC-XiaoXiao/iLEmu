@@ -48,6 +48,7 @@ struct DarwinWorkqueueWorker {
     std::uint32_t stack_bottom { };
     std::uint32_t priority { };
     bool idle { };
+    bool overcommit { };
 };
 
 // The split-libpthread anonymous start/end contract uses one counted resource.
@@ -82,7 +83,11 @@ public:
     // configured from the firmware ABI when workq_open is handled.
     static constexpr std::uint32_t maximum_workqueue_priority_count = 4U;
     static constexpr std::uint32_t workqueue_overcommit = 0x0001'0000U;
-    static constexpr std::size_t maximum_workqueue_workers = 64U;
+    // libpthread-137.1.1 separates the total pool limit from constrained
+    // workers. Serial queue dependencies may require overcommit workers
+    // even when all constrained workers are blocked.
+    static constexpr std::size_t maximum_workqueue_workers = 512U;
+    static constexpr std::size_t maximum_constrained_workqueue_workers = 64U;
     static constexpr std::size_t maximum_workqueue_items_per_priority = 64U;
 
     [[nodiscard]] bool register_process(DarwinPthreadRegistration registration);
@@ -127,12 +132,15 @@ public:
     [[nodiscard]] bool should_create_worker(
         std::uint32_t priority, bool overcommit,
         std::size_t active_worker_count) const noexcept;
+    [[nodiscard]] bool can_schedule_workitem(bool overcommit,
+        std::optional<std::uint32_t> returning_processor = std::nullopt) const noexcept;
     [[nodiscard]] bool add_worker(DarwinWorkqueueWorker worker);
     [[nodiscard]] std::optional<DarwinWorkqueueWorker> worker(
         std::uint32_t processor) const;
     [[nodiscard]] std::optional<DarwinWorkqueueWorker> idle_worker() const;
     [[nodiscard]] std::vector<std::uint32_t> active_worker_processors() const;
-    void mark_worker_running(std::uint32_t processor, std::uint32_t priority);
+    void mark_worker_running(std::uint32_t processor, std::uint32_t priority,
+        bool overcommit);
     void park_worker(std::uint32_t processor);
     void remove_worker(std::uint32_t processor);
     [[nodiscard]] bool set_target_concurrency(

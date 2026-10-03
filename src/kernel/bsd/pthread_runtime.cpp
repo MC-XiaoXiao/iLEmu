@@ -154,9 +154,10 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
             ++active_worker_count;
         }
     }
-    if (!idle_worker && !pthread_runtime_.should_create_worker(
+    if (!pthread_runtime_.can_schedule_workitem(next_item->overcommit) ||
+        (!idle_worker && !pthread_runtime_.should_create_worker(
                             next_item->priority, next_item->overcommit,
-                            active_worker_count)) {
+                            active_worker_count))) {
         static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
         return true;
     }
@@ -186,7 +187,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
             return false;
         }
         pthread_runtime_.mark_worker_running(
-            idle_worker->processor, next_item->priority);
+            idle_worker->processor, next_item->priority, next_item->overcommit);
         output_.write(
             "[pthread] workqueue reuse pid=" + std::to_string(process_.pid) +
             " slot=" + std::to_string(idle_worker->processor) +
@@ -225,6 +226,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         .pthread_address = *base + guard_size + workqueue_stack_size,
         .stack_bottom = *base + guard_size,
         .priority = next_item->priority,
+        .overcommit = next_item->overcommit,
     };
     auto state =
         workqueue_thread_state(*registration, worker, *next_item, false);
@@ -670,14 +672,15 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             static_cast<void>(signal_state_.update(processor, 3,
                 DarwinSignalState::workqueue_mask, DarwinSignalState::Scope::Thread));
             const auto next_item = pthread_runtime_.take_workitem();
-            if (next_item) {
+            if (next_item && pthread_runtime_.can_schedule_workitem(
+                                 next_item->overcommit, processor)) {
                 const auto& registration = *pthread_runtime_.registration();
                 cpu.registers() = workqueue_thread_state(
                     registration, *worker, *next_item, true);
                 cpu.set_cpsr(
                     pthread_start_cpsr(registration.workqueue_thread_start));
                 pthread_runtime_.mark_worker_running(
-                    processor, next_item->priority);
+                    processor, next_item->priority, next_item->overcommit);
                 output_.write(
                     "[pthread] workqueue continue pid=" +
                     std::to_string(process_.pid) +
@@ -686,6 +689,8 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                     " priority=" + std::to_string(next_item->priority) + "\n");
                 return true;
             }
+            if (next_item)
+                static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
             pthread_runtime_.park_worker(processor);
             process_.waiting_for_events = true;
             output_.write(

@@ -52,10 +52,11 @@ namespace ilemu::runtime_detail {
 constexpr std::size_t fault_stack_word_count = 32;
 constexpr std::size_t maximum_watchpoint_traces = 64;
 constexpr std::size_t initial_guest_thread_slots = 16;
-// Workqueues can retain up to 64 workers, including parked threads. Leave
-// capacity for application-created threads as well; CpuCluster adds register
-// contexts on demand without allocating an executor for each thread.
-constexpr std::size_t maximum_guest_threads = 128;
+// Retained workqueue workers and application-created threads share this
+// capacity. CpuCluster still adds register contexts on demand without
+// allocating an executor for each thread.
+constexpr std::size_t maximum_guest_threads =
+    DarwinPthreadRuntime::maximum_workqueue_workers + 64U;
 constexpr std::size_t maximum_virtual_processors = 64;
 constexpr std::size_t maximum_shared_monitor_processes = 1024;
 constexpr std::size_t maximum_shared_monitor_slots =
