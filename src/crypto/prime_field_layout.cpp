@@ -24,6 +24,19 @@ std::optional<PrimeFieldLayout> PrimeFieldLayout::resolve(
     const auto reduction = memory.read32(context + sizeof(std::uint32_t));
     if (reduction && (*reduction & ~1U) == (standard_reduction & ~1U))
         return compact_arm32;
+    // The extended header inserts an options word before the callback.
+    // Only ordinary integer residues can use the existing host arithmetic;
+    // Montgomery or otherwise specialized contexts retain firmware execution.
+    constexpr PrimeFieldLayout options_arm32 { 12U };
+    if (context <= std::numeric_limits<std::uint32_t>::max() -
+                       options_arm32.modulus_offset &&
+        reduction && *reduction == 0U) {
+        const auto extended_reduction = memory.read32(context + 8U);
+        if (extended_reduction &&
+            (*extended_reduction & ~1U) == (standard_reduction & ~1U)) {
+            return options_arm32;
+        }
+    }
     return std::nullopt;
 }
 
