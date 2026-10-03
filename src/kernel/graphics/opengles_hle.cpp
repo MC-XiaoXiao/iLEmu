@@ -2697,6 +2697,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                           .texture_units;
             break;
         case gles_abi::maximum_texture_size:
+        case gles_abi::maximum_renderbuffer_size:
+            // Renderbuffers use the same texture storage as sampled images.
             values[0] =
                 open_gles_guest_capabilities(context->guest_capabilities)
                     .maximum_texture_dimension;
