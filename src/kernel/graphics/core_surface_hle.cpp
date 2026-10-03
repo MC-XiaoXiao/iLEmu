@@ -949,6 +949,16 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
             buffer->client + buffer_abi.reference_count_offset,
             buffer->references));
         if (buffer->references == 0) {
+            // A caller-owned pixel buffer remains live after the surface
+            // wrapper is released. Publish completed GPU writes before that
+            // caller reads its own memory again.
+            if (!buffer->owns_memory) {
+                static_cast<void>(surfaces_->synchronize_for_cpu(call.memory(),
+                    buffer->id,
+                    SurfaceStore::CpuSynchronizationOptions {
+                        .read_only = true,
+                    }));
+            }
             const auto client = buffer->client;
             const auto id = buffer->id;
             const auto imported_mapping_base = buffer->imported_mapping_base;

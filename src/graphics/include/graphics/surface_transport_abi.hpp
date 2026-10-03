@@ -88,7 +88,8 @@ inline constexpr ClientAbi io_surface_client {
     .pixel_format_offset = 36,
     .plane_count_offset = 44,
     .lock_seed_output = true,
-    .create_property_symbols = { "", "_kIOSurfaceAllocSize", "_kIOSurfaceWidth",
+    .create_property_symbols = { "_kIOSurfaceClientAddress",
+        "_kIOSurfaceAllocSize", "_kIOSurfaceWidth",
         "_kIOSurfaceHeight", "_kIOSurfaceBytesPerRow", "_kIOSurfacePixelFormat",
         "_kIOSurfaceOffset" },
 };
