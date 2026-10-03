@@ -126,7 +126,12 @@ public:
     [[nodiscard]] bool request_dispatch_threads(
         std::uint32_t count, std::uint32_t priority, bool overcommit,
         std::uint32_t thread_class);
-    [[nodiscard]] std::optional<DarwinWorkqueueItem> take_workitem();
+    [[nodiscard]] bool has_pending_workitems() const noexcept;
+    // A supplied active count means delivery requires a new worker. Reusing
+    // an idle/returning worker needs only the constrained assignment limit.
+    [[nodiscard]] std::optional<DarwinWorkqueueItem> take_workitem(
+        std::optional<std::size_t> active_worker_count,
+        std::optional<std::uint32_t> returning_processor = std::nullopt);
     [[nodiscard]] bool remove_workitem(
         std::uint32_t address, std::uint32_t priority);
     [[nodiscard]] bool should_create_worker(

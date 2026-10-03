@@ -52,13 +52,34 @@ bool DarwinPthreadRuntime::request_dispatch_threads(
     return true;
 }
 
-std::optional<DarwinWorkqueueItem> DarwinPthreadRuntime::take_workitem()
+bool DarwinPthreadRuntime::has_pending_workitems() const noexcept
 {
+    return std::ranges::any_of(workitems_,
+        [](const auto& queue) { return !queue.empty(); });
+}
+
+std::optional<DarwinWorkqueueItem> DarwinPthreadRuntime::take_workitem(
+    std::optional<std::size_t> active_worker_count,
+    std::optional<std::uint32_t> returning_processor)
+{
+    if (!workqueue_open_)
+        return std::nullopt;
+    const auto constrained_allowed =
+        can_schedule_workitem(false, returning_processor);
+    // libpthread schedules overcommit requests independently of constrained
+    // capacity. Leave blocked requests queued while selecting the first
+    // eligible request in priority/FIFO order, including within one bucket.
     for (auto& queue : workitems_) {
-        if (queue.empty())
+        const auto ready = std::find_if(queue.begin(), queue.end(),
+            [&](const auto& item) {
+                return (item.overcommit || constrained_allowed) &&
+                       (!active_worker_count || should_create_worker(
+                            item.priority, item.overcommit, *active_worker_count));
+            });
+        if (ready == queue.end())
             continue;
-        auto item = queue.front();
-        queue.pop_front();
+        const auto item = *ready;
+        queue.erase(ready);
         return item;
     }
     return std::nullopt;
