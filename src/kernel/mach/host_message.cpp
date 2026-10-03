@@ -95,30 +95,55 @@ bool CompatibilityKernel::dispatch_mach_host_message(
             return true;
         }
         std::uint32_t voucher_name = 0;
+        auto result = darwin::mach::invalid_argument;
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto host_object = resolve_name_with_right(*shared_state_,
                 process_.pid, *remote_port, xnu::ipc::Right::Send);
             if (host_object &&
                 *host_object == mach_task_identity::initial_host_self_name) {
-                const auto object = shared_state_->allocate_mach_object();
-                if (shared_state_->mach_port_objects.create(object)) {
-                    shared_state_->mach_vouchers.emplace(object, *recipes);
-                    voucher_name = shared_state_->mach_namespaces
-                                       .copyout(process_.pid, object,
-                                           xnu::ipc::type_mask(
-                                               xnu::ipc::Right::Send))
-                                       .value_or(0);
-                    if (voucher_name == 0) {
-                        shared_state_->mach_vouchers.erase(object);
-                        static_cast<void>(
-                            shared_state_->mach_port_objects.erase(object));
+                MachVoucherState voucher;
+                result = voucher.create(*recipes,
+                    [&](std::uint32_t name) -> const MachVoucherState* {
+                        const auto object = resolve_name_with_right(*shared_state_,
+                            process_.pid, name, xnu::ipc::Right::Send);
+                        if (!object) return nullptr;
+                        const auto found = shared_state_->mach_vouchers.find(*object);
+                        return found == shared_state_->mach_vouchers.end()
+                            ? nullptr : &found->second;
+                    }, shared_state_->mach_vouchers,
+                    shared_state_->next_activity_id, process_.pid);
+                // XNU's all-default voucher is MACH_VOUCHER_NULL.
+                if (result == darwin::mach::success && !voucher.empty()) {
+                    std::uint32_t object = 0;
+                    for (const auto& [candidate, value] : shared_state_->mach_vouchers) {
+                        if (value == voucher) {
+                            object = candidate;
+                            break;
+                        }
                     }
+                    const auto created = object == 0;
+                    if (created) {
+                        object = shared_state_->allocate_mach_object();
+                        if (shared_state_->mach_port_objects.create(object))
+                            shared_state_->mach_vouchers.emplace(object, std::move(voucher));
+                        else object = 0;
+                    }
+                    if (object) {
+                        voucher_name = shared_state_->mach_namespaces.copyout(
+                            process_.pid, object,
+                            xnu::ipc::type_mask(xnu::ipc::Right::Send)).value_or(0);
+                        if (!voucher_name && created) {
+                            shared_state_->mach_vouchers.erase(object);
+                            static_cast<void>(shared_state_->mach_port_objects.erase(object));
+                        }
+                    }
+                    if (!voucher_name) result = darwin::mach::resource_shortage;
                 }
             }
         }
-        if (voucher_name == 0) {
-            write_result_reply(darwin::mach::resource_shortage);
+        if (result != darwin::mach::success) {
+            write_result_reply(result);
             return true;
         }
         const std::array<std::uint32_t, 10> reply {

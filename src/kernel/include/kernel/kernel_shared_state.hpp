@@ -26,6 +26,7 @@
 #include "kernel/process_resource_usage.hpp"
 #include "kernel/mach_send_wait_queue.hpp"
 #include "kernel/mach_receive_wait_queue.hpp"
+#include "kernel/mach_voucher_state.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/kevent_timer.hpp"
@@ -1791,7 +1792,9 @@ struct KernelSharedState {
     std::map<std::uint32_t, MachMemoryEntry> mach_memory_entries;
     // A registration owns one kernel-held Send to its readonly memory entry.
     std::map<std::uint32_t, TaskTraceMemory> task_trace_memory;
-    std::map<std::uint32_t, std::vector<std::byte>> mach_vouchers;
+    std::map<std::uint32_t, MachVoucherState> mach_vouchers;
+    std::uint64_t next_activity_id { 1 };
+    std::uint64_t next_subactivity_id { 1 };
     // BSD fileports are send-only Mach objects whose payload is a transferable
     // open-file description. The key is the global object identifier; callers
     // hold mach_mutex while accessing this table.

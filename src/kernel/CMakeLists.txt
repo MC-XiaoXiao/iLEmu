@@ -468,6 +468,7 @@ target_sources(ilemu_kernel PRIVATE
     mach/host_message.cpp
     mach/host_special_port.cpp
     mach/voucher_message.cpp
+    mach/voucher_state.cpp
     mach/port_message.cpp
     mach/task_vm_message.cpp
     mach/rights_message.cpp

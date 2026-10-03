@@ -16,58 +16,25 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
-#include <span>
 #include <vector>
 
 namespace ilemu {
 namespace {
 
-    constexpr std::uint32_t recipe_header_size = 16U;
     constexpr std::uint32_t key_request_offset = 32U;
     constexpr std::uint32_t count_request_offset = 36U;
     constexpr std::uint32_t data_reply_offset = 40U;
-
-    [[nodiscard]] std::optional<std::uint32_t> read_word(
-        std::span<const std::byte> bytes, std::size_t offset)
-    {
-        if (offset > bytes.size() || bytes.size() - offset < 4U)
-            return std::nullopt;
-        std::uint32_t value = 0;
-        for (std::size_t index = 0; index < 4U; ++index)
-            value |= std::to_integer<std::uint32_t>(bytes[offset + index])
-                     << (index * 8U);
-        return value;
-    }
-
-    [[nodiscard]] std::span<const std::byte> recipe_for_key(
-        std::span<const std::byte> recipes, std::uint32_t key)
-    {
-        std::size_t offset = 0;
-        while (offset < recipes.size()) {
-            const auto recipe_key = read_word(recipes, offset);
-            const auto content_size = read_word(recipes, offset + 12U);
-            if (!recipe_key || !content_size ||
-                recipes.size() - offset < recipe_header_size ||
-                *content_size > recipes.size() - offset - recipe_header_size) {
-                return { };
-            }
-            const auto size = recipe_header_size + *content_size;
-            if (*recipe_key == key)
-                return recipes.subspan(offset, size);
-            offset += size;
-        }
-        return { };
-    }
 
 } // namespace
 
 bool CompatibilityKernel::dispatch_mach_voucher_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    if (request.identifier != xnu::mig::mach_voucher::id(
-                                  xnu::mig::mach_voucher::Routine::
-                                      extract_attr_recipe) ||
+    using namespace xnu::mig::mach_voucher;
+    const auto content_only = request.identifier == id(Routine::extract_attr_content);
+    const auto attribute_command = request.identifier == id(Routine::attr_command);
+    if ((!content_only && !attribute_command &&
+            request.identifier != id(Routine::extract_attr_recipe)) ||
         shared_state_->darwin_abi.mach_voucher_abi !=
             DarwinMachVoucherAbi::HostCreateWithInlineRecipes) {
         return false;
@@ -79,14 +46,32 @@ bool CompatibilityKernel::dispatch_mach_voucher_message(
         return true;
     }
     const auto key = memory_.read32(request.address + key_request_offset);
-    const auto capacity = memory_.read32(request.address + count_request_offset);
+    auto capacity = memory_.read32(request.address + count_request_offset);
+    std::uint32_t command = 0;
+    std::vector<std::byte> input;
+    if (attribute_command) {
+        const auto count = memory_.read32(request.address + 40U);
+        if (registers[2] < 48U || !count || *count > 4096U ||
+            ((*count + 3U) & ~3U) > registers[2] - 48U) {
+            registers[0] = darwin::mach_message::receive_invalid_data;
+            return true;
+        }
+        command = capacity.value_or(0);
+        const auto bytes = memory_.read_bytes(request.address + 44U, *count);
+        if (!bytes || !capacity) {
+            registers[0] = darwin::mach_message::receive_invalid_data;
+            return true;
+        }
+        input = *bytes;
+        capacity = memory_.read32(request.address + 44U + ((*count + 3U) & ~3U));
+    }
     if (!key || !capacity) {
         registers[0] = darwin::mach_message::receive_invalid_data;
         return true;
     }
 
     std::vector<std::byte> recipe;
-    bool known_voucher = false;
+    auto result = darwin::mach::invalid_argument;
     {
         const std::lock_guard lock { shared_state_->mach_mutex };
         const auto object = mach_support::resolve_name_with_right(*shared_state_,
@@ -94,19 +79,20 @@ bool CompatibilityKernel::dispatch_mach_voucher_message(
         if (object) {
             const auto found = shared_state_->mach_vouchers.find(*object);
             if (found != shared_state_->mach_vouchers.end()) {
-                known_voucher = true;
-                const auto selected = recipe_for_key(found->second, *key);
-                recipe.assign(selected.begin(), selected.end());
+                if (attribute_command) {
+                    result = found->second.command(*key, command, input,
+                        *capacity, process_.pid, shared_state_->next_subactivity_id, recipe);
+                } else {
+                    recipe = found->second.extract(*key, !content_only);
+                    result = darwin::mach::success;
+                }
             }
         }
     }
-    const auto result = known_voucher
-                            ? recipe.size() > *capacity ||
-                                      recipe.size() >
-                                          registers[3] - data_reply_offset
-                                  ? darwin::mach::no_space
-                                  : darwin::mach::success
-                            : darwin::mach::invalid_argument;
+    if (result == darwin::mach::success &&
+        (recipe.size() > *capacity ||
+            ((recipe.size() + 3U) & ~std::size_t { 3U }) > registers[3] - data_reply_offset))
+        result = darwin::mach::no_space;
     const auto size = result == darwin::mach::success
                           ? static_cast<std::uint32_t>(
                                 data_reply_offset + ((recipe.size() + 3U) & ~3U))
@@ -134,7 +120,8 @@ bool CompatibilityKernel::dispatch_mach_voucher_message(
             return true;
         }
     }
-    const auto padded_size = (recipe.size() + 3U) & ~std::size_t { 3U };
+    const auto padded_size = result == darwin::mach::success
+        ? (recipe.size() + 3U) & ~std::size_t { 3U } : 0U;
     for (std::size_t index = 0; index < padded_size; ++index) {
         if (!memory_.write8(request.address + data_reply_offset +
                 static_cast<std::uint32_t>(index),
