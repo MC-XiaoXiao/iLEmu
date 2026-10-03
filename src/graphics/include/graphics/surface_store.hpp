@@ -35,6 +35,8 @@ constexpr std::uint32_t surface_fourcc(char a, char b, char c, char d)
 
 inline constexpr std::uint32_t surface_pixel_format_bgra =
     surface_fourcc('B', 'G', 'R', 'A');
+inline constexpr std::uint32_t surface_pixel_format_rgba =
+    surface_fourcc('R', 'G', 'B', 'A');
 inline constexpr std::uint32_t surface_pixel_format_rgb555 =
     surface_fourcc('R', 'G', '1', '5');
 // Public CoreSurface client images use 'L555' for the same little-endian,
@@ -71,6 +73,12 @@ constexpr bool surface_is_packed_555(std::uint32_t pixel_format)
            pixel_format == surface_pixel_format_argb1555;
 }
 
+constexpr bool surface_is_32bit(std::uint32_t pixel_format)
+{
+    return pixel_format == surface_pixel_format_bgra ||
+           pixel_format == surface_pixel_format_rgba;
+}
+
 constexpr std::uint32_t surface_decode_packed_555(
     std::uint32_t pixel_format, std::uint16_t packed)
 {
@@ -102,7 +110,7 @@ constexpr std::uint16_t surface_encode_packed_555(
 
 constexpr std::uint32_t surface_bytes_per_pixel(std::uint32_t pixel_format)
 {
-    if (pixel_format == surface_pixel_format_bgra)
+    if (surface_is_32bit(pixel_format))
         return 4U;
     if (surface_is_rgb555(pixel_format) ||
         pixel_format == surface_pixel_format_argb1555 ||
