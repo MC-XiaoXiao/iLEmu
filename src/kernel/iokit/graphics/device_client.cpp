@@ -51,7 +51,10 @@ namespace {
         }
     }
     constexpr std::uint32_t config_reply_size = 32U;
+    constexpr std::uint32_t extended_config_reply_size = 40U;
     constexpr std::uint32_t name_reply_size = 64U;
+    constexpr std::size_t event_queue_count_offset = 0x14U;
+    constexpr std::size_t event_predicate_offset = 0x18U;
     constexpr std::uint32_t arena_size = 2U * AddressSpace::page_size;
     constexpr std::uint64_t maximum_memory_bytes = 512ULL * 1024U * 1024U;
 
@@ -116,13 +119,15 @@ std::optional<MethodResult> dispatch_device_method_locked(AddressSpace& memory,
         // never mark an outstanding event complete to bypass a wait.
         word(result, 0U, mapping->second.address);
         word(result, 8U, mapping->second.address + AddressSpace::page_size);
-        word(result, 0x1cU, 1U);
-        string(result, 0x20U, state.ioaccel_event_abi.predicate);
+        word(result, event_queue_count_offset, 1U);
+        string(result, event_predicate_offset,
+            state.ioaccel_event_abi.predicate);
         break;
     case 0U: {
-        if (inband_output_capacity != config_reply_size)
+        if (inband_output_capacity != config_reply_size &&
+            inband_output_capacity != extended_config_reply_size)
             return MethodResult { iokit_abi::bad_argument, {}, {} };
-        result.resize(config_reply_size);
+        result.resize(inband_output_capacity);
         // Optional device feature bits remain clear. GetConfig64 exposes
         // memory limits at +8/+16; GPUSupport converts them to MiB. Bound
         // these by guest RAM and the existing graphics mapping limit.
