@@ -22,6 +22,7 @@
 #include "kernel/kernel_network.hpp"
 #include "kernel/null_device.hpp"
 #include "kernel/offline_serial_device.hpp"
+#include "filesystem/guest_file_security.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1959,11 +1960,24 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         output_.write("[vfs] stat64 " + *path + "\n");
-        const auto finish_extended_security = [&]() -> bool {
-            if ((number == 341 || number == 342) && registers[3] != 0 &&
-                !memory_.write32(registers[3], 0)) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return false;
+        const auto finish_extended_security = [&, this](
+            const std::filesystem::path* host = nullptr,
+            bool follow_symlink = true) -> bool {
+            if (number == 341 || number == 342) {
+                if (host != nullptr && registers[2] != 0U) {
+                    const auto stored = query_hfs_named_attribute(*host,
+                        follow_symlink, bsd::file_security::attribute_name);
+                    const auto error = bsd::file_security::GuestFileSecurity::
+                        copy_out(memory_, registers[2], registers[3], stored);
+                    if (error != 0U) {
+                        bsd_error(cpu, error);
+                        return false;
+                    }
+                } else if (registers[3] != 0U &&
+                    !memory_.write32(registers[3], 0U)) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return false;
+                }
             }
             return true;
         };
@@ -2017,7 +2031,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        if (!finish_extended_security()) {
+        if (!finish_extended_security(&host, follow_symlink)) {
             return;
         }
         bsd_success(cpu, 0);
@@ -2093,7 +2107,16 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        if (!finish_extended_security()) {
+        if (number == 343 && registers[2] != 0U) {
+            const auto stored = query_hfs_named_attribute(found->second, true,
+                bsd::file_security::attribute_name);
+            const auto error = bsd::file_security::GuestFileSecurity::copy_out(
+                memory_, registers[2], registers[3], stored);
+            if (error != 0U) {
+                bsd_error(cpu, error);
+                return;
+            }
+        } else if (!finish_extended_security()) {
             return;
         }
         bsd_success(cpu, 0);

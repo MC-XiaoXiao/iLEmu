@@ -10,6 +10,7 @@
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"
+#include "guest_file_security.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -212,12 +213,17 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         const auto requested_group = registers[2];
         const auto requested_mode = registers[3];
         const auto extended_security = registers[4];
-        // Unlike fchmod_extended, the extended permission ABI uses NULL for no ACL
-        // mutation and the sentinel pointer 1 to remove an ACL.
+        // Unlike fchmod_extended, NULL leaves the ACL unchanged.
         constexpr std::uint32_t remove_acl = 1;
+        std::optional<std::vector<std::byte>> requested_acl;
         if (extended_security != 0 && extended_security != remove_acl) {
-            bsd_error(cpu, darwin::error::operation_not_supported);
-            return true;
+            auto security = bsd::file_security::GuestFileSecurity::read(
+                memory_, extended_security);
+            if (security.error != 0U) {
+                bsd_error(cpu, security.error);
+                return true;
+            }
+            requested_acl = std::move(security.bytes);
         }
 
         const auto path = memory_.read_c_string(registers[0]);
@@ -262,6 +268,10 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 metadata_override.owner = requested_owner;
             if (requested_group != unchanged_identity)
                 metadata_override.group = requested_group;
+            if (extended_security == remove_acl || requested_acl)
+                shared_state_->hfs_named_attribute_overrides[metadata
+                        ->permanent_id][bsd::file_security::attribute_name] =
+                    requested_acl;
             metadata_override.change_time =
                 bsd_support::guest_filesystem_timestamp(shared_state_->clock);
         }
@@ -293,14 +303,19 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         const auto requested_group = registers[2];
         const auto requested_mode = registers[3];
         const auto extended_security = registers[4];
-        // the extended permission ABI uses NULL to remove the ACL and -1 to leave it
-        // unchanged. ACLs are not exposed by the current HFS metadata
-        // projection, so both operations are representable as no-ops. Refuse a
-        // real filesec payload instead of reporting a silently incomplete
-        // mutation.
+        // fchmod_extended uses -1 to leave the ACL unchanged. NULL and 1
+        // both remove it.
+        std::optional<std::vector<std::byte>> requested_acl;
         if (extended_security != 0 && extended_security != unchanged_identity) {
-            bsd_error(cpu, darwin::error::operation_not_supported);
-            return true;
+            if (extended_security != 1U) {
+                auto security = bsd::file_security::GuestFileSecurity::read(
+                    memory_, extended_security);
+                if (security.error != 0U) {
+                    bsd_error(cpu, security.error);
+                    return true;
+                }
+                requested_acl = std::move(security.bytes);
+            }
         }
 
         if (process_.effective_uid != 0) {
@@ -335,6 +350,10 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 metadata_override.owner = requested_owner;
             if (requested_group != unchanged_identity)
                 metadata_override.group = requested_group;
+            if (extended_security != unchanged_identity)
+                shared_state_->hfs_named_attribute_overrides[metadata
+                        ->permanent_id][bsd::file_security::attribute_name] =
+                    requested_acl;
             metadata_override.change_time =
                 bsd_support::guest_filesystem_timestamp(shared_state_->clock);
         }
