@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace ilemu {
@@ -17,6 +18,7 @@ using CodeDirectoryHash = std::array<std::byte, 20>;
 struct CodeSignature {
     CodeDirectoryHash hash;
     std::uint32_t flags;
+    std::string identifier;
     // Validates the embedded directory and its executable page hashes.
     // Trust is determined separately by the firmware's trust cache.
     [[nodiscard]] static std::optional<CodeSignature> inspect(

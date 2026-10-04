@@ -12,6 +12,7 @@
 #include <array>
 #include <limits>
 #include <mutex>
+#include <span>
 #include <vector>
 
 namespace ilemu {
@@ -20,6 +21,7 @@ void CompatibilityKernel::dispatch_bsd_code_signing(
     Cpu& cpu, bool require_audit_token)
 {
     constexpr std::uint32_t entitlements_blob = 7U;
+    constexpr std::uint32_t identity_blob = 11U;
     constexpr std::uint32_t entitlement_magic = 0xfade7171U;
     constexpr std::uint32_t header_size = 8U;
     const auto& registers = cpu.registers();
@@ -68,12 +70,26 @@ void CompatibilityKernel::dispatch_bsd_code_signing(
             bsd_success(cpu, 0U);
             return;
         }
-        if (operation != entitlements_blob) {
+        if (operation == identity_blob) {
+            if ((target->second.code_signing_flags & 0x10000001U) == 0U) {
+                bsd_error(cpu, darwin::error::invalid_argument);
+                return;
+            }
+            const auto& identity = target->second.code_signing_identity;
+            if (identity.empty()) {
+                bsd_error(cpu, darwin::error::no_entry);
+                return;
+            }
+            const auto bytes =
+                std::as_bytes(std::span { identity.c_str(), identity.size() + 1U });
+            payload.assign(bytes.begin(), bytes.end());
+        } else if (operation == entitlements_blob) {
+            // Share the Mach-O payload already used by the AMFI user client.
+            payload = target->second.code_signature_entitlements;
+        } else {
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
-        // Share the Mach-O payload already used by the AMFI user client.
-        payload = target->second.code_signature_entitlements;
     }
     if (capacity < header_size) {
         bsd_error(cpu, darwin::error::result_too_large);
@@ -92,10 +108,11 @@ void CompatibilityKernel::dispatch_bsd_code_signing(
             header[offset + byte] =
                 static_cast<std::byte>(value >> ((3U - byte) * 8U));
     };
-    // XNU returns eight zero bytes when no entitlements exist. A size probe
-    // returns a zero magic and the required big-endian blob length with ERANGE.
+    // XNU returns eight zero bytes when no entitlements exist. Size probes
+    // expose the required big-endian length; identity magic is always zero.
     if (!payload.empty()) {
-        encode(0U, short_buffer ? 0U : entitlement_magic);
+        encode(0U, operation == identity_blob || short_buffer
+                ? 0U : entitlement_magic);
         encode(4U, size);
     }
     std::vector<std::byte> blob { header.begin(), header.end() };

@@ -101,7 +101,18 @@ std::optional<CodeSignature> CodeSignature::inspect(
                 algorithm))
             return std::nullopt;
     }
-    CodeSignature result { .hash = { }, .flags = be32(directory, 12) };
+    CodeSignature result {
+        .hash = { }, .flags = be32(directory, 12), .identifier = { }
+    };
+    const auto identifier_offset = be32(directory, 20);
+    if (identifier_offset < directory.size()) {
+        const auto identifier = directory.subspan(identifier_offset);
+        const auto end = std::find(identifier.begin(), identifier.end(), std::byte { 0 });
+        if (end != identifier.end())
+            result.identifier.assign(
+                reinterpret_cast<const char*>(identifier.data()),
+                static_cast<std::size_t>(end - identifier.begin()));
+    }
     std::array<unsigned char, EVP_MAX_MD_SIZE> digest { };
     unsigned size = 0;
     if (EVP_Digest(directory.data(), directory.size(), digest.data(), &size,

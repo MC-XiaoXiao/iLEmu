@@ -461,7 +461,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             "launchd", "/sbin/launchd", { "/sbin/launchd" },
             { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
                 "SHELL=/bin/sh" },
-            KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, 0U, { },
+            KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, 0U, { }, { },
             DisplayOrientation::Portrait, { }, 0U };
     shared_state_->processes[process_.pid].memory_status =
         darwin::memorystatus::initial_state(shared_state_->darwin_abi.memory_status_priority);
@@ -1321,6 +1321,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         }
     }
     record.code_signing_flags = 0;
+    record.code_signing_identity.clear();
     if (const auto signature = executable ? executable->code_signature() : std::nullopt;
         signature && shared_state_->platform_trust_cache->contains(signature->hash)) {
         // XNU kern_exec propagates executable policy flags, not arbitrary
@@ -1328,6 +1329,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         constexpr std::uint32_t executable_policy_mask = 0x00703b00U;
         record.code_signing_flags = 0x04000001U |
             (signature->flags & executable_policy_mask);
+        record.code_signing_identity = signature->identifier;
     }
     record.code_signature_entitlements.assign(
         code_signature_entitlements.begin(), code_signature_entitlements.end());
