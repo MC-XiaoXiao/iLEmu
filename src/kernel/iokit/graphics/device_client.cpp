@@ -39,7 +39,17 @@ namespace {
     // Internal mapping key, not an IOConnectMapMemory memory selector.
     constexpr auto device_mapping_key =
         std::numeric_limits<std::uint32_t>::max();
-    constexpr std::uint32_t mapping_reply_size = 0x260U;
+    enum class MappingReplyProfile { CompactEventQueue, ExtendedEventQueue };
+
+    [[nodiscard]] std::optional<MappingReplyProfile> mapping_reply_profile(
+        std::uint32_t capacity)
+    {
+        switch (capacity) {
+        case 0x258U: return MappingReplyProfile::CompactEventQueue;
+        case 0x260U: return MappingReplyProfile::ExtendedEventQueue;
+        default: return std::nullopt;
+        }
+    }
     constexpr std::uint32_t config_reply_size = 32U;
     constexpr std::uint32_t name_reply_size = 64U;
     constexpr std::uint32_t arena_size = 2U * AddressSpace::page_size;
@@ -75,8 +85,8 @@ std::optional<MethodResult> dispatch_device_method_locked(AddressSpace& memory,
     auto& connection = state.iokit_graphics_connections[connection_object];
     auto mapping = connection.memory_mappings.find(device_mapping_key);
     const bool initialized = mapping != connection.memory_mappings.end();
-    const bool mapping_request =
-        selector == 2U && inband_output_capacity == mapping_reply_size;
+    const auto reply_profile = mapping_reply_profile(inband_output_capacity);
+    const bool mapping_request = selector == 2U && reply_profile.has_value();
     if (!initialized && !mapping_request)
         return std::nullopt;
     if (!scalar_input.empty() || !inband_input.empty() ||
@@ -86,7 +96,7 @@ std::optional<MethodResult> dispatch_device_method_locked(AddressSpace& memory,
     std::vector<std::byte> result;
     switch (selector) {
     case 2U:
-        if (inband_output_capacity != mapping_reply_size)
+        if (!reply_profile)
             return MethodResult { iokit_abi::bad_argument, {}, {} };
         if (!initialized) {
             const auto address = mach_support::find_free_guest_region(
@@ -98,7 +108,7 @@ std::optional<MethodResult> dispatch_device_method_locked(AddressSpace& memory,
                 KernelSharedState::IOKitGraphicsConnectionState::MemoryMapping {
                     *address, arena_size, arena_size }).first;
         }
-        result.resize(mapping_reply_size);
+        result.resize(inband_output_capacity);
         // Native IOAccelDeviceCreate consumes two 64-bit guest addresses,
         // a queue count, and the firmware event predicate's symbol name.
         // The host GL dispatch backend does not submit kernel GPU commands.
