@@ -12,8 +12,10 @@
 #include "device_lock_state.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace ilemu::kernel_iokit::keybag {
 namespace {
@@ -28,8 +30,11 @@ namespace {
     constexpr std::uint32_t get_keybag_lock_state_selector = 7U;
     constexpr std::uint32_t get_device_lock_state_selector = 17U;
     constexpr std::uint32_t get_extended_device_lock_state_selector = 35U;
+    constexpr std::uint32_t load_key_stash_selector = 34U;
     constexpr std::uint32_t get_system_keybag_selector = 14U;
     constexpr std::uint32_t copy_keybag_uuid_selector = 23U;
+    constexpr std::uint32_t hold_keybag_assertion_selector = 26U;
+    constexpr std::uint32_t drop_keybag_assertion_selector = 27U;
     constexpr std::uint32_t load_blastable_bytes_selector = 5U;
     constexpr std::uint32_t store_blastable_bytes_selector = 6U;
     // MobileKeyBag treats device state 3 as an unlocked device with no
@@ -41,6 +46,13 @@ namespace {
     // unlocked since boot. A no-passcode virtual system bag is always in that
     // state.
     constexpr std::uint64_t keybag_unlocked_since_boot = DeviceLockState::unlocked_since_boot;
+
+    bool known_keybag_handle(const KernelSharedState& state,
+        std::uint64_t handle)
+    {
+        return handle == 0U || handle == state.system_keybag_handle ||
+               (handle < state.next_keybag_handle);
+    }
 
     bool matches_class(std::span<const std::byte> matching,
         std::string_view class_name)
@@ -201,6 +213,16 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         return MethodResult {
             iokit_abi::success, { device_lock_state_no_passcode }, { } };
     }
+    if (selector == get_device_lock_state_selector &&
+        scalar_input.size() == 1U && inband_input.empty() &&
+        scalar_output_capacity == 0U) {
+        if (!known_keybag_handle(state, scalar_input.front()))
+            return MethodResult { iokit_abi::not_found, { }, { } };
+        auto encoded = DeviceLockState::encoded_no_passcode();
+        if (inband_output_capacity < encoded.size())
+            return MethodResult { iokit_abi::bad_argument, { }, { } };
+        return MethodResult { iokit_abi::success, { }, std::move(encoded) };
+    }
     if (selector == get_device_lock_state_selector ||
         selector == get_extended_device_lock_state_selector) {
         if (!scalar_input.empty() || !inband_input.empty() ||
@@ -209,6 +231,32 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             return MethodResult { iokit_abi::bad_argument, { }, { } };
         return MethodResult { iokit_abi::success, { },
             DeviceLockState::packed_no_passcode() };
+    }
+    if (selector == hold_keybag_assertion_selector ||
+        selector == drop_keybag_assertion_selector) {
+        // AKS passes (assertion kind, timeout, bag) to hold and
+        // (assertion kind, bag) to drop. The virtual no-passcode bag stays
+        // unlocked, so these assertions require no device lock transition.
+        const auto expected_count =
+            selector == hold_keybag_assertion_selector ? 3U : 2U;
+        if (scalar_input.size() != expected_count || !inband_input.empty() ||
+            scalar_output_capacity != 0U || inband_output_capacity != 0U)
+            return MethodResult { iokit_abi::bad_argument, { }, { } };
+        if (!known_keybag_handle(state, scalar_input.back()))
+            return MethodResult { iokit_abi::not_found, { }, { } };
+        return MethodResult { iokit_abi::success, { }, { } };
+    }
+    if (selector == load_key_stash_selector) {
+        // A keybag without a passcode has no protected stash to restore.
+        // Report an empty stash and let MobileKeyBag continue its normal
+        // migration path.
+        if (scalar_input.size() != 2U || !inband_input.empty() ||
+            scalar_output_capacity < 1U || inband_output_capacity != 0U ||
+            scalar_input[1] != 0U)
+            return MethodResult { iokit_abi::bad_argument, { }, { } };
+        if (!known_keybag_handle(state, scalar_input.front()))
+            return MethodResult { iokit_abi::not_found, { }, { } };
+        return MethodResult { iokit_abi::success, { 0U }, { } };
     }
     if (selector == copy_keybag_uuid_selector) {
         constexpr std::uint32_t uuid_size = 16U;
@@ -219,31 +267,33 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         // system bag; unregistered special bags and unknown handles do not
         // exist. Native MobileKeyBag distinguishes absence from unsupported
         // UUID export and can safely skip cleanup of an unregistered bag.
-        const auto handle = scalar_input.front();
-        const bool known = handle == 0U ||
-                           handle == state.system_keybag_handle ||
-                           (handle > 0U && handle < state.next_keybag_handle);
-        if (!known)
+        if (!known_keybag_handle(state, scalar_input.front()))
             return MethodResult { iokit_abi::not_found, { }, { } };
     }
     // AppleKeyStore's symmetric system-bag ABI uses selectors 10/11 for
     // authenticated wrapping/unwrapping. The no-passcode model already exposes
     // unlocked class keys; retain firmware ownership of keychain records.
     if ((selector == 10U || selector == 11U) && state.key_store) {
-        if (scalar_input.size() != 2U || scalar_output_capacity != 0U ||
+        const bool wrapping = selector == 10U;
+        if (scalar_input.size() != 2U ||
+            (wrapping ? scalar_output_capacity < 1U
+                      : scalar_output_capacity != 0U) ||
             scalar_input[1] < 1U || scalar_input[1] > 11U ||
             (scalar_input[0] != 0U &&
                 scalar_input[0] != state.system_keybag_handle))
             return MethodResult { iokit_abi::bad_argument, { }, { } };
         const auto key_class = static_cast<std::uint32_t>(scalar_input[1]);
-        auto result = selector == 10U
+        auto result = wrapping
                           ? state.key_store->wrap(key_class, inband_input)
                           : state.key_store->unwrap(key_class, inband_input);
         if (!result)
             return MethodResult { 0xe00002bcU, { }, { } };
         if (result->size() > inband_output_capacity)
             return MethodResult { iokit_abi::bad_argument, { }, { } };
-        return MethodResult { iokit_abi::success, { }, std::move(*result) };
+        return MethodResult { iokit_abi::success,
+            wrapping ? std::vector<std::uint64_t> { key_class }
+                     : std::vector<std::uint64_t> { },
+            std::move(*result) };
     }
     // Keep the remaining endpoint honest while the firmware-era method
     // contract is being filled in: this exposes selector and argument shape
