@@ -8,6 +8,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_descrip.c
 
 #include "kernel/kernel.hpp"
+#include "kernel/darwin_kqueue_abi.hpp"
 
 #include <cstdint>
 #include <string>
@@ -17,6 +18,10 @@ namespace ilemu {
 
 bool CompatibilityKernel::release_file_descriptor(std::uint32_t descriptor)
 {
+    // The workqueue kqueue is process-private and is not an open file
+    // descriptor. close(-1) must report EBADF without destroying it.
+    if (descriptor == darwin::kqueue::workqueue_descriptor)
+        return false;
     release_record_locks_for_descriptor(descriptor);
     const auto erased = file_descriptors_.erase(descriptor) +
                         virtual_descriptors_.erase(descriptor) +
