@@ -574,6 +574,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             }
             auto& destination = queue->bytes;
             destination.insert(destination.end(), bytes->begin(), bytes->end());
+            endpoint->second.note_sender(process_.pid);
             shared_state_->note_io_event_transition();
             bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
             return;

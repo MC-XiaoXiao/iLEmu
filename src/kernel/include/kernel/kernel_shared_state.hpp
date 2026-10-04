@@ -421,6 +421,7 @@ struct SocketPairLifetime {
 
     std::array<std::atomic_bool, 2> read_open { true, true };
     std::array<std::atomic_bool, 2> write_open { true, true };
+    std::array<std::atomic_uint32_t, 2> last_pid { 0U, 0U };
     // Only the receiving open description owns its queue. The peer must not
     // keep unread data or SCM_RIGHTS alive after that description closes.
     std::array<std::weak_ptr<SocketReceiveQueue>, 2> receive_queues;
@@ -451,6 +452,22 @@ struct SocketPairEndpoint {
     std::uint32_t side { };
     std::shared_ptr<SocketPairOpenDescription> description;
     std::optional<bsd::LocalSocketCredentials> peer_credentials { };
+
+    void note_sender(std::uint32_t pid) const
+    {
+        if (description && description->lifetime && side < 2U)
+            description->lifetime->last_pid[side].store(
+                pid, std::memory_order_release);
+    }
+    [[nodiscard]] std::optional<std::uint32_t> peer_pid() const
+    {
+        if (!description || !description->lifetime || side >= 2U)
+            return std::nullopt;
+        const auto pid = description->lifetime->last_pid[1U - side].load(
+            std::memory_order_acquire);
+        return pid == 0U ? std::nullopt
+                         : std::optional<std::uint32_t> { pid };
+    }
 
     [[nodiscard]] bool local_read_open() const
     {

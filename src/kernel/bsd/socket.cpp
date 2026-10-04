@@ -205,6 +205,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 queue->read_offset + destination.size();
             destination.insert(
                 destination.end(), outgoing.begin(), outgoing.end());
+            endpoint->second.note_sender(process_.pid);
             if (control.present()) {
                 queue->ancillary.push_back(KernelSharedState::SocketAncillaryRecord {
                         ancillary_offset, std::move(transfers) });
@@ -686,6 +687,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         const auto pair = shared_state_->next_socket_pair++;
         auto endpoints = make_socket_pair_endpoints(pair);
+        endpoints.first.note_sender(process_.pid);
+        endpoints.second.note_sender(listener->owner_pid);
         endpoints.first.peer_credentials = listener->credentials;
         endpoints.second.peer_credentials.emplace(
             process_.effective_uid, process_.effective_gid);
@@ -1052,6 +1055,22 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             }
             const auto encoded = endpoint->second.peer_credentials->encode();
             value.assign(encoded.begin(), encoded.end());
+        } else if (registers[1] == darwin::socket::local_option_level &&
+            (registers[2] == darwin::socket::local_peer_pid ||
+                registers[2] == darwin::socket::local_peer_effective_pid) &&
+            (socket->second.starts_with("unix-") ||
+                socket->second == "socketpair")) {
+            const auto endpoint = socket_pair_endpoints_.find(fd);
+            const auto pid = endpoint == socket_pair_endpoints_.end()
+                ? std::optional<std::uint32_t> { }
+                : endpoint->second.peer_pid();
+            if (!pid) {
+                bsd_error(cpu, bsd_support::not_connected);
+                return;
+            }
+            value.resize(sizeof(*pid));
+            for (std::size_t byte = 0; byte < value.size(); ++byte)
+                value[byte] = static_cast<std::byte>(*pid >> (byte * 8U));
         } else if (registers[1] == darwin::socket::option_level &&
             registers[2] == darwin::socket::option_pending_bytes) {
             std::uint32_t pending_error = 0;
@@ -1333,6 +1352,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             }
             auto& destination = queue->bytes;
             destination.insert(destination.end(), bytes->begin(), bytes->end());
+            endpoint->second.note_sender(process_.pid);
             shared_state_->note_io_event_transition();
             bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
             return;
@@ -1437,6 +1457,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         descriptor_flags_[*second] = 0;
         const auto pair = shared_state_->next_socket_pair++;
         auto endpoints = make_socket_pair_endpoints(pair, registers[1]);
+        endpoints.first.note_sender(process_.pid);
+        endpoints.second.note_sender(process_.pid);
         socket_options_[*first] = std::make_shared<SocketOptions>();
         socket_options_[*second] = std::make_shared<SocketOptions>();
         if (registers[1] == darwin::socket::stream) {
