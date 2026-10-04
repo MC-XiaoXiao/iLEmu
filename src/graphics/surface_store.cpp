@@ -249,10 +249,19 @@ void SurfaceStore::share_registry(const SurfaceStore& peer)
     registry_ = std::move(shared);
 }
 
+void SurfaceStore::reserve_identifier(std::uint32_t id)
+{
+    if (id == 0)
+        return;
+    std::lock_guard lock { registry_->mutex };
+    registry_->reserved_identifiers.insert(id);
+}
+
 std::uint32_t SurfaceStore::allocate_identifier()
 {
     std::lock_guard lock { registry_->mutex };
     while (registry_->next_identifier == 0 ||
+           registry_->reserved_identifiers.contains(registry_->next_identifier) ||
            registry_->objects.contains(registry_->next_identifier)) {
         ++registry_->next_identifier;
     }

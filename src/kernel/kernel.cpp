@@ -230,6 +230,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , task_vm_events_ { std::make_shared<TaskVmEvents>() }
     , signal_state_ { shared_state_->darwin_abi.abi_epoch }
 {
+    surface_store_->reserve_identifier(
+        iokit_abi::mobile_framebuffer_default_surface_id);
     memory_.set_file_generation_registry(
         shared_state_->guest_file_generation_registry);
     audio_service_->set_output_gain(shared_state_->audio_output_gain);

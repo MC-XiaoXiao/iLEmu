@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <vector>
 
@@ -165,6 +166,9 @@ public:
     // registry; callers import individual mappings through Lookup as firmware
     // passes their IDs between tasks.
     void share_registry(const SurfaceStore& peer);
+    // Device-assigned transport names are published explicitly and must not
+    // be issued to ordinary automatically numbered surfaces.
+    void reserve_identifier(std::uint32_t id);
     [[nodiscard]] std::uint32_t allocate_identifier();
     [[nodiscard]] std::uint64_t publication_watermark() const;
     [[nodiscard]] bool publish(AddressSpace& memory, Backing backing);
@@ -223,6 +227,7 @@ private:
     struct SharedRegistry {
         mutable std::mutex mutex;
         std::map<std::uint32_t, SharedObject> objects;
+        std::set<std::uint32_t> reserved_identifiers;
         std::uint32_t next_identifier { 1 };
         std::uint64_t publication_watermark { };
     };
