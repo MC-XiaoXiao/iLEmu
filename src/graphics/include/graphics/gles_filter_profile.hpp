@@ -13,7 +13,14 @@ namespace ilemu {
 // Describes conventional texture filter expressions, independently of their
 // caller. Offsets, weights and color columns remain firmware-owned uniforms.
 struct GlesFilterProfile {
-    enum class Operation { None, WeightedSamples, ColorMatrix, LuminanceAlpha };
+    enum class Operation {
+        None,
+        WeightedSamples,
+        ColorMatrix,
+        LuminanceAlpha,
+        Unpremultiply,
+        PremultipliedColorOverSample,
+    };
     struct Tap {
         std::size_t offset_index { };
         float offset_sign { 1.0F };

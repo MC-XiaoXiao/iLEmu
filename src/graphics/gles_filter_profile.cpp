@@ -76,6 +76,22 @@ GlesFilterProfile GlesFilterProfile::from_sources(
             result.operation = Operation::LuminanceAlpha;
             return result;
         }
+        const std::regex unpremultiply_pattern(
+            R"((?:gl_FragData\[0\]|gl_FragColor)=)" + sampled + "/" +
+            sampled + R"(\.a;)");
+        if (std::regex_search(fragment, unpremultiply_pattern)) {
+            result.operation = Operation::Unpremultiply;
+            return result;
+        }
+        const std::regex premultiplied_color_over_sample_pattern(
+            R"((?:gl_FragData\[0\]|gl_FragColor)=vec4\(color0\.rgb\+)" +
+            sampled + R"(\.rgb\*\(1\.0-color0\.a\),color0\.a\+)" +
+            sampled + R"(\.a\*\(1\.0-color0\.a\)\);)");
+        if (std::regex_search(
+                fragment, premultiplied_color_over_sample_pattern)) {
+            result.operation = Operation::PremultipliedColorOverSample;
+            return result;
+        }
         return { };
     }
     if (samples.size() > maximum_taps)

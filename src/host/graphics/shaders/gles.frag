@@ -305,6 +305,13 @@ vec4 apply_filter() {
             fixed_state.filter_color_columns[2],
             fixed_state.filter_color_columns[3]) * sampled;
     }
+    if (operation == 4) {
+        return sampled.a > 0.0 ?
+            vec4(sampled.rgb / sampled.a, 1.0) : vec4(0.0);
+    }
+    if (operation == 5) {
+        return primary_color + sampled * (1.0 - primary_color.a);
+    }
     float luminance = dot(sampled.rgb, vec3(.2125, .7154, .0721));
     return vec4(sampled.rgb, luminance * luminance);
 }

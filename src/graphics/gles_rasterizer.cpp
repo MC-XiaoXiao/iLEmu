@@ -739,12 +739,35 @@ namespace {
                                     filtered[row] +=
                                         sample[column] *
                                         state.filter.color_columns[column][row];
-                        } else {
+                        } else if (state.filter.operation ==
+                                   GlesFilterProfile::Operation::
+                                       LuminanceAlpha) {
                             filtered = unpack_color(sampled);
                             const auto luminance = filtered[0] * .2125F +
                                                    filtered[1] * .7154F +
                                                    filtered[2] * .0721F;
                             filtered[3] = luminance * luminance;
+                        } else if (state.filter.operation ==
+                                   GlesFilterProfile::Operation::
+                                       Unpremultiply) {
+                            filtered = unpack_color(sampled);
+                            if (filtered[3] > 0.0F) {
+                                const auto inverse_alpha = 1.0F / filtered[3];
+                                for (std::size_t component = 0;
+                                    component < 3U; ++component)
+                                    filtered[component] *= inverse_alpha;
+                                filtered[3] = 1.0F;
+                            }
+                        } else if (state.filter.operation ==
+                                   GlesFilterProfile::Operation::
+                                       PremultipliedColorOverSample) {
+                            filtered = unpack_color(primary);
+                            const auto sample = unpack_color(sampled);
+                            const auto remainder = 1.0F - filtered[3];
+                            for (std::size_t component = 0; component < 4U;
+                                ++component)
+                                filtered[component] +=
+                                    sample[component] * remainder;
                         }
                         pixel = pack_color(filtered);
                     } else if (state.fragment_operation !=
