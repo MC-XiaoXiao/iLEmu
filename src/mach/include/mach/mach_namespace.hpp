@@ -27,7 +27,11 @@ using MachTypeMask = std::uint32_t;
 
 inline constexpr MachName null_name = 0;
 inline constexpr MachName dead_name = 0xffff'ffffU;
-inline constexpr MachName first_dynamic_name = 0x0001'0000U;
+// Darwin's user-space lock encodings reserve the low two bits of a thread's
+// Mach port name. Keep dynamic names in generation 3, like the initial
+// thread-self name, so both unfair locks and libdispatch queue ownership can
+// compare the unmasked thread identity.
+inline constexpr MachName first_dynamic_name = 0x0001'0003U;
 inline constexpr MachName name_index_stride = 0x100U;
 // XNU stores ipc_entry user references in a 16-bit field. A live send
 // right reserves the all-ones value for dead-name conversion.
