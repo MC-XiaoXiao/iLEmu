@@ -21,10 +21,12 @@ namespace {
     constexpr std::uint32_t initialize_compiled_profile = 0U;
     constexpr std::uint32_t initialize_named_profile = 1U;
     constexpr std::uint32_t check_operation = 2U;
+    constexpr std::uint32_t submit_policy_update = 15U;
     constexpr std::uint32_t path_filter = 1U;
     constexpr std::size_t request_word_count = 6U;
     constexpr std::size_t maximum_operation_size = 256U;
     constexpr std::size_t maximum_path_size = 4096U;
+    constexpr std::size_t maximum_policy_update_size = 1U << 20U;
 
 } // namespace
 
@@ -32,13 +34,17 @@ CallResult dispatch(
     AddressSpace& memory, DarwinSandboxAbi abi, std::uint32_t operation,
     std::uint32_t argument)
 {
+    const auto policy_update = operation == submit_policy_update;
     if (operation != check_operation && operation != initialize_named_profile &&
-        operation != initialize_compiled_profile)
+        operation != initialize_compiled_profile && !policy_update)
+        return CallResult::Unsupported;
+    if (policy_update && abi != DarwinSandboxAbi::Wide64Arguments)
         return CallResult::Unsupported;
     const auto slot_size =
         abi == DarwinSandboxAbi::Wide64Arguments ? 8U : 4U;
     const auto slot_count = operation == initialize_named_profile ? 1U
-        : operation == initialize_compiled_profile ? 2U : request_word_count;
+        : operation == initialize_compiled_profile ? 2U
+        : policy_update ? 3U : request_word_count;
     const auto request_size = static_cast<std::uint32_t>(slot_count) * slot_size;
     if (argument == 0U ||
         argument >
@@ -89,6 +95,31 @@ CallResult dispatch(
         // Named-profile initialization uses the same non-enforcing guest
         // provider as checks below. No host sandbox policy is installed.
         return CallResult::Success;
+    }
+
+    if (operation == submit_policy_update) {
+        const auto payload_address = request[0];
+        const auto payload_size = request[1];
+        // The last slot packs the identifier pointer in its low word and the
+        // target user's ID in its high word.
+        const auto identifier_address =
+            static_cast<std::uint32_t>(request[2] & UINT32_MAX);
+        if (payload_size == 0U || payload_size > maximum_policy_update_size)
+            return CallResult::InvalidArgument;
+        if (payload_address == 0U || payload_address > UINT32_MAX ||
+            payload_size > (std::uint64_t { 1 } << 32U) - payload_address ||
+            !memory.accessible(static_cast<std::uint32_t>(payload_address),
+                static_cast<std::size_t>(payload_size), MemoryPermission::Read) ||
+            identifier_address == 0U)
+            return CallResult::BadAddress;
+        const auto identifier = memory.read_c_string(
+            identifier_address, maximum_path_size);
+        if (!identifier)
+            return CallResult::BadAddress;
+        // The native serialized request is valid. This provider does not
+        // install or enforce a host Sandbox policy.
+        return identifier->empty() ? CallResult::InvalidArgument
+                                   : CallResult::Success;
     }
 
     if (request[0] == 0U || request[0] > UINT32_MAX ||
