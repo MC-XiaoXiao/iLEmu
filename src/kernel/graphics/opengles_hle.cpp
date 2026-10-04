@@ -2496,10 +2496,22 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
 
 void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
 {
-    const auto add = [&](std::string symbol,
+    const auto add = [this, &registry](std::string symbol,
                          UserlandHleRegistry::Handler handler) {
         registry.register_function(std::string { opengles_image },
-            std::move(symbol), std::move(handler));
+            std::move(symbol),
+            [this, handler = std::move(handler)](UserlandHleCall& call) {
+                // The firmware's public GL wrapper obtains its current
+                // context from TLS before entering the context-first driver
+                // table. Preserve that lookup for unprefixed calls; table
+                // entries already carry the native context as their prefix.
+                if (!call.prefix_argument(0U) &&
+                    dispatch_hle_->uses_context_first_dispatch()) {
+                    call.resume_original_persistently();
+                    return;
+                }
+                handler(call);
+            });
     };
     add("_glGetError", [this](UserlandHleCall& call) {
         auto& current = thread(call);
@@ -4011,7 +4023,14 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         }
     });
     registry.register_prefix(std::string { opengles_image }, "_gl",
-        [this](UserlandHleCall& call) { unsupported(call); });
+        [this](UserlandHleCall& call) {
+            if (!call.prefix_argument(0U) &&
+                dispatch_hle_->uses_context_first_dispatch()) {
+                call.resume_original_persistently();
+                return;
+            }
+            unsupported(call);
+        });
 }
 
 void OpenGlesHle::unsupported(UserlandHleCall& call)

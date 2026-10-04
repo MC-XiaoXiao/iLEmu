@@ -27,6 +27,10 @@ public:
     OpenGlesDispatchHle(OpenGlesHle& owner, UserlandHleRegistry& registry);
     void reset();
     void inherit_state(const OpenGlesDispatchHle& parent);
+    [[nodiscard]] bool uses_context_first_dispatch() const
+    {
+        return profile_.has_value() && !dispatch_.empty();
+    }
     [[nodiscard]] std::optional<std::uint32_t> context_for_handle(
         std::uint32_t handle) const;
     [[nodiscard]] std::optional<std::uint32_t> context_for_object(
