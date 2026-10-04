@@ -260,6 +260,16 @@ namespace {
                 std::to_array<std::string_view>({ result, ".", "rgb", "+", "=",
                     "min", "(", destination, ".", "rgb", "*", source, ".", "a",
                     ",", source, ".", "rgb", "*", destination, ".", "a", ")" });
+            const auto additive_rgb =
+                std::to_array<std::string_view>({ result, ".", "rgb", "+", "=",
+                    destination, ".", "rgb", "*", source, ".", "a", "+",
+                    source, ".", "rgb", "*", destination, ".", "a" });
+            if (contains_sequence(tokens, assignment.expression_begin,
+                    assignment.expression_end, darken_base) &&
+                contains_sequence(tokens, additive_rgb) &&
+                contains_sequence(tokens, alpha_product)) {
+                return GlesFragmentOperation::AdditiveSourceOver;
+            }
             if (contains_sequence(tokens, assignment.expression_begin,
                     assignment.expression_end, darken_base) &&
                 contains_sequence(tokens, darken_rgb) &&

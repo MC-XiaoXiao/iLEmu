@@ -27,6 +27,7 @@ enum class GlesFragmentOperation : std::uint32_t {
     Overlay,
     ColorBurn,
     InverseLuminanceSourceOver,
+    AdditiveSourceOver,
 };
 
 // Conventional compositor shaders expose either a single color varying or

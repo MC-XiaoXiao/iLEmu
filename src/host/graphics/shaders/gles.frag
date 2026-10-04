@@ -37,6 +37,7 @@ const int FRAGMENT_DARKEN = 6;
 const int FRAGMENT_OVERLAY = 7;
 const int FRAGMENT_COLOR_BURN = 8;
 const int FRAGMENT_INVERSE_LUMINANCE_SOURCE_OVER = 9;
+const int FRAGMENT_ADDITIVE_SOURCE_OVER = 10;
 
 struct TextureEnvironment {
     ivec4 mode_combine_enabled;
@@ -216,6 +217,14 @@ vec4 sample_unit_offset(int unit, vec2 offset) {
 }
 
 vec4 apply_fragment_operation(int operation, vec4 source, vec4 destination) {
+    if (operation == FRAGMENT_ADDITIVE_SOURCE_OVER) {
+        vec4 result = destination * (1.0 - source.a) +
+                      source * (1.0 - destination.a);
+        result.rgb += destination.rgb * source.a +
+                      source.rgb * destination.a;
+        result.a += destination.a * source.a;
+        return result;
+    }
     if (operation == FRAGMENT_SCREEN)
         return destination * (1.0 - source.a) +
                source * (1.0 - destination.a) + destination * source;
@@ -331,6 +340,7 @@ void main() {
                                  operation == FRAGMENT_DARKEN ||
                                  operation == FRAGMENT_OVERLAY ||
                                  operation == FRAGMENT_COLOR_BURN ||
+                                 operation == FRAGMENT_ADDITIVE_SOURCE_OVER ||
                                  operation ==
                                      FRAGMENT_INVERSE_LUMINANCE_SOURCE_OVER;
     vec4 result = primary_color;
