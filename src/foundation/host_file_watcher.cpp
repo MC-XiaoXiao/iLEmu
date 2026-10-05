@@ -469,7 +469,12 @@ void HostFileWatcher::handle_event(
         return;
     }
 
-    GuestFileMutationKind mutation = GuestFileMutationKind::Write;
+    // Closing an O_RDWR descriptor does not imply that bytes were written.
+    // IN_MODIFY/IN_ATTRIB and namespace events retain their stronger mutation
+    // kinds; queue_path never downgrades an already pending mutation.
+    GuestFileMutationKind mutation = (event.mask &
+        (IN_MODIFY | IN_ATTRIB | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO))
+        ? GuestFileMutationKind::Write : GuestFileMutationKind::Observation;
     if (event.mask & (IN_DELETE | IN_MOVED_FROM)) {
         mutation = GuestFileMutationKind::Unlink;
     } else if (event.mask & (IN_CREATE | IN_MOVED_TO)) {
@@ -523,6 +528,16 @@ HostFileWatcher::AsyncCompletion HostFileWatcher::inspect_path(
     if (!S_ISREG(before.st_mode)) {
         static_cast<void>(registry.publish(path, mutation));
         completion.kind = AsyncCompletionKind::Changed;
+        return completion;
+    }
+
+    // A close-only observation can reuse an established identity when all
+    // descriptor generation fields still match (including nanosecond ctime).
+    // Content-changing events always retain the full stable-hash protocol.
+    if (mutation == GuestFileMutationKind::Observation && current_generation &&
+        current_generation->generation == observed_generation &&
+        current_generation->content_identity) {
+        completion.kind = AsyncCompletionKind::Discarded;
         return completion;
     }
 
