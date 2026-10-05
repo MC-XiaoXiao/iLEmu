@@ -93,6 +93,11 @@ void register_core_crypto_hle(UserlandHleRegistry& registry)
         { "/Security.framework/Security", "/libcorecrypto.dylib" }) {
         registry.register_guest_function(image, "_cczp_mod");
         registry.register_function(image, "_cczp_power", power_modulo);
+        // Private arithmetic entries can be covered by native code-integrity
+        // checks. Accelerate instruction fetches without changing data reads.
+        registry.register_function(image, "_cczp_power_ssma", power_modulo,
+            UserlandHleRegistry::SymbolLookup::ImageAndCacheLocals,
+            UserlandHleRegistry::EntryPatch::InstructionFetch);
         registry.register_function(image, "_ccn_gcd", greatest_common_divisor);
     }
 }
