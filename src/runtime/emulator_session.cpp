@@ -141,6 +141,8 @@ void EmulatorSession::run()
     const auto catalog_manifest = options.catalog.value_or(
         (host_cache / "executable-catalog.bin").string());
     auto device = options.device;
+    device.input.system_gestures.unlock_interaction =
+        darwin_configuration.unlock_interaction;
     const auto& darwin_abi = darwin_configuration.abi;
     SessionCatalog session_catalog { rootfs,
         arm_architecture_for_model(device.processor.model), catalog_manifest,
@@ -2751,7 +2753,7 @@ void EmulatorSession::run()
         for (const auto& input : live_button_scheduler.poll()) {
             note_interactive_host_activity();
             initial_runtime->kernel->enqueue_system_button(input);
-            output.marker("[control] button=up scheduled event queued");
+            output.marker("[control] scheduled button event queued");
         }
         if (pending_button_input_completion && live_button_scheduler.empty()) {
             mark_transition_input_complete(*pending_button_input_completion);
@@ -2821,6 +2823,23 @@ void EmulatorSession::run()
                         pending_button_input_completion.reset();
                     }
                     break;
+                case LiveControlCommandKind::UnlockHome: {
+                    note_interactive_host_activity();
+                    const bool needs_wake = !initial_runtime->kernel->display_powered_on();
+                    if (needs_wake) {
+                        initial_runtime->kernel->enqueue_system_button(
+                            { SystemButton::Home, SystemButtonPhase::Down });
+                        initial_runtime->kernel->enqueue_system_button(
+                            { SystemButton::Home, SystemButtonPhase::Up });
+                    }
+                    live_button_scheduler.schedule_press(SystemButton::Home,
+                        needs_wake ? command.button_delay : std::chrono::milliseconds::zero(),
+                        command.button_hold);
+                    pending_button_input_completion = "unlock";
+                    output.marker("[control] unlock=press-home wake=" +
+                        std::to_string(needs_wake));
+                    break;
+                }
                 case LiveControlCommandKind::Home:
                     note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_system_button(

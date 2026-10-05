@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "device_state/darwin_abi.hpp"
+#include "foundation/device_input_profile.hpp"
 #include "device_state/darwin_kernel_identity.hpp"
 
 namespace ilemu {
@@ -33,6 +34,7 @@ enum class DarwinAbiSource {
 
 struct DarwinKernelConfiguration {
     DarwinKernelIdentity identity;
+    UnlockInteraction unlock_interaction { UnlockInteraction::Slide };
     DarwinAbi abi;
     std::string abi_name { "unresolved" };
     DarwinAbiSource abi_source { DarwinAbiSource::Unresolved };

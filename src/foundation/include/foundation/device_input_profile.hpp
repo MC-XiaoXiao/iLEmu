@@ -24,9 +24,12 @@ struct NormalizedDragGesture {
     std::uint32_t wake_settle_delay_ms { };
 };
 
+enum class UnlockInteraction { Slide, PressHome };
+
 struct SystemGestures {
     std::string_view name;
     NormalizedDragGesture unlock;
+    UnlockInteraction unlock_interaction { UnlockInteraction::Slide };
 };
 
 inline constexpr SystemGestures classic_compact_system_gestures {

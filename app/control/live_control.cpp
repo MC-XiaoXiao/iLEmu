@@ -397,6 +397,13 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line)
         std::string trailing;
         if (parser >> trailing)
             return { error_command("unlock does not accept arguments") };
+        if (system_gestures_.unlock_interaction == UnlockInteraction::PressHome) {
+            auto command = simple_command(LiveControlCommandKind::UnlockHome);
+            command.button_delay = std::chrono::milliseconds {
+                system_gestures_.unlock.wake_settle_delay_ms };
+            command.button_hold = std::chrono::milliseconds { default_tap_duration_ms };
+            return { std::move(command) };
+        }
         const auto width = static_cast<float>(geometry_.width);
         const auto height = static_cast<float>(geometry_.height);
         const auto& unlock = system_gestures_.unlock;

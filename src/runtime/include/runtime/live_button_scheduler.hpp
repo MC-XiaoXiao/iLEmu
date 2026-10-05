@@ -21,6 +21,8 @@ namespace ilemu {
 class LiveButtonScheduler {
 public:
     void schedule(SystemButtonInput down, std::chrono::milliseconds hold);
+    void schedule_press(SystemButton button, std::chrono::milliseconds delay,
+        std::chrono::milliseconds hold);
     [[nodiscard]] std::vector<SystemButtonInput> poll();
     [[nodiscard]] bool empty() const { return events_.empty(); }
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <stdexcept>
 
 namespace ilemu {
@@ -478,6 +479,14 @@ DarwinKernelConfiguration resolve_darwin_configuration(
         configuration.identity = DarwinKernelIdentity { selected->darwin_release,
             build.empty() ? "1A543a" : std::string_view { build } };
         configuration.abi_name = selected->name;
+        unsigned release_major {};
+        const auto release = selected->darwin_release;
+        const auto parsed = std::from_chars(
+            release.data(), release.data() + release.size(), release_major);
+        // The press-Home lock-screen interaction replaces slide-to-unlock
+        // beginning with the Darwin 16 userland generation.
+        if (parsed.ec == std::errc {} && release_major >= 16U)
+            configuration.unlock_interaction = UnlockInteraction::PressHome;
     } else {
         configuration.identity = DarwinKernelIdentity { "unknown",
             build.empty() ? "unknown" : std::string_view { build } };

@@ -28,6 +28,18 @@ void LiveButtonScheduler::schedule(
         SystemButtonInput { down.button, SystemButtonPhase::Up } });
 }
 
+void LiveButtonScheduler::schedule_press(SystemButton button,
+    std::chrono::milliseconds delay, std::chrono::milliseconds hold)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const auto start = events_.empty() ? now
+        : std::max(now, events_.back().deadline + std::chrono::milliseconds { 1 });
+    const auto down = start + std::max(delay, std::chrono::milliseconds::zero());
+    events_.push_back(Event { down, { button, SystemButtonPhase::Down } });
+    events_.push_back(Event { down + std::max(hold, std::chrono::milliseconds { 1 }),
+        { button, SystemButtonPhase::Up } });
+}
+
 std::vector<SystemButtonInput> LiveButtonScheduler::poll()
 {
     std::vector<SystemButtonInput> result;
