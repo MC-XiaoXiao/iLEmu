@@ -106,6 +106,8 @@ class GdbRemoteServer {
 public:
     GdbRemoteServer(std::uint16_t port, Output& output,
         std::function<bool()> stop_requested = { });
+    GdbRemoteServer(std::string socket_path, Output& output,
+        std::function<bool()> stop_requested = { });
     ~GdbRemoteServer();
     GdbRemoteServer(const GdbRemoteServer&) = delete;
     GdbRemoteServer& operator=(const GdbRemoteServer&) = delete;
@@ -127,6 +129,8 @@ private:
     void close_client();
 
     std::uint16_t port_ { };
+    std::string socket_path_;
+    bool socket_bound_ { };
     Output& output_;
     std::function<bool()> stop_requested_;
     int listen_fd_ { -1 };

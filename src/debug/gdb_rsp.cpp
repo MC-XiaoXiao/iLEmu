@@ -23,6 +23,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace ilemu {
@@ -517,16 +518,32 @@ GdbRemoteServer::GdbRemoteServer(
 {
 }
 
+GdbRemoteServer::GdbRemoteServer(std::string socket_path, Output& output,
+    std::function<bool()> stop_requested)
+    : socket_path_ { std::move(socket_path) }
+    , output_ { output }
+    , stop_requested_ { std::move(stop_requested) }
+{
+    if (socket_path_.empty() ||
+        socket_path_.size() >= sizeof(sockaddr_un::sun_path))
+        throw std::invalid_argument {
+            "GDB Unix socket path is empty or too long"
+        };
+}
+
 GdbRemoteServer::~GdbRemoteServer()
 {
     close_client();
     if (listen_fd_ >= 0)
         ::close(listen_fd_);
+    if (socket_bound_ && !socket_path_.empty())
+        ::unlink(socket_path_.c_str());
 }
 
 bool GdbRemoteServer::listen_and_accept()
 {
-    listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+    listen_fd_ =
+        ::socket(socket_path_.empty() ? AF_INET : AF_UNIX, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
         throw std::system_error { errno, std::generic_category(),
             "GDB socket" };
@@ -534,19 +551,33 @@ bool GdbRemoteServer::listen_and_accept()
     const int enabled = 1;
     static_cast<void>(::setsockopt(
         listen_fd_, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)));
-    sockaddr_in address { };
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port_);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (::bind(listen_fd_, reinterpret_cast<const sockaddr*>(&address),
-            sizeof(address)) < 0) {
-        throw std::system_error { errno, std::generic_category(), "GDB bind" };
+    int bound { };
+    if (socket_path_.empty()) {
+        sockaddr_in address { };
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port_);
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        bound = ::bind(listen_fd_, reinterpret_cast<const sockaddr*>(&address),
+            sizeof(address));
+    } else {
+        sockaddr_un address { };
+        address.sun_family = AF_UNIX;
+        std::memcpy(
+            address.sun_path, socket_path_.c_str(), socket_path_.size() + 1);
+        bound = ::bind(listen_fd_, reinterpret_cast<const sockaddr*>(&address),
+            static_cast<socklen_t>(
+                offsetof(sockaddr_un, sun_path) + socket_path_.size() + 1));
     }
+    if (bound < 0)
+        throw std::system_error { errno, std::generic_category(), "GDB bind" };
+    socket_bound_ = true;
     if (::listen(listen_fd_, 1) < 0) {
         throw std::system_error { errno, std::generic_category(),
             "GDB listen" };
     }
-    output_.marker("[gdb] listening on 127.0.0.1:" + std::to_string(port_));
+    output_.marker("[gdb] listening on " +
+                   (socket_path_.empty() ? "127.0.0.1:" + std::to_string(port_)
+                                         : socket_path_));
     if (!wait_for_io(listen_fd_, POLLIN))
         return false;
     client_fd_ = ::accept(listen_fd_, nullptr, nullptr);

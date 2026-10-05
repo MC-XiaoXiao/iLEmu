@@ -70,6 +70,7 @@ struct BootOptions {
     std::optional<std::filesystem::path> boot_logo;
     std::optional<std::string> touch_replay;
     std::optional<std::uint16_t> gdb_port;
+    std::optional<std::string> gdb_socket;
     std::optional<std::uint32_t> watch_address;
     std::optional<std::string> baseband_input;
     std::optional<std::string> baseband_output;

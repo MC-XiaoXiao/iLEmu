@@ -98,7 +98,7 @@ std::string usage()
            "[--cores N] [--jit-cache-mib 8..512] "
            "[--time-dilation 1..16] "
            "[--jit-cache-budget-mib 256..4096] "
-           "[--watch-address ADDR] [--gdb PORT] "
+           "[--watch-address ADDR] [--gdb PORT | --gdb-socket PATH] "
            "[--display headless|sdl] [--network isolated|loopback|host] "
            "[--gles-backend auto|software|vulkan] [--gpu] "
            "[--host-cache DIR] [--catalog FILE] "
@@ -1125,6 +1125,9 @@ void boot(const std::vector<std::string>& args, SessionHost& host, Output& outpu
             };
         options.gdb_port = static_cast<std::uint16_t>(parsed);
     }
+    options.gdb_socket = option(args, "--gdb-socket");
+    if (options.gdb_socket && (options.gdb_socket->empty() || options.gdb_port))
+        throw std::runtime_error { "--gdb-socket requires a nonempty path and cannot be combined with --gdb" };
     if (const auto value = option(args, "--watch-address")) {
         const auto parsed = std::stoull(*value, nullptr, 0);
         if (parsed > std::numeric_limits<std::uint32_t>::max())

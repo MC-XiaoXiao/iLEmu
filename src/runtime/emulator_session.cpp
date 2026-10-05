@@ -482,6 +482,7 @@ void EmulatorSession::run()
         output.marker("[control] ready; use help for commands");
     }
     const auto gdb_port = options.gdb_port;
+    const bool gdb_enabled = gdb_port.has_value() || options.gdb_socket.has_value();
     const auto watch_address = options.watch_address;
     const auto baseband_input_path = options.baseband_input;
     const auto baseband_output_path = options.baseband_output;
@@ -1514,7 +1515,7 @@ void EmulatorSession::run()
             cpu.set_svc_dispatch_mode(guest_processor_count > 1
                                           ? SvcDispatchMode::Deferred
                                           : SvcDispatchMode::Immediate);
-            cpu.set_debug_breakpoints_enabled(gdb_port.has_value());
+            cpu.set_debug_breakpoints_enabled(gdb_enabled);
             if (watch_address) {
                 cpu.set_memory_write_watchpoint(*watch_address,
                     [&, runtime_ptr](Cpu& source, std::uint32_t address,
@@ -2142,9 +2143,13 @@ void EmulatorSession::run()
     bool hard_stop = false;
     std::unique_ptr<GdbRemoteServer> gdb_server;
     std::optional<GdbResumeRequest> debug_request;
-    if (gdb_port) {
-        gdb_server = std::make_unique<GdbRemoteServer>(
-            *gdb_port, output, debug_stop_requested);
+    if (gdb_enabled) {
+        if (options.gdb_socket)
+            gdb_server = std::make_unique<GdbRemoteServer>(
+                *options.gdb_socket, output, debug_stop_requested);
+        else
+            gdb_server = std::make_unique<GdbRemoteServer>(
+                *gdb_port, output, debug_stop_requested);
         if (!gdb_server->listen_and_accept()) {
             output.marker("[gdb] connection wait stopped");
             return;
