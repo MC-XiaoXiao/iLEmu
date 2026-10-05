@@ -61,7 +61,8 @@ public:
         entry("sr", 2U, 0U);
         std::vector<std::byte> result;
         result.reserve(entries.size() + 2U);
-        result.push_back(std::byte { 0x30 });
+        // MobileKeyBag decodes a SET of key/value SEQUENCE entries.
+        result.push_back(std::byte { 0x31 });
         result.push_back(static_cast<std::byte>(entries.size()));
         result.insert(result.end(), entries.begin(), entries.end());
         return result;
