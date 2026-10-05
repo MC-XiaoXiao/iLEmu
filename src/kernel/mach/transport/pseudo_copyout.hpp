@@ -139,7 +139,7 @@ private:
         if (type == xnu::ipc::Right::Send && held_send)
             mach_support::release_inflight_send_right_locked(state_, object);
         if (type == xnu::ipc::Right::Receive) {
-            state_.note_mach_queue_topology_change_locked();
+            state_.note_mach_queue_topology_change_locked(object);
             static_cast<void>(state_.remove_mach_port_set_member_from_all_locked(object));
             static_cast<void>(state_.mach_port_objects.set_receive_owner(object, task_));
         }

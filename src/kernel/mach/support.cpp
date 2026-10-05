@@ -582,7 +582,7 @@ namespace mach_support {
         // A receive may be asleep on this object without any queued message.
         // Make the scheduler revisit its cached namespace capability on the
         // next poll.
-        state.note_mach_queue_topology_change_locked();
+        state.note_mach_queue_topology_change_locked(object);
         state.mach_send_waiters.destroy(object, state.clock.now());
         state.mach_send_possible_armed_destinations.erase(object);
         struct RemovalGuard {
@@ -1047,7 +1047,7 @@ namespace mach_support {
                 cancel_dead_name_notification_locked(state, task, name);
             // A standalone port has no set topology to invalidate, but its
             // old blocked receiver must still observe MACH_RCV_PORT_CHANGED.
-            state.note_mach_queue_topology_change_locked();
+            state.note_mach_queue_topology_change_locked(entry->object);
             static_cast<void>(state.remove_mach_port_set_member_from_all_locked(
                 entry->object));
             // XNU ipc_port_clear_receiver discards receiver-local state when
@@ -1082,7 +1082,7 @@ namespace mach_support {
             return;
         // A port-destroyed notification may keep the object alive in transit.
         // Revoke cached receives even when there is no port-set membership.
-        state.note_mach_queue_topology_change_locked();
+        state.note_mach_queue_topology_change_locked(object);
         static_cast<void>(
             state.remove_mach_port_set_member_from_all_locked(object));
 

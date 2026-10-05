@@ -1381,7 +1381,7 @@ struct KernelSharedState {
             queue != mach_queues.end() && !queue->second.empty()) {
             mach_port_set_preposts[set_object].push_back(member_object);
         }
-        note_mach_queue_topology_change_locked();
+        note_mach_queue_topology_change_locked(set_object);
         return true;
     }
 
@@ -1411,7 +1411,8 @@ struct KernelSharedState {
             if (preposts->second.empty())
                 mach_port_set_preposts.erase(preposts);
         }
-        note_mach_queue_topology_change_locked();
+        note_mach_queue_topology_change_locked(member_object);
+        note_mach_queue_topology_change_locked(set_object);
         return true;
     }
 
@@ -1435,9 +1436,12 @@ struct KernelSharedState {
             }
         }
         mach_port_set_links_by_member.erase(links);
-        note_mach_queue_topology_change_locked();
+        note_mach_queue_topology_change_locked(member_object);
+        note_mach_queue_topology_change_locked(set_object);
         return true;
+        note_mach_queue_topology_change_locked(member_object);
     }
+            note_mach_queue_topology_change_locked(link.set_object);
 
     [[nodiscard]] bool erase_mach_port_set_locked(std::uint32_t set_object)
     {
@@ -1457,10 +1461,10 @@ struct KernelSharedState {
         }
         mach_port_set_preposts.erase(set_object);
         mach_port_sets.erase(set);
-        note_mach_queue_topology_change_locked();
         return true;
     }
     // These maps are keyed by global IPC object identifiers, never by a
+            note_mach_queue_topology_change_locked(member_object);
     // caller's task-local Mach name. Keep task identity separate from generic
     // receive ownership so pid_for_task cannot mistake a service for a task.
     std::map<std::uint32_t, std::uint32_t> task_port_pids;
@@ -1583,9 +1587,15 @@ struct KernelSharedState {
 
     // Adding a populated port to a set can make an already queued message
     // newly visible without enqueueing another message.
-    void note_mach_queue_topology_change_locked()
+    void note_mach_queue_topology_change_locked(std::uint32_t object = 0U)
     {
-        mach_queue_generation.note_topology_change();
+        // A known object's rights or membership change only invalidates
+        // receivers of that object. Membership helpers also notify each set.
+        // Keep the global generation for changes without a resolved object.
+        if (object != 0U)
+            mach_queue_generation.note_enqueue(object);
+        else
+            mach_queue_generation.note_topology_change();
     }
 
     [[nodiscard]] std::uint64_t mach_queue_generation_snapshot() const

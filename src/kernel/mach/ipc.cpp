@@ -797,7 +797,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             if (*right == xnu::ipc::Right::Receive) {
                 // Legacy uncaptured descriptors can revoke the sender's
                 // receive right at copyout without another enqueue.
-                shared_state_->note_mach_queue_topology_change_locked();
+                shared_state_->note_mach_queue_topology_change_locked(*object);
                 static_cast<void>(
                     shared_state_->remove_mach_port_set_member_from_all_locked(
                         *object));
