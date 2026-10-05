@@ -27,7 +27,7 @@ struct GlesPixelUnpack {
 // bitmap has no adjacent descriptor. Explicit GLES pixel-store state wins.
 enum class GlesClientBitmapProfile {
     Standard,
-    Sgx543AlignedLuminanceAlpha,
+    Sgx543AlignedClientBitmap,
 };
 
 } // namespace ilemu

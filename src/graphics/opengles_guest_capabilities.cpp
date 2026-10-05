@@ -151,7 +151,7 @@ GlesClientBitmapProfile open_gles_client_bitmap_profile(
     OpenGlesGuestCapabilitySet kind)
 {
     return kind == OpenGlesGuestCapabilitySet::Sgx543
-               ? GlesClientBitmapProfile::Sgx543AlignedLuminanceAlpha
+               ? GlesClientBitmapProfile::Sgx543AlignedClientBitmap
                : GlesClientBitmapProfile::Standard;
 }
 

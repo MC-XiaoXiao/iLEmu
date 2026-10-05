@@ -172,15 +172,16 @@ namespace {
                 ? bitmap_backing_row_bytes(memory, pixels, width, height,
                       static_cast<std::uint32_t>(row_bytes))
                 : std::nullopt;
-        // The SGX543 client bitmap path uses 16-pixel (32-byte) rows for
-        // headerless luminance/alpha data. Some widths happen to be tightly
-        // packed; others need the same pitch as the producer's allocation.
+        // The SGX543 client bitmap path aligns alpha and luminance/alpha
+        // rows to 32 bytes. The alignment is in bytes, independent of the
+        // number of components in each pixel.
         // Keep explicit pixel-store state and firmware bitmap descriptors
         // authoritative, and leave other source formats on GLES alignment.
         const auto source_alignment =
             client_bitmap_profile ==
-                    GlesClientBitmapProfile::Sgx543AlignedLuminanceAlpha &&
-                    format == gles_abi::luminance_alpha &&
+                    GlesClientBitmapProfile::Sgx543AlignedClientBitmap &&
+                    (format == gles_abi::alpha ||
+                        format == gles_abi::luminance_alpha) &&
                     type == gles_abi::unsigned_byte &&
                     unpack.alignment == 1U && unpack.row_length == 0U &&
                     unpack.skip_rows == 0U && unpack.skip_pixels == 0U &&
