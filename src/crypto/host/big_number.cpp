@@ -13,34 +13,61 @@
 
 namespace ilemu {
 
+namespace {
+    bool common_multiple_or_divisor(
+        std::span<const std::byte> first, std::span<const std::byte> second,
+        std::span<std::byte> result, bool multiple)
+    {
+        if (result.empty() || result.size() > std::numeric_limits<int>::max() ||
+            first.empty() || second.size() != first.size() ||
+            first.size() != result.size() / (multiple ? 2U : 1U) ||
+            (multiple && result.size() % 2U != 0U)) {
+            return false;
+        }
+        std::unique_ptr<BN_CTX, decltype(&BN_CTX_free)> context {
+            BN_CTX_secure_new(), BN_CTX_free
+        };
+        if (!context)
+            return false;
+        BN_CTX_start(context.get());
+        auto* a = BN_CTX_get(context.get());
+        auto* b = BN_CTX_get(context.get());
+        auto* r = BN_CTX_get(context.get());
+        if (!r ||
+            !BN_lebin2bn(reinterpret_cast<const unsigned char*>(first.data()),
+                static_cast<int>(first.size()), a) ||
+            !BN_lebin2bn(reinterpret_cast<const unsigned char*>(second.data()),
+                static_cast<int>(second.size()), b) ||
+            BN_gcd(r, a, b, context.get()) != 1) {
+            return false;
+        }
+        if (multiple) {
+            // Preserve firmware behavior for degenerate inputs through fallback.
+            // Divide before multiplying so temporary values remain bounded.
+            if (BN_is_zero(a) || BN_is_zero(b) ||
+                BN_div(a, nullptr, a, r, context.get()) != 1 ||
+                BN_mul(r, a, b, context.get()) != 1)
+                return false;
+        }
+        return BN_bn2lebinpad(r, reinterpret_cast<unsigned char*>(result.data()),
+                   static_cast<int>(result.size())) ==
+               static_cast<int>(result.size());
+    }
+
+} // namespace
+
 bool BigNumberArithmetic::greatest_common_divisor(
     std::span<const std::byte> first, std::span<const std::byte> second,
     std::span<std::byte> result)
 {
-    if (result.empty() || result.size() > std::numeric_limits<int>::max() ||
-        first.size() != result.size() || second.size() != result.size()) {
-        return false;
-    }
-    std::unique_ptr<BN_CTX, decltype(&BN_CTX_free)> context {
-        BN_CTX_secure_new(), BN_CTX_free
-    };
-    if (!context)
-        return false;
-    BN_CTX_start(context.get());
-    auto* a = BN_CTX_get(context.get());
-    auto* b = BN_CTX_get(context.get());
-    auto* r = BN_CTX_get(context.get());
-    if (!r ||
-        !BN_lebin2bn(reinterpret_cast<const unsigned char*>(first.data()),
-            static_cast<int>(first.size()), a) ||
-        !BN_lebin2bn(reinterpret_cast<const unsigned char*>(second.data()),
-            static_cast<int>(second.size()), b) ||
-        BN_gcd(r, a, b, context.get()) != 1) {
-        return false;
-    }
-    return BN_bn2lebinpad(r, reinterpret_cast<unsigned char*>(result.data()),
-               static_cast<int>(result.size())) ==
-           static_cast<int>(result.size());
+    return common_multiple_or_divisor(first, second, result, false);
+}
+
+bool BigNumberArithmetic::least_common_multiple(
+    std::span<const std::byte> first, std::span<const std::byte> second,
+    std::span<std::byte> result)
+{
+    return common_multiple_or_divisor(first, second, result, true);
 }
 
 bool BigNumberArithmetic::power_modulo(std::span<const std::byte> base,

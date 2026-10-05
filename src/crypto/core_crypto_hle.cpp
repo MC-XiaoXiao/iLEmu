@@ -17,7 +17,7 @@
 namespace ilemu {
 namespace {
 
-    void greatest_common_divisor(UserlandHleCall& call)
+    void common_multiple_or_divisor(UserlandHleCall& call, bool multiple)
     {
         // ccn uses fixed-width, little-endian ARM32 units, including leading
         // zero units. Read both operands before writing to allow output aliasing.
@@ -31,20 +31,34 @@ namespace {
             static_cast<std::size_t>(units) * sizeof(std::uint32_t);
         const auto first = call.memory().read_bytes(call.argument(2), size);
         const auto second = call.memory().read_bytes(call.argument(3), size);
+        const auto result_size = size * (multiple ? 2U : 1U);
         const auto destination = call.argument(1);
         if (!first || !second || !call.memory().accessible(
-                                    destination, size, MemoryPermission::Write)) {
+                                    destination, result_size, MemoryPermission::Write)) {
             call.resume_original_persistently();
             return;
         }
-        std::vector<std::byte> result(size);
-        if (!BigNumberArithmetic::greatest_common_divisor(
-                *first, *second, result) ||
+        std::vector<std::byte> result(result_size);
+        const auto operation = multiple
+            ? BigNumberArithmetic::least_common_multiple
+            : BigNumberArithmetic::greatest_common_divisor;
+        if (!operation(*first, *second, result) ||
             !call.memory().copy_in(destination, result)) {
             call.resume_original_persistently();
             return;
         }
         call.set_return(0U);
+    }
+
+    void greatest_common_divisor(UserlandHleCall& call)
+    {
+        common_multiple_or_divisor(call, false);
+    }
+
+    void least_common_multiple(UserlandHleCall& call)
+    {
+        // ccn_lcm(n, r2n, s, t): output contains 2*n ARM32 units.
+        common_multiple_or_divisor(call, true);
     }
 
     void power_modulo_arguments(UserlandHleCall& call, std::size_t first)
@@ -113,6 +127,9 @@ void register_core_crypto_hle(UserlandHleRegistry& registry)
             UserlandHleRegistry::EntryPatch::InstructionFetch);
         registry.register_function(image, "_cczp_power_ssma_ws",
             power_modulo_workspace,
+            UserlandHleRegistry::SymbolLookup::ImageAndCacheLocals,
+            UserlandHleRegistry::EntryPatch::InstructionFetch);
+        registry.register_function(image, "_ccn_lcm", least_common_multiple,
             UserlandHleRegistry::SymbolLookup::ImageAndCacheLocals,
             UserlandHleRegistry::EntryPatch::InstructionFetch);
         registry.register_function(image, "_ccn_gcd", greatest_common_divisor,

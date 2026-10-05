@@ -18,6 +18,10 @@ public:
     [[nodiscard]] static bool greatest_common_divisor(
         std::span<const std::byte> first, std::span<const std::byte> second,
         std::span<std::byte> result);
+    // The least common multiple needs twice the operand width.
+    [[nodiscard]] static bool least_common_multiple(
+        std::span<const std::byte> first, std::span<const std::byte> second,
+        std::span<std::byte> result);
     [[nodiscard]] static bool power_modulo(std::span<const std::byte> base,
         std::span<const std::byte> exponent, std::span<const std::byte> modulus,
         std::span<std::byte> result);
