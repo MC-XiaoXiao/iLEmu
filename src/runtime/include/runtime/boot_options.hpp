@@ -50,6 +50,8 @@ struct BootOptions {
     bool disable_scheduler_preemption { };
     bool jit_observer_only { };
     bool report_performance { };
+    // One guest monotonic nanosecond spans this many host nanoseconds.
+    std::uint32_t time_dilation { 1 };
     std::optional<std::uint64_t> ticks;
     std::optional<std::size_t> cores;
     std::optional<std::size_t> jit_cache_bytes;

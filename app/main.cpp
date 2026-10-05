@@ -95,6 +95,7 @@ std::string usage()
            "  ilemu boot --rootfs DIR [--device PROFILE] [--ios-build CODE] "
            "[--binary /sbin/launchd] [--guest-command COMMAND] [--ticks N] "
            "[--cores N] [--jit-cache-mib 8..512] "
+           "[--time-dilation 1..16] "
            "[--jit-cache-budget-mib 256..4096] "
            "[--watch-address ADDR] [--gdb PORT] "
            "[--display headless|sdl] [--network isolated|loopback|host] "
@@ -1088,6 +1089,12 @@ void boot(const std::vector<std::string>& args, Output& output)
         options.ticks = std::stoull(*value);
     if (const auto value = option(args, "--cores"))
         options.cores = static_cast<std::size_t>(std::stoul(*value));
+    if (const auto value = option(args, "--time-dilation")) {
+        const auto dilation = std::stoul(*value);
+        if (dilation < 1U || dilation > 16U)
+            throw std::runtime_error { "--time-dilation must be 1..16" };
+        options.time_dilation = static_cast<std::uint32_t>(dilation);
+    }
     if (option(args, "--jit-cache-mib"))
         options.jit_cache_bytes = jit_code_cache_size(args);
     if (const auto value = option(args, "--jit-cache-budget-mib"))

@@ -28,7 +28,8 @@ enum class DeviceTimePolicy : std::uint8_t {
 // this class so their deterministic-time behavior remains fast and repeatable.
 class RealtimePacer {
 public:
-    explicit RealtimePacer(DeviceMonotonicTime initial_device_monotonic_time);
+    explicit RealtimePacer(DeviceMonotonicTime initial_device_monotonic_time,
+        std::uint32_t host_nanoseconds_per_device_nanosecond = 1);
 
     [[nodiscard]] DeviceMonotonicTime allowed_device_monotonic_time() const;
     [[nodiscard]] std::chrono::nanoseconds delay_until(
@@ -45,6 +46,7 @@ public:
 
 private:
     DeviceMonotonicTime initial_device_monotonic_time_ { };
+    std::uint32_t host_nanoseconds_per_device_nanosecond_ { 1 };
     std::chrono::steady_clock::time_point initial_host_time_;
 };
 

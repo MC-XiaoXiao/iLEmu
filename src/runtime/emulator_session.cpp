@@ -2437,7 +2437,8 @@ void EmulatorSession::run()
     DeadlineQueue<std::uint32_t, std::uint64_t> guest_deadlines;
     if (device_time_policy == DeviceTimePolicy::HostMappedInteractive) {
         realtime_pacer.emplace(
-            initial_runtime->kernel->current_absolute_time());
+            initial_runtime->kernel->current_absolute_time(),
+            options.time_dilation);
         initial_runtime->kernel->set_absolute_time_source(
             [pacer = *realtime_pacer] {
                 return pacer.allowed_device_monotonic_time();
@@ -2450,8 +2451,9 @@ void EmulatorSession::run()
             initial_runtime->kernel->set_wall_time(
                 static_cast<std::uint64_t>(host_wall_time));
         }
-        output.line("[clock] mode=virtual-rtc seed=host-once rate=realtime "
-                    "timezone=guest");
+        output.line("[clock] mode=virtual-rtc seed=host-once rate=1/" +
+                    std::to_string(options.time_dilation) +
+                    "-realtime timezone=guest");
     }
     // Interactive DeviceMonotonicTime is mapped to host steady time exactly
     // once. CPU execution accounting never advances this domain; after a slow

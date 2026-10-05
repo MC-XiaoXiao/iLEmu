@@ -14,8 +14,11 @@
 
 namespace ilemu {
 
-RealtimePacer::RealtimePacer(DeviceMonotonicTime initial_device_monotonic_time)
+RealtimePacer::RealtimePacer(DeviceMonotonicTime initial_device_monotonic_time,
+    std::uint32_t host_nanoseconds_per_device_nanosecond)
     : initial_device_monotonic_time_ { initial_device_monotonic_time }
+    , host_nanoseconds_per_device_nanosecond_ {
+          std::max<std::uint32_t>(host_nanoseconds_per_device_nanosecond, 1U) }
     , initial_host_time_ { std::chrono::steady_clock::now() }
 {
 }
@@ -30,7 +33,8 @@ DeviceMonotonicTime RealtimePacer::allowed_device_monotonic_time() const
     const auto elapsed_nanoseconds =
         std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
     const auto positive_elapsed =
-        static_cast<std::uint64_t>(elapsed_nanoseconds);
+        static_cast<std::uint64_t>(elapsed_nanoseconds) /
+        host_nanoseconds_per_device_nanosecond_;
     if (positive_elapsed > std::numeric_limits<DeviceMonotonicTime>::max() -
                                initial_device_monotonic_time_) {
         return std::numeric_limits<std::uint64_t>::max();
@@ -48,8 +52,11 @@ std::chrono::nanoseconds RealtimePacer::delay_until(
     const auto delay = device_monotonic_time - allowed;
     const auto maximum =
         static_cast<std::uint64_t>(std::chrono::nanoseconds::max().count());
+    if (delay > maximum / host_nanoseconds_per_device_nanosecond_)
+        return std::chrono::nanoseconds::max();
     return std::chrono::nanoseconds {
-        static_cast<std::chrono::nanoseconds::rep>(std::min(delay, maximum))
+        static_cast<std::chrono::nanoseconds::rep>(
+            delay * host_nanoseconds_per_device_nanosecond_)
     };
 }
 
@@ -61,10 +68,11 @@ std::chrono::steady_clock::time_point RealtimePacer::host_deadline_for(
     const auto delta = device_monotonic_time - initial_device_monotonic_time_;
     const auto maximum = static_cast<std::uint64_t>(
         std::chrono::steady_clock::duration::max().count());
-    if (delta >= maximum)
+    if (delta >= maximum / host_nanoseconds_per_device_nanosecond_)
         return std::chrono::steady_clock::time_point::max();
     return initial_host_time_ +
-           std::chrono::nanoseconds { static_cast<std::int64_t>(delta) };
+           std::chrono::nanoseconds { static_cast<std::int64_t>(
+               delta * host_nanoseconds_per_device_nanosecond_) };
 }
 
 std::chrono::nanoseconds RealtimePacer::limit_delay(
