@@ -42,6 +42,7 @@
 #endif
 
 #include "dynarmic_ir_artifact.hpp"
+#include "jit_backend_capabilities.hpp"
 #include "foundation/arm_unpredictable_instruction.hpp"
 #include "foundation/jit_artifact.hpp"
 #include "foundation/jit_code_cache_governor.hpp"
@@ -567,14 +568,7 @@ namespace {
 
     [[nodiscard]] constexpr bool portable_artifact_import_supported() noexcept
     {
-#if defined(__x86_64__) || defined(_M_X64)
-        return true;
-#else
-        // Dynarmic's ARM64 A32 emitter currently rejects Interpret terminals;
-        // keep portable IR as a publish-only diagnostic/cache format until that
-        // backend can validate and emit every imported terminal safely.
-        return false;
-#endif
+        return JitBackendCapabilities::portable_ir;
     }
 
 } // namespace
@@ -673,6 +667,8 @@ public:
     [[nodiscard]] ArtifactImportOutcome import_artifact(Dynarmic::A32::Jit& jit,
         std::uint64_t location_descriptor) const noexcept
     {
+        if constexpr (!JitBackendCapabilities::portable_ir)
+            return ArtifactImportOutcome::Unavailable;
         auto validated = validated_artifact_block(location_descriptor);
         if (!validated)
             return ArtifactImportOutcome::Unavailable;
@@ -712,6 +708,8 @@ public:
     [[nodiscard]] bool generate_portable_artifact(
         Dynarmic::A32::Jit& jit, std::uint64_t location_descriptor) noexcept
     {
+        if constexpr (!JitBackendCapabilities::portable_ir)
+            return false;
         if (!artifact_store_ || !jit_artifact_producer_fingerprint_available) {
             return false;
         }
@@ -2480,6 +2478,18 @@ public:
         }
     }
 
+    void request_local_cache_clear()
+    {
+        if (jit_)
+            jit_->ClearCache();
+    }
+
+    void request_local_cache_range(std::uint32_t address, std::size_t length)
+    {
+        if (jit_)
+            jit_->InvalidateCacheRange(address, length);
+    }
+
     void halt(Dynarmic::HaltReason reason)
     {
         if (jit_) {
@@ -2551,6 +2561,8 @@ public:
     PrecompileDisposition precompile_descriptor(std::uint64_t descriptor,
         JitPrecompileTarget target, bool profile_derived)
     {
+        if constexpr (!JitBackendCapabilities::precompile)
+            return PrecompileDisposition::Failed;
         const std::lock_guard execution_lock { execution_mutex_ };
         memory_.synchronize_shared_write_tracking();
         ensure_jit();
@@ -2879,6 +2891,8 @@ private:
 
     [[nodiscard]] bool preload_current_artifact()
     {
+        if constexpr (!JitBackendCapabilities::portable_ir)
+            return false;
         if (demand_artifact_attempt_generation_ !=
             std::numeric_limits<std::uint64_t>::max()) {
             ++demand_artifact_attempt_generation_;
@@ -2977,6 +2991,8 @@ private:
 
     void set_portable_demand_provider(bool enabled) noexcept
     {
+        if constexpr (!JitBackendCapabilities::portable_ir)
+            return;
         if (!jit_ || portable_demand_provider_installed_ == enabled)
             return;
         jit_->SetPortableIRDemandProvider(
@@ -3010,6 +3026,8 @@ private:
 
     void service_pending_shared_invalidation()
     {
+        if constexpr (!JitBackendCapabilities::shared_native_cache)
+            return;
         if (execution_context_->cache_invalidation_epoch() ==
             observed_invalidation_epoch_) {
             return;
@@ -3026,6 +3044,8 @@ private:
     void observe_shared_cache_state()
     {
         observe_shared_invalidation_epoch();
+        if constexpr (!JitBackendCapabilities::shared_native_cache)
+            return;
         const auto slab_generation =
             execution_context_->native_code_slab()->generation();
         // Publish the safe-boundary snapshot without taking the slab mutex
@@ -3217,6 +3237,13 @@ private:
         }
         const auto current = jit_code_cache_used(*jit_);
         const auto committed = logical_committed_code_bytes(current);
+        if constexpr (!JitBackendCapabilities::shared_native_cache) {
+            performance_counters().record_jit_executor_memory_usage(
+                execution_context_->context_id(), process_id_,
+                static_cast<std::uint32_t>(execution_slot_),
+                executor_local_memory_bytes());
+            return;
+        }
         if (!recorded_shared_memory_ ||
             recorded_shared_used_bytes_ != current ||
             recorded_shared_committed_bytes_ != committed) {
@@ -3274,6 +3301,8 @@ private:
 
     void record_dispatch_counters()
     {
+        if constexpr (!JitBackendCapabilities::dispatch_counters)
+            return;
         if (!jit_)
             return;
         const auto current = jit_->GetDispatchCounters();
@@ -3306,6 +3335,8 @@ private:
             jit_link_cell_count * sizeof(std::atomic<std::uint64_t>);
         if (!jit_)
             return link_cell_bytes;
+        if constexpr (!JitBackendCapabilities::shared_native_cache)
+            return link_cell_bytes + code_cache_size_;
         constexpr auto fast_dispatch_table_bytes =
             fast_dispatch_table_size * fast_dispatch_entry_bytes;
         // A32JitState includes the executor's RSB arrays.  The link cells are
@@ -3571,6 +3602,14 @@ public:
 
     [[nodiscard]] std::uint64_t code_cache_used()
     {
+        if constexpr (!JitBackendCapabilities::shared_native_cache) {
+            std::uint64_t total { };
+            for (auto& executor : executors_)
+                total += executor->code_cache_used();
+            for (auto& executor : precompile_executors_)
+                total += executor->code_cache_used();
+            return total;
+        }
         // All executors in this pool publish into one NativeCodeSlab.  Jit's
         // CodeCacheUsed therefore reports the same process-wide byte count
         // from every slot; summing it would multiply one allocation by the
@@ -3599,6 +3638,13 @@ public:
         if (code_cache_used() == 0U)
             return;
         static_cast<void>(execution_context_->request_cache_clear());
+        if constexpr (!JitBackendCapabilities::shared_native_cache) {
+            for (auto& executor : executors_)
+                executor->request_local_cache_clear();
+            for (auto& executor : precompile_executors_)
+                executor->request_local_cache_clear();
+            return;
+        }
         // CpuCluster cache clears are issued at a Guest-safe host boundary
         // (exec/debug image replacement) after prediction work is quiesced.
         // Resolve that explicit transition now so the replacement profile is
@@ -3621,6 +3667,12 @@ public:
             return;
         static_cast<void>(
             execution_context_->request_cache_range(address, length));
+        if constexpr (!JitBackendCapabilities::shared_native_cache) {
+            for (auto& executor : executors_)
+                executor->request_local_cache_range(address, length);
+            for (auto& executor : precompile_executors_)
+                executor->request_local_cache_range(address, length);
+        }
         if (native_preimport_tracker_) {
             native_preimport_tracker_->invalidate_range(address, length);
         }

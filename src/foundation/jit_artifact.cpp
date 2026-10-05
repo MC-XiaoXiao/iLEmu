@@ -29,6 +29,7 @@
 #include <dynarmic/interface/A32/a32.h>
 
 #include "dynarmic_ir_artifact.hpp"
+#include "jit_backend_capabilities.hpp"
 
 namespace ilemu {
 namespace {
@@ -5441,8 +5442,9 @@ bool JitArtifactStore::save_full(const std::filesystem::path& path,
 
 ExecutionContext::ExecutionContext()
     : context_id_ { next_context_id.fetch_add(1, std::memory_order_relaxed) }
-    , native_code_slab_ { std::make_shared<Dynarmic::A32::NativeCodeSlab>() }
 {
+    if constexpr (JitBackendCapabilities::shared_native_cache)
+        native_code_slab_ = std::make_shared<Dynarmic::A32::NativeCodeSlab>();
 }
 
 ExecutionContext::ExecutionContext(std::uint32_t process_id)
@@ -5506,7 +5508,8 @@ ExecutionContext::native_code_slab() const noexcept
 std::uint64_t ExecutionContext::request_cache_clear()
 {
     const std::lock_guard lock { invalidation_mutex_ };
-    native_code_slab_->request_cache_clear();
+    if constexpr (JitBackendCapabilities::shared_native_cache)
+        native_code_slab_->request_cache_clear();
     auto clear_epoch =
         cache_clear_epoch_.fetch_add(1U, std::memory_order_acq_rel) + 1U;
     if (clear_epoch == 0U) {
@@ -5527,7 +5530,8 @@ std::uint64_t ExecutionContext::request_cache_range(
     if (length == 0U)
         return cache_invalidation_epoch();
     const std::lock_guard lock { invalidation_mutex_ };
-    native_code_slab_->request_cache_range(address, length);
+    if constexpr (JitBackendCapabilities::shared_native_cache)
+        native_code_slab_->request_cache_range(address, length);
     auto epoch =
         cache_invalidation_epoch_.fetch_add(1U, std::memory_order_acq_rel) + 1U;
     if (epoch == 0U) {

@@ -1837,7 +1837,7 @@ void FilePageCache::evict_locked()
         lru_.pop_front();
         const auto page = pages_.find(key);
         if (page != pages_.end()) {
-            if (!page->second.page.unique())
+            if (page->second.page.use_count() != 1)
                 evicted_pages_.insert_or_assign(key, page->second.page);
             pages_.erase(page);
         }

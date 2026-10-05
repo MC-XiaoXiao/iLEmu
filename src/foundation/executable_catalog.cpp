@@ -1432,7 +1432,7 @@ ExecutableCatalogKind ExecutableCatalog::classify(
 
 void ExecutableCatalog::detach_storage()
 {
-    if (!storage_.unique())
+    if (storage_.use_count() != 1)
         storage_ = std::make_shared<Storage>(*storage_);
 }
 
