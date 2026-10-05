@@ -26,12 +26,19 @@ if(TARGET PkgConfig::SDL2)
     endif()
 endif()
 
-add_executable(ilemu main.cpp desktop_host.cpp abi_command.cpp routes_command.cpp mig_command.cpp)
-target_link_libraries(ilemu PRIVATE
+add_library(ilemu_app_commands STATIC
+    command_line.cpp abi_command.cpp routes_command.cpp mig_command.cpp)
+add_library(iLEmu::app_commands ALIAS ilemu_app_commands)
+ilemu_configure_module(ilemu_app_commands)
+target_link_libraries(ilemu_app_commands PUBLIC
     iLEmu::syscall_routes
     iLEmu::host
-    iLEmu::app_control
-    iLEmu::app_sdl
     iLEmu::runtime)
+
+add_executable(ilemu main.cpp desktop_host.cpp)
+target_link_libraries(ilemu PRIVATE
+    iLEmu::app_commands
+    iLEmu::app_control
+    iLEmu::app_sdl)
 set_target_properties(ilemu PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
