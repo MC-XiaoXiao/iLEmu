@@ -78,6 +78,16 @@ enum class MobileFramebufferSelector : std::uint32_t {
     SetTVOutSignalType = 16,
     IsMainDisplay = 18,
     GetDigitalOutState = 25,
+    // Four-scalar callback registration used by the display user client.
+    EnableNotifications = 72,
+};
+
+// The four-scalar notification registration passes callback, refcon, kind,
+// and reserved. The disconnected external controller registers HotPlug; the
+// built-in panel registers VSync through the same selector.
+enum class MobileFramebufferNotificationKind : std::uint32_t {
+    HotPlug = 0,
+    VSync = 5,
 };
 
 constexpr bool is_mobile_framebuffer_vsync_selector(std::uint32_t selector)

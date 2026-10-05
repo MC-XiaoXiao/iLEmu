@@ -274,8 +274,33 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             { geometry.width, geometry.height } };
     }
 
-    if (iokit_abi::is_mobile_framebuffer_vsync_selector(selector)) {
-        if (scalar_input.size() != 2U || !inband_input.empty()) {
+    const bool notification_registration =
+        selector == static_cast<std::uint32_t>(
+                        iokit_abi::MobileFramebufferSelector::EnableNotifications);
+    if (notification_registration) {
+        if (scalar_input.size() != 4U || !inband_input.empty() ||
+            scalar_output_capacity != 0U || scalar_input[3] != 0U) {
+            return MethodResult { iokit_abi::bad_argument, { } };
+        }
+        if (scalar_input[2] == static_cast<std::uint32_t>(
+                                   iokit_abi::MobileFramebufferNotificationKind::
+                                       HotPlug)) {
+            return MethodResult {
+                state.iokit_display_vsync.contains(connection_object)
+                    ? iokit_abi::success
+                    : iokit_abi::bad_argument,
+                { } };
+        }
+        if (scalar_input[2] != static_cast<std::uint32_t>(
+                                   iokit_abi::MobileFramebufferNotificationKind::
+                                       VSync)) {
+            return MethodResult { iokit_abi::unsupported, { } };
+        }
+    }
+    if (notification_registration ||
+        iokit_abi::is_mobile_framebuffer_vsync_selector(selector)) {
+        if ((!notification_registration && scalar_input.size() != 2U) ||
+            !inband_input.empty()) {
             return MethodResult { iokit_abi::bad_argument, { } };
         }
         if (external)
