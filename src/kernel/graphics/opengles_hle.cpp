@@ -651,24 +651,8 @@ std::optional<GlesRasterVertex> OpenGlesHle::read_vertex(UserlandHleCall& call,
 std::optional<std::uint32_t> OpenGlesHle::core_surface_identifier(
     UserlandHleCall& call, std::uint32_t surface) const
 {
-    if (surface == 0) {
-        return std::nullopt;
-    }
-    const auto& profile = surface_transport::loaded_client_abi(call);
-    if (surface > std::numeric_limits<std::uint32_t>::max() -
-                      profile.public_client_pointer_offset)
-        return std::nullopt;
-    const auto client =
-        call.memory().read32(surface + profile.public_client_pointer_offset);
-    if (!client || *client == 0 ||
-        *client > std::numeric_limits<std::uint32_t>::max() -
-                      profile.identifier_offset)
-        return std::nullopt;
-    const auto identifier =
-        call.memory().read32(*client + profile.identifier_offset);
-    if (identifier && *identifier != 0 && surface_store_->find(*identifier))
-        return *identifier;
-    return std::nullopt;
+    return surface_transport::public_surface_identifier(
+        call, *surface_store_, surface);
 }
 
 OpenGlesHle::SurfaceState* OpenGlesHle::current_pixmap_surface(

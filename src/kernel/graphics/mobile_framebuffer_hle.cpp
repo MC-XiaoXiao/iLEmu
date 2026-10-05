@@ -923,27 +923,9 @@ void MobileFramebufferHle::set_layer(UserlandHleCall& call)
         call.set_return(iokit_abi::success);
         return;
     }
-    // CoreSurface-era firmware stores a CoreSurfaceClientBuffer here. When the
-    // IOSurface symbol family is loaded, the genuine CoreSurface CFRuntime
-    // wrapper forwards to an IOSurfaceClient instead. Select by that exported
-    // transport capability, not by firmware build or calling application.
-    const auto& transport = surface_transport::loaded_client_abi(call);
-    if (surface > std::numeric_limits<std::uint32_t>::max() -
-                      transport.public_client_pointer_offset) {
-        call.set_return(iokit_abi::bad_argument);
-        return;
-    }
-    const auto client =
-        call.memory().read32(surface + transport.public_client_pointer_offset);
-    if (!client || *client == 0 ||
-        *client > std::numeric_limits<std::uint32_t>::max() -
-                      transport.identifier_offset) {
-        call.set_return(iokit_abi::bad_argument);
-        return;
-    }
-    const auto identifier =
-        call.memory().read32(*client + transport.identifier_offset);
-    if (!identifier || *identifier == 0 || !surface_store_->find(*identifier)) {
+    const auto identifier = surface_transport::public_surface_identifier(
+        call, *surface_store_, surface);
+    if (!identifier) {
         call.set_return(iokit_abi::bad_argument);
         return;
     }

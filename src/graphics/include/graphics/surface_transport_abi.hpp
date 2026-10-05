@@ -29,7 +29,7 @@ struct ClientAbi {
     std::string_view name;
     std::string_view image_suffix;
     std::string_view symbol_prefix;
-    std::uint32_t public_client_pointer_offset;
+    std::array<std::uint32_t, 2> public_client_pointer_offsets;
     std::uint32_t client_structure_size;
     std::uint32_t reference_count_offset;
     std::uint32_t identifier_offset;
@@ -49,7 +49,7 @@ inline constexpr ClientAbi core_surface_client_buffer {
     .name = "core-surface-client-buffer",
     .image_suffix = "/CoreSurface.framework/CoreSurface",
     .symbol_prefix = "_CoreSurfaceClientBuffer",
-    .public_client_pointer_offset = 8,
+    .public_client_pointer_offsets = { 8, 0 },
     .client_structure_size = 432,
     .reference_count_offset = 0,
     .identifier_offset = 4,
@@ -75,7 +75,9 @@ inline constexpr ClientAbi io_surface_client {
     .name = "io-surface-client",
     .image_suffix = "/IOSurface.framework/IOSurface",
     .symbol_prefix = "_IOSurfaceClient",
-    .public_client_pointer_offset = 8,
+    // Native CFRuntime wrappers can place the client directly after isa or
+    // after the full runtime header. Validate either against SurfaceStore.
+    .public_client_pointer_offsets = { 8, 4 },
     .client_structure_size = 1216,
     .reference_count_offset = 0,
     .identifier_offset = 12,
