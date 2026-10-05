@@ -1753,10 +1753,10 @@ bool GuestPageBacking::flush_file()
 bool FilePageCache::Key::operator<(const Key& other) const
 {
     return std::tie(path, generation, generation_revision, content_identity,
-               file_offset, byte_count, immutable_snapshot, shared_vnode) <
+               file_offset, byte_count, immutable_snapshot, shared_vnode, derived_immutable) <
            std::tie(other.path, other.generation, other.generation_revision,
                other.content_identity, other.file_offset, other.byte_count,
-               other.immutable_snapshot, other.shared_vnode);
+               other.immutable_snapshot, other.shared_vnode, other.derived_immutable);
 }
 
 void FilePageCache::touch_locked(std::map<Key, PageRecord>::iterator iterator)

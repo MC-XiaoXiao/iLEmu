@@ -16,6 +16,7 @@ add_library(ilemu_foundation STATIC
     address_space_instructions.cpp
     memory/protection.cpp
     memory/shared_mapping.cpp
+    memory/immutable_page.cpp
     address_space_parallel.cpp
     application_display.cpp
     arm_cpu_model.cpp

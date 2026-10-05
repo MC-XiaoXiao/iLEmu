@@ -140,7 +140,7 @@ namespace {
         // a malformed terminating delta, as the scalar decoder does. Flush
         // before reading the next extra chain so overlapping inputs retain
         // their ordering, while COW and VM accounting happen once per chain.
-        return memory.copy_in(page_address, *page) ? error : bad_address;
+        return memory.copy_in_immutable_page(page_address, *page) ? error : bad_address;
     }
 } // namespace
 

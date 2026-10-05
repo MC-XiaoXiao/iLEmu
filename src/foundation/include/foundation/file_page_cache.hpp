@@ -497,6 +497,11 @@ public:
         std::shared_ptr<const ImmutableFileView> immutable_file_view = { },
         std::shared_ptr<const GuestFileBacking> reusable_mapping = { });
 
+    // Content-addressed loader output shares the existing bounded page LRU.
+    // Consumers must map these anonymous backings copy-on-write.
+    [[nodiscard]] std::shared_ptr<GuestPageBacking> intern_immutable_page(
+        std::span<const std::byte> bytes);
+
     // Creates or reuses one page for an already validated mapping. The page
     // remains byte-lazy; GuestPageBacking::materialize performs clustered I/O.
     [[nodiscard]] std::shared_ptr<GuestPageBacking> load_page(
@@ -543,6 +548,7 @@ private:
         std::uint32_t byte_count { };
         bool immutable_snapshot { };
         bool shared_vnode { };
+        bool derived_immutable { };
 
         [[nodiscard]] bool operator<(const Key& other) const;
     };

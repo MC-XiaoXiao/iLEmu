@@ -231,6 +231,11 @@ public:
         std::span<const std::byte> data;
     };
     bool copy_in(std::uint32_t address, std::span<const std::byte> data);
+    // Replace one loader-produced page with an interned immutable backing.
+    // Private writes still detach through normal COW; shared mappings retain
+    // ordinary copy-in semantics. As with copy_in, callers invalidate code.
+    bool copy_in_immutable_page(std::uint32_t address,
+        std::span<const std::byte> data);
     // Applies a preflighted set of writes under one address-space lock. File
     // backed pages are detached at most once per touched page and executable
     // generation/JIT write bookkeeping is coalesced across the batch.
