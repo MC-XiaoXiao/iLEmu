@@ -47,10 +47,10 @@ namespace {
         call.set_return(0U);
     }
 
-    void power_modulo(UserlandHleCall& call)
+    void power_modulo_arguments(UserlandHleCall& call, std::size_t first)
     {
-        const auto context = call.argument(0);
-        const auto destination = call.argument(1);
+        const auto context = call.argument(first);
+        const auto destination = call.argument(first + 1U);
         const auto reduction = call.symbol_address("_cczp_mod");
         const auto profile = reduction ? PrimeFieldLayout::resolve(
                                              call.memory(), context, *reduction)
@@ -65,8 +65,9 @@ namespace {
         }
         const auto size =
             static_cast<std::size_t>(*units) * sizeof(std::uint32_t);
-        const auto base = call.memory().read_bytes(call.argument(2), size);
-        const auto exponent = call.memory().read_bytes(call.argument(3), size);
+        const auto base = call.memory().read_bytes(call.argument(first + 2U), size);
+        const auto exponent =
+            call.memory().read_bytes(call.argument(first + 3U), size);
         const auto modulus =
             call.memory().read_bytes(context + profile->modulus_offset, size);
         if (!base || !exponent || !modulus ||
@@ -85,6 +86,18 @@ namespace {
         call.set_return(0U);
     }
 
+    void power_modulo(UserlandHleCall& call)
+    {
+        power_modulo_arguments(call, 0U);
+    }
+
+    void power_modulo_workspace(UserlandHleCall& call)
+    {
+        // The workspace form prepends a scratch allocator, whose cursor is
+        // restored before return. Host arithmetic owns its temporary storage.
+        power_modulo_arguments(call, 1U);
+    }
+
 } // namespace
 
 void register_core_crypto_hle(UserlandHleRegistry& registry)
@@ -98,7 +111,13 @@ void register_core_crypto_hle(UserlandHleRegistry& registry)
         registry.register_function(image, "_cczp_power_ssma", power_modulo,
             UserlandHleRegistry::SymbolLookup::ImageAndCacheLocals,
             UserlandHleRegistry::EntryPatch::InstructionFetch);
-        registry.register_function(image, "_ccn_gcd", greatest_common_divisor);
+        registry.register_function(image, "_cczp_power_ssma_ws",
+            power_modulo_workspace,
+            UserlandHleRegistry::SymbolLookup::ImageAndCacheLocals,
+            UserlandHleRegistry::EntryPatch::InstructionFetch);
+        registry.register_function(image, "_ccn_gcd", greatest_common_divisor,
+            UserlandHleRegistry::SymbolLookup::ImageAndCacheLocals,
+            UserlandHleRegistry::EntryPatch::InstructionFetch);
     }
 }
 
