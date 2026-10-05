@@ -1720,6 +1720,12 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         std::uint32_t entry_name = 0;
         {
             std::lock_guard mach_lock { shared_state.mach_mutex };
+            // Path lookup must see the same lazily published providers as
+            // class matching, including before the first matching request.
+            std::deque<std::uint32_t> providers;
+            populate_matching_services_locked(shared_state,
+                std::as_bytes(std::span { path.data(), path.size() }),
+                providers);
             const auto service =
                 std::find_if(shared_state.iokit_services.begin(),
                     shared_state.iokit_services.end(),
