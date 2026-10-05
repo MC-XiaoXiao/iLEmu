@@ -9,7 +9,9 @@ add_library(ilemu_foundation_memory STATIC
 add_library(iLEmu::foundation_memory ALIAS ilemu_foundation_memory)
 ilemu_configure_module(ilemu_foundation_memory)
 
-find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+if(NOT TARGET OpenSSL::Crypto)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+endif()
 
 add_library(ilemu_foundation STATIC
     address_space.cpp
@@ -67,8 +69,8 @@ target_link_libraries(ilemu_foundation PUBLIC
     dynarmic Threads::Threads iLEmu::xnu_adapter
     iLEmu::foundation_memory
     PRIVATE OpenSSL::Crypto)
-if(TARGET PkgConfig::PLIST)
-    target_link_libraries(ilemu_foundation PRIVATE PkgConfig::PLIST)
+if(TARGET iLEmu::plist)
+    target_link_libraries(ilemu_foundation PRIVATE iLEmu::plist)
     target_compile_definitions(ilemu_foundation PRIVATE
         ILEMU_HAS_LIBPLIST=1)
 endif()

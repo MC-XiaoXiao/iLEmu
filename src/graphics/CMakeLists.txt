@@ -27,7 +27,9 @@ add_library(ilemu_graphics STATIC
     scanout_composition.cpp
     surface_store.cpp)
 target_sources(ilemu_graphics PRIVATE touch_replay.cpp)
-find_package(PNG REQUIRED)
+if(NOT TARGET PNG::PNG)
+    find_package(PNG REQUIRED)
+endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/boot-placeholder.png")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/boot-placeholder.png"

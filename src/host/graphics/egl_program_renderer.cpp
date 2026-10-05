@@ -25,8 +25,14 @@ namespace {
         EGLConfig config { };
         EglDisplayOwner()
         {
+#if defined(__ANDROID__)
+            // Android's default display supports the same pbuffer context;
+            // the Mesa surfaceless platform is a desktop-only extension.
+            display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+#else
             display = eglGetPlatformDisplay(
                 EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr);
+#endif
             if (display == EGL_NO_DISPLAY ||
                 !eglInitialize(display, nullptr, nullptr))
                 throw std::runtime_error {

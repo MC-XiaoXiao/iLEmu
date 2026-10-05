@@ -2,7 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+if(NOT TARGET OpenSSL::Crypto)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+endif()
 
 add_library(ilemu_crypto STATIC
     core_crypto_hle.cpp

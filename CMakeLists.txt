@@ -6,6 +6,10 @@ cmake_minimum_required(VERSION 3.24)
 
 project(iLEmu VERSION 0.1.0 LANGUAGES C CXX)
 
+if(ANDROID)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 option(ILEMU_ENABLE_IPO
     "Optimize across translation units in Release and RelWithDebInfo builds" ON)
 if(ILEMU_ENABLE_IPO)
@@ -32,14 +36,22 @@ if(ILEMU_ENABLE_VULKAN)
 endif()
 option(ILEMU_ENABLE_DYNARMIC_TEST_EMIT_FAILURE
     "Compile Dynarmic portable-emit fault injection for tests" OFF)
-find_package(PkgConfig QUIET)
-if(ILEMU_ENABLE_SDL2 AND PkgConfig_FOUND)
-    pkg_check_modules(SDL2 QUIET IMPORTED_TARGET sdl2)
-endif()
-if(PkgConfig_FOUND)
-    pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET
-        libavformat libavcodec libavutil libswresample)
-    pkg_check_modules(PLIST QUIET IMPORTED_TARGET libplist-2.0)
+if(NOT ANDROID)
+    find_package(PkgConfig QUIET)
+    if(ILEMU_ENABLE_SDL2 AND PkgConfig_FOUND)
+        pkg_check_modules(SDL2 QUIET IMPORTED_TARGET sdl2)
+        if(TARGET PkgConfig::SDL2)
+            add_library(SDL2::SDL2 ALIAS PkgConfig::SDL2)
+        endif()
+    endif()
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET
+            libavformat libavcodec libavutil libswresample)
+        pkg_check_modules(PLIST QUIET IMPORTED_TARGET libplist-2.0)
+        if(TARGET PkgConfig::PLIST)
+            add_library(iLEmu::plist ALIAS PkgConfig::PLIST)
+        endif()
+    endif()
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -190,7 +202,9 @@ target_link_libraries(ilemu_core INTERFACE
 
 add_subdirectory(src/runtime)
 add_subdirectory(app)
-add_subdirectory(tools/guest)
+if(NOT ANDROID)
+    add_subdirectory(tools/guest)
+endif()
 
 if(BUILD_TESTING)
     if(EXISTS "${ILEMU_TESTS_DIR}/CMakeLists.txt")

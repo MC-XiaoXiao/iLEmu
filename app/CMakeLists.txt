@@ -17,8 +17,8 @@ ilemu_configure_module(ilemu_app_sdl)
 target_link_libraries(ilemu_app_sdl PUBLIC
     iLEmu::graphics
     iLEmu::media)
-if(TARGET PkgConfig::SDL2)
-    target_link_libraries(ilemu_app_sdl PRIVATE PkgConfig::SDL2)
+if(ILEMU_ENABLE_SDL2 AND TARGET SDL2::SDL2)
+    target_link_libraries(ilemu_app_sdl PRIVATE SDL2::SDL2)
     target_compile_definitions(ilemu_app_sdl PRIVATE ILEMU_HAS_SDL2=1)
     if(ILEMU_ENABLE_VULKAN AND Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
         target_link_libraries(ilemu_app_sdl PRIVATE Vulkan::Headers)
@@ -35,6 +35,7 @@ target_link_libraries(ilemu_app_commands PUBLIC
     iLEmu::host
     iLEmu::runtime)
 
+if(NOT ANDROID)
 add_executable(ilemu main.cpp desktop_host.cpp)
 target_link_libraries(ilemu PRIVATE
     iLEmu::app_commands
@@ -42,3 +43,4 @@ target_link_libraries(ilemu PRIVATE
     iLEmu::app_sdl)
 set_target_properties(ilemu PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
+endif()

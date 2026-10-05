@@ -308,8 +308,8 @@ add_library(iLEmu::kernel_iokit_display ALIAS
 ilemu_configure_module(ilemu_kernel_iokit_display)
 target_link_libraries(ilemu_kernel_iokit_display PRIVATE
     iLEmu::foundation)
-if(TARGET PkgConfig::PLIST)
-    target_link_libraries(ilemu_kernel_iokit_display PRIVATE PkgConfig::PLIST)
+if(TARGET iLEmu::plist)
+    target_link_libraries(ilemu_kernel_iokit_display PRIVATE iLEmu::plist)
     target_compile_definitions(ilemu_kernel_iokit_display PRIVATE ILEMU_HAS_LIBPLIST=1)
 endif()
 
