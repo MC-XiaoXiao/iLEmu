@@ -561,6 +561,38 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
         names(fragment_declarations, "uniform", "sampler2D");
     const auto samplers_rect =
         names(fragment_declarations, "uniform", "sampler2DRect");
+    const auto assignments = local_vec4_assignments(fragment_tokens);
+    std::size_t alpha_sample_index { };
+    for (const auto& sample : assignments) {
+        const auto begin = sample.expression_begin;
+        if (sample.expression_end - begin != 6U ||
+            (fragment_tokens[begin] != "texture2D" &&
+                fragment_tokens[begin] != "texture2DRect") ||
+            fragment_tokens[begin + 1U] != "(" ||
+            fragment_tokens[begin + 3U] != "," ||
+            fragment_tokens[begin + 5U] != ")")
+            continue;
+        const auto sampler = fragment_tokens[begin + 2U];
+        // Restrict this lowering to one sampled value used only by the alpha
+        // constructor. Other reads or mutations need the original channels.
+        if (std::count(fragment_tokens.begin(), fragment_tokens.end(),
+                sample.name) != 2 ||
+            std::count(
+                fragment_tokens.begin(), fragment_tokens.end(), sampler) != 2)
+            continue;
+        const std::array<std::string_view, 6> alpha_constructor { "vec4", "(",
+            sample.name, ".", "a", ")" };
+        for (const auto& converted : assignments) {
+            if (converted.expression_end - converted.expression_begin !=
+                    alpha_constructor.size() ||
+                !contains_sequence(fragment_tokens, converted.expression_begin,
+                    converted.expression_end, alpha_constructor))
+                continue;
+            if (alpha_sample_index < result.alpha_sample_samplers.size())
+                result.alpha_sample_samplers[alpha_sample_index++] = sampler;
+            break;
+        }
+    }
     std::size_t projected_index { };
     for (std::size_t index = 0;
         index + 5U < fragment_tokens.size() &&

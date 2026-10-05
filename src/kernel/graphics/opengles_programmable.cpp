@@ -284,6 +284,41 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
             result.fragment_operation_texture_unit = unit;
         }
     }
+    for (const auto& name : program->interface_profile.alpha_sample_samplers) {
+        if (name.empty())
+            continue;
+        const auto* sampler = programs_.uniform(context.current_program, name);
+        const auto unit = sampler && sampler->integer ? *sampler->integer : 0;
+        if (unit < 0 || static_cast<std::size_t>(unit) >=
+                            result.texture_environments.size())
+            continue;
+        auto& environment =
+            result.texture_environments[static_cast<std::size_t>(unit)];
+        if (environment.mode == gles_abi::modulate) {
+            set_previous_times_texture_alpha(environment, false);
+        } else if (environment.mode == gles_abi::replace) {
+            environment.mode = gles_abi::combine;
+            environment.combine_rgb = gles_abi::replace;
+            environment.combine_alpha = gles_abi::replace;
+            environment.rgb_sources[0] = gles_abi::texture_source;
+            environment.alpha_sources[0] = gles_abi::texture_source;
+            environment.rgb_operands[0] = gles_abi::source_alpha;
+            environment.alpha_operands[0] = gles_abi::source_alpha;
+        } else if (environment.mode == gles_abi::combine) {
+            for (std::size_t operand = 0;
+                operand < environment.rgb_sources.size(); ++operand) {
+                if (environment.rgb_sources[operand] !=
+                    gles_abi::texture_source)
+                    continue;
+                if (environment.rgb_operands[operand] == gles_abi::source_color)
+                    environment.rgb_operands[operand] = gles_abi::source_alpha;
+                else if (environment.rgb_operands[operand] ==
+                         gles_abi::one_minus_source_color)
+                    environment.rgb_operands[operand] =
+                        gles_abi::one_minus_source_alpha;
+            }
+        }
+    }
     if (program->interface_profile.framebuffer_fetch) {
         const auto free_unit = std::find(result.sampled_textures.begin(),
             result.sampled_textures.end(), false);

@@ -81,6 +81,8 @@ struct GlesProgramInterfaceProfile {
         matrix_texture_inputs;
     std::array<ProjectedTextureInput, gles_abi::texture_unit_count>
         projected_texture_inputs;
+    // Samplers whose sole use replicates sample alpha into all four channels.
+    std::array<std::string, gles_abi::texture_unit_count> alpha_sample_samplers;
     GlesFragmentOperation fragment_operation {
         GlesFragmentOperation::TextureEnvironment
     };
