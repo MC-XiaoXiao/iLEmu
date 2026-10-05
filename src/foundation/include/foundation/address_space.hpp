@@ -235,6 +235,11 @@ public:
     // backed pages are detached at most once per touched page and executable
     // generation/JIT write bookkeeping is coalesced across the batch.
     bool copy_in_batch(std::span<const CopyInOperation> operations);
+    // Replace instruction fetches while retaining the data-visible bytes.
+    // Only private read-only executable pages are eligible. Overlays follow
+    // the mapping through fork and are dropped when that page is written.
+    // As with copy_in_batch, the caller invalidates affected CPU code ranges.
+    bool overlay_instructions(std::span<const CopyInOperation> operations);
     // Checked kernel-to-user transfer. Retains the copied prefix on EFAULT;
     // loaders continue to use the permission-bypassing copy_in APIs.
     [[nodiscard]] bool copy_to_user(std::uint32_t address,
@@ -458,6 +463,7 @@ private:
         // is set only when fork/file/private-object sharing can require a
         // detach.
         mutable bool copy_on_write_possible { };
+        std::shared_ptr<const std::array<std::byte, page_size>> instructions;
     };
     struct FileMapping {
         std::uint64_t end { };

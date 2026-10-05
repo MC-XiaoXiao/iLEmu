@@ -955,9 +955,8 @@ UserlandHleRegistry::UserlandHleRegistry(AddressSpace& memory, Output& output)
 {
 }
 
-void UserlandHleRegistry::register_function(
-    std::string image_suffix, std::string symbol, Handler handler,
-    SymbolLookup lookup)
+void UserlandHleRegistry::register_function(std::string image_suffix,
+    std::string symbol, Handler handler, SymbolLookup lookup, EntryPatch patch)
 {
     if (!handler || registrations_.size() >= userland_hle_call_mask) {
         throw std::runtime_error {
@@ -977,7 +976,7 @@ void UserlandHleRegistry::register_function(
     registrations_.push_back(
         Registration { static_cast<std::uint16_t>(registrations_.size() + 1U),
             std::move(image_suffix), std::move(symbol), false, std::nullopt,
-            std::nullopt, false, std::move(handler), lookup });
+            std::nullopt, false, std::move(handler), lookup, patch });
     ++registration_generation_;
 }
 
@@ -1513,6 +1512,9 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
         plan_key += rule_key_text(rule_key(registration));
         plan_key += registration.lookup == SymbolLookup::ImageAndCacheLocals
                         ? "locals1|" : "locals0|";
+        plan_key += registration.patch == EntryPatch::InstructionFetch
+                        ? "fetch1|"
+                        : "fetch0|";
         plan_key.push_back('\n');
     }
     for (const auto& dependency : guest_functions_) {
@@ -2214,11 +2216,23 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
             hle_expected_patches.fetch_add(
                 pending_patches.size(), std::memory_order_relaxed);
         std::vector<AddressSpace::CopyInOperation> writes;
+        std::vector<AddressSpace::CopyInOperation> instruction_writes;
         writes.reserve(pending_patches.size());
         std::vector<Cpu::CacheInvalidationRange> invalidations;
         invalidations.reserve(pending_patches.size());
         for (const auto& pending : pending_patches) {
-            writes.push_back(AddressSpace::CopyInOperation { pending.address,
+            const auto existing = installed_calls_.find(pending.address);
+            const auto* installed =
+                pending.installed_call               ? &*pending.installed_call
+                : existing != installed_calls_.end() ? &existing->second
+                                                     : nullptr;
+            const auto* registration =
+                installed ? find_registration(installed->id) : nullptr;
+            auto& target = registration && registration->patch ==
+                                               EntryPatch::InstructionFetch
+                               ? instruction_writes
+                               : writes;
+            target.push_back(AddressSpace::CopyInOperation { pending.address,
                 std::span<const std::byte> { pending.instruction } });
             invalidations.push_back(Cpu::CacheInvalidationRange {
                 pending.address, pending.instruction.size() });
@@ -2249,7 +2263,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
                 coalesced_invalidations.push_back(range);
             }
         }
-        if (!memory_.copy_in_batch(writes)) {
+        if (!memory_.copy_in_batch(writes) ||
+            !memory_.overlay_instructions(instruction_writes)) {
             if (collect_stats)
                 hle_batch_failures.fetch_add(1, std::memory_order_relaxed);
             // The batch preflight is the atomic boundary for MAP_PRIVATE/COW
@@ -2558,10 +2573,17 @@ bool UserlandHleRegistry::dispatch(
         return true;
     }
     if (call.resume_original_) {
-        if (installed == installed_calls_.end() ||
-            !memory_.copy_in(entry, installed->second.original)) {
+        if (installed == installed_calls_.end())
             return false;
-        }
+        const AddressSpace::CopyInOperation original {
+            entry, installed->second.original
+        };
+        const bool restored =
+            registration->patch == EntryPatch::InstructionFetch
+                ? memory_.overlay_instructions({ &original, 1U })
+                : memory_.copy_in(entry, installed->second.original);
+        if (!restored)
+            return false;
         const bool original_thumb = installed->second.thumb;
         cpu.invalidate_cache_range(entry, installed->second.original.size());
         installed_calls_.erase(installed);

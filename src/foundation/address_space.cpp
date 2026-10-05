@@ -1113,6 +1113,8 @@ void AddressSpace::share_pages_locked(std::uint32_t address, std::uint64_t end,
         }
         page.file_cached = false;
         page.shared_writable = true;
+        if (page.instructions)
+            mark_written_locked(static_cast<std::uint32_t>(base), page_size);
         page.copy_on_write_possible = false;
         if (tracks_write_locked(static_cast<std::uint32_t>(base), page_size)) {
             // A private page has no other virtual alias whose direct JIT write
@@ -1204,7 +1206,7 @@ bool AddressSpace::map_page_ranges(std::uint32_t address, std::uint32_t size,
             has_permission(permissions, MemoryPermission::Write);
         auto [page, inserted] = pages_->emplace(base,
             Page { backings[index], 0, false, shared_writable,
-                file_writeback_capable, file_writeback, !shared_writable });
+                file_writeback_capable, file_writeback, !shared_writable, { } });
         if (inserted)
             record_resident_page_locked();
         if (shared_writable && tracks_write_locked(base, page_size)) {
@@ -1695,6 +1697,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
         return;
     }
     if (page == nullptr || !page->backing || page->file_cached ||
+        page->instructions ||
         (page->copy_on_write_possible && !page->shared_writable)) {
         return;
     }
@@ -1867,6 +1870,14 @@ void AddressSpace::mark_written_batch_locked(
         if (range.size == 0U)
             continue;
         const auto end = static_cast<std::uint64_t>(range.address) + range.size;
+        for (std::uint64_t base = page_base(range.address); base < end;
+            base += page_size) {
+            auto* page = find_page_locked(static_cast<std::uint32_t>(base));
+            if (page && page->instructions) {
+                page->instructions.reset();
+                refresh_jit_page_locked(static_cast<std::uint32_t>(base));
+            }
+        }
         if (vm_map_.accessible(range.address, end, MemoryPermission::Execute)) {
             executable_write = true;
         }
@@ -1933,10 +1944,13 @@ std::optional<T> AddressSpace::read_integer(
                 const auto* page = find_page_locked(address);
                 if (page != nullptr && page->backing) {
                     T value = 0;
+                    const auto& bytes = access == MemoryPermission::Execute &&
+                                                page->instructions
+                                            ? *page->instructions
+                                            : page->backing->bytes;
                     for (std::size_t index = 0; index < sizeof(T); ++index) {
                         value |= static_cast<T>(
-                            std::to_integer<T>(
-                                page->backing->bytes[offset + index])
+                            std::to_integer<T>(bytes[offset + index])
                             << (index * 8U));
                     }
                     const_cast<AddressSpace*>(this)->grant_parallel_page_locked(
@@ -1951,8 +1965,12 @@ std::optional<T> AddressSpace::read_integer(
                     const auto current =
                         address + static_cast<std::uint32_t>(i);
                     const auto* page = find_page_locked(current);
+                    const auto byte_offset = current & (page_size - 1U);
                     const auto byte = std::to_integer<T>(
-                        read_byte_locked(page, current & (page_size - 1U)));
+                        access == MemoryPermission::Execute && page &&
+                                page->instructions
+                            ? (*page->instructions)[byte_offset]
+                            : read_byte_locked(page, byte_offset));
                     value |= static_cast<T>(byte << (i * 8U));
                 }
                 return value;
@@ -2238,7 +2256,8 @@ bool AddressSpace::is_read_only_executable(
                 return false;
             continue;
         }
-        if ((!page->file_cached && !page->backing->file_backed()) ||
+        if (page->instructions ||
+            (!page->file_cached && !page->backing->file_backed()) ||
             page->shared_writable ||
             page->backing->shared_write_tracking_enabled()) {
             return false;
@@ -2281,7 +2300,8 @@ AddressSpace::executable_backing_identity(
         // mutable even when this particular virtual mapping is currently RX.
         const auto* page = find_page_locked(page_address);
         if (page != nullptr &&
-            (!page->backing || !page->file_cached || page->shared_writable ||
+            (page->instructions || !page->backing || !page->file_cached ||
+                page->shared_writable ||
                 page->backing->shared_write_tracking_enabled())) {
             return std::nullopt;
         }
