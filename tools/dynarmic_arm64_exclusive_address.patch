@@ -1,0 +1,16 @@
+diff --git a/src/dynarmic/backend/arm64/exclusive_monitor.cpp b/src/dynarmic/backend/arm64/exclusive_monitor.cpp
+index 5e49cc4..db7a2dc 100644
+--- a/src/dynarmic/backend/arm64/exclusive_monitor.cpp
++++ b/src/dynarmic/backend/arm64/exclusive_monitor.cpp
+@@ -30,9 +30,9 @@ void ExclusiveMonitor::Unlock() {
+ }
+ 
+ bool ExclusiveMonitor::CheckAndClear(size_t processor_id, VAddr address) {
+-    const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
+-
+     Lock();
++    const VAddr masked_address =
++        ResolveAddress(processor_id, address) & RESERVATION_GRANULE_MASK;
+     if (exclusive_addresses[processor_id] != masked_address) {
+         Unlock();
+         return false;
