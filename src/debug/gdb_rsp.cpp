@@ -21,6 +21,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -508,9 +509,11 @@ GdbPacketResult GdbRspProtocol::handle(
     return { "", std::nullopt, false };
 }
 
-GdbRemoteServer::GdbRemoteServer(std::uint16_t port, Output& output)
+GdbRemoteServer::GdbRemoteServer(
+    std::uint16_t port, Output& output, std::function<bool()> stop_requested)
     : port_ { port }
     , output_ { output }
+    , stop_requested_ { std::move(stop_requested) }
 {
 }
 
@@ -521,7 +524,7 @@ GdbRemoteServer::~GdbRemoteServer()
         ::close(listen_fd_);
 }
 
-void GdbRemoteServer::listen_and_accept()
+bool GdbRemoteServer::listen_and_accept()
 {
     listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
@@ -543,13 +546,34 @@ void GdbRemoteServer::listen_and_accept()
         throw std::system_error { errno, std::generic_category(),
             "GDB listen" };
     }
-    output_.line("[gdb] listening on 127.0.0.1:" + std::to_string(port_));
+    output_.marker("[gdb] listening on 127.0.0.1:" + std::to_string(port_));
+    if (!wait_for_io(listen_fd_, POLLIN))
+        return false;
     client_fd_ = ::accept(listen_fd_, nullptr, nullptr);
     if (client_fd_ < 0) {
         throw std::system_error { errno, std::generic_category(),
             "GDB accept" };
     }
     output_.line("[gdb] debugger connected");
+    return true;
+}
+
+bool GdbRemoteServer::cancelled() const
+{
+    return stop_requested_ && stop_requested_();
+}
+
+bool GdbRemoteServer::wait_for_io(int fd, short events)
+{
+    while (!cancelled()) {
+        pollfd descriptor { fd, events, 0 };
+        const auto result = ::poll(&descriptor, 1, 100);
+        if (result > 0)
+            return (descriptor.revents & events) != 0;
+        if (result < 0 && errno != EINTR)
+            return false;
+    }
+    return false;
 }
 
 std::optional<char> GdbRemoteServer::read_byte(bool blocking)
@@ -560,8 +584,10 @@ std::optional<char> GdbRemoteServer::read_byte(bool blocking)
         return value;
     }
     char value { };
-    const auto flags = blocking ? 0 : MSG_DONTWAIT;
+    constexpr auto flags = MSG_DONTWAIT;
     while (true) {
+        if (blocking && !wait_for_io(client_fd_, POLLIN))
+            return std::nullopt;
         const auto count = ::recv(client_fd_, &value, 1, flags);
         if (count == 1)
             return value;
@@ -569,7 +595,9 @@ std::optional<char> GdbRemoteServer::read_byte(bool blocking)
             return std::nullopt;
         if (errno == EINTR)
             continue;
-        if (!blocking && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (blocking)
+                continue;
             return std::nullopt;
         }
         return std::nullopt;
@@ -621,13 +649,16 @@ bool GdbRemoteServer::send_all(std::string_view bytes)
 {
     std::size_t sent = 0;
     while (sent < bytes.size()) {
-        const auto count = ::send(
-            client_fd_, bytes.data() + sent, bytes.size() - sent, MSG_NOSIGNAL);
+        if (!wait_for_io(client_fd_, POLLOUT))
+            return false;
+        const auto count = ::send(client_fd_, bytes.data() + sent,
+            bytes.size() - sent, MSG_NOSIGNAL | MSG_DONTWAIT);
         if (count > 0) {
             sent += static_cast<std::size_t>(count);
             continue;
         }
-        if (count < 0 && errno == EINTR)
+        if (count < 0 &&
+            (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
             continue;
         return false;
     }
@@ -655,15 +686,21 @@ GdbResumeRequest GdbRemoteServer::command_loop(GdbTarget& target,
 {
     protocol_.set_stop(stopped_thread, signal);
     if (announce_stop && !send_packet(protocol_.stop_reply())) {
+        if (cancelled())
+            return { GdbResumeKind::Kill, std::nullopt };
         throw std::runtime_error { "failed to send GDB stop notification" };
     }
     while (true) {
         const auto packet = read_packet();
         if (!packet) {
+            if (cancelled())
+                return { GdbResumeKind::Kill, std::nullopt };
             throw std::runtime_error { "GDB client disconnected" };
         }
         auto result = protocol_.handle(*packet, target);
         if (result.response && !send_packet(*result.response)) {
+            if (cancelled())
+                return { GdbResumeKind::Kill, std::nullopt };
             throw std::runtime_error { "failed to send GDB response" };
         }
         if (result.enable_no_ack)

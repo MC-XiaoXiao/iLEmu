@@ -11,6 +11,7 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -103,12 +104,13 @@ private:
 
 class GdbRemoteServer {
 public:
-    GdbRemoteServer(std::uint16_t port, Output& output);
+    GdbRemoteServer(std::uint16_t port, Output& output,
+        std::function<bool()> stop_requested = { });
     ~GdbRemoteServer();
     GdbRemoteServer(const GdbRemoteServer&) = delete;
     GdbRemoteServer& operator=(const GdbRemoteServer&) = delete;
 
-    void listen_and_accept();
+    bool listen_and_accept();
     [[nodiscard]] GdbResumeRequest command_loop(GdbTarget& target,
         GdbThreadId stopped_thread, std::uint8_t signal = gdb_signal::trap,
         bool announce_stop = false);
@@ -116,6 +118,8 @@ public:
     void detach();
 
 private:
+    [[nodiscard]] bool cancelled() const;
+    bool wait_for_io(int fd, short events);
     [[nodiscard]] std::optional<char> read_byte(bool blocking);
     [[nodiscard]] std::optional<std::string> read_packet();
     bool send_all(std::string_view bytes);
@@ -124,6 +128,7 @@ private:
 
     std::uint16_t port_ { };
     Output& output_;
+    std::function<bool()> stop_requested_;
     int listen_fd_ { -1 };
     int client_fd_ { -1 };
     bool no_ack_ { };

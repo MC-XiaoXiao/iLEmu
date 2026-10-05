@@ -119,6 +119,8 @@ void EmulatorSession::run()
     const auto& options = options_;
     auto& host = host_;
     auto& output = output_;
+    if (host.stop_requested())
+        return;
     if (options.rootfs.empty())
         throw std::invalid_argument { "boot requires a firmware rootfs" };
     const auto darwin_configuration = resolve_darwin_configuration(
@@ -147,6 +149,8 @@ void EmulatorSession::run()
     SessionCatalog session_catalog { rootfs,
         arm_architecture_for_model(device.processor.model), catalog_manifest,
         output };
+    if (host.stop_requested())
+        return;
     const auto gles_backend = options.gles_backend;
     configure_gles_pipeline_cache(host_cache / "vulkan-pipeline-cache.bin");
     configure_gles_backend(gles_backend);
@@ -393,6 +397,19 @@ void EmulatorSession::run()
     std::unique_ptr<FrameFilePresenter> frame_file_presenter;
     std::unique_ptr<TouchReplay> touch_replay;
     std::unique_ptr<ControlChannel> live_control;
+    std::vector<LiveControlCommand> pending_control_commands;
+    bool control_stop_requested = false;
+    const auto debug_stop_requested = [&]() {
+        if (live_control) {
+            for (auto& command : live_control->poll()) {
+                if (command.kind == LiveControlCommandKind::Quit)
+                    control_stop_requested = true;
+                else
+                    pending_control_commands.push_back(std::move(command));
+            }
+        }
+        return control_stop_requested || host.stop_requested();
+    };
     LiveButtonScheduler live_button_scheduler;
     LiveTouchScheduler live_touch_scheduler;
     struct TransitionAttribution {
@@ -2096,6 +2113,8 @@ void EmulatorSession::run()
     };
     configure_runtime(*initial_runtime);
 
+    if (host.stop_requested())
+        return;
     auto& initial_cpu = initial_runtime->cpus->cpu(0);
     initial_runtime->allocated[0] = true;
     static_cast<void>(scheduler.register_thread(
@@ -2124,8 +2143,12 @@ void EmulatorSession::run()
     std::unique_ptr<GdbRemoteServer> gdb_server;
     std::optional<GdbResumeRequest> debug_request;
     if (gdb_port) {
-        gdb_server = std::make_unique<GdbRemoteServer>(*gdb_port, output);
-        gdb_server->listen_and_accept();
+        gdb_server = std::make_unique<GdbRemoteServer>(
+            *gdb_port, output, debug_stop_requested);
+        if (!gdb_server->listen_and_accept()) {
+            output.marker("[gdb] connection wait stopped");
+            return;
+        }
         const GdbThreadId initial_thread { 1, 1 };
         debug_target.set_current_thread(initial_thread);
         auto request = gdb_server->command_loop(debug_target, initial_thread);
@@ -2709,7 +2732,8 @@ void EmulatorSession::run()
     SessionDiagnostics diagnostics { *initial_runtime, runtimes, scheduler,
         display_presenter.get(), output };
     while ((!bounded_execution || remaining_ticks != 0) &&
-           !initial_runtime->kernel->process().exited && !hard_stop) {
+           !initial_runtime->kernel->process().exited && !hard_stop &&
+           !host.stop_requested()) {
         synchronize_device_time_to_host();
         synchronize_scheduler_time();
         observe_transition_stability();
@@ -2760,7 +2784,11 @@ void EmulatorSession::run()
             pending_button_input_completion.reset();
         }
         if (live_control) {
-            for (const auto& command : live_control->poll()) {
+            auto commands = std::move(pending_control_commands);
+            pending_control_commands.clear();
+            for (auto& command : live_control->poll())
+                commands.push_back(std::move(command));
+            for (const auto& command : commands) {
                 switch (command.kind) {
                 case LiveControlCommandKind::Touch:
                     note_interactive_host_activity();

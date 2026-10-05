@@ -32,6 +32,7 @@ struct SessionAudio {
 class SessionHost {
 public:
     virtual ~SessionHost() = default;
+    [[nodiscard]] virtual bool stop_requested() const { return false; }
     virtual void initialize_graphics() = 0;
     [[nodiscard]] virtual std::unique_ptr<DisplayPresenter> create_display(
         const DeviceModel& device) = 0;
