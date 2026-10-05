@@ -186,6 +186,9 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
     add("_IOMobileFramebufferSwapSetLayer",
         [this](UserlandHleCall& call) { set_layer(call); });
     add("_IOMobileFramebufferSwapWait", success);
+    // SwapEnd completes synchronously, so the timed wait observes the same
+    // completed transaction as the untimed entry point.
+    add("_IOMobileFramebufferSwapWaitWithTimeout", success);
     add("_IOMobileFramebufferCreateStatistics",
         [](UserlandHleCall& call) { call.set_return(0); });
 }
