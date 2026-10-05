@@ -12,6 +12,7 @@
 
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
+#include "shared_region_slide_v2.hpp"
 
 #include "../support.hpp"
 
@@ -985,8 +986,19 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     }
 
     if (fixed_mapping_contract) {
-        const auto slide_error = apply_slide_info_v1(memory_, *mappings,
-            content_slide, slide_info_address, slide_info_size);
+        const auto version = memory_.read32(slide_info_address);
+        const auto slide_mapping = std::find_if(mappings->begin(), mappings->end(),
+            [](const Mapping& mapping) {
+                return (mapping.initial_protection & vm_protection_slide) != 0U;
+            });
+        const auto slide_error = version && *version == 2U &&
+                slide_mapping != mappings->end()
+            ? apply_shared_region_slide_v2(memory_,
+                  slide_mapping->address + *address_slide,
+                  slide_mapping->size, slide_mapping->initial_protection,
+                  content_slide, slide_info_address, slide_info_size)
+            : apply_slide_info_v1(memory_, *mappings, content_slide,
+                  slide_info_address, slide_info_size);
         if (slide_error != 0) {
             rollback(memory_, applied);
             bsd_error(cpu, slide_error);

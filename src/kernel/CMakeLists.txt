@@ -215,7 +215,8 @@ target_link_libraries(ilemu_kernel_bsd_security PRIVATE
     iLEmu::foundation)
 
 add_library(ilemu_kernel_bsd_vm_shared_region STATIC
-    bsd/vm/shared_region.cpp)
+    bsd/vm/shared_region.cpp
+    bsd/vm/shared_region_slide_v2.cpp)
 add_library(iLEmu::kernel_bsd_vm_shared_region ALIAS
     ilemu_kernel_bsd_vm_shared_region)
 ilemu_configure_module(ilemu_kernel_bsd_vm_shared_region)
