@@ -23,16 +23,17 @@
 #include "foundation/address_space.hpp"
 #include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
-#include "graphics/core_surface_abi.hpp"
 #include "foundation/cpu.hpp"
+#include "foundation/output.hpp"
+#include "foundation/scene_coordinator.hpp"
+#include "foundation/userland_hle.hpp"
+#include "graphics/core_surface_abi.hpp"
 #include "graphics/display.hpp"
+#include "graphics/presentation_tracker.hpp"
+#include "graphics/surface_store.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
-#include "foundation/output.hpp"
-#include "graphics/presentation_tracker.hpp"
-#include "foundation/scene_coordinator.hpp"
-#include "graphics/surface_store.hpp"
-#include "foundation/userland_hle.hpp"
+#include "surface_plane_reader.hpp"
 #include "surface_transport_hle.hpp"
 
 namespace ilemu {
@@ -145,6 +146,7 @@ CoreSurfaceHle::CoreSurfaceHle(UserlandHleRegistry& registry,
         };
     register_property_symbols(surface_transport::core_surface_client_buffer);
     register_property_symbols(surface_transport::io_surface_client);
+    SurfacePlaneReader::register_symbols(registry);
     registry.register_guest_function(
         std::string { core_foundation_image }, "_CFDictionaryGetValue");
     registry.register_guest_function(
@@ -288,7 +290,18 @@ void CoreSurfaceHle::read_next_create_property(
 {
     const auto& profile = surface_transport::for_kind(request->transport);
     if (request->property_index >= profile.create_property_symbols.size()) {
-        finish_create_from_dictionary(call, request);
+        if (request->transport ==
+            surface_transport::Kind::CoreSurfaceClientBuffer) {
+            finish_create_from_dictionary(call, request);
+        } else {
+            SurfacePlaneReader::read(call, request->dictionary,
+                request->number_output,
+                [this, request](UserlandHleCall& completed,
+                    std::vector<SurfacePlane> planes) {
+                    request->planes = std::move(planes);
+                    finish_create_from_dictionary(completed, request);
+                });
+        }
         return;
     }
     const auto property_symbol =
@@ -399,6 +412,21 @@ void CoreSurfaceHle::finish_create_from_dictionary(
         return;
     }
 
+    for (const auto& plane : request->planes) {
+        if (!plane.fits(usable_size)) {
+            call.output().write(
+                "[coresurface-hle] invalid plane layout offset=" +
+                std::to_string(plane.offset) +
+                " width=" + std::to_string(plane.width) +
+                " height=" + std::to_string(plane.height) +
+                " pitch=" + std::to_string(plane.bytes_per_row) +
+                " size=" + std::to_string(plane.size) +
+                " element=" + std::to_string(plane.bytes_per_element) + "\n");
+            call.set_return(0);
+            return;
+        }
+    }
+
     auto owns_memory = address == 0;
     auto storage = base;
     if (owns_memory) {
@@ -410,7 +438,7 @@ void CoreSurfaceHle::finish_create_from_dictionary(
         storage == 0 ? 0
                      : create_buffer(call, storage, usable_size, surface_width,
                            surface_height, bytes_per_row, format, owns_memory,
-                           0, true, request->transport));
+                           0, true, request->transport, request->planes));
 }
 
 std::uint32_t CoreSurfaceHle::create_default_buffer(UserlandHleCall& call,
@@ -465,7 +493,8 @@ std::uint32_t CoreSurfaceHle::lookup_buffer(UserlandHleCall& call,
         if (const auto local = surfaces_->find(requested_id)) {
             created = create_buffer(call, local->base, local->allocation_size,
                 local->width, local->height, local->bytes_per_row,
-                local->pixel_format, false, requested_id, false, transport);
+                local->pixel_format, false, requested_id, false, transport,
+                local->planes);
         } else if (const auto shared =
                        surfaces_->shared_mapping(requested_id)) {
             const auto mapping_address =
@@ -478,7 +507,7 @@ std::uint32_t CoreSurfaceHle::lookup_buffer(UserlandHleCall& call,
                         imported->allocation_size, imported->width,
                         imported->height, imported->bytes_per_row,
                         imported->pixel_format, false, requested_id, false,
-                        transport);
+                        transport, imported->planes);
                     if (auto* buffer = find(created)) {
                         buffer->imported_mapping_base = mapping_address;
                         buffer->imported_mapping_size = shared->mapping_size;
@@ -536,7 +565,8 @@ std::uint32_t CoreSurfaceHle::create_buffer(UserlandHleCall& call,
     std::uint32_t base, std::uint32_t size, std::uint32_t width,
     std::uint32_t height, std::uint32_t bytes_per_row,
     std::uint32_t pixel_format, bool owns_memory, std::uint32_t requested_id,
-    bool publish, surface_transport::Kind transport)
+    bool publish, surface_transport::Kind transport,
+    std::vector<SurfacePlane> planes)
 {
     const auto& profile = surface_transport::for_kind(transport);
     const auto client = acquire_client_buffer(call, profile);
@@ -554,7 +584,8 @@ std::uint32_t CoreSurfaceHle::create_buffer(UserlandHleCall& call,
         { profile.bytes_per_row_offset, bytes_per_row },
         { profile.data_offset_offset, 0 },
         { profile.pixel_format_offset, pixel_format },
-        { profile.plane_count_offset, 0 },
+        { profile.plane_count_offset,
+            static_cast<std::uint32_t>(planes.size()) },
     };
     for (const auto& [offset, value] : fields) {
         if (!call.memory().write32(client + offset, value)) {
@@ -563,7 +594,7 @@ std::uint32_t CoreSurfaceHle::create_buffer(UserlandHleCall& call,
         }
     }
     auto backing = SurfaceStore::Backing { id, base, size, width, height,
-        bytes_per_row, pixel_format, { } };
+        bytes_per_row, pixel_format, { }, planes };
     backing.provenance.producer_process_id = call.process_id();
     // Only the legacy continuously scanned display surface needs per-store
     // generations. Ordinary CoreSurface/IOSurface buffers publish completed
@@ -615,15 +646,15 @@ std::uint32_t CoreSurfaceHle::create_buffer(UserlandHleCall& call,
             }
         }
     }
-    buffers_[client] =
-        Buffer { client, id, base, size, width, height, bytes_per_row,
-            pixel_format, 1, 1, transport, owns_memory, 0, 0, 0, { } };
+    buffers_[client] = Buffer { client, id, base, size, width, height,
+        bytes_per_row, pixel_format, 1, 1, transport, owns_memory, 0, 0, 0, { },
+        std::move(planes) };
     clients_by_id_[{ id, transport }] = client;
     call.output().write(
         "[coresurface-hle] create pid=" + std::to_string(call.process_id()) +
         " id=" + std::to_string(id) + " client=" + std::to_string(client) +
         " base=" + std::to_string(base) + " size=" + std::to_string(size) +
-        "\n");
+        " planes=" + std::to_string(buffers_[client].planes.size()) + "\n");
     return client;
 }
 
@@ -976,6 +1007,39 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
             recycle_client_buffer(client, buffer_abi);
         }
         call.set_return(0);
+    } else if (operation == "GetPlaneCount") {
+        call.set_return(static_cast<std::uint32_t>(buffer->planes.size()));
+    } else if (!buffer->planes.empty() &&
+               (operation == "GetWidthOfPlane" ||
+                   operation == "GetHeightOfPlane" ||
+                   operation == "GetBytesPerRowOfPlane" ||
+                   operation == "GetBaseAddressOfPlane" ||
+                   operation == "GetOffsetOfPlane" ||
+                   operation == "GetBytesPerElementOfPlane" ||
+                   operation == "GetElementWidthOfPlane" ||
+                   operation == "GetElementHeightOfPlane")) {
+        const auto index = call.argument(1);
+        if (index >= buffer->planes.size()) {
+            call.set_return(0);
+            return;
+        }
+        const auto& plane = buffer->planes[index];
+        if (operation == "GetWidthOfPlane")
+            call.set_return(plane.width);
+        else if (operation == "GetHeightOfPlane")
+            call.set_return(plane.height);
+        else if (operation == "GetBytesPerRowOfPlane")
+            call.set_return(plane.bytes_per_row);
+        else if (operation == "GetBaseAddressOfPlane")
+            call.set_return(buffer->base + plane.offset);
+        else if (operation == "GetOffsetOfPlane")
+            call.set_return(plane.offset);
+        else if (operation == "GetBytesPerElementOfPlane")
+            call.set_return(plane.bytes_per_element);
+        else if (operation == "GetElementWidthOfPlane")
+            call.set_return(plane.element_width);
+        else
+            call.set_return(plane.element_height);
     } else if (operation == "GetID") {
         call.set_return(buffer->id);
     } else if (operation == "GetAllocSize") {
@@ -999,8 +1063,6 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
         call.set_return(buffer->base);
     } else if (operation == "GetBaseAddressOfPlane") {
         call.set_return(call.argument(1) == 0 ? buffer->base : 0);
-    } else if (operation == "GetPlaneCount") {
-        call.set_return(0);
     } else if (operation == "GetSeed" || operation == "GetSeedOfPlane") {
         call.set_return(buffer->seed);
     } else if (operation == "GetOffset" || operation == "GetOffsetOfPlane") {

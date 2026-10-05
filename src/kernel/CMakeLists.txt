@@ -54,6 +54,7 @@ ilemu_configure_module(ilemu_kernel)
 
 add_library(ilemu_kernel_graphics STATIC
     graphics/core_surface_hle.cpp
+    graphics/surface_plane_reader.cpp
     graphics/guest_drawable_geometry.cpp
     graphics/guest_eagl_window.cpp
     graphics/layerkit_hle.cpp

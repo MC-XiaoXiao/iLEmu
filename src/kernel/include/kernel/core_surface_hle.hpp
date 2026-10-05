@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "graphics/surface_transport_abi.hpp"
+#include "graphics/surface_plane.hpp"
 
 namespace ilemu {
 
@@ -83,11 +84,13 @@ private:
         std::uint32_t imported_mapping_size { };
         std::uint64_t imported_mapping_lease_token { };
         std::vector<std::uint32_t> lock_options;
+        std::vector<SurfacePlane> planes;
     };
     struct CreateRequest {
         std::uint32_t dictionary { };
         std::array<std::uint32_t, 7> properties { };
         std::size_t property_index { };
+        std::vector<SurfacePlane> planes;
         std::uint32_t number_output { };
         surface_transport::Kind transport {
             surface_transport::Kind::CoreSurfaceClientBuffer
@@ -120,7 +123,8 @@ private:
         std::uint32_t pixel_format, bool owns_memory,
         std::uint32_t requested_id = 0, bool publish = true,
         surface_transport::Kind transport =
-            surface_transport::Kind::CoreSurfaceClientBuffer);
+            surface_transport::Kind::CoreSurfaceClientBuffer,
+        std::vector<SurfacePlane> planes = { });
     [[nodiscard]] std::uint32_t acquire_client_buffer(
         UserlandHleCall& call, const surface_transport::ClientAbi& profile);
     void recycle_client_buffer(

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "foundation/file_page_cache.hpp"
+#include "graphics/surface_plane.hpp"
 
 namespace ilemu {
 
@@ -152,6 +153,7 @@ public:
         std::uint32_t bytes_per_row { };
         std::uint32_t pixel_format { };
         Provenance provenance;
+        std::vector<SurfacePlane> planes;
     };
 
     struct SharedMapping {
