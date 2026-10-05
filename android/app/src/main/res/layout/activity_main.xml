@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:padding="20dp">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="@string/app_name" android:textSize="28sp" android:textStyle="bold" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="@string/rootfs_label" android:layout_marginTop="16dp" />
+    <TextView android:id="@+id/rootfs_path" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:textIsSelectable="true" android:textSize="12sp" />
+    <EditText android:id="@+id/device" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:hint="@string/device_hint"
+        android:inputType="textVisiblePassword" android:singleLine="true" android:importantForAutofill="no" />
+    <CheckBox android:id="@+id/headless" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:text="@string/headless" />
+    <Button android:id="@+id/start" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:text="@string/start" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content">
+        <Button android:id="@+id/smoke" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/smoke" />
+        <Button android:id="@+id/refresh" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:text="@string/refresh" />
+    </LinearLayout>
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <TextView android:id="@+id/log" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:fontFamily="monospace" android:textSize="12sp" android:textIsSelectable="true" />
+    </ScrollView>
+</LinearLayout>
