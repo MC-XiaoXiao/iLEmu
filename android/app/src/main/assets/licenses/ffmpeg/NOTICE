@@ -1,0 +1,7 @@
+FFmpeg 8.0.3
+Copyright (c) the FFmpeg developers.
+Licensed under LGPL version 2.1 or later; see COPYING.LGPLv2.1.
+Unmodified upstream source: https://ffmpeg.org/releases/ffmpeg-8.0.3.tar.xz
+SHA256: 6136812ea6d4e68bdba27e33c2a94382711cdf4f8602ffef056ff792bd6f9818
+NDK build configuration: android/cmake/ffmpeg.cmake
+FFmpeg is dynamically linked; GPL and nonfree components are disabled.

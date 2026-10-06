@@ -13,6 +13,7 @@
 #include "app/sdl_audio_sink.hpp"
 #include "app/sdl_display.hpp"
 #include "foundation/device_model.hpp"
+#include "host/ffmpeg_audio_decoder.hpp"
 #include "host/native_gles.hpp"
 #include "host/resource_usage.hpp"
 
@@ -67,6 +68,10 @@ SessionAudio AndroidHost::create_audio()
     SessionAudio audio;
     audio.sink = std::make_shared<SdlAudioSink>();
     audio.backend_name = "sdl";
+    if (FfmpegAudioDecoder::available()) {
+        audio.decoder = std::make_shared<FfmpegAudioDecoder>();
+        audio.decoder_name = "ffmpeg";
+    }
     return audio;
 }
 

@@ -11,6 +11,7 @@ find_package(Perl REQUIRED)
 get_filename_component(_android_tools "${CMAKE_C_COMPILER}" DIRECTORY)
 set(_android_prefix "${CMAKE_BINARY_DIR}/dependencies/install")
 file(MAKE_DIRECTORY "${_android_prefix}/include")
+include("${CMAKE_CURRENT_LIST_DIR}/ffmpeg.cmake")
 
 ExternalProject_Add(android_openssl
     URL https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz
