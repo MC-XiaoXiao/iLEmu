@@ -13,7 +13,6 @@
 #include <sstream>
 #include <system_error>
 
-#include <dynarmic/interface/A32/disassembler.h>
 
 #include "foundation/output.hpp"
 #include "graphics/display_presenter.hpp"
@@ -264,8 +263,14 @@ void SessionDiagnostics::stopped(std::uint32_t stopped_pid,
         stopped_runtime->cpus->cpu(stopped_cpu).registers();
     if (const auto instruction = stopped_runtime->memory->read32(
             stopped_registers[15], MemoryPermission::Execute)) {
-        message << " insn=0x" << std::hex << *instruction << "("
-                << Dynarmic::A32::DisassembleArm(*instruction) << ")"
+        // A stop can land in Thumb code or on an invalid instruction. The
+        // execution disassembler asserts on some invalid register encodings;
+        // diagnostics must remain safe even when the guest is already faulty.
+        message << " insn=0x" << std::hex << *instruction
+                << " isa="
+                << ((stopped_runtime->cpus->cpu(stopped_cpu).cpsr() & 0x20U)
+                        ? "thumb"
+                        : "arm")
                 << " lr=0x" << stopped_registers[14] << std::dec;
     }
     if (stopped_result.fault) {
