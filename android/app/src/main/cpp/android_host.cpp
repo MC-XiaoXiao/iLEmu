@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #include "android_host.hpp"
+#include "android_sensors.hpp"
 
 #include <cerrno>
 #include <fcntl.h>
@@ -46,6 +47,8 @@ AndroidHost::~AndroidHost()
 }
 
 bool AndroidHost::stop_requested() const { return stop_.load(); }
+
+std::shared_ptr<SensorInput> AndroidHost::sensors() { return android_sensors(); }
 
 void AndroidHost::initialize_graphics() { register_native_gles_renderer(); }
 

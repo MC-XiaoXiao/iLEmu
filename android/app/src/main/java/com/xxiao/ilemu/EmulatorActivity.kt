@@ -16,6 +16,7 @@ import java.io.File
 import org.libsdl.app.SDLActivity
 
 class EmulatorActivity : SDLActivity() {
+    private var hostSensors: HostSensors? = null
     override fun getLibraries(): Array<String> = arrayOf("SDL2", "ilemu")
 
     override fun getArguments(): Array<String> {
@@ -26,6 +27,9 @@ class EmulatorActivity : SDLActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (mBrokenLibraries) return
+        if (intent.getStringArrayExtra("arguments")?.firstOrNull() == "boot") {
+            hostSensors = HostSensors(this).also { it.start() }
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(
                 OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback)
@@ -63,6 +67,7 @@ class EmulatorActivity : SDLActivity() {
     }
 
     override fun onPause() {
+        hostSensors?.stop()
         if (!mBrokenLibraries) sendCommand("quit")
         super.onPause()
     }
@@ -81,6 +86,7 @@ class EmulatorActivity : SDLActivity() {
     }
 
     override fun onDestroy() {
+        hostSensors?.stop()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !mBrokenLibraries) {
             onBackInvokedDispatcher.unregisterOnBackInvokedCallback(backCallback)
         }

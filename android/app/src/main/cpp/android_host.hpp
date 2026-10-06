@@ -23,6 +23,7 @@ public:
         const DeviceModel&) override;
     std::unique_ptr<ControlChannel> create_control(const DeviceModel&) override;
     SessionAudio create_audio() override;
+    std::shared_ptr<SensorInput> sensors() override;
     HostMemorySnapshot memory_snapshot() const override;
     HostMemoryBudgetSnapshot memory_budget_snapshot() const override;
 

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #include "android_host.hpp"
+#include "android_sensors.hpp"
 #include "app/command_line.hpp"
 
 #include <SDL.h>
@@ -38,6 +39,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_xxiao_ilemu_NativeBridge_prepare(
     if (running.load())
         return JNI_FALSE;
     stop_requested.store(false);
+    ilemu::android_sensors()->reset();
     return JNI_TRUE;
 }
 

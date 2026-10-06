@@ -1,3 +1,4 @@
 # SDL resolves these Java names and callbacks from native code.
 -keep class org.libsdl.app.** { *; }
 -keep class com.xxiao.ilemu.NativeBridge { *; }
+-keep class com.xxiao.ilemu.HostSensors { *; }

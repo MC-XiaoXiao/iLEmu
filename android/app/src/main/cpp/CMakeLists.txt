@@ -26,7 +26,7 @@ add_subdirectory("${ILEMU_REPOSITORY_ROOT}" "${CMAKE_BINARY_DIR}/core" EXCLUDE_F
 target_compile_definitions(dynarmic PUBLIC
     _LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION)
 
-add_library(ilemu SHARED android_main.cpp android_host.cpp)
+add_library(ilemu SHARED android_main.cpp android_host.cpp android_sensors.cpp)
 target_link_libraries(ilemu PRIVATE
     iLEmu::app_commands iLEmu::app_control iLEmu::app_sdl
     SDL2::SDL2 android log)

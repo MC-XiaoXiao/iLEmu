@@ -1,9 +1,12 @@
 package com.xxiao.ilemu
 
 import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.xxiao.ilemu.databinding.ActivityMainBinding
@@ -13,9 +16,16 @@ import org.json.JSONArray
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
+    private var pendingArguments: Array<String>? = null
+    private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        val arguments = pendingArguments
+        pendingArguments = null
+        if (arguments != null) launchSession(arguments)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingArguments = savedInstanceState?.getStringArray("pendingArguments")
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         val padding = (20 * resources.displayMetrics.density).toInt()
@@ -71,6 +81,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchSession(arguments: Array<String>) {
+        val preferences = getPreferences(MODE_PRIVATE)
+        if (arguments.firstOrNull() == "boot" &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            !preferences.getBoolean("locationPermissionRequested", false)) {
+            // Ask before SDL starts: Android pauses the foreground Activity
+            // for permission dialogs, and pausing SDL intentionally ends it.
+            pendingArguments = arguments
+            preferences.edit().putBoolean("locationPermissionRequested", true).apply()
+            locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            return
+        }
         try {
             if (!NativeBridge.prepareSession()) {
                 Toast.makeText(this, R.string.session_stopping, Toast.LENGTH_SHORT).show()
@@ -100,5 +121,10 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (error: Exception) { "$name: ${error.message}" }
         }.joinToString("\n\n").ifEmpty { getString(R.string.no_log) }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingArguments?.let { outState.putStringArray("pendingArguments", it) }
+        super.onSaveInstanceState(outState)
     }
 }
