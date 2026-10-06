@@ -1,0 +1,4 @@
+<resources>
+    <color name="ringer_silent">#E53935</color>
+    <color name="ringer_ring">#43A047</color>
+</resources>

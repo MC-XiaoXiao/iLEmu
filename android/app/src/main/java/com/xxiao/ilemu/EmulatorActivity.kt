@@ -34,17 +34,23 @@ class EmulatorActivity : SDLActivity() {
         val height = (56 * resources.displayMetrics.density).toInt()
         val controls = LinearLayout(this).apply {
             id = View.generateViewId()
+            orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setBackgroundColor(0xff202124.toInt())
         }
-        listOf(R.string.home to "home", R.string.unlock to "unlock", R.string.stop to "quit").forEach { (label, command) ->
-            controls.addView(Button(this).apply {
+        controls.addView(AudioControls(this, ::sendCommand), LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, (48 * resources.displayMetrics.density).toInt()))
+        val buttons = LinearLayout(this)
+        listOf(R.string.home to "home", R.string.lock to "lock", R.string.stop to "quit").forEach { (label, command) ->
+            buttons.addView(Button(this).apply {
                 setText(label)
                 setOnClickListener { sendCommand(command) }
             }, LinearLayout.LayoutParams(0, height, 1f))
         }
+        controls.addView(buttons, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, height))
         val container = mLayout as RelativeLayout
-        container.addView(controls, RelativeLayout.LayoutParams(RelativeLayout.LayoutParams.MATCH_PARENT, height).apply {
+        container.addView(controls, RelativeLayout.LayoutParams(RelativeLayout.LayoutParams.MATCH_PARENT, RelativeLayout.LayoutParams.WRAP_CONTENT).apply {
             addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
         })
         mSurface.layoutParams = RelativeLayout.LayoutParams(RelativeLayout.LayoutParams.MATCH_PARENT, RelativeLayout.LayoutParams.MATCH_PARENT).apply {
@@ -52,8 +58,8 @@ class EmulatorActivity : SDLActivity() {
         }
     }
 
-    private fun sendCommand(command: String) {
-        NativeBridge.command(File(filesDir, "control.fifo").path, command, command == "quit")
+    private fun sendCommand(command: String): Boolean {
+        return NativeBridge.command(File(filesDir, "control.fifo").path, command, command == "quit")
     }
 
     override fun onPause() {

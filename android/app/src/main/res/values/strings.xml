@@ -8,8 +8,12 @@
     <string name="smoke">检查 CPU</string>
     <string name="refresh">刷新日志</string>
     <string name="home">Home</string>
-    <string name="unlock">唤醒 / 解锁</string>
+    <string name="lock">Lock</string>
     <string name="stop">停止</string>
+    <string name="audio_volume_down">音量 −</string>
+    <string name="audio_volume_up">音量 +</string>
+    <string name="audio_ring">响铃</string>
+    <string name="audio_mute">静音</string>
     <string name="no_log">尚无运行日志。可先检查 CPU，再启动已准备的固件。</string>
     <string name="session_stopping">上一个会话尚未退出，请稍后重试。</string>
 </resources>
