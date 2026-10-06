@@ -290,11 +290,14 @@ void CompatibilityKernel::wait_on_semaphore_object(Cpu& cpu,
                     bsd_result, std::move(posix_semaphore) };
             blocked = true;
         }
-        // XNU first establishes/consumes the wait and only then performs the
-        // paired signal, keeping pthread condition-variable handoff atomic.
-        if (result == 0 && signal_object) {
-            result = signal_semaphore_object_locked(
+        // XNU performs the paired signal even when a nonblocking wait times
+        // out. pthread condition waits rely on this signal to release their
+        // mutex; suppressing it strands the subsequent mutex reacquisition.
+        if ((result == 0 || result == kern_operation_timed_out) && signal_object) {
+            const auto signal_result = signal_semaphore_object_locked(
                 *signal_object, false, true, &woken_thread);
+            if (signal_result != 0)
+                result = signal_result;
         }
     }
 
