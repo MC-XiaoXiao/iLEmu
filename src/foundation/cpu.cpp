@@ -3661,6 +3661,27 @@ public:
         performance_counters().record_jit_shared_invalidation(true);
     }
 
+    void recycle_cache()
+    {
+        if (code_cache_used() == 0U)
+            return;
+        if constexpr (JitBackendCapabilities::shared_native_cache) {
+            execution_context_->native_code_slab()->recycle_cache();
+            execution_context_->native_code_slab()->service_pending_invalidation();
+            const auto slab_generation =
+                execution_context_->native_code_slab()->generation();
+            if (execution_context_->observe_slab_generation(slab_generation)) {
+                performance_counters().record_jit_slab_generation_transition(
+                    execution_context_->process_id());
+                if (native_preimport_tracker_)
+                    native_preimport_tracker_->clear();
+                performance_counters().record_jit_shared_invalidation(true);
+            }
+        } else {
+            clear_cache();
+        }
+    }
+
     void invalidate_cache_range(std::uint32_t address, std::size_t length)
     {
         if (length == 0U)
@@ -5492,6 +5513,8 @@ std::uint64_t CpuCluster::jit_code_cache_bytes()
 }
 
 void CpuCluster::clear_cache() { execution_pool_->clear_cache(); }
+
+void CpuCluster::recycle_cache() { execution_pool_->recycle_cache(); }
 
 void CpuCluster::invalidate_cache_range(
     std::uint32_t address, std::size_t length)

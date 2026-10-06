@@ -350,6 +350,10 @@ public:
         std::shared_ptr<JitWorkObservationSignal> signal);
     [[nodiscard]] std::uint64_t jit_code_cache_bytes();
     void clear_cache();
+    // Reclaim one cold segment from a shared native-code slab. Backends that
+    // do not expose segmented storage fall back to their normal full clear.
+    // Call only at a Guest-idle boundary after precompilation is quiesced.
+    void recycle_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(std::shared_ptr<JitTranslationProfile> profile,
         JitPrecompilePhase phase = JitPrecompilePhase::Opportunistic,

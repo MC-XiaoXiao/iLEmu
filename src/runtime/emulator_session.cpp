@@ -4501,9 +4501,10 @@ void EmulatorSession::run()
                 }
                 if (reclamation_needed) {
                     // Native mappings stay intact. At a global Guest-idle safe
-                    // point, discard only an ordinary runtime whose measured
-                    // live code exceeds its core-owned retention target. This
-                    // is intentionally after optional work cancellation.
+                    // point, recycle a cold segment only in ordinary runtimes
+                    // whose measured live code exceeds the retention target.
+                    // Other segments remain available for demand execution.
+                    // This is after optional work cancellation.
                     std::uint64_t native_reclaimed { };
                     std::size_t native_runtimes { };
                     for (auto& runtime : runtimes) {
@@ -4519,7 +4520,7 @@ void EmulatorSession::run()
                         }
                         const auto before =
                             runtime->cpus->jit_code_cache_bytes();
-                        runtime->cpus->clear_cache();
+                        runtime->cpus->recycle_cache();
                         const auto after =
                             runtime->cpus->jit_code_cache_bytes();
                         jit_code_cache_governor.refresh_actual(
