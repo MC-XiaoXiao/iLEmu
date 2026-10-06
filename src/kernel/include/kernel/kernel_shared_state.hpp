@@ -29,6 +29,7 @@
 #include "kernel/mach_voucher_state.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
+#include "kernel/compass_device.hpp"
 #include "kernel/kevent_timer.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "kernel/bsd_dispatch_table.hpp"
@@ -539,6 +540,7 @@ struct KernelSharedState {
     DarwinCoalitionRuntime coalitions;
     HidEventQueue hid_event_queue;
     std::shared_ptr<SensorInput> sensors;
+    CompassDevice compass;
     DarwinKernelIdentity darwin_kernel_identity;
     DarwinAbi darwin_abi;
     // Resolved once at construction; fork shares it and exec preserves it.

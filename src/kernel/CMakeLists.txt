@@ -253,6 +253,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/apple80211.cpp
     bsd/kqueue.cpp
     bsd/device/offline_serial.cpp
+    bsd/device/compass.cpp
     bsd/support.cpp)
 target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::syscall_routes

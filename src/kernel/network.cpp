@@ -533,6 +533,17 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
         return true;
     }
     GuestSocketReceiveTarget target {memory_, address, size, vectors};
+    if (const auto descriptor = virtual_descriptors_.find(fd);
+        descriptor != virtual_descriptors_.end() &&
+        descriptor->second == CompassDevice::descriptor_kind && shared_state_->sensors) {
+        const auto bytes = shared_state_->compass.read(*shared_state_->sensors,
+            shared_state_->clock.now(), size);
+        if (bytes.empty() && size != 0) return false;
+        if (!GuestReadBuffer {address, vectors}.copy(memory_, bytes))
+            bsd_error(cpu, darwin::error::bad_address);
+        else bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
+        return true;
+    }
     if (const auto host = host_sockets_.find(fd); host != host_sockets_.end()) {
         const auto received = host->second->receive(size, &target);
         if (received.status == HostSocketStatus::WouldBlock)
@@ -1263,6 +1274,12 @@ void CompatibilityKernel::synchronize_interface_routes(
 
 bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
 {
+    if (const auto descriptor = virtual_descriptors_.find(fd);
+        descriptor != virtual_descriptors_.end() &&
+        descriptor->second == CompassDevice::descriptor_kind) {
+        return shared_state_->sensors && shared_state_->compass.pending_bytes(
+            *shared_state_->sensors, shared_state_->clock.now()) != 0;
+    }
     if (file_descriptors_.contains(fd))
         return true;
     if (bpf_descriptor_readable(fd))
@@ -1402,7 +1419,8 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd) const
         if (const auto kind = virtual_descriptors_.find(fd);
             kind != virtual_descriptors_.end() &&
             (kind->second == bsd::baseband_device::descriptor_kind ||
-                kind->second == bsd::offline_serial_device::descriptor_kind)) {
+                kind->second == bsd::offline_serial_device::descriptor_kind ||
+                kind->second == CompassDevice::descriptor_kind)) {
             return true;
         }
         const auto queue = kqueues_.find(fd);
@@ -1439,7 +1457,8 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd,
     if (const auto kind = virtual_descriptors_.find(fd);
         kind != virtual_descriptors_.end() &&
         (kind->second == bsd::baseband_device::descriptor_kind ||
-            kind->second == bsd::offline_serial_device::descriptor_kind)) {
+            kind->second == bsd::offline_serial_device::descriptor_kind ||
+                kind->second == CompassDevice::descriptor_kind)) {
         return true;
     }
     const auto queue = kqueues_.find(fd);
@@ -1575,6 +1594,13 @@ std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
     std::uint32_t fd, std::uint32_t& darwin_error) const
 {
     darwin_error = 0;
+    if (const auto descriptor = virtual_descriptors_.find(fd);
+        descriptor != virtual_descriptors_.end() &&
+        descriptor->second == CompassDevice::descriptor_kind) {
+        return shared_state_->sensors ? static_cast<std::uint32_t>(
+            shared_state_->compass.pending_bytes(*shared_state_->sensors,
+                shared_state_->clock.now())) : 0U;
+    }
     if (const auto event_stream = wifi_driver_event_streams_.find(fd);
         event_stream != wifi_driver_event_streams_.end() &&
         event_stream->second) {

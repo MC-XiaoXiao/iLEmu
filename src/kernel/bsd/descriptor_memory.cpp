@@ -182,6 +182,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             socket_defunct(fd) ||
             (virtual_descriptor != virtual_descriptors_.end() &&
                 (virtual_descriptor->second == "system-event-socket" ||
+                    virtual_descriptor->second == CompassDevice::descriptor_kind ||
                     virtual_descriptor->second == "route-socket" ||
                     virtual_descriptor->second ==
                         darwin::network::apple80211_driver::

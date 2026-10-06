@@ -99,6 +99,8 @@ CompatibilityKernel::cached_directory_entries(
             }
             add_virtual(
                 std::string { bsd::offline_serial_device::directory_name }, 2);
+            if (shared_state_->sensors && shared_state_->sensors->available(MotionSensor::MagneticField))
+                add_virtual(std::string { CompassDevice::path.substr(5) }, 2);
         }
         std::sort(entries.begin() + 2, entries.end(),
             [](const DirectoryEntry& lhs, const DirectoryEntry& rhs) {

@@ -60,6 +60,8 @@ namespace {
         if (descriptor_kind == "random") {
             return random_device_minor;
         }
+        if (descriptor_kind == CompassDevice::descriptor_kind)
+            return CompassDevice::device_minor;
         if (descriptor_kind == "console") {
             return console_device_minor;
         }
@@ -84,7 +86,7 @@ namespace {
     }
 
     [[nodiscard]] std::optional<std::uint32_t> virtual_character_path_minor(
-        std::string_view path)
+        std::string_view path, bool compass_available = false)
     {
         if (path == "/dev/random" || path == "/dev/urandom" ||
             path == "/dev/srandom") {
@@ -93,6 +95,8 @@ namespace {
         if (path == "/dev/console") {
             return console_device_minor;
         }
+        if (compass_available && path == CompassDevice::path)
+            return CompassDevice::device_minor;
         if (bsd::null_device::is_path(path)) {
             return bsd::null_device::device_minor;
         }
@@ -471,7 +475,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd::null_device::is_path(*path) ||
             (bsd::baseband_device::is_path(*path) &&
                 shared_state_->baseband_device_state.available()) ||
-            bsd::offline_serial_device::is_path(*path)) {
+            bsd::offline_serial_device::is_path(*path) ||
+            (*path == CompassDevice::path && shared_state_->sensors &&
+                shared_state_->sensors->available(MotionSensor::MagneticField))) {
             const auto fd = allocate_file_descriptor();
             if (!fd) {
                 bsd_error(cpu, 24); // EMFILE
@@ -479,6 +485,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             }
             const auto kind = *path == "/dev/console"
                                   ? std::string_view { "console" }
+                              : *path == CompassDevice::path
+                                  ? CompassDevice::descriptor_kind
                               : bsd::null_device::is_path(*path)
                                   ? bsd::null_device::descriptor_kind
                               : bsd::baseband_device::is_path(*path)
@@ -686,7 +694,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             darwin::packet_filter::minor_for_path(*path) ||
             (bsd::baseband_device::is_path(*path) &&
                 shared_state_->baseband_device_state.available()) ||
-            bsd::offline_serial_device::is_path(*path)) {
+            bsd::offline_serial_device::is_path(*path) ||
+            (*path == CompassDevice::path && shared_state_->sensors &&
+                shared_state_->sensors->available(MotionSensor::MagneticField))) {
             bsd_success(cpu, 0);
             return;
         }
@@ -1072,7 +1082,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             " free-blocks=" + std::to_string(volume.free_blocks) + "\n");
         std::error_code error;
         const auto virtual_path =
-            virtual_character_path_minor(*path) ||
+            virtual_character_path_minor(*path, shared_state_->sensors &&
+                shared_state_->sensors->available(MotionSensor::MagneticField)) ||
             darwin::bpf::device_minor(*path) || *path == "/dev/disk0s1" ||
             *path == "/dev/disk0s2" || *path == "/dev/rdisk0s1" ||
             *path == "/dev/rdisk0s2";
@@ -1990,8 +2001,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, darwin::error::no_such_device_or_address);
             return;
         }
-        if (const auto minor = virtual_character_path_minor(*path)) {
-            if (!write_guest_device_stat64(registers[1], *minor, true)) {
+        if (const auto minor = virtual_character_path_minor(*path, shared_state_->sensors &&
+                shared_state_->sensors->available(MotionSensor::MagneticField))) {
+            if (!write_guest_device_stat64(stat_address, *minor, true)) {
                 bsd_error(cpu, bsd_support::bad_address);
             } else if (finish_extended_security()) {
                 bsd_success(cpu, 0);
@@ -2139,7 +2151,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, darwin::error::no_such_device_or_address);
             return;
         }
-        if (const auto minor = virtual_character_path_minor(*path)) {
+        if (const auto minor = virtual_character_path_minor(*path, shared_state_->sensors &&
+                shared_state_->sensors->available(MotionSensor::MagneticField))) {
             if (!write_guest_device_stat(registers[1], *minor, true)) {
                 bsd_error(cpu, bsd_support::bad_address);
             } else {

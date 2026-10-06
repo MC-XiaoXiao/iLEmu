@@ -193,6 +193,29 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             bsd_success(cpu, 0);
             return;
         }
+        if (device->second == CompassDevice::descriptor_kind &&
+            (registers[1] == CompassDevice::get_parameters ||
+                registers[1] == CompassDevice::set_parameters)) {
+            CompassDevice::Parameters parameters {};
+            if (registers[1] == CompassDevice::set_parameters) {
+                for (std::size_t index = 0; index < parameters.size(); ++index) {
+                    const auto word = memory_.read32(registers[2] + static_cast<std::uint32_t>(index * 4));
+                    if (!word) { bsd_error(cpu, bsd_support::bad_address); return; }
+                    parameters[index] = *word;
+                }
+                if (!shared_state_->compass.configure(parameters)) {
+                    bsd_error(cpu, bsd_support::invalid_argument);
+                    return;
+                }
+            } else parameters = shared_state_->compass.parameters();
+            for (std::size_t index = 0; index < parameters.size(); ++index) {
+                if (!memory_.write32(registers[2] + static_cast<std::uint32_t>(index * 4), parameters[index])) {
+                    bsd_error(cpu, bsd_support::bad_address); return;
+                }
+            }
+            bsd_success(cpu, 0);
+            return;
+        }
         if (darwin::packet_filter::minor_for_descriptor(device->second)) {
             switch (registers[1]) {
             case darwin::packet_filter::ioctl_set_debug: {
