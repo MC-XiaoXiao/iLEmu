@@ -28,6 +28,7 @@ public:
         std::size_t processor;
         std::uint32_t system;
         bool keyboard_events { };
+        bool digitizer_events { true };
     };
     struct Observer {
         std::uint32_t process;
@@ -112,7 +113,8 @@ public:
         std::lock_guard lock { mutex_ };
         const auto touch = std::holds_alternative<TouchInput>(event.input);
         const auto primary =
-            consumer_ && (!std::holds_alternative<KeyboardInput>(event.input) ||
+            consumer_ && (!touch || consumer_->digitizer_events) &&
+            (!std::holds_alternative<KeyboardInput>(event.input) ||
                              consumer_->keyboard_events);
         const auto observed = std::any_of(observers_.begin(), observers_.end(),
             [touch](const ObserverState& state) {

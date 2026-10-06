@@ -21,6 +21,8 @@
 #include "runtime/live_touch_scheduler.hpp"
 #include "runtime/realtime_pacer.hpp"
 #include "runtime/session_host.hpp"
+#include "sensor_control.hpp"
+#include "foundation/sensor_input.hpp"
 #include "session_catalog.hpp"
 #include "session_debugger.hpp"
 #include "session_diagnostics.hpp"
@@ -1271,6 +1273,9 @@ void EmulatorSession::run()
                 " data=" + (baseband_input_path ? "replay-only" : "none"));
     initial->cpus->set_process_id(initial->kernel->process().pid);
     auto audio = host.create_audio();
+    auto sensors = host.sensors();
+    if (!sensors) sensors = std::make_shared<SensorInput>();
+    initial->kernel->set_sensor_input(sensors);
     auto audio_sink = audio.sink;
     if (audio_sink) {
         initial->kernel->set_audio_sink(audio_sink);
@@ -3069,6 +3074,9 @@ void EmulatorSession::run()
                 case LiveControlCommandKind::Status:
                     diagnostics.status();
                     break;
+                case LiveControlCommandKind::Sensor:
+                    runtime_detail::sensor_control(*sensors, command.message, output);
+                    break;
                 case LiveControlCommandKind::Processes:
                     diagnostics.processes(command.message);
                     break;
@@ -3086,6 +3094,7 @@ void EmulatorSession::run()
                         "ringer ring|silent; "
                         "snapshot-sequence PATH-PREFIX INTERVAL-MS COUNT; "
                         "perf-begin LABEL; perf-end; "
+                        "sensor [status|acceleration X Y Z|gyro X Y Z|magnetic X Y Z]; "
                         "status; ps [PID|NAME]; threads PID|NAME; quit");
                     break;
                 case LiveControlCommandKind::Quit:

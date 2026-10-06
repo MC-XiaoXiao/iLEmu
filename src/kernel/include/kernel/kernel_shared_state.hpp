@@ -81,6 +81,7 @@
 #include "mach/mach_port_object.hpp"
 #include "mach/receive_queue_generation.hpp"
 #include "foundation/touch_input.hpp"
+#include "foundation/sensor_input.hpp"
 #include "foundation/virtual_clock.hpp"
 #include "media/audio_output_gain.hpp"
 #include "network/virtual_network.hpp"
@@ -537,6 +538,7 @@ struct KernelSharedState {
 
     DarwinCoalitionRuntime coalitions;
     HidEventQueue hid_event_queue;
+    std::shared_ptr<SensorInput> sensors;
     DarwinKernelIdentity darwin_kernel_identity;
     DarwinAbi darwin_abi;
     // Resolved once at construction; fork shares it and exec preserves it.

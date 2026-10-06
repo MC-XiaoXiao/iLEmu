@@ -35,6 +35,7 @@ enum class LiveControlCommandKind {
     PerfBegin,
     PerfEnd,
     Status,
+    Sensor,
     Processes,
     Threads,
     Help,

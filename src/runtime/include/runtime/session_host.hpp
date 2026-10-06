@@ -18,6 +18,7 @@ class AudioDecoder;
 class AudioSink;
 class ControlChannel;
 class DisplayPresenter;
+class SensorInput;
 struct DeviceModel;
 
 struct SessionAudio {
@@ -39,6 +40,7 @@ public:
     [[nodiscard]] virtual std::unique_ptr<ControlChannel> create_control(
         const DeviceModel& device) = 0;
     [[nodiscard]] virtual SessionAudio create_audio() = 0;
+    [[nodiscard]] virtual std::shared_ptr<SensorInput> sensors() { return {}; }
     [[nodiscard]] virtual HostMemorySnapshot memory_snapshot() const = 0;
     [[nodiscard]] virtual HostMemoryBudgetSnapshot
     memory_budget_snapshot() const = 0;

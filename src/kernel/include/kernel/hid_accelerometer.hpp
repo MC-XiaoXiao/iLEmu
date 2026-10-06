@@ -7,6 +7,7 @@
 #pragma once
 
 #include "kernel/hid_event_queue.hpp"
+#include "foundation/sensor_input.hpp"
 
 namespace ilemu {
 
@@ -20,13 +21,21 @@ public:
         return next_sample_;
     }
 
-    [[nodiscard]] std::optional<HidEventQueue::Event> sample(std::uint64_t now)
+    [[nodiscard]] std::optional<HidEventQueue::Event> sample(
+        std::uint64_t now, const SensorInput* input = nullptr)
     {
         if (!next_sample_ || now < *next_sample_)
             return std::nullopt;
-        // Missed samples are not replayed in a burst. The virtual chassis is
-        // upright and at rest; firmware owns filtering and orientation policy.
+        // Missed samples are not replayed in a burst. A real sensor with no
+        // fresh reading must not be replaced with a fabricated stationary one.
         next_sample_ = now + sample_period;
+        if (input && input->available(MotionSensor::Acceleration)) {
+            next_sample_ = now + 20'000'000U;
+            const auto sample = input->motion(MotionSensor::Acceleration);
+            if (!sample) return std::nullopt;
+            return HidEventQueue::Event { HidEventQueue::Acceleration {
+                sample->value[0], sample->value[1], sample->value[2] }, now };
+        }
         return HidEventQueue::Event {
             HidEventQueue::Acceleration { 0.0F, -1.0F, 0.0F }, now
         };

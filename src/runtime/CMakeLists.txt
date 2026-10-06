@@ -9,6 +9,7 @@ add_library(ilemu_runtime STATIC
     resource_policy.cpp
     session_catalog.cpp
     session_diagnostics.cpp
+    sensor_control.cpp
     input/live_button_scheduler.cpp
     input/live_touch_scheduler.cpp)
 add_library(iLEmu::runtime ALIAS ilemu_runtime)

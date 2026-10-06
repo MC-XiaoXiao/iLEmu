@@ -161,6 +161,7 @@ namespace {
             DispatchService,
             ReleaseService,
             Dispatch,
+            SessionCallback,
             Callback,
             ReleaseEvent
         };
@@ -255,6 +256,12 @@ namespace {
                 r[0] = system_;
                 r[1] = root_event_;
                 break;
+            case Step::SessionCallback:
+                r[0] = system_;
+                r[1] = 0U;
+                r[2] = 0U;
+                r[3] = root_event_;
+                break;
             case Step::Callback:
                 r[0] = observer_->target;
                 r[1] = observer_->refcon;
@@ -280,6 +287,10 @@ namespace {
                 }
                 step_ = Step::Dispatch;
                 symbol = "__IOHIDEventSystemDispatchEvent";
+                if (!call.symbol_address(symbol)) {
+                    step_ = Step::SessionCallback;
+                    symbol = "___IOHIDEventSystemEventCallback";
+                }
                 break;
             case Step::Hand:
                 root_event_ = call.argument(0);
@@ -341,6 +352,7 @@ namespace {
                 break;
             case Step::ReleaseService:
             case Step::Dispatch:
+            case Step::SessionCallback:
             case Step::Callback:
                 step_ = Step::ReleaseEvent;
                 symbol = "_CFRelease";

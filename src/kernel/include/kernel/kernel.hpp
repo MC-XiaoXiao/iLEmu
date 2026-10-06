@@ -354,6 +354,10 @@ public:
     {
         audio_service_->set_sink(std::move(sink));
     }
+    void set_sensor_input(std::shared_ptr<SensorInput> input)
+    {
+        shared_state_->sensors = std::move(input);
+    }
     void set_audio_decoder(std::shared_ptr<AudioDecoder> decoder)
     {
         audio_service_->set_decoder(std::move(decoder));

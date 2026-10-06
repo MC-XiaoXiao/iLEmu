@@ -216,6 +216,11 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line)
     std::istringstream parser { line };
     std::string operation;
     parser >> operation;
+    if (operation == "sensor") {
+        auto command = simple_command(LiveControlCommandKind::Sensor);
+        std::getline(parser, command.message);
+        return { std::move(command) };
+    }
     if (operation == "quit")
         return { simple_command(LiveControlCommandKind::Quit) };
     if (operation == "status")

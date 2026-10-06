@@ -30,20 +30,27 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
                 call.symbol_address("_IOHIDEventCreateKeyboardEvent")
                     .has_value();
             call.resume_original_persistently([this, consumer](
-                                                  UserlandHleCall& completed) {
+                                                  UserlandHleCall& completed) mutable {
                 // Opening the event system establishes the hardware event
                 // consumer even when its callback is installed later.
                 // Native dispatch owns callback and client routing.
                 if (!state_ || completed.argument(0) == 0U ||
                     !state_->user_interface_geometry.valid())
                     return;
-                for (const auto symbol : { "_IOHIDEventCreateDigitizerEvent",
-                         "_IOHIDEventAppendEvent",
-                         "__IOHIDEventSystemDispatchEvent", "_CFRelease" }) {
-                    if (!completed.symbol_address(symbol)) {
-                        return;
-                    }
-                }
+                const bool dispatch = completed.symbol_address(
+                    "__IOHIDEventSystemDispatchEvent").has_value();
+                const bool session_callback = completed.symbol_address(
+                    "___IOHIDEventSystemEventCallback").has_value();
+                if ((!dispatch && !session_callback) ||
+                    !completed.symbol_address("_CFRelease"))
+                    return;
+                // Session-based firmware can receive sensor objects through
+                // its native callback while retaining its GraphicsServices
+                // touch/keyboard transport.
+                consumer.digitizer_events = dispatch &&
+                    completed.symbol_address("_IOHIDEventCreateDigitizerEvent") &&
+                    completed.symbol_address("_IOHIDEventAppendEvent");
+                consumer.keyboard_events = consumer.keyboard_events && dispatch;
                 consumer_process_ = consumer.process;
                 consumer_processor_ = consumer.processor;
                 state_->hid_event_queue.open(consumer);
@@ -141,6 +148,7 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
     for (const auto symbol :
         { "_IOHIDEventCreateDigitizerEvent", "_IOHIDEventCreateKeyboardEvent",
             "_IOHIDEventAppendEvent", "__IOHIDEventSystemDispatchEvent",
+            "___IOHIDEventSystemEventCallback",
             "_IOHIDEventCreateAccelerometerEvent", "_IOHIDEventSetSenderID",
             "_IOHIDEventSystemCopyService", "___IOHIDServiceEventCallback" }) {
         registry_.register_guest_function("/IOKit", symbol);
@@ -253,7 +261,7 @@ bool HidEventSystemHle::prepare_pending_event(
     const auto consumer = state_->hid_event_queue.consumer();
     auto event = state_->hid_event_queue.take(process, cpu.processor_id());
     if (consumer && !event) {
-        event = accelerometer_.sample(state_->clock.now());
+        event = accelerometer_.sample(state_->clock.now(), state_->sensors.get());
         if (event)
             state_->note_kernel_event_transition();
     }

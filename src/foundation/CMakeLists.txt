@@ -55,6 +55,7 @@ add_library(ilemu_foundation STATIC
     process_loader.cpp
     rootfs_path_resolver.cpp
     scene_coordinator.cpp
+    sensor_input.cpp
     userland_hle.cpp
     virtual_clock.cpp)
 add_library(iLEmu::foundation ALIAS ilemu_foundation)
