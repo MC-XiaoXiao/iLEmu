@@ -47,8 +47,24 @@ public:
     };
 
     struct Program {
+        struct DrawAttributes {
+            std::optional<std::uint32_t> position;
+            std::optional<std::uint32_t> color;
+            std::array<std::optional<std::uint32_t>,
+                gles_abi::texture_unit_count>
+                textures;
+            std::array<std::optional<std::uint32_t>,
+                gles_abi::texture_unit_count>
+                matrix_textures;
+            std::optional<std::uint32_t> filter_coordinate;
+        };
+
         std::vector<std::uint32_t> shaders;
         std::map<std::string, std::uint32_t, std::less<>> attributes;
+        // Programmable compositor draws ask for the profile's conventional
+        // attributes on every frame. Keep those resolved locations beside the
+        // linked program while retaining the map for arbitrary API queries.
+        DrawAttributes draw_attributes;
         std::map<std::string, std::int32_t, std::less<>> uniform_locations;
         std::map<std::int32_t, Uniform> uniforms;
         GlesProgramInterfaceProfile interface_profile;
@@ -77,6 +93,9 @@ public:
     [[nodiscard]] bool bind_attribute(
         std::uint32_t program, std::uint32_t index, std::string name);
     [[nodiscard]] bool link(std::uint32_t program);
+    // Rebuild locations after a host renderer has supplied reflected
+    // attributes for native GLSL execution.
+    void refresh_draw_attributes(std::uint32_t program);
     [[nodiscard]] std::optional<std::uint32_t> attribute(
         std::uint32_t program, std::string_view name) const;
     [[nodiscard]] std::int32_t uniform_location(

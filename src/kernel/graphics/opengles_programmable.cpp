@@ -107,22 +107,19 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
         return std::nullopt;
 
     ProgrammableDrawState result;
-    const auto array_for =
-        [&](std::string_view semantic) -> const ContextState::ArrayPointer* {
-        const auto location =
-            programs_.attribute(context.current_program, semantic);
+    const auto array_for = [&](std::optional<std::uint32_t> location)
+        -> const ContextState::ArrayPointer* {
         if (!location)
             return nullptr;
         const auto array = context.generic_arrays.find(*location);
         return array == context.generic_arrays.end() ? nullptr : &array->second;
     };
-    const auto* position =
-        array_for(program->interface_profile.position_attribute);
+    const auto& attributes = program->draw_attributes;
+    const auto* position = array_for(attributes.position);
     if (position == nullptr || !position->enabled)
         return std::nullopt;
     result.position_array = *position;
-    if (const auto color_location = programs_.attribute(context.current_program,
-            program->interface_profile.color_attribute);
+    if (const auto color_location = attributes.color;
         color_location &&
         *color_location < context.current_generic_attributes.size()) {
         result.current_color =
@@ -133,8 +130,7 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
     }
     for (std::size_t unit = 0; unit < result.texture_arrays.size(); ++unit) {
         const auto suffix = std::to_string(unit);
-        if (const auto* texture =
-                array_for(std::string { "vertex_texcoord" } + suffix)) {
+        if (const auto* texture = array_for(attributes.textures[unit])) {
             result.texture_arrays[unit] = *texture;
         }
         if (const auto* transform = programs_.uniform(
@@ -205,7 +201,10 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
         unit0.mode = gles_abi::replace;
     }
 
-    for (const auto& input : program->interface_profile.matrix_texture_inputs) {
+    for (std::size_t index = 0; index < attributes.matrix_textures.size();
+        ++index) {
+        const auto& input =
+            program->interface_profile.matrix_texture_inputs[index];
         if (!input.valid())
             continue;
         const auto* sampler =
@@ -217,7 +216,8 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
             continue;
         }
         const auto unit = static_cast<std::size_t>(sampled_unit);
-        const auto* texture_array = array_for(input.attribute);
+        const auto* texture_array =
+            array_for(attributes.matrix_textures[index]);
         if (texture_array != nullptr)
             result.texture_arrays[unit] = *texture_array;
         result.sampled_textures[unit] = true;
@@ -352,7 +352,7 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
             result.sampled_textures[unit] = true;
             if (filter.operation ==
                 GlesFilterProfile::Operation::WeightedSamples) {
-                if (const auto* array = array_for(filter.coordinate_attribute))
+                if (const auto* array = array_for(attributes.filter_coordinate))
                     result.texture_arrays[unit] = *array;
                 const auto* transform = programs_.uniform(
                     context.current_program, filter.coordinate_transform);
@@ -557,6 +557,7 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
             program->active_uniforms = std::move(linked.active_uniforms);
             program->uniform_locations.clear();
             program->uniforms.clear();
+            programs_.refresh_draw_attributes(call.argument(0));
         } else
             call.output().marker(
                 "[gles] GLSL link failed: " + program->info_log);

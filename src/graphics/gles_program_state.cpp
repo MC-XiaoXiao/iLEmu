@@ -100,6 +100,7 @@ bool GlesProgramState::bind_attribute(
     if (program_value == nullptr || name.empty())
         return false;
     program_value->attributes.insert_or_assign(std::move(name), index);
+    refresh_draw_attributes(program_name);
     return true;
 }
 
@@ -124,7 +125,35 @@ bool GlesProgramState::link(std::uint32_t program_name)
                 shader_source(program_name, gles_abi::vertex_shader),
                 shader_source(program_name, gles_abi::fragment_shader));
     }
+    refresh_draw_attributes(program_name);
     return program_value->linked;
+}
+
+void GlesProgramState::refresh_draw_attributes(std::uint32_t program_name)
+{
+    auto* program_value = program(program_name);
+    if (program_value == nullptr)
+        return;
+    auto& cached = program_value->draw_attributes;
+    cached = { };
+    if (!program_value->linked)
+        return;
+    const auto location = [&](std::string_view name) {
+        const auto found = program_value->attributes.find(name);
+        return found == program_value->attributes.end()
+                   ? std::nullopt
+                   : std::optional<std::uint32_t> { found->second };
+    };
+    const auto& profile = program_value->interface_profile;
+    cached.position = location(profile.position_attribute);
+    cached.color = location(profile.color_attribute);
+    cached.filter_coordinate = location(profile.filter.coordinate_attribute);
+    for (std::size_t unit = 0; unit < gles_abi::texture_unit_count; ++unit) {
+        cached.textures[unit] =
+            location("vertex_texcoord" + std::to_string(unit));
+        cached.matrix_textures[unit] =
+            location(profile.matrix_texture_inputs[unit].attribute);
+    }
 }
 
 std::optional<std::uint32_t> GlesProgramState::attribute(
