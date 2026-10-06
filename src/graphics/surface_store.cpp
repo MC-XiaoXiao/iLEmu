@@ -61,23 +61,26 @@ namespace {
                (static_cast<std::uint32_t>(green) << 8U) | blue;
     }
 
-    // The guest's 32-bit CoreSurface client memory uses little-endian ARGB
-    // words for both BGRA and RGBA attachments. RGBA selects the GPU channel
-    // contract, while CPU consumers may wrap the same bytes as BGRA.
-    std::uint32_t decode_32bit_pixel(const std::byte* source)
+    std::uint32_t decode_32bit_pixel(
+        std::uint32_t pixel_format, const std::byte* source)
     {
-        const auto red = std::to_integer<std::uint32_t>(source[2U]);
+        const auto rgba = pixel_format == surface_pixel_format_rgba;
+        const auto red = std::to_integer<std::uint32_t>(source[rgba ? 0U : 2U]);
         const auto green = std::to_integer<std::uint32_t>(source[1U]);
-        const auto blue = std::to_integer<std::uint32_t>(source[0U]);
+        const auto blue =
+            std::to_integer<std::uint32_t>(source[rgba ? 2U : 0U]);
         const auto alpha = std::to_integer<std::uint32_t>(source[3U]);
         return (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
     }
 
-    void encode_32bit_pixel(std::uint32_t pixel, std::byte* destination)
+    void encode_32bit_pixel(
+        std::uint32_t pixel_format, std::uint32_t pixel, std::byte* destination)
     {
-        destination[2U] = static_cast<std::byte>((pixel >> 16U) & 0xffU);
+        const auto rgba = pixel_format == surface_pixel_format_rgba;
+        destination[rgba ? 0U : 2U] =
+            static_cast<std::byte>((pixel >> 16U) & 0xffU);
         destination[1U] = static_cast<std::byte>((pixel >> 8U) & 0xffU);
-        destination[0U] = static_cast<std::byte>(pixel & 0xffU);
+        destination[rgba ? 2U : 0U] = static_cast<std::byte>(pixel & 0xffU);
         destination[3U] = static_cast<std::byte>((pixel >> 24U) & 0xffU);
     }
 
@@ -586,7 +589,7 @@ std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb(
             }
             continue;
         }
-        if (surface_is_32bit(backing.pixel_format)) {
+        if (backing.pixel_format == surface_pixel_format_bgra) {
             if constexpr (std::endian::native == std::endian::little) {
                 std::memcpy(
                     pixels.data() + static_cast<std::size_t>(y) * backing.width,
@@ -601,7 +604,8 @@ std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb(
                 static_cast<std::uint64_t>(y) * backing.bytes_per_row +
                 static_cast<std::uint64_t>(x) * pixel_size);
             pixels[static_cast<std::size_t>(y) * backing.width + x] =
-                decode_32bit_pixel(source->data() + offset);
+                decode_32bit_pixel(
+                    backing.pixel_format, source->data() + offset);
         }
     }
     return pixels;
@@ -648,7 +652,7 @@ std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb_region(
             return std::nullopt;
         }
         if constexpr (std::endian::native == std::endian::little) {
-            if (surface_is_32bit(backing.pixel_format)) {
+            if (backing.pixel_format == surface_pixel_format_bgra) {
                 auto destination = std::span { pixels }.subspan(
                     static_cast<std::size_t>(row) * rectangle.width,
                     rectangle.width);
@@ -681,7 +685,7 @@ std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb_region(
         for (std::uint32_t x = 0; x < rectangle.width; ++x) {
             const auto byte = static_cast<std::size_t>(x) * pixel_size;
             pixels[static_cast<std::size_t>(row) * rectangle.width + x] =
-                decode_32bit_pixel(bytes->data() + byte);
+                decode_32bit_pixel(backing.pixel_format, bytes->data() + byte);
         }
     }
     return pixels;
@@ -1154,9 +1158,8 @@ bool SurfaceStore::write_argb_region_to_guest(AddressSpace& memory,
     }
 
     if constexpr (std::endian::native == std::endian::little) {
-        if (surface_is_32bit(backing.pixel_format) &&
-            rectangle.x == 0 &&
-            rectangle.width == backing.width &&
+        if (backing.pixel_format == surface_pixel_format_bgra &&
+            rectangle.x == 0 && rectangle.width == backing.width &&
             row_bytes == backing.bytes_per_row) {
             // Adjacent rows form one guest-memory write. Besides avoiding
             // per-row lookup/locking, this publishes one write generation for
@@ -1173,7 +1176,8 @@ bool SurfaceStore::write_argb_region_to_guest(AddressSpace& memory,
         }
     }
     std::vector<std::byte> encoded_row;
-    if (packed_555 || std::endian::native != std::endian::little)
+    if (packed_555 || backing.pixel_format == surface_pixel_format_rgba ||
+        std::endian::native != std::endian::little)
         encoded_row.resize(static_cast<std::size_t>(row_bytes));
     for (std::uint32_t y = 0; y < rectangle.height; ++y) {
         const auto source_y = static_cast<std::uint32_t>(rectangle.y) + y;
@@ -1192,14 +1196,15 @@ bool SurfaceStore::write_argb_region_to_guest(AddressSpace& memory,
                     static_cast<std::byte>((packed >> 8U) & 0xffU);
             }
             bytes = encoded_row;
-        } else if (surface_is_32bit(backing.pixel_format) &&
+        } else if (backing.pixel_format == surface_pixel_format_bgra &&
                    std::endian::native == std::endian::little) {
             bytes = { reinterpret_cast<const std::byte*>(row.data()),
                 static_cast<std::size_t>(row_bytes) };
         } else {
             for (std::uint32_t x = 0; x < rectangle.width; ++x) {
                 const auto offset = static_cast<std::size_t>(x) * pixel_size;
-                encode_32bit_pixel(row[x], encoded_row.data() + offset);
+                encode_32bit_pixel(
+                    backing.pixel_format, row[x], encoded_row.data() + offset);
             }
             bytes = encoded_row;
         }

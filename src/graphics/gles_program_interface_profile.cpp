@@ -79,6 +79,27 @@ namespace {
         return token == "highp" || token == "mediump" || token == "lowp";
     }
 
+    bool has_helper_functions(const std::vector<std::string_view>& tokens)
+    {
+        unsigned depth { };
+        for (std::size_t index = 0; index < tokens.size(); ++index) {
+            if (tokens[index] == "{") {
+                ++depth;
+            } else if (tokens[index] == "}") {
+                if (depth != 0U)
+                    --depth;
+            } else if (depth == 0U && tokens[index] == "(" && index != 0U &&
+                       tokens[index - 1U] != "main") {
+                auto end = index + 1U;
+                while (end < tokens.size() && tokens[end] != ")")
+                    ++end;
+                if (end + 1U < tokens.size() && tokens[end + 1U] == "{")
+                    return true;
+            }
+        }
+        return false;
+    }
+
     std::vector<Declaration> declarations(
         const std::vector<std::string_view>& tokens)
     {
@@ -694,6 +715,16 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
         if (colors.size() == 1U)
             input.color_uniform = colors.front();
     }
+    // Interface declarations alone do not describe computations in helper
+    // functions. Preserve recognized fragment operations (including framebuffer
+    // fetch), but compile other helpers instead of treating them as simple
+    // texture/color operations. Vertex helpers always need GLSL execution.
+    if (has_helper_functions(vertex_tokens) ||
+        (result.fragment_operation ==
+                GlesFragmentOperation::TextureEnvironment &&
+            result.filter.operation == GlesFilterProfile::Operation::None &&
+            has_helper_functions(fragment_tokens)))
+        result.requires_glsl_execution = true;
     return result;
 }
 
