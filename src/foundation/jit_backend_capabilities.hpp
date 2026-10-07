@@ -14,11 +14,12 @@ struct JitBackendCapabilities {
     static constexpr bool precompile = true;
     static constexpr bool dispatch_counters = true;
 #else
-    static constexpr bool shared_native_cache = false;
 #if defined(__aarch64__) || defined(_M_ARM64)
+    static constexpr bool shared_native_cache = true;
     static constexpr bool portable_ir = true;
     static constexpr bool precompile = true;
 #else
+    static constexpr bool shared_native_cache = false;
     static constexpr bool portable_ir = false;
     static constexpr bool precompile = false;
 #endif

@@ -32,7 +32,12 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wshadow"
 #endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <dynarmic/backend/arm64/a32_jitstate.h>
+#include <dynarmic/backend/arm64/fast_dispatch.h>
+#else
 #include <dynarmic/backend/x64/a32_jitstate.h>
+#endif
 #include <dynarmic/backend/x64/exclusive_monitor_friend.h>
 #include <dynarmic/frontend/A32/a32_ir_emitter.h>
 #include <dynarmic/interface/A32/coprocessor.h>
@@ -136,7 +141,14 @@ namespace {
     }
 
     constexpr std::size_t jit_link_cell_count = 9U;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    using NativeA32JitState = Dynarmic::Backend::Arm64::A32JitState;
+    constexpr std::size_t fast_dispatch_table_size =
+        Dynarmic::Backend::Arm64::FastDispatchCache::entry_count;
+#else
+    using NativeA32JitState = Dynarmic::Backend::X64::A32JitState;
     constexpr std::size_t fast_dispatch_table_size = 0x10000U;
+#endif
     constexpr std::size_t fast_dispatch_entry_bytes =
         sizeof(std::uint64_t) * 2U;
     constexpr std::size_t host_code_page_size = 4096U;
@@ -3357,7 +3369,7 @@ private:
         // A32JitState includes the executor's RSB arrays.  The link cells are
         // allocated by the shared ExecutionContext but their payload is still
         // executor-local mutable state and is counted here exactly once.
-        return link_cell_bytes + sizeof(Dynarmic::Backend::X64::A32JitState) +
+        return link_cell_bytes + sizeof(NativeA32JitState) +
                fast_dispatch_table_bytes;
     }
 
