@@ -754,7 +754,7 @@ public:
 
     [[nodiscard]] bool demand_artifact_catalog_nonempty() const noexcept
     {
-        return artifact_store_ && artifact_store_->size() != 0U;
+        return artifact_store_ && !artifact_store_->empty();
     }
 
     // Preparation is deliberately separate from the Dynarmic miss callback:

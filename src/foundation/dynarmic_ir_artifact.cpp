@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <boost/container/small_vector.hpp>
 #include <boost/variant/apply_visitor.hpp>
 #include <limits>
 #include <unordered_map>
@@ -496,7 +497,8 @@ namespace {
     struct EncodedInstruction {
         Dynarmic::IR::Opcode opcode { Dynarmic::IR::Opcode::Void };
         std::uint32_t name { };
-        std::vector<EncodedValue> arguments;
+        boost::container::small_vector<EncodedValue,
+            Dynarmic::IR::max_arg_count> arguments;
     };
 
     [[nodiscard]] bool emitter_safe_opcode(Dynarmic::IR::Opcode opcode)
@@ -1564,7 +1566,7 @@ namespace {
 
     [[nodiscard]] bool append_instruction(Dynarmic::IR::Block& block,
         Dynarmic::IR::Opcode opcode,
-        const std::vector<Dynarmic::IR::Value>& args)
+        std::span<const Dynarmic::IR::Value> args)
     {
         switch (args.size()) {
         case 0:
@@ -1724,7 +1726,8 @@ std::optional<Dynarmic::IR::Block> deserialize_dynarmic_ir(
     std::vector<Dynarmic::IR::Inst*> instructions;
     instructions.reserve(encoded_instructions.size());
     for (const auto& encoded_instruction : encoded_instructions) {
-        std::vector<Dynarmic::IR::Value> arguments;
+        boost::container::small_vector<Dynarmic::IR::Value,
+            Dynarmic::IR::max_arg_count> arguments;
         arguments.reserve(encoded_instruction.arguments.size());
         for (const auto& encoded_argument : encoded_instruction.arguments) {
             auto value = decode_value(encoded_argument, instructions);
@@ -1732,7 +1735,8 @@ std::optional<Dynarmic::IR::Block> deserialize_dynarmic_ir(
                 return std::nullopt;
             arguments.push_back(std::move(*value));
         }
-        if (!append_instruction(block, encoded_instruction.opcode, arguments)) {
+        if (!append_instruction(block, encoded_instruction.opcode,
+                { arguments.data(), arguments.size() })) {
             return std::nullopt;
         }
         block.back().SetName(encoded_instruction.name);

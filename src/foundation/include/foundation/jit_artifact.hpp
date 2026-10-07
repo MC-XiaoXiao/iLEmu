@@ -420,6 +420,8 @@ public:
     [[nodiscard]] std::shared_ptr<const BlockArtifact> publish(
         JitArtifactKey key, JitArtifactData data,
         JitArtifactRetention retention = JitArtifactRetention::Normal);
+    // Constant-time catalog presence, including disk-only and queued entries.
+    [[nodiscard]] bool empty() const;
     [[nodiscard]] std::size_t size() const;
     [[nodiscard]] JitArtifactStoreStats stats() const;
     // Changes whenever a new artifact becomes available to runtime lookups.

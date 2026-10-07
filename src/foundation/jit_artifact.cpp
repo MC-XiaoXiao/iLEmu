@@ -3021,6 +3021,13 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
     return result;
 }
 
+bool JitArtifactStore::empty() const
+{
+    const std::lock_guard lock { mutex_ };
+    return disk_artifacts_.empty() && artifacts_.empty() &&
+           pending_writebacks_.empty();
+}
+
 std::size_t JitArtifactStore::size() const
 {
     const std::lock_guard lock { mutex_ };
