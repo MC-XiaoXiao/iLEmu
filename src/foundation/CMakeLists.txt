@@ -12,6 +12,7 @@ ilemu_configure_module(ilemu_foundation_memory)
 if(NOT TARGET OpenSSL::Crypto)
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 endif()
+target_link_libraries(ilemu_foundation_memory PRIVATE OpenSSL::Crypto)
 
 add_library(ilemu_foundation STATIC
     address_space.cpp
