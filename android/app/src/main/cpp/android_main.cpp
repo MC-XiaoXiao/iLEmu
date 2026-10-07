@@ -33,6 +33,12 @@ bool send_command(const char* path, const char* command)
 }
 }
 
+extern "C" JNIEXPORT jboolean JNICALL Java_com_xxiao_ilemu_NativeBridge_isRunning(
+    JNIEnv*, jobject)
+{
+    return running.load() ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL Java_com_xxiao_ilemu_NativeBridge_prepare(
     JNIEnv*, jobject)
 {

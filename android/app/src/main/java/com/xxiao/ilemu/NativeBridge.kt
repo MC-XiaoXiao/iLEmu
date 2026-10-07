@@ -18,6 +18,7 @@ internal object NativeBridge {
 
     fun releaseActivity() { activityReserved = false }
 
+    external fun isRunning(): Boolean
     private external fun prepare(): Boolean
     external fun command(path: String, command: String, stop: Boolean): Boolean
 }

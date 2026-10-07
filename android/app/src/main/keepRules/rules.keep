@@ -2,3 +2,4 @@
 -keep class org.libsdl.app.** { *; }
 -keep class com.xxiao.ilemu.NativeBridge { *; }
 -keep class com.xxiao.ilemu.HostSensors { *; }
+-keep class com.xxiao.ilemu.firmware.FirmwareMetadata { *; }
