@@ -299,6 +299,10 @@ public:
 
     ~CpuCluster();
 
+    // Preparation must produce code reusable by the execution slots. Local
+    // native caches therefore prepare portable IR rather than lane-local code.
+    [[nodiscard]] static JitPrecompileTarget reusable_precompile_target() noexcept;
+
     CpuCluster(std::size_t processor_count, AddressSpace& memory);
     CpuCluster(std::size_t initial_processor_count,
         std::size_t maximum_processor_count, AddressSpace& memory);

@@ -1171,20 +1171,25 @@ void EmulatorSession::run()
             Runtime& runtime, std::string_view executable_path) {
             if (!startup_profile_enabled)
                 return;
+            const auto target = CpuCluster::reusable_precompile_target();
             if (runtime.cpus->next_precompile_phase(
-                    JitPrecompileTarget::NativeCode,
+                    target,
                     JitPrecompileSource::DemandProfile)) {
                 const auto result = runtime.cpus->precompile_pending(
                     static_cast<std::size_t>(startup_profile_blocks),
                     startup_profile_budget_us * 1'000U,
-                    JitPrecompileTarget::NativeCode, { },
+                    target, { },
                     JitPrecompileSource::DemandProfile);
                 record_precompile_outcomes(
                     result, JitPrecompileSource::DemandProfile);
                 output.line(
-                    "[jit-profile] startup-native-warm executable=" +
+                    std::string { target == JitPrecompileTarget::NativeCode
+                        ? "[jit-profile] startup-native-warm executable="
+                        : "[jit-profile] startup-portable-warm executable=" } +
                     std::string { executable_path } +
-                    " blocks=" + std::to_string(result.native_compiled) +
+                    " blocks=" + std::to_string(target == JitPrecompileTarget::NativeCode
+                            ? result.native_compiled
+                            : result.portable_generated) +
                     " attempted=" + std::to_string(result.attempted) +
                     " elapsed-ns=" +
                     std::to_string(result.elapsed_nanoseconds) +

@@ -1006,6 +1006,11 @@ public:
         switch (outcome) {
         case Dynarmic::A32::Jit::PortableIREmitOutcome::NativeEmitted:
             demand_artifact_state_ = DemandArtifactState::NativeEmitted;
+            // Reusing IR still spends host time emitting native code. Keep
+            // that work out of steady-state throughput samples and service
+            // the cooperative deadline before entering the emitted block.
+            translated_code_ = true;
+            maybe_check_host_yield(0U, true);
             if (artifact_store_) {
                 artifact_store_->record_demand_native_emitted();
             }
@@ -1027,7 +1032,7 @@ public:
         return true;
     }
 
-    // Called by Dynarmic only after NativeCodeSlab::find_block misses. This
+    // Called by Dynarmic only after its native code cache misses. This
     // function does not access the store and does not allocate or lock.
     [[nodiscard]] Dynarmic::IR::Block* take_demand_artifact(
         std::uint64_t location_descriptor,
@@ -2563,6 +2568,12 @@ public:
     {
         if constexpr (!JitBackendCapabilities::precompile)
             return PrecompileDisposition::Failed;
+        // A preparation lane's local native code cannot serve another
+        // execution slot. Such backends prepare reusable IR only.
+        if constexpr (!JitBackendCapabilities::shared_native_cache) {
+            if (target == JitPrecompileTarget::NativeCode)
+                return PrecompileDisposition::Failed;
+        }
         const std::lock_guard execution_lock { execution_mutex_ };
         memory_.synchronize_shared_write_tracking();
         ensure_jit();
@@ -2898,8 +2909,7 @@ private:
             ++demand_artifact_attempt_generation_;
         }
         const auto location = current_location_descriptor();
-        const auto slab_generation =
-            execution_context_->native_code_slab()->generation_snapshot();
+        const auto slab_generation = jit_->CodeCacheGeneration();
         if (callbacks_->demand_artifact_staged(location, slab_generation))
             return true;
         if (callbacks_->demand_artifact_native_ready(location, slab_generation))
@@ -3758,7 +3768,7 @@ public:
         // should train the next image, not continuously reset this image's
         // warmup scan.
         JitTranslationProfilePrediction native_prediction;
-        if (precompile && profile) {
+        if (precompile && profile && JitBackendCapabilities::shared_native_cache) {
             const auto limits =
                 JitWorkPolicy::native_prediction_policy(code_cache_size_);
             native_prediction = profile->snapshot_prediction(
@@ -3767,8 +3777,8 @@ public:
                     limits.historical_locations });
         }
         native_preimport_tracker_ =
-            precompile ? std::make_shared<JitNativePreimportTracker>()
-                       : nullptr;
+            precompile && JitBackendCapabilities::shared_native_cache
+                ? std::make_shared<JitNativePreimportTracker>() : nullptr;
         for (auto& executor : executors_) {
             executor->set_translation_profile(
                 profile, record, native_preimport_tracker_);
@@ -3902,11 +3912,15 @@ public:
         if (precompile_quiescing_)
             return;
         for (const auto entry : location_descriptors) {
+            if constexpr (JitBackendCapabilities::shared_native_cache) {
+                if (enqueue_precompile_entry_locked(
+                        PrecompileEntry {
+                            entry, JitPrecompileTarget::NativeCode, source },
+                        phase) == PrecompileEnqueueResult::Rejected) {
+                    break;
+                }
+            }
             if (enqueue_precompile_entry_locked(
-                    PrecompileEntry {
-                        entry, JitPrecompileTarget::NativeCode, source },
-                    phase) == PrecompileEnqueueResult::Rejected ||
-                enqueue_precompile_entry_locked(
                     PrecompileEntry {
                         entry, JitPrecompileTarget::PortableIr, source },
                     phase) == PrecompileEnqueueResult::Rejected) {
@@ -4851,8 +4865,11 @@ private:
 
     void refill_profile_entries_locked(JitPrecompileTarget target)
     {
-        if (target == JitPrecompileTarget::NativeCode)
+        if (target == JitPrecompileTarget::NativeCode) {
+            if constexpr (!JitBackendCapabilities::shared_native_cache)
+                return;
             synchronize_native_profile_generation_locked();
+        }
         const auto profile = translation_profile_;
         const auto target_index = static_cast<std::size_t>(target);
         if (!profile_precompile_enabled_ || !profile ||
@@ -5520,6 +5537,13 @@ void CpuCluster::invalidate_cache_range(
     std::uint32_t address, std::size_t length)
 {
     execution_pool_->invalidate_cache_range(address, length);
+}
+
+JitPrecompileTarget CpuCluster::reusable_precompile_target() noexcept
+{
+    return JitBackendCapabilities::shared_native_cache
+               ? JitPrecompileTarget::NativeCode
+               : JitPrecompileTarget::PortableIr;
 }
 
 void CpuCluster::set_translation_profile(

@@ -15,8 +15,13 @@ struct JitBackendCapabilities {
     static constexpr bool dispatch_counters = true;
 #else
     static constexpr bool shared_native_cache = false;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    static constexpr bool portable_ir = true;
+    static constexpr bool precompile = true;
+#else
     static constexpr bool portable_ir = false;
     static constexpr bool precompile = false;
+#endif
     static constexpr bool dispatch_counters = false;
 #endif
     // Runtime links allow guarded page-table views to change between entries.
