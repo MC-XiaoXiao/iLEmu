@@ -2909,7 +2909,13 @@ private:
             ++demand_artifact_attempt_generation_;
         }
         const auto location = current_location_descriptor();
-        const auto slab_generation = jit_->CodeCacheGeneration();
+        // Retire requested native changes before choosing an IR handoff stamp.
+        // A live native block needs no optional artifact preparation; Run will
+        // still revalidate any invalidation arriving after this stopped probe.
+        const auto native = jit_->LookupCodeCache(location);
+        if (native.present)
+            return false;
+        const auto slab_generation = native.generation;
         if (callbacks_->demand_artifact_staged(location, slab_generation))
             return true;
         if (callbacks_->demand_artifact_native_ready(location, slab_generation))
