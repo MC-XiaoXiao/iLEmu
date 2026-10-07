@@ -17,7 +17,7 @@ android {
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DCMAKE_BUILD_TYPE=RelWithDebInfo")
-                targets += listOf("ilemu", "SDL2")
+                targets += listOf("ilemu", "SDL2", "firmware_dmg", "firmware_decrypt", "firmware_hfstar")
             }
         }
     }
@@ -39,6 +39,7 @@ android {
             version = "3.31.6"
         }
     }
+    packaging { jniLibs.useLegacyPackaging = true }
     buildFeatures {
         viewBinding = true
         buildConfig = true
@@ -50,4 +51,8 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
+    implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("com.liulishuo.okdownload:okdownload:1.0.7")
+    implementation("com.liulishuo.okdownload:sqlite:1.0.7")
+    implementation("org.apache.commons:commons-compress:1.27.1")
 }

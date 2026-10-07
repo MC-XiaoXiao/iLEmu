@@ -9,6 +9,11 @@ set(ILEMU_DEPENDENCY_JOBS 4 CACHE STRING "Parallel jobs for make dependencies")
 find_program(ILEMU_MAKE make REQUIRED)
 find_package(Perl REQUIRED)
 get_filename_component(_android_tools "${CMAKE_C_COMPILER}" DIRECTORY)
+get_filename_component(_android_make_directory "${ILEMU_MAKE}" DIRECTORY)
+get_filename_component(_android_perl_directory "${PERL_EXECUTABLE}" DIRECTORY)
+# Keep build commands independent of ephemeral launcher PATH entries. Otherwise
+# ExternalProject rebuilds OpenSSL and invalidates native consumers every run.
+set(_android_build_path "${_android_tools}:${_android_make_directory}:${_android_perl_directory}:/usr/local/bin:/usr/bin:/bin")
 set(_android_prefix "${CMAKE_BINARY_DIR}/dependencies/install")
 file(MAKE_DIRECTORY "${_android_prefix}/include")
 include("${CMAKE_CURRENT_LIST_DIR}/ffmpeg.cmake")
@@ -20,13 +25,13 @@ ExternalProject_Add(android_openssl
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     CONFIGURE_COMMAND "${CMAKE_COMMAND}" -E env
         "ANDROID_NDK_ROOT=${CMAKE_ANDROID_NDK}"
-        "PATH=${_android_tools}:$ENV{PATH}"
+        "PATH=${_android_build_path}"
         "${PERL_EXECUTABLE}" <SOURCE_DIR>/Configure android-arm64
         "--prefix=${_android_prefix}" --libdir=lib
         "-D__ANDROID_API__=${ANDROID_PLATFORM_LEVEL}" -fPIC
         no-shared no-tests no-module
     BUILD_COMMAND "${CMAKE_COMMAND}" -E env
-        "PATH=${_android_tools}:$ENV{PATH}"
+        "PATH=${_android_build_path}"
         "${ILEMU_MAKE}" "-j${ILEMU_DEPENDENCY_JOBS}" build_libs
     INSTALL_COMMAND "${ILEMU_MAKE}" install_dev
     BUILD_BYPRODUCTS "${_android_prefix}/lib/libcrypto.a"

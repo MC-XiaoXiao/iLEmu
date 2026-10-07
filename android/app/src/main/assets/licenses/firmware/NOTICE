@@ -1,0 +1,8 @@
+Firmware preparation uses separate unmodified codecs from dmg2img (a3e4134), hfsfuse (f5b3b80), bzip2 1.0.8, lzfse (e634ca5), and libarchive 3.8.9. hfsfuse hfstar is adapted to carry guest HFS metadata as user xattrs; the patch is included in android/cmake/patches. Sources and checksums are pinned in android/cmake/firmware-tools.cmake.
+
+Source repositories:
+https://github.com/Lekensteyn/dmg2img
+https://github.com/0x09/hfsfuse
+https://sourceware.org/bzip2/
+https://github.com/lzfse/lzfse
+https://github.com/libarchive/libarchive

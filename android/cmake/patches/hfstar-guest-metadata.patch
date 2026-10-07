@@ -1,0 +1,57 @@
+--- a/src/hfstar.c
++++ b/src/hfstar.c
+@@ -94,8 +94,23 @@
+ 	return relpath;
+ }
+ 
+-static void hfstar_write_automatic_xattrs(struct hfstar_archive_context* ctx, const char* path, hfs_catalog_keyed_record_t* rec, struct archive_entry* entry) {
++static void hfstar_write_automatic_xattrs(struct hfstar_archive_context* ctx, const char* path, hfs_catalog_keyed_record_t* rec, hfs_cnid_t entry_cnid, const struct stat* st, bool write_xattrs, struct archive_entry* entry) {
+ 	archive_entry_set_birthtime(entry,HFSTIMETOEPOCH(rec->file.date_created),0);
++	if(!write_xattrs)
++		return;
++
++	char numeric[32];
++	#define ADD_NUMERIC_XATTR(name,value) do { \
++		int length = snprintf(numeric,sizeof(numeric),"%" PRIu64,(uint64_t)(value)); \
++		if(length > 0 && (size_t)length < sizeof(numeric)) \
++			archive_entry_xattr_add_entry(entry,attrname(name),numeric,(size_t)length+1); \
++	} while(0)
++	ADD_NUMERIC_XATTR("hfsfuse.record.cnid",entry_cnid);
++	ADD_NUMERIC_XATTR("hfsfuse.record.owner_id",st->st_uid);
++	ADD_NUMERIC_XATTR("hfsfuse.record.group_id",st->st_gid);
++	ADD_NUMERIC_XATTR("hfsfuse.record.file_mode",st->st_mode);
++	ADD_NUMERIC_XATTR("hfsfuse.record.bsd_flags",(rec->file.bsd.admin_flags << 16) | rec->file.bsd.owner_flags);
++	#undef ADD_NUMERIC_XATTR
+ 
+ 	char timebuf[25];
+ 	struct tm t;
+@@ -313,6 +328,7 @@
+ 
+ static void hfstar_write_entry(struct hfstar_archive_context* ctx, const char* path, size_t pathlen, hfs_catalog_keyed_record_t* rec, bool* header_only) {
+ 	*header_only = false;
++	hfs_cnid_t entry_cnid = rec->file.cnid;
+ 
+ 	struct archive_entry* entry = archive_entry_new();
+ 	if(!entry) {
+@@ -382,14 +398,19 @@
+ 	if(ctx->symbolic_dir_links && directory_hardlink && *header_only)
+ 		archive_entry_set_filetype(entry,AE_IFLNK);
+ 	else archive_entry_set_filetype(entry,st.st_mode & AE_IFMT);
++	bool archive_symlink =
++		(ctx->symbolic_dir_links && directory_hardlink && *header_only) ||
++		(rec->type == HFS_REC_FILE &&
++		 (rec->file.bsd.file_mode & HFS_S_IFMT) == HFS_S_IFLNK);
+ 
+ 	// extra data exposed as extended attributes
+-	hfstar_write_automatic_xattrs(ctx,path,rec,entry);
++	hfstar_write_automatic_xattrs(ctx,path,rec,entry_cnid,&st,!archive_symlink,entry);
+ 	if(unrecoverable_err(ctx))
+ 		goto entry_end;
+ 
+ 	// extended attributes
+-	hfstar_write_user_defined_xattrs(ctx,path,rec,entry);
++	if(!archive_symlink)
++		hfstar_write_user_defined_xattrs(ctx,path,rec,entry);
+ 	if(unrecoverable_err(ctx))
+ 		goto entry_end;
+ 
