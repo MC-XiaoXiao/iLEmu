@@ -2334,8 +2334,8 @@ public:
             }
             diagnostics.checkpoint(PerfLatencyKind::CpuRunArtifactPreload);
             std::optional<AddressSpace::ParallelAccess> parallel_access;
-#if defined(__x86_64__) || defined(_M_X64)
-            if (cpu.parallel_memory_allowed_ && cooperative_execution &&
+            if (JitBackendCapabilities::parallel_memory_leases &&
+                cpu.parallel_memory_allowed_ && cooperative_execution &&
                 GuestExecutionCoordinator::in_execution_channel() &&
                 cpu.svc_dispatch_mode_ == SvcDispatchMode::Deferred &&
                 !single_step && !cpu.memory_write_watch_address_) {
@@ -2344,7 +2344,6 @@ public:
                 bind_memory_tables();
                 jit_->PrepareRun();
             }
-#endif
             callbacks_->limit_ticks(native_ticks);
             memory_yield_requested_.store(false, std::memory_order_relaxed);
             if (parallel_access)

@@ -30,6 +30,9 @@ struct JitBackendCapabilities {
 #else
     static constexpr bool runtime_memory_table_links = false;
 #endif
+    // Run/Step, cold lookup and exclusive callbacks coordinate the native
+    // lease with the existing checked-memory and reservation boundaries.
+    static constexpr bool parallel_memory_leases = runtime_memory_table_links;
 };
 
 } // namespace ilemu
