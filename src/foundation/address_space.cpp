@@ -20,6 +20,7 @@
 #include <sys/mman.h>
 
 #include "foundation/performance.hpp"
+#include "jit_backend_capabilities.hpp"
 
 namespace ilemu {
 namespace {
@@ -355,9 +356,8 @@ std::uint8_t** AddressSpace::jit_read_page_table()
     if (auto** table = parallel_table_locked(false))
         return table;
     bool direct_reads = !parallel_access_;
-#if defined(__x86_64__) || defined(_M_X64)
-    direct_reads = direct_reads || owns_exclusive_access();
-#endif
+    if constexpr (JitBackendCapabilities::runtime_memory_table_links)
+        direct_reads = direct_reads || owns_exclusive_access();
     if (!direct_reads) {
         // Checked stores update scalar values under the address-space lock.
         // A raw load on another lane could otherwise observe a partial store.
@@ -387,10 +387,8 @@ std::uint8_t** AddressSpace::jit_write_page_table()
     if (auto** table = parallel_table_locked(true))
         return table;
     bool direct_writes = !parallel_access_;
-#if defined(__x86_64__) || defined(_M_X64)
-    // The x64 backend reloads executor page-table links on every JIT entry.
-    direct_writes = direct_writes || owns_exclusive_access();
-#endif
+    if constexpr (JitBackendCapabilities::runtime_memory_table_links)
+        direct_writes = direct_writes || owns_exclusive_access();
     if (!direct_writes) {
         // Shared by every parallel lane. Serialized slices can select the
         // guarded private-write table through their executor's runtime link.

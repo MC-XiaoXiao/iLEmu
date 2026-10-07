@@ -19,6 +19,12 @@ struct JitBackendCapabilities {
     static constexpr bool precompile = false;
     static constexpr bool dispatch_counters = false;
 #endif
+    // Runtime links allow guarded page-table views to change between entries.
+#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
+    static constexpr bool runtime_memory_table_links = true;
+#else
+    static constexpr bool runtime_memory_table_links = false;
+#endif
 };
 
 } // namespace ilemu
