@@ -1835,6 +1835,18 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
             std::numeric_limits<std::uint64_t>::max() - mapping_size) {
         return 0;
     }
+    // File inspection can map executable image bytes as ordinary data. Keep
+    // those views intact; only callable mappings may receive entry patches.
+    // Shared-cache data exports have a separate resolver that needs no code.
+    const auto executable_mapping = memory_.accessible(
+        mapping_address, mapping_size, MemoryPermission::Execute);
+    if (!executable_mapping) {
+        if (image_header_offset)
+            return resolve_mapped_shared_cache_data_symbols(
+                source_path, mapping_address, mapping_size, file_offset);
+        if (!needs_data_symbol_mapping(path))
+            return 0;
+    }
     const auto hle_relevant = std::any_of(registrations_.begin(),
         registrations_.end(), [&](const Registration& registration) {
             return path_has_suffix(path, registration.image_suffix);
@@ -1888,6 +1900,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
     // alias that dyld can unload as soon as a bundle query finishes.
     const auto publish_symbol = [&](const std::string& name,
                                     std::uint32_t address, bool thumb) {
+        if (!memory_.accessible(address, 1U, MemoryPermission::Execute))
+            return;
         const auto existing = installed_symbols_.find(name);
         if (existing != installed_symbols_.end() &&
             existing->second != address &&
@@ -1909,6 +1923,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
             std::optional<std::pair<std::string, std::uint32_t>>
                 installed_symbol = std::nullopt) {
             if (instruction.empty() ||
+                !memory_.accessible(address, instruction.size(),
+                    MemoryPermission::Execute) ||
                 !pending_addresses.insert(address).second)
                 return false;
             pending_patches.push_back(PendingPatch { address,
