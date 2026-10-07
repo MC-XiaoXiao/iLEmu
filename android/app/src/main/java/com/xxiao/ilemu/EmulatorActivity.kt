@@ -14,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import java.io.File
 import org.libsdl.app.SDLActivity
+import com.xxiao.ilemu.containers.ContainerTasks
 
 class EmulatorActivity : SDLActivity() {
     private var hostSensors: HostSensors? = null
@@ -94,6 +95,7 @@ class EmulatorActivity : SDLActivity() {
             super.onDestroy()
         } finally {
             NativeBridge.releaseActivity()
+            intent.getStringExtra("containerId")?.let { ContainerTasks.sessionEnded(applicationContext, it) }
         }
     }
 
