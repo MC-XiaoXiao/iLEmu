@@ -32,12 +32,12 @@ internal class ContainerRepository(context: Context) {
         save(change(get(id)))
     }
 
-    fun removeOwned(id: String) = synchronized(lock) {
+    fun removeOwned(id: String) {
         val container = get(id)
         // A migrated rootfs remains owned by the user; remove only its list entry.
         if (!container.legacy) PosixFiles.delete(home(container))
         PosixFiles.delete(File(context.cacheDir, "containers/$id"))
-        write(list().filterNot { it.id == id })
+        synchronized(lock) { write(list().filterNot { it.id == id }) }
     }
 
     fun home(container: Container) = File(directory, container.id)
