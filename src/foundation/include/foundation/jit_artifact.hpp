@@ -30,6 +30,7 @@
 
 namespace Dynarmic::A32 {
 class NativeCodeSlab;
+class NativeCodeTemplate;
 }
 
 namespace Dynarmic::IR {
@@ -113,8 +114,8 @@ struct JitConstantDependency {
 };
 
 struct JitArtifactData {
-    // This is a normalized, portable representation. It is deliberately not a
-    // copy of Dynarmic's native code cache.
+    // The persistent payload is normalized portable IR. The optional native
+    // companion below is an opaque, process-local handle.
     std::vector<std::byte> normalized_ir;
     std::vector<std::uint64_t> relocation_targets;
     std::vector<std::uint64_t> exit_locations;
@@ -129,11 +130,19 @@ struct JitArtifactData {
     std::vector<JitCodeDependency> code_dependencies;
     // Read-only values folded by Dynarmic's constant-memory pass.
     std::vector<JitConstantDependency> constant_dependencies;
+    // Process-local reuse only. Native-only entries are budgeted by this store
+    // but never enter writeback, journals, or snapshots.
+    std::shared_ptr<const Dynarmic::A32::NativeCodeTemplate> native_template;
+    [[nodiscard]] bool native_only() const noexcept
+    {
+        return native_template != nullptr && normalized_ir.empty();
+    }
 };
 
 struct JitArtifactLimits {
     // Zero means unbounded. The default resident target matches the initial
-    // metadata budget; native code is still owned by Dynarmic's live cache.
+    // metadata budget, including any process-local native templates. Live
+    // executable code remains owned by Dynarmic's separate cache.
     std::size_t resident_bytes { 64U * 1024U * 1024U };
     std::size_t persistence_bytes { };
     // A disabled persistence store is a successful no-op on save and a cache
@@ -471,7 +480,7 @@ private:
     };
     struct ArtifactRecord {
         std::shared_ptr<const BlockArtifact> artifact;
-        std::size_t serialized_bytes { };
+        std::size_t resident_bytes { };
         std::list<const JitArtifactKey*>::iterator lru_position;
         bool loaded_from_disk { };
         bool startup_prefetched { };

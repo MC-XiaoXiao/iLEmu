@@ -27,6 +27,7 @@
 #include <utility>
 
 #include <dynarmic/interface/A32/a32.h>
+#include <dynarmic/interface/A32/native_code_template.h>
 
 #include "dynarmic_ir_artifact.hpp"
 #include "jit_backend_capabilities.hpp"
@@ -2525,6 +2526,14 @@ JitArtifactBackgroundPrepareResult JitArtifactStore::request_background_prepare(
             ++stats_.background_prepare_deduplicated;
             return JitArtifactBackgroundPrepareResult::Pending;
         }
+        // Native-only entries are consumed directly at a native miss. They
+        // have no portable payload for the background deserializer to prepare.
+        if (const auto resident = artifacts_.find(key);
+            resident != artifacts_.end() &&
+            resident->second.artifact->data.native_only() &&
+            !pending_writebacks_.contains(key) && !disk_artifacts_.contains(key)) {
+            return JitArtifactBackgroundPrepareResult::Unavailable;
+        }
         const bool available = artifacts_.contains(key) ||
                                pending_writebacks_.contains(key) ||
                                disk_artifacts_.contains(key);
@@ -2823,7 +2832,7 @@ void JitArtifactStore::evict_until_fit_locked(std::size_t required_bytes) const
         const auto iterator = artifacts_.find(key);
         if (iterator == artifacts_.end())
             continue;
-        resident_bytes_ -= iterator->second.serialized_bytes;
+        resident_bytes_ -= iterator->second.resident_bytes;
         ++stats_.evictions;
         ++stats_.payload_evictions;
         artifacts_.erase(iterator);
@@ -2835,6 +2844,15 @@ void JitArtifactStore::insert_locked(
     bool loaded_from_disk, bool startup_prefetched,
     JitArtifactRetention retention) const
 {
+    auto resident_bytes = serialized_bytes;
+    if (artifact->data.native_template) {
+        const auto native_bytes =
+            artifact->data.native_template->MemoryFootprint();
+        if (native_bytes >
+            std::numeric_limits<std::size_t>::max() - resident_bytes)
+            return;
+        resident_bytes += native_bytes;
+    }
     const auto& key = artifact->key;
     const auto* key_pointer = &key;
     if (const auto existing = artifacts_.find(key);
@@ -2848,15 +2866,15 @@ void JitArtifactStore::insert_locked(
         return;
     }
     if (limits_.resident_bytes != 0U &&
-        serialized_bytes > limits_.resident_bytes) {
+        resident_bytes > limits_.resident_bytes) {
         return;
     }
-    evict_until_fit_locked(serialized_bytes);
+    evict_until_fit_locked(resident_bytes);
     if (limits_.resident_bytes != 0U &&
-        resident_bytes_ > limits_.resident_bytes - serialized_bytes) {
+        resident_bytes_ > limits_.resident_bytes - resident_bytes) {
         return;
     }
-    if (serialized_bytes >
+    if (resident_bytes >
         std::numeric_limits<std::size_t>::max() - resident_bytes_) {
         return;
     }
@@ -2883,7 +2901,7 @@ void JitArtifactStore::insert_locked(
         boot_lru_begin_ = lru_position;
     }
     const auto [iterator, inserted] = artifacts_.try_emplace(key_pointer,
-        ArtifactRecord { std::move(artifact), serialized_bytes, lru_position,
+        ArtifactRecord { std::move(artifact), resident_bytes, lru_position,
             loaded_from_disk, startup_prefetched, false, benefit_generation,
             benefit_hits, boot_working_set });
     if (!inserted) {
@@ -2896,7 +2914,7 @@ void JitArtifactStore::insert_locked(
         touch_locked(iterator);
         return;
     }
-    resident_bytes_ += serialized_bytes;
+    resident_bytes_ += resident_bytes;
     if (loaded_from_disk)
         ++stats_.disk_loaded_entries;
 }
@@ -2905,7 +2923,8 @@ bool JitArtifactStore::enqueue_writeback_locked(
     const std::shared_ptr<const BlockArtifact>& artifact,
     std::size_t serialized_bytes, JitArtifactRetention retention) const
 {
-    if (writeback_disabled_ || persistence_path_.empty() ||
+    if (artifact->data.native_only() || writeback_disabled_ ||
+        persistence_path_.empty() ||
         !limits_.persistence_enabled || limits_.writeback_bytes == 0U ||
         disk_artifacts_.contains(artifact->key) ||
         pending_writebacks_.contains(artifact->key)) {
@@ -2980,9 +2999,23 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
         promote_retention_locked(key, retention);
         if (const auto existing = artifacts_.find(key);
             existing != artifacts_.end()) {
-            ++stats_.deduplicated_publishes;
-            touch_locked(existing);
-            return existing->second.artifact;
+            // Portable publication may replace an earlier transient template.
+            // The template never prevents explicit portable artifact creation.
+            if (!existing->second.artifact->data.native_only() ||
+                data.native_only()) {
+                ++stats_.deduplicated_publishes;
+                touch_locked(existing);
+                return existing->second.artifact;
+            }
+            if (existing->second.boot_working_set)
+                retention = JitArtifactRetention::BootWorkingSet;
+            if (existing->second.lru_position == boot_lru_begin_)
+                boot_lru_begin_ = std::next(boot_lru_begin_);
+            lru_.erase(existing->second.lru_position);
+            resident_bytes_ -= existing->second.resident_bytes;
+            artifacts_.erase(existing);
+            if (lru_.empty())
+                boot_lru_begin_ = lru_.end();
         }
         if (const auto pending = pending_writebacks_.find(key);
             pending != pending_writebacks_.end()) {
@@ -2995,7 +3028,8 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
         // The queue owns the immutable artifact before insert_locked can evict
         // a resident entry to make room for it.
         const auto requires_writeback =
-            !writeback_disabled_ && !persistence_path_.empty() &&
+            !artifact->data.native_only() && !writeback_disabled_ &&
+            !persistence_path_.empty() &&
             limits_.persistence_enabled && limits_.writeback_bytes != 0U &&
             !disk_artifacts_.contains(lookup_key);
         notify_writeback =
@@ -3371,11 +3405,12 @@ std::size_t JitArtifactStore::trim_resident_bytes(
             !artifact->second.boot_working_set &&
             artifact->second.artifact.use_count() == 1U) {
             const auto was_boot_begin = boot_lru_begin_ == iterator;
-            resident_bytes_ -= artifact->second.serialized_bytes;
+            resident_bytes_ -= artifact->second.resident_bytes;
             retire_writeback_locked(*key);
             ++stats_.evictions;
             ++stats_.payload_evictions;
             ++stats_.quota_evictions;
+            lru_.erase(iterator);
             artifacts_.erase(artifact);
             if (lru_.empty())
                 boot_lru_begin_ = lru_.end();
@@ -4352,7 +4387,8 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
                 if (disk_artifacts_.find(*key) != disk_artifacts_.end())
                     return;
                 const auto resident = artifacts_.find(*key);
-                if (resident != artifacts_.end()) {
+                if (resident != artifacts_.end() &&
+                    !resident->second.artifact->data.native_only()) {
                     new_artifacts.emplace_back(&resident->second.artifact->key,
                         resident->second.artifact);
                     return;
@@ -4751,7 +4787,8 @@ bool JitArtifactStore::save_full(const std::filesystem::path& path,
                     return;
                 }
                 const auto resident = artifacts_.find(key);
-                if (resident != artifacts_.end()) {
+                if (resident != artifacts_.end() &&
+                    !resident->second.artifact->data.native_only()) {
                     auto record = disk->second;
                     record.benefit_generation =
                         std::max(record.benefit_generation,
@@ -4793,6 +4830,10 @@ bool JitArtifactStore::save_full(const std::filesystem::path& path,
             }
             const auto append_resident_entry = [&entries, &emitted, this](
                                                    const JitArtifactKey& key) {
+                const auto transient = artifacts_.find(key);
+                if (transient != artifacts_.end() &&
+                    transient->second.artifact->data.native_only())
+                    return;
                 if (!emitted.insert(&key).second)
                     return;
                 const auto resident = artifacts_.find(key);
