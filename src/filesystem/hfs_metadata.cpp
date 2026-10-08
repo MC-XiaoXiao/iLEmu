@@ -376,16 +376,20 @@ std::optional<Metadata> MetadataProvider::query(
     result.mode =
         numeric_xattr(path, "user.hfsfuse.record.file_mode", follow_symlink)
             .value_or(static_cast<std::uint32_t>(status.st_mode));
-    result.owner =
-        numeric_xattr(path, "user.hfsfuse.record.owner_id", follow_symlink)
-            .value_or(
-                inherited_identity(root_, path, "user.hfsfuse.record.owner_id")
-                    .value_or(0));
-    result.group =
-        numeric_xattr(path, "user.hfsfuse.record.group_id", follow_symlink)
-            .value_or(
-                inherited_identity(root_, path, "user.hfsfuse.record.group_id")
-                    .value_or(0));
+    if (const auto owner =
+            numeric_xattr(path, "user.hfsfuse.record.owner_id", follow_symlink))
+        result.owner = *owner;
+    else
+        result.owner =
+            inherited_identity(root_, path, "user.hfsfuse.record.owner_id")
+                .value_or(0);
+    if (const auto group =
+            numeric_xattr(path, "user.hfsfuse.record.group_id", follow_symlink))
+        result.group = *group;
+    else
+        result.group =
+            inherited_identity(root_, path, "user.hfsfuse.record.group_id")
+                .value_or(0);
     result.flags =
         numeric_xattr(path, "user.hfsfuse.record.bsd_flags", follow_symlink)
             .value_or(0);
