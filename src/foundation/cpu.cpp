@@ -41,6 +41,7 @@
 #include <dynarmic/backend/x64/exclusive_monitor_friend.h>
 #include <dynarmic/frontend/A32/a32_ir_emitter.h>
 #include <dynarmic/interface/A32/coprocessor.h>
+#include <dynarmic/interface/A32/native_code_template.h>
 #include <dynarmic/ir/basic_block.h>
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -64,6 +65,19 @@ namespace {
     {
         const char* value = std::getenv(name);
         return value != nullptr && value[0] == '1';
+    }
+
+    [[nodiscard]] bool jit_native_template_enabled() noexcept
+    {
+#if defined(__aarch64__) || defined(_M_ARM64)
+        // Same-process templates reuse the full artifact identity and live
+        // dependencies. Keep a diagnostic opt-out for controlled comparisons.
+        static const bool enabled =
+            !jit_env_flag("ILEMU_JIT_DISABLE_NATIVE_TEMPLATES");
+        return enabled;
+#else
+        return false;
+#endif
     }
 
     [[nodiscard]] bool jit_demand_disabled() noexcept
@@ -644,14 +658,20 @@ public:
             translation_code_pages_.clear();
             translation_constant_dependencies_.clear();
             constant_dependency_failed_ = false;
+            produced_native_template_.reset();
         }
         if (translation_block_ == &ir.block &&
-            (portable_generation_location_ || explicit_artifact_publication_)) {
+            (portable_generation_location_ || explicit_artifact_publication_ ||
+                native_template_reuse_enabled())) {
             const auto page = address & ~(AddressSpace::page_size - 1U);
             if (std::find(translation_code_pages_.begin(),
                     translation_code_pages_.end(),
                     page) == translation_code_pages_.end()) {
-                translation_code_pages_.push_back(page);
+                try {
+                    translation_code_pages_.push_back(page);
+                } catch (...) {
+                    constant_dependency_failed_ = true;
+                }
             }
         }
         // This fork's translator continues normal decoding when the hook
@@ -674,6 +694,67 @@ public:
     {
         translation_completed(
             location_descriptor, translation_nanoseconds, &block);
+    }
+
+    [[nodiscard]] bool native_template_reuse_enabled() const noexcept
+    {
+        return artifact_store_ && jit_artifact_producer_fingerprint_available &&
+               jit_native_template_enabled();
+    }
+
+    void NativeCodeTemplateProduced(
+        std::shared_ptr<const Dynarmic::A32::NativeCodeTemplate> native_template)
+        noexcept override
+    {
+        produced_native_template_ = std::move(native_template);
+    }
+
+    std::shared_ptr<const Dynarmic::A32::NativeCodeTemplate>
+    NativeCodeTemplateLookup(
+        std::uint64_t location_descriptor) noexcept override
+    {
+        native_template_lookup_ = {};
+        if (!artifact_store_ || !jit_artifact_producer_fingerprint_available)
+            return {};
+        try {
+            const auto key = make_artifact_key(location_descriptor);
+            if (!key)
+                return {};
+            auto lookup = artifact_store_->lookup(
+                *key, artifact_retention_, false);
+            if (!lookup || !lookup.artifact->data.native_template ||
+                lookup.artifact->data.native_template->LocationDescriptor() !=
+                    location_descriptor ||
+                !dependencies_match(*lookup.artifact))
+                return {};
+            artifact_store_->record_validation_success();
+            native_template_lookup_ = std::move(lookup);
+            return native_template_lookup_.artifact->data.native_template;
+        } catch (...) {
+            return {};
+        }
+    }
+
+    void NativeCodeTemplateCompleted(std::uint64_t location_descriptor,
+        bool imported, bool newly_emitted) noexcept override
+    {
+        if (imported && newly_emitted) {
+            // Copying/linking native code is cold-path work, not a sample of
+            // steady-state guest throughput for the execution policy.
+            translated_code_ = true;
+            if (translation_recorder_) {
+                static_cast<void>(
+                    translation_recorder_->record(location_descriptor));
+            }
+        }
+        if (imported && native_template_lookup_ && artifact_store_) {
+            if (newly_emitted)
+                artifact_store_->record_native_imported(native_template_lookup_);
+            else
+                artifact_store_->record_already_present(native_template_lookup_);
+        }
+        native_template_lookup_ = {};
+        maybe_check_host_yield(0U, true);
     }
 
     [[nodiscard]] ArtifactImportOutcome import_artifact(Dynarmic::A32::Jit& jit,
@@ -1165,7 +1246,8 @@ private:
         std::uint32_t address, std::uint32_t size, std::uint64_t value)
     {
         if ((!portable_generation_location_ &&
-                !explicit_artifact_publication_) ||
+                !explicit_artifact_publication_ &&
+                !native_template_reuse_enabled()) ||
             translation_block_ == nullptr || constant_dependency_failed_) {
             return;
         }
@@ -1185,8 +1267,12 @@ private:
                 return;
             }
         }
-        translation_constant_dependencies_.push_back(JitConstantDependency {
-            address, size, value, identity->content, identity->layout });
+        try {
+            translation_constant_dependencies_.push_back(JitConstantDependency {
+                address, size, value, identity->content, identity->layout });
+        } catch (...) {
+            constant_dependency_failed_ = true;
+        }
     }
 
     [[nodiscard]] bool dependencies_match(
@@ -1262,11 +1348,9 @@ private:
         // compilations can exhaust a host slice before the execution probes
         // reach their count threshold, so check at every translation boundary.
         maybe_check_host_yield(0U, true);
-        // Ordinary guest execution is latency-sensitive. Artifact production
-        // remains reserved for an explicit precompile request, but a complete
-        // descriptor is retained in fixed executor-local storage for a later
-        // safe-point profile merge. No store lookup, IR serialization, or
-        // profile lock is allowed on this callback path.
+        // Ordinary translations retain their demand counters even when they
+        // publish an optional process-local native template. No IR serialization
+        // or disk work is performed by that transient publication.
         if (!portable_generation_location_ && !explicit_artifact_publication_) {
             if (translation_recorder_) {
                 static_cast<void>(
@@ -1274,6 +1358,10 @@ private:
             }
             performance_counters().record_jit_demand_translation(
                 process_id_, translation_nanoseconds);
+            if (produced_native_template_) {
+                static_cast<void>(publish_artifact(location_descriptor,
+                    translation_nanoseconds, nullptr));
+            }
             return;
         }
         const auto published = publish_artifact(
@@ -1882,7 +1970,13 @@ private:
                         dependency->content, dependency->layout });
             }
             data.constant_dependencies = translation_constant_dependencies_;
-            if (optimized_block != nullptr) {
+            if (!portable_generation_location_ &&
+                !explicit_artifact_publication_ &&
+                produced_native_template_ &&
+                produced_native_template_->LocationDescriptor() ==
+                    location_descriptor) {
+                data.native_template = std::move(produced_native_template_);
+            } else if (optimized_block != nullptr) {
                 const auto serialized = serialize_dynarmic_ir(*optimized_block);
                 if (!serialized)
                     return false;
@@ -2051,6 +2145,8 @@ private:
     std::shared_ptr<JitArtifactStore> artifact_store_;
     JitArtifactRetention artifact_retention_ { JitArtifactRetention::Normal };
     bool explicit_artifact_publication_ { };
+    std::shared_ptr<const Dynarmic::A32::NativeCodeTemplate> produced_native_template_;
+    JitArtifactLookup native_template_lookup_;
     std::optional<std::uint64_t> portable_generation_location_;
     bool portable_generation_published_ { };
     Dynarmic::IR::Block* translation_block_ { };
@@ -3129,6 +3225,7 @@ private:
         }
         Dynarmic::A32::UserConfig config { callbacks_.get() };
         config.native_code_slab = execution_context_->native_code_slab();
+        config.enable_native_code_templates = callbacks_->native_template_reuse_enabled();
         config.callbacks_link = runtime_link_cell_address_;
         if (performance_counters().native_lookup_diagnostics_enabled()) {
             config.native_code_block_lookup_callback =
