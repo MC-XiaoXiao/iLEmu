@@ -630,7 +630,9 @@ private:
     // physical backing becomes write-tracked in another address space.  Keep a
     // sparse index instead of rescanning every resident guest page at each
     // CoreSurface/Mach shared-memory publication.
-    std::unordered_set<std::uint32_t> direct_jit_write_pages_;
+    // Reservations revoke and restore these entries frequently. Reuse flat
+    // buckets instead of allocating a node on every restored write pointer.
+    tsl::robin_pg_set<std::uint32_t> direct_jit_write_pages_;
     // Reservation aliases can only be shared-writable direct entries.
     tsl::robin_pg_set<std::uint32_t> direct_shared_jit_write_pages_;
     bool jit_page_table_enabled_ { };
