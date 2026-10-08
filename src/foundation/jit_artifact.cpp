@@ -18,6 +18,7 @@
 #include <span>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <sys/file.h>
 #include <sys/resource.h>
 #include <system_error>
@@ -25,6 +26,8 @@
 #include <unistd.h>
 #include <unordered_set>
 #include <utility>
+
+#include <boost/container_hash/hash.hpp>
 
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/A32/native_code_template.h>
@@ -2189,23 +2192,32 @@ std::size_t JitArtifactKeyHash::operator()(
     const JitArtifactKey& key) const noexcept
 {
     auto hash = std::size_t { 0 };
-    hash_identity(hash, key.content_identity);
-    hash_identity(hash, key.layout_identity);
-    hash_scalar(hash, key.guest_pc);
-    hash_scalar(hash, key.thumb);
-    hash_scalar(hash, key.location_descriptor);
-    hash_scalar(hash, key.architecture);
-    hash_scalar(hash, key.cpu_model);
-    hash_scalar(hash, key.timing_model_version);
-    hash_scalar(hash, key.guest_ticks_per_second);
-    hash_scalar(hash, key.image_slide);
-    hash_scalar(hash, key.hle_abi_version);
-    hash_scalar(hash, key.backend_abi_version);
-    hash_scalar(hash, key.dynarmic_build_fingerprint);
-    hash_scalar(hash, key.codegen_options);
-    hash_scalar(hash, key.host_isa);
-    hash_scalar(hash, key.host_feature_mask);
-    hash_scalar(hash, key.artifact_format_version);
+    // This hash selects an in-memory bucket; equality still compares the full
+    // key. Hash each complete digest with the standard library's byte-range
+    // implementation and combine scalar values rather than serializing them.
+    const auto combine_identity = [&hash](const ContentIdentity& identity) {
+        const std::string_view bytes {
+            reinterpret_cast<const char*>(identity.digest.data()),
+            identity.digest.size() };
+        boost::hash_combine(hash, std::hash<std::string_view> { }(bytes));
+    };
+    combine_identity(key.content_identity);
+    combine_identity(key.layout_identity);
+    boost::hash_combine(hash, key.guest_pc);
+    boost::hash_combine(hash, key.thumb);
+    boost::hash_combine(hash, key.location_descriptor);
+    boost::hash_combine(hash, static_cast<std::uint8_t>(key.architecture));
+    boost::hash_combine(hash, static_cast<std::uint8_t>(key.cpu_model));
+    boost::hash_combine(hash, key.timing_model_version);
+    boost::hash_combine(hash, key.guest_ticks_per_second);
+    boost::hash_combine(hash, key.image_slide);
+    boost::hash_combine(hash, key.hle_abi_version);
+    boost::hash_combine(hash, key.backend_abi_version);
+    boost::hash_combine(hash, key.dynarmic_build_fingerprint);
+    boost::hash_combine(hash, key.codegen_options);
+    boost::hash_combine(hash, static_cast<std::uint8_t>(key.host_isa));
+    boost::hash_combine(hash, key.host_feature_mask);
+    boost::hash_combine(hash, key.artifact_format_version);
     return hash;
 }
 
