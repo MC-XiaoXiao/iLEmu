@@ -55,8 +55,9 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
                 consumer_processor_ = consumer.processor;
                 state_->hid_event_queue.open(consumer);
                 accelerometer_.stop();
-                if (completed.symbol_address(
-                        "_IOHIDEventCreateAccelerometerEvent"))
+                if (completed.symbol_address("_IOHIDEventCreateAccelerometerEvent") &&
+                    completed.symbol_address("_IOHIDEventCreate") &&
+                    completed.symbol_address("_IOHIDEventSetFloatValue"))
                     accelerometer_.start(state_->clock.now());
                 state_->note_kernel_event_transition();
             });
@@ -149,7 +150,9 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
         { "_IOHIDEventCreateDigitizerEvent", "_IOHIDEventCreateKeyboardEvent",
             "_IOHIDEventAppendEvent", "__IOHIDEventSystemDispatchEvent",
             "___IOHIDEventSystemEventCallback",
-            "_IOHIDEventCreateAccelerometerEvent", "_IOHIDEventSetSenderID",
+            "_IOHIDEventCreateAccelerometerEvent", "_IOHIDEventCreate",
+            "_IOHIDEventSetFloatValue",
+            "_IOHIDEventSetSenderID",
             "_IOHIDEventSystemCopyService", "___IOHIDServiceEventCallback" }) {
         registry_.register_guest_function("/IOKit", symbol);
     }

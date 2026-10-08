@@ -40,7 +40,14 @@ namespace {
 
     constexpr auto create_digitizer = "_IOHIDEventCreateDigitizerEvent";
     constexpr auto create_keyboard = "_IOHIDEventCreateKeyboardEvent";
-    constexpr auto create_accelerometer = "_IOHIDEventCreateAccelerometerEvent";
+    struct Arm32AccelerationEventAbi {
+        static constexpr std::uint32_t type = 13U;
+        static constexpr std::uint32_t first_axis = type << 16U;
+        static constexpr std::size_t axis_count = 3U;
+    };
+
+    constexpr auto create_event = "_IOHIDEventCreate";
+    constexpr auto set_float = "_IOHIDEventSetFloatValue";
     constexpr auto dispatch_service = "___IOHIDServiceEventCallback";
     constexpr auto copy_service = "_IOHIDEventSystemCopyService";
     constexpr auto create_number = "_CFNumberCreate";
@@ -138,7 +145,7 @@ namespace {
             return registry.queue_guest_function(
                 step_ == Step::Hand       ? create_digitizer
                 : step_ == Step::Keyboard ? create_keyboard
-                                          : create_accelerometer,
+                                          : create_event,
                 processor,
                 [self = shared_from_this()](
                     UserlandHleCall& call) { self->setup(call); },
@@ -149,6 +156,7 @@ namespace {
     private:
         enum class Step {
             Accelerometer,
+            AccelerationAxis,
             Keyboard,
             Hand,
             Finger,
@@ -169,20 +177,26 @@ namespace {
         {
             auto& r = call.cpu().registers();
             switch (step_) {
-            case Step::Accelerometer: {
-                const auto& acceleration =
-                    std::get<HidEventQueue::Acceleration>(event_.input);
+            case Step::Accelerometer:
+                // Let the firmware select its complete event data size. The
+                // specialized axis constructor may allocate an older payload
+                // size than its own event validation/copy routines require.
                 r[13] -= 16U;
                 r[0] = 0U;
-                r[1] = static_cast<std::uint32_t>(event_.timestamp);
-                r[2] = static_cast<std::uint32_t>(event_.timestamp >> 32U);
-                r[3] = std::bit_cast<std::uint32_t>(acceleration.x);
-                const std::array<std::uint32_t, 3> arguments {
-                    std::bit_cast<std::uint32_t>(acceleration.y),
-                    std::bit_cast<std::uint32_t>(acceleration.z), 0U
+                r[1] = Arm32AccelerationEventAbi::type;
+                r[2] = static_cast<std::uint32_t>(event_.timestamp);
+                r[3] = static_cast<std::uint32_t>(event_.timestamp >> 32U);
+                static_cast<void>(call.memory().write32(r[13], 0U));
+                break;
+            case Step::AccelerationAxis: {
+                const auto& acceleration =
+                    std::get<HidEventQueue::Acceleration>(event_.input);
+                const std::array axes {
+                    acceleration.x, acceleration.y, acceleration.z
                 };
-                static_cast<void>(call.memory().copy_in(
-                    r[13], std::as_bytes(std::span { arguments })));
+                r[0] = root_event_;
+                r[1] = Arm32AccelerationEventAbi::first_axis + acceleration_axis_;
+                r[2] = std::bit_cast<std::uint32_t>(axes[acceleration_axis_]);
                 break;
             }
             case Step::Keyboard: {
@@ -279,11 +293,26 @@ namespace {
             const char* symbol = nullptr;
             switch (step_) {
             case Step::Accelerometer:
+                root_event_ = call.argument(0);
+                if (!root_event_) {
+                    completion_();
+                    return;
+                }
+                step_ = Step::AccelerationAxis;
+                symbol = set_float;
+                break;
             case Step::Keyboard:
                 root_event_ = call.argument(0);
                 if (!root_event_) {
                     completion_();
                     return;
+                }
+                [[fallthrough]];
+            case Step::AccelerationAxis:
+                if (step_ == Step::AccelerationAxis &&
+                    ++acceleration_axis_ < Arm32AccelerationEventAbi::axis_count) {
+                    symbol = set_float;
+                    break;
                 }
                 step_ = Step::Dispatch;
                 symbol = "__IOHIDEventSystemDispatchEvent";
@@ -386,6 +415,7 @@ namespace {
         std::uint64_t sender_id_ { };
         Completion completion_;
         Step step_;
+        std::uint32_t acceleration_axis_ { };
         std::uint32_t root_event_ { };
         std::uint32_t finger_ { };
         std::uint32_t sender_number_ { };
