@@ -1752,11 +1752,15 @@ bool GuestPageBacking::flush_file()
 
 bool FilePageCache::Key::operator<(const Key& other) const
 {
-    return std::tie(path, generation, generation_revision, content_identity,
-               file_offset, byte_count, immutable_snapshot, shared_vnode, derived_immutable) <
-           std::tie(other.path, other.generation, other.generation_revision,
-               other.content_identity, other.file_offset, other.byte_count,
-               other.immutable_snapshot, other.shared_vnode, other.derived_immutable);
+    // Pages of one image share the pathname and complete backing identity.
+    // Compare their cheap offset first; retain every identity field for ties.
+    return std::tie(file_offset, path, generation, generation_revision,
+               content_identity, byte_count, immutable_snapshot, shared_vnode,
+               derived_immutable) <
+           std::tie(other.file_offset, other.path, other.generation,
+               other.generation_revision, other.content_identity,
+               other.byte_count, other.immutable_snapshot, other.shared_vnode,
+               other.derived_immutable);
 }
 
 void FilePageCache::touch_locked(std::map<Key, PageRecord>::iterator iterator)
