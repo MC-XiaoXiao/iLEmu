@@ -1916,6 +1916,10 @@ bool AddressSpace::range_accessible_locked(
     }
     const auto first = page_base(address);
     const auto end = page_range_end(address, size);
+    // The VM interval map owns the same page-rounded protections. Keep the
+    // byte index for scalar accesses; large spans need one query per region.
+    if (end - first > page_size)
+        return vm_map_.accessible(first, end, access);
     const auto required = permission_bits(access);
     for (std::uint64_t base = first; base < end; base += page_size) {
         const auto flags = page_permission_locked(base / page_size);
