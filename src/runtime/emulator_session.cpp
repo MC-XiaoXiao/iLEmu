@@ -3956,6 +3956,7 @@ void EmulatorSession::run()
             const auto index = prepared.thread_index;
             auto& cpu = *prepared.execution.cpu;
             auto result = std::move(prepared.execution.result);
+            auto host_execution_ns = result.host_execution_ns;
             if (prepared.host_tick_budget_limited &&
                 result.ticks_consumed >= prepared.execution.tick_budget)
                 result.host_yielded = true;
@@ -3992,9 +3993,13 @@ void EmulatorSession::run()
                 result.host_execution_ns, prepared.deferred_svc,
                 result.translated_code);
             if (prepared.deferred_svc && result.svc) {
+                const auto dispatch_started = std::chrono::steady_clock::now();
                 active_thread_accounting = std::pair {
                     scheduled->thread, result.ticks_consumed };
                 runtime.kernel->dispatch(cpu, *result.svc);
+                host_execution_ns += static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - dispatch_started).count());
                 active_thread_accounting.reset();
                 // UserDefined2 is shared by deferred SVC and host cooperation.
                 // The explicit host-only marker remains attached to the result;
@@ -4246,8 +4251,9 @@ void EmulatorSession::run()
                 display_yielded_thread = scheduled->thread;
             }
             if (!scheduler_completed) {
-                guest_execution_policy.observe(scheduled->thread, completion,
-                    result.translated_code);
+                completion = guest_execution_policy.observe(scheduled->thread,
+                    completion, result.translated_code, host_execution_ns,
+                    prepared.execution.host_slice_budget);
                 const auto slice_completed = scheduler.complete_slice(
                     scheduled->thread, result.ticks_consumed, completion,
                     XnuTimeAccounting::Deferred);

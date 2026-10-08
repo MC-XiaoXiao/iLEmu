@@ -37,8 +37,12 @@ public:
     // hot-code throughput sample. Keep its next slice at the low-latency
     // starting budget so display and input peers can run while demand JIT is
     // still building the working set.
-    void observe(XnuThreadId thread, XnuSliceCompletion completion,
-        bool translated_code = false);
+    // Cache invalidation and deferred entries can split one continuation into
+    // many short runs. Accumulate their host execution before renewing its
+    // cooperation budget, without changing XNU time or priority accounting.
+    XnuSliceCompletion observe(XnuThreadId thread, XnuSliceCompletion completion,
+        bool translated_code = false, std::uint64_t host_execution_ns = 0,
+        std::chrono::nanoseconds host_slice_budget = {});
     void forget(XnuThreadId thread);
     void forget_process(std::uint32_t process_id);
 
@@ -46,6 +50,7 @@ private:
     struct ThreadHistory {
         std::uint8_t saturation_level { };
         bool translation_active { };
+        std::uint64_t continuation_host_ns { };
     };
 
     static constexpr std::uint8_t maximum_saturation_level = 2;

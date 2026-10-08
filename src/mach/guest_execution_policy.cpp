@@ -116,20 +116,35 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
     return std::clamp(result, minimum_budget_, throughput_budget_);
 }
 
-void GuestExecutionPolicy::observe(
-    XnuThreadId thread, XnuSliceCompletion completion, bool translated_code)
+XnuSliceCompletion GuestExecutionPolicy::observe(
+    XnuThreadId thread, XnuSliceCompletion completion, bool translated_code,
+    std::uint64_t host_execution_ns, std::chrono::nanoseconds host_slice_budget)
 {
     if (completion == XnuSliceCompletion::Terminate) {
         histories_.erase(thread);
-        return;
+        return completion;
     }
     auto history = histories_.find(thread);
+    if (completion == XnuSliceCompletion::Continue && host_execution_ns != 0 &&
+        host_slice_budget > std::chrono::nanoseconds::zero()) {
+        if (history == histories_.end())
+            history = histories_.try_emplace(thread).first;
+        auto& used = history->second.continuation_host_ns;
+        const auto cap = static_cast<std::uint64_t>(throughput_budget_.count());
+        used += std::min(host_execution_ns, cap - used);
+        if (used >= static_cast<std::uint64_t>(host_slice_budget.count())) {
+            completion = XnuSliceCompletion::HostCooperate;
+            used = 0;
+        }
+    } else if (history != histories_.end()) {
+        history->second.continuation_host_ns = 0;
+    }
     if (translated_code) {
         if (history == histories_.end())
             history = histories_.try_emplace(thread).first;
         history->second.translation_active = true;
         history->second.saturation_level = 0U;
-        return;
+        return completion;
     }
     if (completion == XnuSliceCompletion::HostCooperate) {
         if (history == histories_.end())
@@ -137,16 +152,17 @@ void GuestExecutionPolicy::observe(
         history->second.translation_active = false;
         history->second.saturation_level = std::min<std::uint8_t>(
             maximum_saturation_level, history->second.saturation_level + 1U);
-        return;
+        return completion;
     }
     if (history == histories_.end())
-        return;
+        return completion;
     history->second.translation_active = false;
     if (history->second.saturation_level > 1U) {
         --history->second.saturation_level;
-    } else {
+    } else if (history->second.continuation_host_ns == 0) {
         histories_.erase(history);
     }
+    return completion;
 }
 
 void GuestExecutionPolicy::forget(XnuThreadId thread)
