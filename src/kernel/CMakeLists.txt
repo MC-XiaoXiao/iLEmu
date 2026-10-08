@@ -6,6 +6,8 @@ add_library(ilemu_kernel_api INTERFACE)
 add_library(iLEmu::kernel_api ALIAS ilemu_kernel_api)
 target_include_directories(ilemu_kernel_api INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
+target_include_directories(ilemu_kernel_api SYSTEM INTERFACE
+    "${ILEMU_BOOST_DIR}")
 target_link_libraries(ilemu_kernel_api INTERFACE
     iLEmu::device_state
     iLEmu::foundation

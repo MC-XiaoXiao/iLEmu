@@ -10,6 +10,8 @@
 
 #include "kernel/darwin_file_guard.hpp"
 #include "kernel/darwin_signal_state.hpp"
+#include <boost/container/flat_map.hpp>
+#include <boost/container/small_vector.hpp>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -950,10 +952,13 @@ private:
         const KernelSharedState::DescriptorTransfer& transfer);
     [[nodiscard]] bool descriptor_readable(std::uint32_t fd) const;
     [[nodiscard]] bool descriptor_writable(std::uint32_t fd) const;
+    using DescriptorPollVisited = boost::container::flat_map<std::uint32_t,
+        bool, std::less<std::uint32_t>,
+        boost::container::small_vector<std::pair<std::uint32_t, bool>, 16>>;
     [[nodiscard]] bool descriptor_requires_host_poll(
         std::uint32_t fd) const;
     [[nodiscard]] bool descriptor_requires_host_poll(std::uint32_t fd,
-        std::unordered_set<std::uint32_t>& visited) const;
+        DescriptorPollVisited& visited) const;
     [[nodiscard]] bool descriptor_valid(std::uint32_t fd) const;
     [[nodiscard]] std::uint16_t descriptor_poll_revents(
         std::int32_t fd, std::uint16_t events) const;

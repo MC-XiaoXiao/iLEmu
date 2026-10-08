@@ -1408,8 +1408,8 @@ bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const
 bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd) const
 {
     // Most pending waits refer to leaf descriptors. Avoid allocating a cycle
-    // guard for those immutable terminal cases; recursive traversal remains
-    // unchanged for dup chains and kqueues with active read/write knotes.
+    // guard for those immutable terminal cases; recursive traversal handles
+    // dup chains and kqueues with active read/write knotes.
     if (!duplicated_descriptors_.contains(fd)) {
         if (host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
             bpf_descriptors_.contains(fd) ||
@@ -1435,44 +1435,52 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd) const
         if (!active)
             return false;
     }
-    std::unordered_set<std::uint32_t> visited;
+    DescriptorPollVisited visited;
     return descriptor_requires_host_poll(fd, visited);
 }
 
 bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd,
-    std::unordered_set<std::uint32_t>& visited) const
+    DescriptorPollVisited& visited) const
 {
-    // A descriptor cycle is invalid Guest state, but treating it as host
-    // sensitive preserves forward progress without recursively polling it.
-    if (!visited.insert(fd).second)
-        return true;
-    if (const auto duplicate = duplicated_descriptors_.find(fd);
-        duplicate != duplicated_descriptors_.end()) {
-        return descriptor_requires_host_poll(duplicate->second, visited);
-    }
-    if (host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
-        bpf_descriptors_.contains(fd) || wifi_driver_event_streams_.contains(fd)) {
-        return true;
-    }
-    if (const auto kind = virtual_descriptors_.find(fd);
-        kind != virtual_descriptors_.end() &&
-        (kind->second == bsd::baseband_device::descriptor_kind ||
-            kind->second == bsd::offline_serial_device::descriptor_kind ||
-                kind->second == CompassDevice::descriptor_kind)) {
-        return true;
-    }
+    const auto duplicate = duplicated_descriptors_.find(fd);
     const auto queue = kqueues_.find(fd);
-    if (queue == kqueues_.end())
-        return false;
+    if (duplicate == duplicated_descriptors_.end()) {
+        if (host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
+            bpf_descriptors_.contains(fd) || wifi_driver_event_streams_.contains(fd)) {
+            return true;
+        }
+        if (const auto kind = virtual_descriptors_.find(fd);
+            kind != virtual_descriptors_.end() &&
+            (kind->second == bsd::baseband_device::descriptor_kind ||
+                kind->second == bsd::offline_serial_device::descriptor_kind ||
+                kind->second == CompassDevice::descriptor_kind)) {
+            return true;
+        }
+        if (queue == kqueues_.end())
+            return false;
+    }
+    // An unfinished node is a cycle and conservatively needs host polling.
+    // Memoize completed negative results so converging knotes are not cycles.
+    const auto [entry, inserted] = visited.try_emplace(fd, true);
+    if (!inserted)
+        return entry->second;
+    if (duplicate != duplicated_descriptors_.end()) {
+        const auto requires_poll =
+            descriptor_requires_host_poll(duplicate->second, visited);
+        visited.find(fd)->second = requires_poll;
+        return requires_poll;
+    }
     for (const auto& registration : queue->second) {
         if (!registration.enabled ||
             (registration.filter != darwin::kqueue::filter_read &&
                 registration.filter != darwin::kqueue::filter_write)) {
             continue;
         }
-        if (descriptor_requires_host_poll(static_cast<std::uint32_t>(registration.ident), visited))
+        if (descriptor_requires_host_poll(
+                static_cast<std::uint32_t>(registration.ident), visited))
             return true;
     }
+    visited.find(fd)->second = false;
     return false;
 }
 
