@@ -21,6 +21,7 @@
 
 #include "foundation/performance.hpp"
 #include "jit_backend_capabilities.hpp"
+#include "executable_identity_cache.hpp"
 
 namespace ilemu {
 namespace {
@@ -2308,6 +2309,12 @@ AddressSpace::executable_backing_identity(
             mapping.file_offset + (static_cast<std::uint64_t>(page_address) -
                                       mapping_iterator->first);
         const auto identity = mapping.backing->content_identity;
+        if (end - page_base(address) == page_size) {
+            // All live eligibility checks above still run under the memory
+            // read lock. Cache only the deterministic single-page digests.
+            static thread_local ExecutableIdentityCache identity_cache;
+            return identity_cache.get(identity, base, mapping.end, file_offset);
+        }
         if (std::find(source_identities.begin(), source_identities.end(),
                 identity) == source_identities.end()) {
             source_identities.push_back(identity);
