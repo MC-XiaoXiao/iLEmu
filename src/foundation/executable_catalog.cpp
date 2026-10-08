@@ -764,17 +764,20 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
                relative.begin() != relative.end() && *relative.begin() != "..";
     };
 
+    // Snapshot the aliases once. Descendants form a contiguous range in path
+    // order, so only the first alias after a subtree can establish its old
+    // directory shape. Avoid scanning every image for every data notification.
+    std::set<std::filesystem::path> catalog_paths;
+    for (const auto& entry : storage_->entries) {
+        catalog_paths.insert(entry.aliases.begin(), entry.aliases.end());
+    }
     std::set<std::filesystem::path> requested_files;
     std::set<std::filesystem::path> requested_subtrees;
     const auto has_catalog_descendant =
-        [this, &is_in_subtree](const std::filesystem::path& subtree) {
-            for (const auto& entry : storage_->entries) {
-                for (const auto& alias : entry.aliases) {
-                    if (alias != subtree && is_in_subtree(alias, subtree))
-                        return true;
-                }
-            }
-            return false;
+        [&catalog_paths, &is_in_subtree](const std::filesystem::path& subtree) {
+            const auto descendant = catalog_paths.upper_bound(subtree);
+            return descendant != catalog_paths.end() &&
+                   is_in_subtree(*descendant, subtree);
         };
     for (const auto& path : paths) {
         const auto normalized = normalize_path(path);
@@ -786,7 +789,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
         const bool current_directory =
             !status_error && std::filesystem::is_directory(status);
         const bool replaced_catalog_subtree =
-            has_catalog_descendant(normalized);
+            !current_directory && has_catalog_descendant(normalized);
         // A removed directory has no status to inspect.  Existing catalog
         // aliases are the authoritative shape of that old subtree, so retain
         // the directory scope even after the host path has disappeared.  This
@@ -801,6 +804,20 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
         } else {
             requested_files.insert(normalized);
         }
+    }
+
+    // Only coalesce removal scopes. Keep every requested scan: a nested scope
+    // can traverse a directory symlink that ancestor enumeration does not follow.
+    // Disjoint removal scopes let each alias use a single predecessor lookup.
+    auto removal_subtrees = requested_subtrees;
+    for (auto subtree = removal_subtrees.begin();
+        subtree != removal_subtrees.end();) {
+        auto next = std::next(subtree);
+        while (next != removal_subtrees.end() &&
+               is_in_subtree(*next, *subtree)) {
+            next = removal_subtrees.erase(next);
+        }
+        subtree = next;
     }
 
     ExecutableCatalogScanSummary summary;
@@ -837,16 +854,12 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
     }
 
     std::set<std::filesystem::path> old_paths;
-    for (const auto& entry : storage_->entries) {
-        for (const auto& alias : entry.aliases) {
-            if (requested_files.contains(alias) ||
-                std::any_of(requested_subtrees.begin(),
-                    requested_subtrees.end(),
-                    [&alias, &is_in_subtree](const auto& subtree) {
-                        return is_in_subtree(alias, subtree);
-                    })) {
-                old_paths.insert(alias);
-            }
+    for (const auto& alias : catalog_paths) {
+        const auto next_scope = removal_subtrees.upper_bound(alias);
+        if (requested_files.contains(alias) ||
+            (next_scope != removal_subtrees.begin() &&
+                is_in_subtree(alias, *std::prev(next_scope)))) {
+            old_paths.insert(alias);
         }
     }
     for (const auto& old_path : old_paths) {
