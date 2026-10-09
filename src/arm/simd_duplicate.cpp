@@ -6,7 +6,7 @@ namespace ilemu::arm {
 bool decode_simd_duplicate(
     Instruction& out, std::uint32_t word, bool thumb) noexcept
 {
-    auto& v = out.vector_duplicate;
+    VectorDuplicateOperands v;
     if ((word & (thumb ? 0xff900f5fU : 0x0f900f5fU)) ==
             (thumb ? 0xee800b10U : 0x0e800b10U) &&
         (thumb || out.condition != 15)) {
@@ -35,6 +35,7 @@ bool decode_simd_duplicate(
     } else
         return false;
     out.kind = InstructionKind::VectorDuplicate;
+    out.vector = v;
     return true;
 }
 }

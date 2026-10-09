@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include <cstdint>
+#include <variant>
 
 namespace ilemu::arm {
 
@@ -19,7 +20,8 @@ enum class InstructionKind {
     CompareBranch,
     WideImmediate,
     PackHalfword,
-    VectorDuplicate
+    VectorDuplicate,
+    VectorBitwise
 };
 enum class ShiftKind { Lsl, Lsr, Asr, Ror };
 // Data-processing uses A32 opcode numbers; Thumb adds ORN to that set.
@@ -31,6 +33,16 @@ struct VectorDuplicateOperands {
     unsigned element_bits = 0, lane = 0;
     bool quad = false, core_source = false;
 };
+enum class VectorBitwiseOperation {
+    And, BitClear, Or, OrNot, Xor, Select, InsertIfTrue, InsertIfFalse, Not
+};
+struct VectorBitwiseOperands {
+    unsigned destination = 0, first = 0, second = 0;
+    VectorBitwiseOperation operation = VectorBitwiseOperation::And;
+    bool quad = false;
+};
+using VectorOperands =
+    std::variant<VectorDuplicateOperands, VectorBitwiseOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.
@@ -52,7 +64,7 @@ struct Instruction {
     unsigned access_size = 0;
     bool load = false, sign_extend = false;
     bool add = true, index = true, writeback = false;
-    VectorDuplicateOperands vector_duplicate;
+    VectorOperands vector;
 };
 
 }

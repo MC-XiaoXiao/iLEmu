@@ -423,7 +423,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     emit.integer().pack_halfword(inst);
                     break;
                 case arm::InstructionKind::VectorDuplicate:
-                    SimdEmitter { emit.code() }.duplicate(inst.vector_duplicate);
+                    SimdEmitter { emit.code() }.duplicate(
+                        std::get<arm::VectorDuplicateOperands>(inst.vector));
+                    break;
+                case arm::InstructionKind::VectorBitwise:
+                    SimdEmitter { emit.code() }.bitwise(
+                        std::get<arm::VectorBitwiseOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::DataProcessing:
                     emit.integer().alu(inst, pc);

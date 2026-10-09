@@ -4,6 +4,7 @@
 #include "t32_shifted.hpp"
 #include "t32_transfer.hpp"
 #include "simd_duplicate.hpp"
+#include "simd_bitwise.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -37,7 +38,8 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if (decode_simd_duplicate(out, (word << 16U) | tail, true))
+        if (decode_simd_duplicate(out, (word << 16U) | tail, true) ||
+            decode_simd_bitwise(out, (word << 16U) | tail, true))
             return out;
         if ((word & 0xfe00U) == 0xf800U) {
             decode_t32_transfer(out, word, tail, last);

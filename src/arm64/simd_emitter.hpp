@@ -8,8 +8,11 @@ class SimdEmitter {
 public:
     explicit SimdEmitter(oaknut::VectorCodeGenerator& code) : code_(code) { }
     void duplicate(const arm::VectorDuplicateOperands&);
+    void bitwise(const arm::VectorBitwiseOperands&);
 
 private:
+    void load(oaknut::VReg, unsigned d, bool quad);
+    void store(oaknut::VReg, unsigned d, bool quad);
     oaknut::VectorCodeGenerator& code_;
 };
 }

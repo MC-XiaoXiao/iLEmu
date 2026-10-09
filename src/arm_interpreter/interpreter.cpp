@@ -254,7 +254,12 @@ RunResult ArmInterpreter::run(
                 break;
             }
             case arm::InstructionKind::VectorDuplicate:
-                duplicate_vector(state, inst.vector_duplicate);
+                duplicate_vector(state,
+                    std::get<arm::VectorDuplicateOperands>(inst.vector));
+                break;
+            case arm::InstructionKind::VectorBitwise:
+                bitwise_vector(state,
+                    std::get<arm::VectorBitwiseOperands>(inst.vector));
                 break;
             case arm::InstructionKind::WideImmediate:
                 state.registers[inst.rd] =
