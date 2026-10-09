@@ -243,6 +243,15 @@ RunResult ArmInterpreter::run(
                 if (inst.rd == 15 && (inst.opcode < 8 || inst.opcode > 11))
                     state.registers[15] &= ~1U; // Thumb ALUWritePC
                 break;
+            case arm::InstructionKind::PackHalfword: {
+                const auto shifted = arm::shift(state.registers[inst.rm],
+                    inst.shift, inst.shift_amount, false, false).value;
+                const auto a = state.registers[inst.rn];
+                state.registers[inst.rd] = inst.shift == arm::ShiftKind::Lsl
+                    ? (a & 0xffffU) | (shifted & 0xffff0000U)
+                    : (a & 0xffff0000U) | (shifted & 0xffffU);
+                break;
+            }
             case arm::InstructionKind::WideImmediate:
                 state.registers[inst.rd] =
                     inst.opcode != 0 ? (state.registers[inst.rd] & 0xffffU) |

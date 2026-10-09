@@ -312,6 +312,19 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
         merge_nz();
     }
 }
+void IntegerEmitter::pack_halfword(const arm::Instruction& inst)
+{
+    shifter(inst, 0, false);
+    const WReg a { static_cast<int>(inst.rn) },
+        d { static_cast<int>(inst.rd) };
+    if (inst.shift == arm::ShiftKind::Lsl) {
+        code_.BFI(W16, a, 0, 16);
+        code_.MOV(d, W16);
+    } else {
+        code_.MOV(d, a);
+        code_.BFI(d, W16, 0, 16);
+    }
+}
 void IntegerEmitter::wide_immediate(const arm::Instruction& inst)
 {
     const WReg destination { static_cast<int>(inst.rd) };

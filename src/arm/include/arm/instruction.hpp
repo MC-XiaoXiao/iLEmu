@@ -17,7 +17,8 @@ enum class InstructionKind {
     IfThen,
     Nop,
     CompareBranch,
-    WideImmediate
+    WideImmediate,
+    PackHalfword
 };
 enum class ShiftKind { Lsl, Lsr, Asr, Ror };
 // Data-processing uses A32 opcode numbers; Thumb adds ORN to that set.

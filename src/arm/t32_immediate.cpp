@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "t32_immediate.hpp"
+#include "t32_data_opcode.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -18,19 +19,10 @@ void decode_t32_modified_immediate(
         (out.rd == 13 && !(arithmetic && out.rn == 13)) ||
         (out.rn == 13 && !arithmetic) || (out.rn == 15 && !move))
         return;
-    switch (op) {
-    case 0: out.opcode = test ? 8U : 0U; break;
-    case 1: out.opcode = 14; break;
-    case 2: out.opcode = move ? 13U : 12U; break;
-    case 3: out.opcode = move ? 15U : opcode_orn; break;
-    case 4: out.opcode = test ? 9U : 1U; break;
-    case 8: out.opcode = test ? 11U : 4U; break;
-    case 10: out.opcode = 5; break;
-    case 11: out.opcode = 6; break;
-    case 13: out.opcode = test ? 10U : 2U; break;
-    case 14: out.opcode = 3; break;
-    default: return;
-    }
+    const auto opcode = t32_data_opcode(op, move, test);
+    if (!opcode)
+        return;
+    out.opcode = *opcode;
     const auto imm12 = (((first >> 10U) & 1U) << 11U) |
                        (((second >> 12U) & 7U) << 8U) | (second & 255U);
     if ((imm12 & 0xc00U) == 0) {

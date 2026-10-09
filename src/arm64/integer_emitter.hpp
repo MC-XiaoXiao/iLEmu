@@ -21,6 +21,7 @@ public:
     }
     void multiply(const arm::Instruction&);
     void wide_immediate(const arm::Instruction&);
+    void pack_halfword(const arm::Instruction&);
 
 private:
     void merge_nz();

@@ -207,6 +207,7 @@ namespace {
             if ((inst.kind == arm::InstructionKind::DataProcessing &&
                     (inst.opcode < 8 || inst.opcode > 11)) ||
                 inst.kind == arm::InstructionKind::Multiply ||
+                inst.kind == arm::InstructionKind::PackHalfword ||
                 inst.kind == arm::InstructionKind::WideImmediate ||
                 (inst.kind == arm::InstructionKind::Transfer && inst.load))
                 memory_.invalidate_register(inst.rd);
@@ -416,6 +417,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::WideImmediate:
                     emit.integer().wide_immediate(inst);
+                    break;
+                case arm::InstructionKind::PackHalfword:
+                    emit.integer().pack_halfword(inst);
                     break;
                 case arm::InstructionKind::DataProcessing:
                     emit.integer().alu(inst, pc);
