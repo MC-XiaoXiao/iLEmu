@@ -45,12 +45,28 @@ public:
         return std::make_unique<Lease>(memory_, identity_);
     }
     MemoryAccess* data_memory() noexcept override { return this; }
+    std::optional<execution::MemoryFault> prepare_instruction_fetch(
+        std::uint32_t address, unsigned size) override
+    {
+        TaskVmEvents::Scope actor { memory_.task_vm_events() };
+        if (memory_.prepare_instruction_fetch(address, size))
+            return { };
+        return fault(address, static_cast<execution::AccessSize>(size), false);
+    }
+    execution::InstructionRegion instruction_region(
+        std::uint32_t address) const override
+    {
+        const auto begin = address & ~(AddressSpace::page_size - 1U);
+        return { begin, std::uint64_t { begin } + AddressSpace::page_size };
+    }
     std::optional<std::uint16_t> fetch16(std::uint32_t address) override
     {
+        TaskVmEvents::Scope inspection { nullptr };
         return memory_.read16(address, MemoryPermission::Execute);
     }
     std::optional<std::uint32_t> fetch32(std::uint32_t address) override
     {
+        TaskVmEvents::Scope inspection { nullptr };
         return memory_.read32(address, MemoryPermission::Execute);
     }
     execution::DirectMemory direct_memory() override

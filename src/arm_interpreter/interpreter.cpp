@@ -125,12 +125,26 @@ RunResult ArmInterpreter::run(
             result.reason = StopReason::FetchFault;
             return result;
         }
+        auto lease = source.acquire_code_lease();
+        if (auto fault = source.prepare_instruction_fetch(
+                result.pc, thumb ? 2U : 4U)) {
+            result.memory_fault = fault;
+            result.reason = StopReason::FetchFault;
+            return result;
+        }
         arm::Instruction inst;
         if (thumb) {
             const auto first = source.fetch16(result.pc);
             std::optional<std::uint16_t> second;
-            if (first && arm::thumb_is_wide(*first))
+            if (first && arm::thumb_is_wide(*first)) {
+                if (auto fault = source.prepare_instruction_fetch(
+                        result.pc + 2U, 2U)) {
+                    result.memory_fault = fault;
+                    result.reason = StopReason::FetchFault;
+                    return result;
+                }
                 second = source.fetch16(result.pc + 2U);
+            }
             if (!first || (arm::thumb_is_wide(*first) && !second)) {
                 result.reason = StopReason::FetchFault;
                 return result;

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <deque>
 #include <limits>
+#include <stdexcept>
 #include <oaknut/oaknut.hpp>
 #include <type_traits>
 
@@ -261,6 +262,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
     unsigned it)
 {
+    const auto region = source.instruction_region(pc);
+    if (region.begin > pc || region.end <= pc ||
+        region.end > (std::uint64_t { 1 } << 32U))
+        throw std::invalid_argument("invalid instruction region");
     CompiledTrace out;
     Emitter emit(out, big_endian, thumb);
     emit.prologue();
@@ -269,14 +274,21 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     unsigned cycles = 0, cycle_length = 0;
     const auto limit = single_step ? 1U : maximum_trace_instructions;
     for (unsigned n = 0; n < limit; ++n) {
+        if (pc < region.begin || pc >= region.end)
+            break;
         emit.location(it, thumb ? 2U : 4U);
         std::optional<std::uint32_t> word;
         arm::Instruction inst;
         if (thumb) {
             const auto first = source.fetch16(pc);
             std::optional<std::uint16_t> second;
-            if (first && arm::thumb_is_wide(*first))
+            if (first && arm::thumb_is_wide(*first)) {
+                // A straddling instruction must enter through the dispatcher,
+                // which prepares both actual halfwords before native execution.
+                if (n != 0 && std::uint64_t { pc } + 4U > region.end)
+                    break;
                 second = source.fetch16(pc + 2U);
+            }
             if (first && (!arm::thumb_is_wide(*first) || second)) {
                 word = *first | (std::uint32_t { second.value_or(0) } << 16U);
                 inst = arm::decode_t32(*first, second, it);
@@ -293,6 +305,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 emit.exit(StopReason::FetchFault, out.maximum_ticks, pc));
             break;
         }
+        if (n != 0 && std::uint64_t { pc } + inst.size > region.end)
+            break;
+        const bool straddles = std::uint64_t { pc } + inst.size > region.end;
         emit.location(it, inst.size);
         const auto before = out.maximum_ticks;
         const bool unsupported =
@@ -417,6 +432,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         }
         emit.invalidate_written_registers(inst);
         it = next_it;
+        if (straddles)
+            break;
         if (!single_step && pc == start && it == start_it) {
             ++cycles;
             if (cycle_length == 0)

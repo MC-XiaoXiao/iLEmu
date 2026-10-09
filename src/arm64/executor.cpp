@@ -50,6 +50,27 @@ public:
             if (!lease)
                 throw std::runtime_error(
                     "ARM64 executor requires a stable instruction lease");
+            if (auto fault = source.prepare_instruction_fetch(
+                    result.pc, thumb ? 2U : 4U)) {
+                result.memory_fault = fault;
+                result.reason = StopReason::FetchFault;
+                return result;
+            }
+            if (thumb) {
+                const auto first = source.fetch16(result.pc);
+                if (!first) {
+                    result.reason = StopReason::FetchFault;
+                    return result;
+                }
+                if (arm::thumb_is_wide(*first)) {
+                    if (auto fault = source.prepare_instruction_fetch(
+                            result.pc + 2U, 2U)) {
+                        result.memory_fault = fault;
+                        result.reason = StopReason::FetchFault;
+                        return result;
+                    }
+                }
+            }
             const auto binding = cache_.bind(*lease);
             const bool big_endian = (state.cpsr & (1U << 9U)) != 0;
             auto* selected = &cache_.entry(

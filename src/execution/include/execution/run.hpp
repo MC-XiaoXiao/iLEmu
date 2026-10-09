@@ -80,6 +80,11 @@ public:
     }
 };
 
+struct InstructionRegion {
+    std::uint64_t begin = 0;
+    std::uint64_t end = std::uint64_t { 1 } << 32U;
+};
+
 // Bound at Run entry; a source owns permissions, backing lifetime and timing.
 // No pointer into guest bytes or backend descriptor escapes this interface.
 class InstructionSource {
@@ -90,6 +95,25 @@ public:
         return { };
     }
     virtual MemoryAccess* data_memory() noexcept { return nullptr; }
+    // Executed fetches install/validate runtime translations and charge guest
+    // VM events. Inspection below must not charge them. Thumb-wide fetches
+    // prepare each halfword separately, including a second-page fault. Empty
+    // means success; failures retain the actual fetch address/status in RunResult.
+    virtual std::optional<MemoryFault> prepare_instruction_fetch(
+        std::uint32_t, unsigned)
+    {
+        return { };
+    }
+    // Native traces remain within this region, except a first instruction
+    // straddling its end, which executes alone. Runtime sources can use VM
+    // pages so an unexecuted successor never receives a prepared fetch. Within
+    // a region, a prepared entry authorizes later instructions for the lease;
+    // sources with narrower runtime fetch checks must use narrower regions.
+    // Bounds and preparation policy belong to the leased instruction view.
+    virtual InstructionRegion instruction_region(std::uint32_t) const
+    {
+        return { };
+    }
     // Thumb fetches must not require the neighbouring halfword to be mapped
     // executable. Sources without halfword support reject Thumb explicitly.
     virtual std::optional<std::uint16_t> fetch16(std::uint32_t) { return { }; }
