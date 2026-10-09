@@ -14,6 +14,7 @@
 
 #include "device_state/lockdown_state.hpp"
 #include "foundation/device_model.hpp"
+#include "execution/factory.hpp"
 #include "foundation/jit_compilation_mode.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "network/host_network.hpp"
@@ -39,6 +40,8 @@ struct BootOptions {
     std::optional<std::string> catalog;
     std::optional<std::string> ios_build;
     DeviceModel device { DeviceModel::default_model() };
+    std::string executor_backend { "dynarmic" };
+    execution::ExecutorFactory executor_factory;
     std::optional<DisplayGeometry> display_geometry;
     std::string binary { "/sbin/launchd" };
     std::optional<std::string> guest_command;

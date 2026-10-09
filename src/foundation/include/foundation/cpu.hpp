@@ -23,6 +23,7 @@
 
 #include "foundation/address_space.hpp"
 #include "execution/arm_state.hpp"
+#include "execution/factory.hpp"
 #include "foundation/arm_cpu_model.hpp"
 #include "foundation/guest_exclusive_address_resolver.hpp"
 #include "foundation/jit_work_signal.hpp"
@@ -189,6 +190,7 @@ enum class SvcDispatchMode : std::uint8_t {
 class CpuExecutionPool;
 class JitExecutor;
 class JitCallbacks;
+class IndependentCpuExecutor;
 
 class Cpu {
 public:
@@ -268,6 +270,7 @@ private:
     friend class CpuCluster;
     friend class JitExecutor;
     friend class JitCallbacks;
+    friend class IndependentCpuExecutor;
     Cpu(std::size_t processor_id,
         std::shared_ptr<CpuExecutionPool> execution_pool);
 
@@ -275,6 +278,7 @@ private:
     std::shared_ptr<CpuExecutionPool> execution_pool_;
     CpuThreadState state_;
     JitExecutor* active_executor_ { };
+    IndependentCpuExecutor* active_independent_executor_ { };
     SvcHandler svc_handler_;
     MemoryWriteHandler memory_write_handler_;
     SvcDispatchMode svc_dispatch_mode_ { SvcDispatchMode::Immediate };
@@ -334,7 +338,10 @@ public:
     [[nodiscard]] std::optional<std::size_t> add_cpu();
     void set_process_id(std::uint32_t process_id);
     void set_jit_code_cache_size(std::size_t bytes);
-    // Construct the primary Dynarmic executor without running Guest code.
+    // Select an independent backend before the first Guest run. Slots retain
+    // existing scheduler ownership; factories own host code-allocation policy.
+    void set_executor_factory(execution::ExecutorFactory);
+    // Construct the primary selected executor without running Guest code.
     // Spawned foreground processes use this from a Host worker while their
     // initial Guest thread remains suspended, keeping the non-preemptible
     // constructor off the interactive scheduler thread.

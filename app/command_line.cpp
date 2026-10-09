@@ -52,6 +52,7 @@
 #include "foundation/performance.hpp"
 
 #include "app/arm_benchmark.hpp"
+#include "app/executor_factory.hpp"
 #include "app/abi_command.hpp"
 #include "app/routes_command.hpp"
 #include "app/mig_command.hpp"
@@ -112,7 +113,7 @@ std::string usage()
            "[--disable-scheduler-preemption] "
            "[--perf-summary] [--jit-observer-only] [--perf-frame-content] "
            "[--perf-cpu-phases] "
-           "[--perf-jit-native-lookups] "
+           "[--perf-jit-native-lookups] [--executor dynarmic|interpreter|arm64] "
            "[--jit-compile-mode optimized|baseline] "
            "[--jit-profile-mode "
            "adaptive|off|record-only|load-only|idle|startup] "
@@ -1021,6 +1022,8 @@ void boot(const std::vector<std::string>& args, SessionHost& host, Output& outpu
         throw std::runtime_error { "boot requires --rootfs" };
     BootOptions options;
     options.rootfs = *rootfs;
+    options.executor_backend = option(args, "--executor").value_or("dynarmic");
+    options.executor_factory = make_executor_factory(options.executor_backend);
     options.host_cache = host_cache_directory(args, options.rootfs);
     options.catalog = option(args, "--catalog");
     options.ios_build = ios_build_option(args);

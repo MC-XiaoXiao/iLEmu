@@ -6,6 +6,7 @@
 // and CPU callbacks.
 
 #include "foundation/cpu.hpp"
+#include "cpu_independent_executor.hpp"
 #include "foundation/guest_execution_coordinator.hpp"
 
 #include <algorithm>
@@ -3678,6 +3679,10 @@ public:
 
     void prepare_primary_execution_resource()
     {
+        if (!independent_executors_.empty()) {
+            independent_executors_.front()->prepare();
+            return;
+        }
         if (!executors_.empty())
             executors_.front()->prepare();
     }
@@ -3708,7 +3713,42 @@ public:
             execution_context_->context_id());
     }
 
-    [[nodiscard]] std::size_t size() const { return executors_.size(); }
+    [[nodiscard]] std::size_t size() const
+    {
+        return independent_executors_.empty()
+            ? executors_.size() : independent_executors_.size();
+    }
+
+    void set_executor_factory(execution::ExecutorFactory factory)
+    {
+        if (!factory || execution_started_.load(std::memory_order_acquire) ||
+            !independent_executors_.empty())
+            throw std::logic_error(
+                "executor factory must be selected before CPU execution");
+        quiesce_precompilation();
+        std::vector<std::unique_ptr<IndependentCpuExecutor>> slots;
+        slots.reserve(executors_.size());
+        for (std::size_t slot = 0; slot < executors_.size(); ++slot)
+            slots.push_back(std::make_unique<IndependentCpuExecutor>(
+                memory_, cpu_model_, factory, code_cache_size_));
+        independent_executors_ = std::move(slots);
+        precompile_executors_.clear();
+        precompile_executor_busy_.clear();
+        executors_.clear();
+    }
+
+    CpuRunResult run(Cpu& cpu, std::uint64_t ticks, std::size_t slot,
+        bool single_step, bool cooperative,
+        std::chrono::nanoseconds host_budget =
+            default_host_cooperative_slice_budget)
+    {
+        execution_started_.store(true, std::memory_order_release);
+        if (!independent_executors_.empty())
+            return independent_executors_.at(slot)->run(
+                cpu, ticks, single_step, cooperative, host_budget);
+        return executor(slot).run(
+            cpu, ticks, single_step, cooperative, host_budget);
+    }
 
     [[nodiscard]] JitExecutor& executor(std::size_t slot)
     {
@@ -3717,10 +3757,15 @@ public:
 
     void clear_exclusive_state(std::size_t slot)
     {
-        executor(slot).clear_exclusive_state();
+        if (!independent_executors_.empty()) {
+            static_cast<void>(independent_executors_.at(slot));
+            // Independent backends currently reject exclusive instructions;
+            // no local reservation can survive a scheduler context switch.
+        } else
+            executor(slot).clear_exclusive_state();
         // Only a single-executor pool can prove that no other virtual
         // processor still owns a reservation in this address space.
-        if (executors_.size() == 1U)
+        if (size() == 1U)
             memory_.clear_exclusive_access_tracking();
     }
 
@@ -3736,6 +3781,8 @@ public:
     void set_code_cache_size(std::size_t bytes)
     {
         code_cache_size_ = bytes;
+        for (auto& executor : independent_executors_)
+            executor->set_cache_size(bytes);
         for (auto& executor : executors_)
             executor->set_code_cache_size(bytes);
         for (auto& executor : precompile_executors_)
@@ -3744,6 +3791,12 @@ public:
 
     [[nodiscard]] std::uint64_t code_cache_used()
     {
+        if (!independent_executors_.empty()) {
+            std::uint64_t total = 0;
+            for (auto& executor : independent_executors_)
+                total += executor->code_cache_used();
+            return total;
+        }
         if constexpr (!JitBackendCapabilities::shared_native_cache) {
             std::uint64_t total { };
             for (auto& executor : executors_)
@@ -3773,6 +3826,11 @@ public:
 
     void clear_cache()
     {
+        if (!independent_executors_.empty()) {
+            for (auto& executor : independent_executors_)
+                executor->clear_cache();
+            return;
+        }
         // A fork/exec child owns a fresh execution context and often reaches
         // exec before translating any Guest block. Avoid advancing the slab
         // generation for an empty context; callers that have emitted code
@@ -3805,6 +3863,10 @@ public:
 
     void recycle_cache()
     {
+        if (!independent_executors_.empty()) {
+            clear_cache();
+            return;
+        }
         if (code_cache_used() == 0U)
             return;
         if constexpr (JitBackendCapabilities::shared_native_cache) {
@@ -3828,6 +3890,10 @@ public:
     {
         if (length == 0U)
             return;
+        if (!independent_executors_.empty()) {
+            clear_cache();
+            return;
+        }
         static_cast<void>(
             execution_context_->request_cache_range(address, length));
         if constexpr (!JitBackendCapabilities::shared_native_cache) {
@@ -3893,6 +3959,8 @@ public:
     void set_translation_profile(std::shared_ptr<JitTranslationProfile> profile,
         JitPrecompilePhase phase, bool record, bool precompile)
     {
+        if (!independent_executors_.empty())
+            return;
         quiesce_precompilation();
         // Native prediction is about the previous process image. Freeze that
         // order before current-process recording starts mutating the persistent
@@ -4041,7 +4109,7 @@ public:
         JitPrecompilePhase phase, JitPrecompileSource source)
     {
         const std::lock_guard queue_lock { precompile_queue_mutex_ };
-        if (precompile_quiescing_)
+        if (precompile_quiescing_ || !independent_executors_.empty())
             return;
         for (const auto entry : location_descriptors) {
             if constexpr (JitBackendCapabilities::shared_native_cache) {
@@ -5221,6 +5289,8 @@ private:
     const ArmCpuModel& cpu_model_;
     std::shared_ptr<JitArtifactStore> artifact_store_;
     std::size_t code_cache_size_ { 64U * 1024U * 1024U };
+    std::atomic<bool> execution_started_ { false };
+    std::vector<std::unique_ptr<IndependentCpuExecutor>> independent_executors_;
     std::vector<std::unique_ptr<JitExecutor>> executors_;
     std::vector<std::unique_ptr<JitExecutor>> precompile_executors_;
     std::vector<bool> precompile_executor_busy_;
@@ -5297,8 +5367,7 @@ CpuRunResult Cpu::run(std::uint64_t ticks, std::size_t execution_slot)
     if (!execution_pool_) {
         throw std::logic_error { "CPU execution resources have been released" };
     }
-    return execution_pool_->executor(execution_slot)
-        .run(*this, ticks, false, false);
+    return execution_pool_->run(*this, ticks, execution_slot, false, false);
 }
 
 CpuRunResult Cpu::run_cooperatively(
@@ -5307,8 +5376,7 @@ CpuRunResult Cpu::run_cooperatively(
     if (!execution_pool_) {
         throw std::logic_error { "CPU execution resources have been released" };
     }
-    return execution_pool_->executor(execution_slot)
-        .run(*this, ticks, false, true, default_host_cooperative_slice_budget);
+    return execution_pool_->run(*this, ticks, execution_slot, false, true);
 }
 
 CpuRunResult Cpu::run_cooperatively(std::uint64_t ticks,
@@ -5317,8 +5385,8 @@ CpuRunResult Cpu::run_cooperatively(std::uint64_t ticks,
     if (!execution_pool_) {
         throw std::logic_error { "CPU execution resources have been released" };
     }
-    return execution_pool_->executor(execution_slot)
-        .run(*this, ticks, false, true, host_slice_budget);
+    return execution_pool_->run(
+        *this, ticks, execution_slot, false, true, host_slice_budget);
 }
 
 CpuRunResult Cpu::step(std::size_t execution_slot)
@@ -5326,7 +5394,7 @@ CpuRunResult Cpu::step(std::size_t execution_slot)
     if (!execution_pool_) {
         throw std::logic_error { "CPU execution resources have been released" };
     }
-    return execution_pool_->executor(execution_slot).run(*this, 1, true, false);
+    return execution_pool_->run(*this, 1, execution_slot, true, false);
 }
 
 void Cpu::reset()
@@ -5358,6 +5426,10 @@ void Cpu::invalidate_cache_ranges(
 void Cpu::raise_memory_fault(
     std::uint32_t address, std::size_t size, MemoryPermission access)
 {
+    if (active_independent_executor_) {
+        active_independent_executor_->raise_memory_fault(address, size, access);
+        return;
+    }
     if (active_executor_) {
         active_executor_->raise_memory_fault(address, size, access);
         return;
@@ -5370,6 +5442,8 @@ void Cpu::raise_memory_fault(
 void Cpu::clear_halt()
 {
     requested_halt_reason_ = { };
+    if (active_independent_executor_)
+        active_independent_executor_->clear_halt();
     if (active_executor_) {
         active_executor_->clear_halt();
     }
@@ -5377,6 +5451,8 @@ void Cpu::clear_halt()
 void Cpu::halt(Dynarmic::HaltReason reason)
 {
     requested_halt_reason_ = requested_halt_reason_ | reason;
+    if (active_independent_executor_)
+        active_independent_executor_->halt(reason);
     if (active_executor_) {
         active_executor_->halt(reason);
     }
@@ -5394,6 +5470,8 @@ void Cpu::request_guest_preemption()
     }
     requested_halt_reason_ =
         requested_halt_reason_ | Dynarmic::HaltReason::UserDefined2;
+    if (active_independent_executor_)
+        active_independent_executor_->request_guest_preemption();
     if (active_executor_) {
         active_executor_->request_guest_preemption();
     }
@@ -5639,6 +5717,13 @@ void CpuCluster::set_jit_code_cache_size(std::size_t bytes)
     execution_pool_->set_code_cache_size(bytes);
 }
 
+void CpuCluster::set_executor_factory(execution::ExecutorFactory factory)
+{
+    if (!execution_pool_)
+        throw std::logic_error("CPU execution resources have been released");
+    execution_pool_->set_executor_factory(std::move(factory));
+}
+
 void CpuCluster::prepare_primary_execution_resource()
 {
     if (execution_pool_)
@@ -5754,7 +5839,8 @@ std::shared_ptr<CpuExecutionPool> CpuCluster::release_execution_resources()
     }
     quiesce_precompilation();
     for (const auto& cpu : cpus_) {
-        if (cpu->active_executor_ != nullptr) {
+        if (cpu->active_executor_ != nullptr ||
+            cpu->active_independent_executor_ != nullptr) {
             throw std::logic_error {
                 "cannot release CPU execution resources while executing"
             };

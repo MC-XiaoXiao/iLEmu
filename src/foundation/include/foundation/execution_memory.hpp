@@ -2,11 +2,13 @@
 #pragma once
 #include "execution/run.hpp"
 #include <cstddef>
+#include <functional>
 #include <memory>
 
 namespace ilemu {
 class AddressSpace;
 class ArmCpuModel;
+struct MemoryFault;
 
 struct ExecutionMemoryPolicy {
     bool permits_unaligned = true;
@@ -40,6 +42,12 @@ public:
     std::optional<execution::MemoryFault> write(
         std::uint32_t, execution::AccessSize, std::uint32_t) override;
     [[nodiscard]] std::size_t instruction_view_count() const noexcept;
+    // Checked write observation for runtime debugging. Setting an observer
+    // suppresses direct stores; it is invoked only after a successful write.
+    using WriteObserver = std::function<void(
+        std::uint32_t address, unsigned size, std::uint32_t value)>;
+    void set_write_observer(WriteObserver);
+    std::optional<ilemu::MemoryFault> take_fault();
 
 private:
     class Impl;

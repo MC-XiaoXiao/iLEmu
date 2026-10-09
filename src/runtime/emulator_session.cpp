@@ -1232,6 +1232,9 @@ void EmulatorSession::run()
         options.jit_compilation_mode);
     initial->cpus->set_jit_code_cache_size(
         initial->jit_cache_reservation->shared_slab_bytes());
+    if (options.executor_factory)
+        initial->cpus->set_executor_factory(options.executor_factory);
+    output.line("[execution] backend=" + options.executor_backend);
     initial->cpus->set_jit_work_signal(jit_work_signal);
     initial->cpus->set_jit_artifact_retention(
         JitArtifactRetention::BootWorkingSet);
@@ -1770,6 +1773,8 @@ void EmulatorSession::run()
                     options.jit_compilation_mode);
                 child->cpus->set_jit_code_cache_size(
                     child->jit_cache_reservation->shared_slab_bytes());
+                if (options.executor_factory)
+                    child->cpus->set_executor_factory(options.executor_factory);
                 child->cpus->set_jit_work_signal(jit_work_signal);
             }
             {

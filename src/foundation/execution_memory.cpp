@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <utility>
 
 namespace ilemu {
 namespace {
@@ -109,7 +110,7 @@ public:
                     "fetch preparation outside entry instruction");
             TaskVmEvents::Scope actor { owner_.memory_.task_vm_events() };
             if (!owner_.memory_.prepare_instruction_fetch(address, size))
-                return owner_.fault(address, size, false);
+                return owner_.fault(address, size, MemoryPermission::Execute);
             const auto base = page_base(address);
             for (unsigned i = 0; i < count_; ++i)
                 if (pages_[i].base == base)
@@ -118,7 +119,7 @@ public:
                 throw std::logic_error("instruction lease exceeds two pages");
             auto backing = owner_.memory_.instruction_page_backing(address);
             if (!backing)
-                return owner_.fault(address, size, false);
+                return owner_.fault(address, size, MemoryPermission::Execute);
             auto& page = pages_[count_];
             page.base = base;
             page.backing = std::move(*backing);
@@ -153,10 +154,13 @@ public:
             throw std::invalid_argument("invalid execution memory policy");
     }
     execution::MemoryFault fault(
-        std::uint32_t address, unsigned size, bool writing) const
+        std::uint32_t address, unsigned size, MemoryPermission access)
     {
+        last_fault_ = ilemu::MemoryFault { address, size, access,
+            "unmapped address or protection failure" };
         return { address, (memory_.mapped(address, size) ? 13U : 5U) |
-                              (writing ? 1U << 11U : 0U) };
+                              (access == MemoryPermission::Write
+                                      ? 1U << 11U : 0U) };
     }
     void require_checked() const
     {
@@ -170,6 +174,8 @@ public:
     std::size_t maximum_views_;
     std::map<std::uint32_t, View> views_;
     Lease* active_ = nullptr;
+    WriteObserver write_observer_;
+    std::optional<ilemu::MemoryFault> last_fault_;
 };
 ExecutionMemory::ExecutionMemory(AddressSpace& memory, const ArmCpuModel& model,
     ExecutionMemoryPolicy policy, std::size_t maximum_views)
@@ -229,7 +235,7 @@ execution::DirectMemory ExecutionMemory::direct_memory()
     if (!impl_->active_)
         throw std::logic_error("direct memory requires a code lease");
     return { impl_->memory_.jit_read_page_table(),
-        impl_->memory_.jit_write_page_table(),
+        impl_->write_observer_ ? nullptr : impl_->memory_.jit_write_page_table(),
         impl_->policy_.permits_unaligned ? 1U : 0U,
         impl_->policy_.pc_store_offset };
 }
@@ -238,8 +244,11 @@ execution::MemoryRead ExecutionMemory::read(
 {
     impl_->require_checked();
     const auto width = access_width(size);
-    if (!impl_->policy_.permits_unaligned && (address & (width - 1U)) != 0)
+    if (!impl_->policy_.permits_unaligned && (address & (width - 1U)) != 0) {
+        impl_->last_fault_ = ilemu::MemoryFault { address, width,
+            MemoryPermission::Read, "unaligned address" };
         return { 0, execution::MemoryFault { address, 1 } };
+    }
     TaskVmEvents::Scope actor { impl_->memory_.task_vm_events() };
     std::optional<std::uint32_t> value;
     switch (size) {
@@ -255,15 +264,18 @@ execution::MemoryRead ExecutionMemory::read(
     }
     return value ? execution::MemoryRead { *value, { } }
                  : execution::MemoryRead { 0,
-                       impl_->fault(address, width, false) };
+                       impl_->fault(address, width, MemoryPermission::Read) };
 }
 std::optional<execution::MemoryFault> ExecutionMemory::write(
     std::uint32_t address, execution::AccessSize size, std::uint32_t value)
 {
     impl_->require_checked();
     const auto width = access_width(size);
-    if (!impl_->policy_.permits_unaligned && (address & (width - 1U)) != 0)
+    if (!impl_->policy_.permits_unaligned && (address & (width - 1U)) != 0) {
+        impl_->last_fault_ = ilemu::MemoryFault { address, width,
+            MemoryPermission::Write, "unaligned address" };
         return execution::MemoryFault { address, 1U | (1U << 11U) };
+    }
     TaskVmEvents::Scope actor { impl_->memory_.task_vm_events() };
     bool written = false;
     switch (size) {
@@ -279,8 +291,20 @@ std::optional<execution::MemoryFault> ExecutionMemory::write(
         written = impl_->memory_.write32(address, value);
         break;
     }
+    if (written && impl_->write_observer_)
+        impl_->write_observer_(address, width, value);
     return written ? std::nullopt
-                   : std::optional { impl_->fault(address, width, true) };
+                   : std::optional { impl_->fault(
+                         address, width, MemoryPermission::Write) };
+}
+void ExecutionMemory::set_write_observer(WriteObserver observer)
+{
+    impl_->require_checked();
+    impl_->write_observer_ = std::move(observer);
+}
+std::optional<ilemu::MemoryFault> ExecutionMemory::take_fault()
+{
+    return std::exchange(impl_->last_fault_, std::nullopt);
 }
 std::size_t ExecutionMemory::instruction_view_count() const noexcept
 {

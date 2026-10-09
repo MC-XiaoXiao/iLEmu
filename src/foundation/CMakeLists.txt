@@ -27,6 +27,7 @@ add_library(ilemu_foundation STATIC
     arm_cpu_model.cpp
     arm_unpredictable_instruction.cpp
     cpu.cpp
+    cpu_independent_executor.cpp
     code_signature.cpp
     darwin_notify_state_hle.cpp
     device_display_profile.cpp
