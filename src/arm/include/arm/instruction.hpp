@@ -18,11 +18,19 @@ enum class InstructionKind {
     Nop,
     CompareBranch,
     WideImmediate,
-    PackHalfword
+    PackHalfword,
+    VectorDuplicate
 };
 enum class ShiftKind { Lsl, Lsr, Asr, Ror };
 // Data-processing uses A32 opcode numbers; Thumb adds ORN to that set.
 inline constexpr unsigned opcode_orn = 16;
+
+struct VectorDuplicateOperands {
+    // Vector indices name D registers; a quad destination names its even D.
+    unsigned destination = 0, source = 0;
+    unsigned element_bits = 0, lane = 0;
+    bool quad = false, core_source = false;
+};
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.
@@ -44,6 +52,7 @@ struct Instruction {
     unsigned access_size = 0;
     bool load = false, sign_extend = false;
     bool add = true, index = true, writeback = false;
+    VectorDuplicateOperands vector_duplicate;
 };
 
 }

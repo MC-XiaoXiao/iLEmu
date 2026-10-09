@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm/a32_decode.hpp"
+#include "simd_duplicate.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -7,6 +8,8 @@ Instruction decode_a32(std::uint32_t word) noexcept
 {
     Instruction out;
     out.condition = word >> 28;
+    if (decode_simd_duplicate(out, word, false))
+        return out;
     // BLX immediate occupies the unconditional branch encoding space.
     if ((word & 0xfe000000U) == 0xfa000000U) {
         out.condition = 14;

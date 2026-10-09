@@ -5,6 +5,7 @@
 #include "integer_emitter.hpp"
 #include "memory_emitter.hpp"
 #include "multiple_emitter.hpp"
+#include "simd_emitter.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <deque>
@@ -420,6 +421,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::PackHalfword:
                     emit.integer().pack_halfword(inst);
+                    break;
+                case arm::InstructionKind::VectorDuplicate:
+                    SimdEmitter { emit.code() }.duplicate(inst.vector_duplicate);
                     break;
                 case arm::InstructionKind::DataProcessing:
                     emit.integer().alu(inst, pc);

@@ -1,4 +1,4 @@
-add_library(ilemu_arm_interpreter STATIC interpreter.cpp)
+add_library(ilemu_arm_interpreter STATIC interpreter.cpp simd.cpp)
 add_library(iLEmu::arm_interpreter ALIAS ilemu_arm_interpreter)
 target_compile_features(ilemu_arm_interpreter PUBLIC cxx_std_20)
 target_include_directories(ilemu_arm_interpreter PUBLIC

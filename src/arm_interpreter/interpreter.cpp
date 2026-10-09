@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm_interpreter/interpreter.hpp"
+#include "simd.hpp"
 #include "arm/a32_decode.hpp"
 #include "arm/integer_semantics.hpp"
 #include "arm/t32_decode.hpp"
@@ -252,6 +253,9 @@ RunResult ArmInterpreter::run(
                     : (a & 0xffff0000U) | (shifted & 0xffffU);
                 break;
             }
+            case arm::InstructionKind::VectorDuplicate:
+                duplicate_vector(state, inst.vector_duplicate);
+                break;
             case arm::InstructionKind::WideImmediate:
                 state.registers[inst.rd] =
                     inst.opcode != 0 ? (state.registers[inst.rd] & 0xffffU) |
