@@ -55,6 +55,7 @@
 
 #include "foundation/arm_cpu_model.hpp"
 #include "foundation/code_signature.hpp"
+#include "foundation/deadline_queue.hpp"
 #include "foundation/application_display.hpp"
 #include "kernel/baseband_device.hpp"
 #include "filesystem/bsd_file_lock.hpp"
@@ -1818,6 +1819,8 @@ struct KernelSharedState {
     // sharing the same kernel semaphore primitive underneath.
     std::map<std::string, std::shared_ptr<SemaphoreState>> posix_named_semaphore_objects;
     std::map<std::uint32_t, MachTimer> mach_timers;
+    // Armed timers only; maintained with mach_timers under mach_mutex.
+    DeadlineQueue<std::uint32_t, std::uint64_t> mach_timer_deadlines;
     std::map<std::uint32_t, ProcessIntervalTimer> process_interval_timers;
     // XNU named-memory entries are kernel ipc_port objects. The per-task Mach
     // namespace carries rights; this table carries the referenced VM object.

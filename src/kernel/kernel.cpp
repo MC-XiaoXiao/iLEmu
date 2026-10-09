@@ -2695,11 +2695,8 @@ CompatibilityKernel::timer_deadline_snapshot() const
             if (!shared_state_->shared_timer_deadline_cache_valid ||
                 shared_state_->shared_timer_deadline_cache_generation !=
                     generation) {
-                std::optional<std::uint64_t> shared_deadline;
-                for (const auto& [port, timer] : shared_state_->mach_timers) {
-                    static_cast<void>(port);
-                    consider(shared_deadline, timer.deadline);
-                }
+                auto shared_deadline =
+                    shared_state_->mach_timer_deadlines.next_deadline();
                 consider(shared_deadline,
                     next_clock_alarm_deadline_locked(*shared_state_));
                 consider(shared_deadline,
@@ -2762,6 +2759,7 @@ void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline)
             shared_state_->enqueue_mach_message_locked(
                 port, std::move(message));
             timer.deadline.reset();
+            shared_state_->mach_timer_deadlines.erase(port);
             output_.write(
                 "[timer] expired port=" + std::to_string(port) + "\n");
         }

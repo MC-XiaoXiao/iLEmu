@@ -52,6 +52,7 @@ void CompatibilityKernel::dispatch_mach_timer_trap(Cpu& cpu, std::uint32_t trap)
             registers[0] = darwin::mach::invalid_argument;
             return;
         }
+        shared_state_->mach_timer_deadlines.erase(*object);
         shared_state_->mach_timers.erase(timer);
         // Tear down the task-local receive name through the common ipc_right
         // path. It marks foreign Send names dead and drains queued rights
@@ -76,6 +77,7 @@ void CompatibilityKernel::dispatch_mach_timer_trap(Cpu& cpu, std::uint32_t trap)
             return;
         }
         timer->second.deadline = deadline;
+        shared_state_->mach_timer_deadlines.upsert(*object, deadline);
         registers[0] = darwin::mach::success;
         output_.write("[timer] arm pid=" + std::to_string(process_.pid) +
                       " name=" + std::to_string(name) +
@@ -99,6 +101,7 @@ void CompatibilityKernel::dispatch_mach_timer_trap(Cpu& cpu, std::uint32_t trap)
             }
             armed_time = timer->second.deadline.value_or(0);
             timer->second.deadline.reset();
+            shared_state_->mach_timer_deadlines.erase(*object);
         }
         if (result_address != 0 &&
             (!memory_.write32(
