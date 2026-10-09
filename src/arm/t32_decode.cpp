@@ -2,6 +2,7 @@
 #include "arm/t32_decode.hpp"
 #include "t32_immediate.hpp"
 #include "t32_shifted.hpp"
+#include "t32_transfer.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -35,7 +36,9 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if ((word & 0xfe00U) == 0xea00U && (tail & 0x8000U) == 0) {
+        if ((word & 0xfe00U) == 0xf800U) {
+            decode_t32_transfer(out, word, tail, last);
+        } else if ((word & 0xfe00U) == 0xea00U && (tail & 0x8000U) == 0) {
             decode_t32_shifted_register(out, word, tail);
         } else if ((word & 0xf800U) == 0xf000U && (tail & 0x8000U) != 0) {
             const auto s = (word >> 10U) & 1U;
