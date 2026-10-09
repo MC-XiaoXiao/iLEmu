@@ -80,6 +80,9 @@ namespace {
         case 15:
             value = ~b;
             break;
+        case arm::opcode_orn:
+            value = a | ~b;
+            break;
         }
         if (arithmetic_flags)
             value = arithmetic.value;

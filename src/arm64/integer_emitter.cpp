@@ -190,6 +190,9 @@ bool IntegerEmitter::shifted_alu(const arm::Instruction& inst, std::uint32_t pc)
     case 15:
         code_.MVN(d, b, shift, amount);
         break;
+    case arm::opcode_orn:
+        code_.ORN(d, a, b, shift, amount);
+        break;
     default:
         return false;
     }
@@ -298,6 +301,9 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
         break;
     case 15:
         code_.MVN(d, b);
+        break;
+    case arm::opcode_orn:
+        code_.ORN(d, a, b);
         break;
     }
     if (logical && inst.set_flags) {

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm/t32_decode.hpp"
+#include "t32_immediate.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -60,6 +61,9 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
                 out.align_pc = out.exchange;
             }
             out.kind = InstructionKind::Branch;
+        } else if ((word & 0xfa00U) == 0xf000U &&
+                   (tail & 0x8000U) == 0) {
+            decode_t32_modified_immediate(out, word, tail);
         } else if (((word & 0xfbf0U) == 0xf240U ||
                        (word & 0xfbf0U) == 0xf2c0U) &&
                    (tail & 0x8000U) == 0) { // MOVW / MOVT

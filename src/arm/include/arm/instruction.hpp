@@ -20,6 +20,8 @@ enum class InstructionKind {
     WideImmediate
 };
 enum class ShiftKind { Lsl, Lsr, Asr, Ror };
+// Data-processing uses A32 opcode numbers; Thumb adds ORN to that set.
+inline constexpr unsigned opcode_orn = 16;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.
