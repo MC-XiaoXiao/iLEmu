@@ -11,7 +11,7 @@ namespace {
     constexpr auto transfer_offset = offsetof(NativeOutcome, transfer);
 }
 void MemoryEmitter::store_value(
-    const arm::A32Instruction& inst, std::uint32_t pc)
+    const arm::Instruction& inst, std::uint32_t pc)
 {
     if (inst.rd == 15) {
         code_.LDR(
@@ -42,7 +42,7 @@ void MemoryEmitter::invalidate_register(unsigned reg)
             entry.reset();
 }
 std::optional<MemoryEmitter::Address> MemoryEmitter::address(
-    const arm::A32Instruction& inst) const
+    const arm::Instruction& inst) const
 {
     if (!inst.immediate_operand || !inst.index || inst.writeback ||
         inst.rn == 15 || inst.rd == 15)
@@ -50,7 +50,7 @@ std::optional<MemoryEmitter::Address> MemoryEmitter::address(
     return Address { inst.rn, inst.access_size, inst.immediate, inst.add,
         inst.load };
 }
-void MemoryEmitter::access(const arm::A32Instruction& inst, std::uint32_t pc,
+void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
     XReg pointer, Label& unsupported_exit, Label& branch_exit)
 {
     if (inst.load) {
@@ -99,7 +99,7 @@ void MemoryEmitter::access(const arm::A32Instruction& inst, std::uint32_t pc,
         }
     }
 }
-void MemoryEmitter::emit(const arm::A32Instruction& inst, std::uint32_t pc,
+void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     std::uint64_t cost, Label& checked_exit, Label& unsupported_exit,
     Label& branch_exit)
 {

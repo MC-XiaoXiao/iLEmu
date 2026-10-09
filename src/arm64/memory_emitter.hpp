@@ -14,7 +14,7 @@ public:
         , big_endian_(big_endian)
     {
     }
-    void emit(const arm::A32Instruction&, std::uint32_t pc, std::uint64_t cost,
+    void emit(const arm::Instruction&, std::uint32_t pc, std::uint64_t cost,
         oaknut::Label& checked_exit, oaknut::Label& unsupported_exit,
         oaknut::Label& branch_exit);
     void invalidate_register(unsigned reg);
@@ -26,10 +26,10 @@ private:
         bool add, load;
         bool operator==(const Address&) const = default;
     };
-    std::optional<Address> address(const arm::A32Instruction&) const;
-    void access(const arm::A32Instruction&, std::uint32_t pc, oaknut::XReg,
+    std::optional<Address> address(const arm::Instruction&) const;
+    void access(const arm::Instruction&, std::uint32_t pc, oaknut::XReg,
         oaknut::Label& unsupported_exit, oaknut::Label& branch_exit);
-    void store_value(const arm::A32Instruction&, std::uint32_t pc);
+    void store_value(const arm::Instruction&, std::uint32_t pc);
     void endian(unsigned size, oaknut::WReg value);
     oaknut::VectorCodeGenerator& code_;
     IntegerEmitter& integer_;

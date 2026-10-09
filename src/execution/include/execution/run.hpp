@@ -79,6 +79,9 @@ public:
         return { };
     }
     virtual MemoryAccess* data_memory() noexcept { return nullptr; }
+    // Thumb fetches must not require the neighbouring halfword to be mapped
+    // executable. Sources without halfword support reject Thumb explicitly.
+    virtual std::optional<std::uint16_t> fetch16(std::uint32_t) { return {}; }
     virtual std::optional<std::uint32_t> fetch32(std::uint32_t address) = 0;
     virtual std::uint64_t ticks_for_instruction(
         std::uint32_t, std::uint32_t) const

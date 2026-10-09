@@ -27,7 +27,7 @@ void IntegerEmitter::carry_from(WReg value, unsigned bit)
     code_.BFI(X21, X15, 29, 1);
 }
 void IntegerEmitter::shifter(
-    const arm::A32Instruction& inst, std::uint32_t pc, bool carry_output)
+    const arm::Instruction& inst, std::uint32_t pc, bool carry_output)
 {
     if (carry_output)
         code_.MRS(X21, SystemReg::NZCV);
@@ -138,7 +138,7 @@ void IntegerEmitter::shifter(
     code_.l(done);
 }
 bool IntegerEmitter::shifted_alu(
-    const arm::A32Instruction& inst, std::uint32_t pc)
+    const arm::Instruction& inst, std::uint32_t pc)
 {
     if (inst.immediate_operand || inst.register_shift ||
         (inst.shift != arm::ShiftKind::Lsl && inst.shift_amount == 0))
@@ -197,7 +197,7 @@ bool IntegerEmitter::shifted_alu(
     return true;
 }
 
-void IntegerEmitter::alu(const arm::A32Instruction& inst, std::uint32_t pc)
+void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
 {
     if (shifted_alu(inst, pc))
         return;
@@ -306,7 +306,7 @@ void IntegerEmitter::alu(const arm::A32Instruction& inst, std::uint32_t pc)
         merge_nz();
     }
 }
-void IntegerEmitter::multiply(const arm::A32Instruction& inst)
+void IntegerEmitter::multiply(const arm::Instruction& inst)
 {
     const WReg rd { static_cast<int>(inst.rd) },
         rm { static_cast<int>(inst.rm) }, rs { static_cast<int>(inst.rs) };

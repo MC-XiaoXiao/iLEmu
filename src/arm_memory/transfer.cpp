@@ -14,11 +14,14 @@ namespace {
                ((value >> 8U) & 0xff00U) | (value >> 24U);
     }
 }
-Transfer prepare(const CpuThreadState& state, const arm::A32Instruction& inst,
+Transfer prepare(const CpuThreadState& state, const arm::Instruction& inst,
     std::uint32_t pc_store_offset)
 {
     const auto read = [&](unsigned r) {
-        return r == 15 ? state.registers[15] + 8U : state.registers[r];
+        if (r != 15)
+            return state.registers[r];
+        const auto pc = state.registers[15] + inst.pc_offset;
+        return inst.align_pc ? pc & ~3U : pc;
     };
     const auto offset =
         inst.immediate_operand
@@ -74,7 +77,7 @@ Completion complete(
         state.cpsr = (state.cpsr & ~(1U << 5)) | ((value & 1U) << 5);
         state.registers[15] = value & ((value & 1U) != 0 ? ~1U : ~3U);
     } else
-        state.registers[15] += 4U;
+        state.registers[15] += (transfer.control >> 16U) & 7U;
     return { };
 }
 }

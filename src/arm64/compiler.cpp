@@ -126,7 +126,7 @@ namespace {
                 code_.B(static_cast<Cond>(condition ^ 1U), target);
         }
         // Target legality precedes timing/retirement, matching the interpreter.
-        void exchange_target(const arm::A32Instruction& inst, std::uint32_t pc,
+        void exchange_target(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t ticks)
         {
             code_.MOV(W17, integer_.reg(inst.rm, pc, W17));
@@ -136,7 +136,7 @@ namespace {
             code_.B(exit(StopReason::UnsupportedInstruction, ticks, pc, word));
             code_.l(valid);
         }
-        void exchange(const arm::A32Instruction& inst, std::uint32_t pc,
+        void exchange(const arm::Instruction& inst, std::uint32_t pc,
             std::uint64_t ticks)
         {
             if (inst.link)
@@ -151,7 +151,7 @@ namespace {
             code_.l(done);
             code_.B(exit(StopReason::None, ticks, 0, { }, 0, true));
         }
-        void invalidate_written_registers(const arm::A32Instruction& inst)
+        void invalidate_written_registers(const arm::Instruction& inst)
         {
             if ((inst.kind == arm::InstructionKind::DataProcessing &&
                     (inst.opcode < 8 || inst.opcode > 11)) ||
@@ -167,7 +167,7 @@ namespace {
         }
         VectorCodeGenerator& code() { return code_; }
         IntegerEmitter& integer() { return integer_; }
-        void transfer(const arm::A32Instruction& inst, std::uint32_t pc,
+        void transfer(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t before, std::uint64_t cost)
         {
             memory_.emit(inst, pc, cost,

@@ -3,9 +3,9 @@
 #include <bit>
 
 namespace ilemu::arm {
-A32Instruction decode_a32(std::uint32_t word) noexcept
+Instruction decode_a32(std::uint32_t word) noexcept
 {
-    A32Instruction out;
+    Instruction out;
     out.condition = word >> 28;
     // Unconditional encoding space has different decode rules.
     if (out.condition == 15)

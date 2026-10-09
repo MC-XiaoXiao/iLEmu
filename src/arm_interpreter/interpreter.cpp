@@ -2,16 +2,21 @@
 #include "arm_interpreter/interpreter.hpp"
 #include "arm/a32_decode.hpp"
 #include "arm/integer_semantics.hpp"
+#include "arm/t32_decode.hpp"
 #include "arm_memory/transfer.hpp"
 
 namespace ilemu::execution {
 namespace {
-    std::uint32_t read_register(const CpuThreadState& state, unsigned reg)
+    std::uint32_t read_register(
+        const CpuThreadState& state, unsigned reg, const arm::Instruction& inst)
     {
-        return reg == 15 ? state.registers[15] + 8U : state.registers[reg];
+        if (reg != 15)
+            return state.registers[reg];
+        const auto pc = state.registers[15] + inst.pc_offset;
+        return inst.align_pc ? pc & ~3U : pc;
     }
 
-    void data_processing(CpuThreadState& state, const arm::A32Instruction& inst)
+    void data_processing(CpuThreadState& state, const arm::Instruction& inst)
     {
         const bool carry = (state.cpsr & (1U << 29)) != 0;
         const auto shifted =
@@ -19,11 +24,11 @@ namespace {
                 ? arm::ShiftResult { inst.immediate,
                       inst.shift_amount == 0 ? carry
                                              : (inst.immediate >> 31) != 0 }
-                : arm::shift(read_register(state, inst.rm), inst.shift,
+                : arm::shift(read_register(state, inst.rm, inst), inst.shift,
                       inst.register_shift ? state.registers[inst.rs] & 255U
                                           : inst.shift_amount,
                       carry, inst.register_shift);
-        const auto a = read_register(state, inst.rn), b = shifted.value;
+        const auto a = read_register(state, inst.rn, inst), b = shifted.value;
         std::uint32_t value = 0;
         arm::ArithmeticResult arithmetic { };
         bool arithmetic_flags = false;
@@ -108,22 +113,39 @@ RunResult ArmInterpreter::run(
             result.reason = result.reason | StopReason::HostDeadline;
         if (result.reason != StopReason::None)
             return result;
-        // This first independent executor supports the common userland A32
-        // integer subset. Other states return before mutating guest context.
-        if ((state.cpsr & (0x3fU | 0x01000000U | 0x0600fc00U)) != 0x10U) {
+        const bool thumb = (state.cpsr & 0x20U) != 0;
+        const auto it = arm::it_state(state.cpsr);
+        if ((state.cpsr & (0x1fU | 0x01000000U)) != 0x10U ||
+            (!thumb && it != 0)) {
             result.reason = StopReason::UnsupportedInstruction;
             return result;
         }
-        if ((result.pc & 3U) != 0) {
+        if ((result.pc & (thumb ? 1U : 3U)) != 0) {
             result.reason = StopReason::FetchFault;
             return result;
         }
-        result.instruction = source.fetch32(result.pc);
+        arm::Instruction inst;
+        if (thumb) {
+            const auto first = source.fetch16(result.pc);
+            std::optional<std::uint16_t> second;
+            if (first && arm::thumb_is_wide(*first))
+                second = source.fetch16(result.pc + 2U);
+            if (!first || (arm::thumb_is_wide(*first) && !second)) {
+                result.reason = StopReason::FetchFault;
+                return result;
+            }
+            result.instruction =
+                *first | (std::uint32_t { second.value_or(0) } << 16U);
+            inst = arm::decode_t32(*first, second, it);
+        } else {
+            result.instruction = source.fetch32(result.pc);
+            if (result.instruction)
+                inst = arm::decode_a32(*result.instruction);
+        }
         if (!result.instruction) {
             result.reason = StopReason::FetchFault;
             return result;
         }
-        const auto inst = arm::decode_a32(*result.instruction);
         const bool passed = arm::condition_passed(inst.condition, state.cpsr);
         if (inst.condition == 15 ||
             (passed && (inst.kind == arm::InstructionKind::Unsupported ||
@@ -134,7 +156,7 @@ RunResult ArmInterpreter::run(
         }
         std::uint32_t branch_target = 0;
         if (passed && inst.kind == arm::InstructionKind::BranchExchange) {
-            branch_target = read_register(state, inst.rm);
+            branch_target = read_register(state, inst.rm, inst);
             if ((branch_target & 3U) == 2U) {
                 result.reason = StopReason::UnsupportedInstruction;
                 return result;
@@ -170,6 +192,14 @@ RunResult ArmInterpreter::run(
             }
             case arm::InstructionKind::DataProcessing:
                 data_processing(state, inst);
+                if (inst.rd == 15 && (inst.opcode < 8 || inst.opcode > 11))
+                    state.registers[15] &= ~1U; // Thumb ALUWritePC
+                break;
+            case arm::InstructionKind::WideImmediate:
+                state.registers[inst.rd] =
+                    inst.opcode != 0 ? (state.registers[inst.rd] & 0xffffU) |
+                                           (inst.immediate << 16U)
+                                     : inst.immediate;
                 break;
             case arm::InstructionKind::Multiply: {
                 const auto value =
@@ -182,11 +212,15 @@ RunResult ArmInterpreter::run(
             }
             case arm::InstructionKind::Branch:
                 if (inst.link)
-                    state.registers[14] = result.pc + 4U;
+                    state.registers[14] =
+                        (result.pc + inst.size) | (thumb ? 1U : 0U);
+                if (inst.exchange)
+                    state.cpsr &= ~0x20U;
                 break;
             case arm::InstructionKind::BranchExchange:
                 if (inst.link)
-                    state.registers[14] = result.pc + 4U;
+                    state.registers[14] =
+                        (result.pc + inst.size) | (thumb ? 1U : 0U);
                 state.cpsr =
                     (state.cpsr & ~(1U << 5)) | ((branch_target & 1U) << 5);
                 break;
@@ -194,13 +228,28 @@ RunResult ArmInterpreter::run(
                 break;
             }
         }
-        if (!(passed && inst.kind == arm::InstructionKind::Transfer))
+        const bool alu_pc = inst.kind == arm::InstructionKind::DataProcessing &&
+                            inst.rd == 15 &&
+                            (inst.opcode < 8 || inst.opcode > 11);
+        const bool compare_branch =
+            inst.kind == arm::InstructionKind::CompareBranch &&
+            ((state.registers[inst.rn] != 0) == (inst.opcode != 0));
+        if (!(passed &&
+                (inst.kind == arm::InstructionKind::Transfer || alu_pc)))
             state.registers[15] =
-                passed && inst.kind == arm::InstructionKind::Branch
-                    ? result.pc + 8U + inst.immediate
+                passed && (inst.kind == arm::InstructionKind::Branch ||
+                              compare_branch)
+                    ? (inst.align_pc ? (result.pc + inst.pc_offset) & ~3U
+                                     : result.pc + inst.pc_offset) +
+                          inst.immediate
                 : passed && inst.kind == arm::InstructionKind::BranchExchange
                     ? branch_target & ((branch_target & 1U) != 0 ? ~1U : ~3U)
-                    : result.pc + 4U;
+                    : result.pc + inst.size;
+        if (thumb)
+            state.cpsr = arm::with_it_state(
+                state.cpsr, passed && inst.kind == arm::InstructionKind::IfThen
+                                ? inst.immediate
+                                : arm::advance_it(it));
         result.ticks_consumed += ticks;
         if (passed && inst.kind == arm::InstructionKind::Svc) {
             result.svc = inst.immediate;
