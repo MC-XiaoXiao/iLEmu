@@ -21,7 +21,8 @@ enum class InstructionKind {
     WideImmediate,
     PackHalfword,
     VectorDuplicate,
-    VectorBitwise
+    VectorBitwise,
+    VectorTransfer
 };
 enum class ShiftKind { Lsl, Lsr, Asr, Ror };
 // Data-processing uses A32 opcode numbers; Thumb adds ORN to that set.
@@ -41,8 +42,14 @@ struct VectorBitwiseOperands {
     VectorBitwiseOperation operation = VectorBitwiseOperation::And;
     bool quad = false;
 };
-using VectorOperands =
-    std::variant<VectorDuplicateOperands, VectorBitwiseOperands>;
+enum class VectorTransferMode { Multiple, Lane, Replicate };
+struct VectorTransferOperands {
+    unsigned first = 0, count = 0, element_size = 0, alignment = 1;
+    VectorTransferMode mode = VectorTransferMode::Multiple;
+    unsigned lane = 0;
+};
+using VectorOperands = std::variant<VectorDuplicateOperands,
+    VectorBitwiseOperands, VectorTransferOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.

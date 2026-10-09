@@ -115,7 +115,8 @@ public:
 #endif
             ++stats_.execution_calls;
             if (native.reason == arm64::memory_exit ||
-                native.reason == arm64::multiple_exit) {
+                native.reason == arm64::multiple_exit ||
+                native.reason == arm64::vector_exit) {
                 if (!memory)
                     throw std::logic_error("memory exit has no bound memory");
                 // No generated code or direct pointer remains in use. Release
@@ -123,20 +124,28 @@ public:
                 lease.reset();
                 const bool memory_thumb = (state.cpsr & 0x20U) != 0;
                 const auto memory_it = arm::it_state(state.cpsr);
-                const bool multiple = native.reason == arm64::multiple_exit;
-                const auto completion =
-                    multiple
-                        ? arm_memory::complete_multiple(
-                              state, *memory, native.multiple)
-                        : arm_memory::complete(state, *memory, native.transfer);
+                arm_memory::Completion completion;
+                std::uint64_t transfer_ticks;
+                if (native.reason == arm64::vector_exit) {
+                    completion = arm_memory::complete_vector(
+                        state, *memory, native.vector);
+                    transfer_ticks = native.vector.ticks;
+                } else if (native.reason == arm64::multiple_exit) {
+                    completion = arm_memory::complete_multiple(
+                        state, *memory, native.multiple);
+                    transfer_ticks = native.multiple.ticks;
+                } else {
+                    completion = arm_memory::complete(
+                        state, *memory, native.transfer);
+                    transfer_ticks = native.transfer.ticks;
+                }
                 native.reason = static_cast<std::uint32_t>(completion.reason);
                 result.memory_fault = completion.fault;
                 if (completion.reason == StopReason::None) {
                     if (memory_thumb)
                         state.cpsr = arm::with_it_state(
                             state.cpsr, arm::advance_it(memory_it));
-                    native.ticks += multiple ? native.multiple.ticks
-                                             : native.transfer.ticks;
+                    native.ticks += transfer_ticks;
                     native.pc = state.registers[15];
                     native.has_instruction = step ? 1U : 0U;
                 }

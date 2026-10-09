@@ -6,6 +6,7 @@
 #include "arm/t32_decode.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
+#include "arm_memory/vector_transfer.hpp"
 
 namespace ilemu::execution {
 namespace {
@@ -170,7 +171,8 @@ RunResult ArmInterpreter::run(
             (passed &&
                 (inst.kind == arm::InstructionKind::Unsupported ||
                     ((inst.kind == arm::InstructionKind::Transfer ||
-                         inst.kind == arm::InstructionKind::MultipleTransfer) &&
+                         inst.kind == arm::InstructionKind::MultipleTransfer ||
+                         inst.kind == arm::InstructionKind::VectorTransfer) &&
                         !source.data_memory())))) {
             result.reason = StopReason::UnsupportedInstruction;
             return result;
@@ -198,6 +200,20 @@ RunResult ArmInterpreter::run(
         }
         if (passed) {
             switch (inst.kind) {
+            case arm::InstructionKind::VectorTransfer: {
+                auto& memory = *source.data_memory();
+                const auto transfer = arm_memory::prepare_vector(state, inst,
+                    memory.direct_memory().permits_unaligned != 0);
+                lease.reset();
+                const auto completion =
+                    arm_memory::complete_vector(state, memory, transfer);
+                if (completion.reason != StopReason::None) {
+                    result.reason = completion.reason;
+                    result.memory_fault = completion.fault;
+                    return result;
+                }
+                break;
+            }
             case arm::InstructionKind::MultipleTransfer: {
                 auto& memory = *source.data_memory();
                 const auto offset = memory.direct_memory().pc_store_offset;
@@ -303,6 +319,7 @@ RunResult ArmInterpreter::run(
         if (!(passed &&
                 (inst.kind == arm::InstructionKind::Transfer ||
                     inst.kind == arm::InstructionKind::MultipleTransfer ||
+                    inst.kind == arm::InstructionKind::VectorTransfer ||
                     alu_pc)))
             state.registers[15] =
                 passed && (inst.kind == arm::InstructionKind::Branch ||

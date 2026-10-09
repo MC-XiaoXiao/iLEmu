@@ -6,6 +6,7 @@
 #include "memory_emitter.hpp"
 #include "multiple_emitter.hpp"
 #include "simd_emitter.hpp"
+#include "vector_memory_emitter.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <deque>
@@ -212,7 +213,9 @@ namespace {
                 inst.kind == arm::InstructionKind::WideImmediate ||
                 (inst.kind == arm::InstructionKind::Transfer && inst.load))
                 memory_.invalidate_register(inst.rd);
-            if (inst.kind == arm::InstructionKind::Transfer && inst.writeback)
+            if ((inst.kind == arm::InstructionKind::Transfer ||
+                    inst.kind == arm::InstructionKind::VectorTransfer) &&
+                inst.writeback)
                 memory_.invalidate_register(inst.rn);
             if (inst.kind == arm::InstructionKind::MultipleTransfer)
                 memory_.invalidate_all();
@@ -222,6 +225,14 @@ namespace {
                 memory_.invalidate_register(14);
         }
         VectorCodeGenerator& code() { return code_; }
+        void vector_transfer(const arm::Instruction& inst, std::uint32_t pc,
+            std::uint32_t word, std::uint64_t before, std::uint64_t cost,
+            unsigned before_it, bool big_endian)
+        {
+            VectorMemoryEmitter { code_, big_endian }.emit(inst, cost,
+                exit(static_cast<StopReason>(vector_exit), before, pc, word,
+                    0, false, before_it));
+        }
         IntegerEmitter& integer() { return integer_; }
         void transfer(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
@@ -315,7 +326,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         const bool unsupported =
             inst.kind == arm::InstructionKind::Unsupported ||
             ((inst.kind == arm::InstructionKind::Transfer ||
-                 inst.kind == arm::InstructionKind::MultipleTransfer) &&
+                 inst.kind == arm::InstructionKind::MultipleTransfer ||
+                 inst.kind == arm::InstructionKind::VectorTransfer) &&
                 !source.data_memory());
         if (inst.condition == 15 || (unsupported && inst.condition == 14)) {
             emit.code().B(emit.exit(
@@ -343,7 +355,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         }
         if (!unsupported &&
             (inst.kind == arm::InstructionKind::Transfer ||
-                inst.kind == arm::InstructionKind::MultipleTransfer))
+                inst.kind == arm::InstructionKind::MultipleTransfer ||
+                inst.kind == arm::InstructionKind::VectorTransfer))
             out.accesses_memory = true;
         out.maximum_ticks += cost;
         ++out.instructions;
@@ -406,6 +419,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             if (!unsupported) {
                 emit.conditional_skip(inst.condition, skip);
                 switch (inst.kind) {
+                case arm::InstructionKind::VectorTransfer:
+                    emit.vector_transfer(
+                        inst, pc, *word, before, cost, it, big_endian);
+                    break;
                 case arm::InstructionKind::Multiply:
                     emit.integer().multiply(inst);
                     break;

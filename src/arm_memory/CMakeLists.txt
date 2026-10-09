@@ -1,4 +1,4 @@
-add_library(ilemu_arm_memory STATIC transfer.cpp multiple.cpp)
+add_library(ilemu_arm_memory STATIC transfer.cpp multiple.cpp vector_transfer.cpp)
 add_library(iLEmu::arm_memory ALIAS ilemu_arm_memory)
 target_link_libraries(ilemu_arm_memory PUBLIC iLEmu::execution iLEmu::arm)
 target_include_directories(ilemu_arm_memory PUBLIC
