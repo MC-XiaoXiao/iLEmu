@@ -1943,7 +1943,7 @@ private:
             // Keep baseline artifacts out of optimized comparison runs and
             // retain the existing optimized artifact key unchanged.
             key.codegen_options = jit_artifact_codegen_options |
-                (static_cast<std::uint64_t>(compilation_mode_) << 8U);
+                (compilation_mode_ == JitCompilationMode::Baseline ? 2U << 8U : 0U);
             key.host_isa = jit_artifact_host_isa();
             key.host_feature_mask = jit_artifact_host_feature_mask();
             key.artifact_format_version = jit_artifact_format_version;
@@ -3239,11 +3239,8 @@ private:
             throw std::logic_error { "JIT runtime callback link is not bound" };
         }
         Dynarmic::A32::UserConfig config { callbacks_.get() };
-        // Keep state-access elimination: without it, extra register loads and
-        // stores can cost more to emit than the removed pass saves. Baseline
-        // defers constant folding and read-only-memory specialization only.
-        if (callbacks_->compilation_mode() == JitCompilationMode::Baseline)
-            config.optimizations &= ~Dynarmic::OptimizationFlag::ConstProp;
+        config.fast_compilation =
+            callbacks_->compilation_mode() == JitCompilationMode::Baseline;
         config.native_code_slab = execution_context_->native_code_slab();
         config.enable_native_code_templates = callbacks_->native_template_reuse_enabled();
         config.callbacks_link = runtime_link_cell_address_;

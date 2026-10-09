@@ -1767,7 +1767,7 @@ void EmulatorSession::run()
                     shared_exclusive_monitor, allocate_shared_monitor_slots(),
                     jit_artifacts, shared_exclusive_address_resolver,
                     std::max<std::size_t>(1U, translation_lanes),
-        options.jit_compilation_mode);
+                    options.jit_compilation_mode);
                 child->cpus->set_jit_code_cache_size(
                     child->jit_cache_reservation->shared_slab_bytes());
                 child->cpus->set_jit_work_signal(jit_work_signal);

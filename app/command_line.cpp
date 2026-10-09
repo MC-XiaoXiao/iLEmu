@@ -121,6 +121,7 @@ std::string usage()
            "[--jit-catalog-warming no-enqueue] "
            "[--output FILE]\n"
            "  ilemu smoke [--cores N] [--jit-cache-mib 8..512] "
+           "[--jit-compile-mode optimized|baseline] "
            "[--perf-summary] [--output FILE]\n"
            "  ilemu benchmark arm [--iterations N] "
            "[--jit-cache-mib 8..512] [--perf-summary] "
@@ -229,6 +230,17 @@ bool flag(const std::vector<std::string>& args, std::string_view name)
         };
     }
     return mode;
+}
+
+JitCompilationMode jit_compilation_mode(const std::vector<std::string>& args)
+{
+    const auto mode = parse_jit_compilation_mode(
+        option(args, "--jit-compile-mode").value_or("optimized"));
+    if (!mode)
+        throw std::runtime_error {
+            "--jit-compile-mode must be optimized or baseline"
+        };
+    return *mode;
 }
 
 std::size_t jit_code_cache_size(const std::vector<std::string>& args)
@@ -941,7 +953,7 @@ void smoke(const std::vector<std::string>& args, Output& output)
         std::make_shared<GuestExclusiveAddressResolver>();
     CpuCluster cluster { core_count, core_count, memory, core_count,
         default_arm_cpu_model(), shared_exclusive_monitor, 0, { },
-        shared_exclusive_address_resolver };
+        shared_exclusive_address_resolver, 1U, jit_compilation_mode(args) };
     cluster.set_jit_code_cache_size(jit_code_cache_size(args));
     for (std::size_t index = 0; index < cluster.size(); ++index) {
         cluster.cpu(index).registers()[0] =
@@ -1108,13 +1120,7 @@ void boot(const std::vector<std::string>& args, SessionHost& host, Output& outpu
     if (const auto value = option(args, "--jit-artifact-disk-mib"))
         options.artifact_disk_bytes = static_cast<std::size_t>(
             parse_mib_value(*value, "--jit-artifact-disk-mib", 0U, 4096U));
-    const auto compilation_mode = parse_jit_compilation_mode(
-        option(args, "--jit-compile-mode").value_or("optimized"));
-    if (!compilation_mode)
-        throw std::runtime_error {
-            "--jit-compile-mode must be optimized or baseline"
-        };
-    options.jit_compilation_mode = *compilation_mode;
+    options.jit_compilation_mode = jit_compilation_mode(args);
     options.jit_profile_mode = parse_jit_profile_mode(args);
     options.jit_catalog_warming = parse_jit_catalog_warming_mode(args);
     options.startup_profile_blocks =
