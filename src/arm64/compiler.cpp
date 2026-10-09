@@ -39,6 +39,7 @@ namespace {
         Emitter(CompiledTrace& trace, bool big_endian, bool thumb)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
+            , vectors_(code_)
             , integer_(code_)
             , memory_(code_, integer_, big_endian)
             , thumb_(thumb)
@@ -83,6 +84,7 @@ namespace {
                 code_.LDP(WReg { i }, WReg { i + 1 }, X19, i * 4);
             code_.LDR(W14, X19, 56);
             code_.align(16);
+            entry_end_ = trace_.words.size();
             code_.l(head_);
         }
         void finish(std::uint32_t pc)
@@ -106,7 +108,9 @@ namespace {
                 code_.STR(W14, SP, 152);
                 code_.LDR(X16, X20, offsetof(NativeOutcome, poll));
                 code_.LDR(X0, X20, offsetof(NativeOutcome, control));
+                vectors_.flush();
                 code_.BLR(X16);
+                vectors_.restore();
                 code_.STR(W0, X20, offsetof(NativeOutcome, reason));
                 code_.MOV(W17, W0);
                 code_.MOV(X30, std::max(1U, 4096U / trace_.instructions));
@@ -156,6 +160,7 @@ namespace {
                 code_.B(epilogue_);
             }
             code_.l(epilogue_);
+            vectors_.flush();
             for (int i = 0; i < 14; i += 2)
                 code_.STP(WReg { i }, WReg { i + 1 }, X19, i * 4);
             code_.STR(W14, X19, 56);
@@ -170,6 +175,18 @@ namespace {
             code_.LDP(X29, X30, SP, 80);
             code_.LDP(X19, X20, SP, PostIndexed { }, 160);
             code_.RET();
+            if (vectors_.used()) {
+                // Only the entry prefix precedes this boundary and it contains
+                // no branches. All body labels/relative branches move together;
+                // backedges skip initialization. Preserve head alignment.
+                std::vector<std::uint32_t> initial;
+                VectorCodeGenerator entry(initial);
+                vectors_.restore(entry);
+                entry.align(16);
+                trace_.words.insert(trace_.words.begin() +
+                        static_cast<std::ptrdiff_t>(entry_end_),
+                    initial.begin(), initial.end());
+            }
         }
         void conditional_skip(unsigned condition, Label& target)
         {
@@ -229,11 +246,13 @@ namespace {
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
             unsigned before_it, bool big_endian)
         {
-            VectorMemoryEmitter { code_, big_endian, memory_.addresses() }
+            VectorMemoryEmitter { code_, big_endian, memory_.addresses(),
+                vectors_ }
                 .emit(inst, cost,
                     exit(static_cast<StopReason>(vector_exit), before, pc,
                         word, 0, false, before_it));
         }
+        VectorRegisters& vectors() { return vectors_; }
         IntegerEmitter& integer() { return integer_; }
         void transfer(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
@@ -263,9 +282,11 @@ namespace {
     private:
         CompiledTrace& trace_;
         VectorCodeGenerator code_;
+        VectorRegisters vectors_;
         IntegerEmitter integer_;
         MemoryEmitter memory_;
         bool thumb_;
+        std::size_t entry_end_ = 0;
         unsigned it_ = 0, size_ = 4;
         Label head_, epilogue_;
         std::deque<Exit> exits_;
@@ -441,11 +462,11 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     emit.integer().pack_halfword(inst);
                     break;
                 case arm::InstructionKind::VectorDuplicate:
-                    SimdEmitter { emit.code() }.duplicate(
+                    SimdEmitter { emit.code(), emit.vectors() }.duplicate(
                         std::get<arm::VectorDuplicateOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::VectorBitwise:
-                    SimdEmitter { emit.code() }.bitwise(
+                    SimdEmitter { emit.code(), emit.vectors() }.bitwise(
                         std::get<arm::VectorBitwiseOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::DataProcessing:

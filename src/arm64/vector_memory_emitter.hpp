@@ -2,16 +2,18 @@
 #pragma once
 #include "address_cache.hpp"
 #include "arm/instruction.hpp"
+#include "vector_registers.hpp"
 #include <oaknut/oaknut.hpp>
 
 namespace ilemu::execution::arm64 {
 class VectorMemoryEmitter {
 public:
     VectorMemoryEmitter(oaknut::VectorCodeGenerator& code, bool big_endian,
-        AddressCache& addresses)
+        AddressCache& addresses, VectorRegisters& vectors)
         : code_(code)
         , big_endian_(big_endian)
         , addresses_(addresses)
+        , vectors_(vectors)
     {
     }
     void emit(const arm::Instruction&, std::uint64_t cost,
@@ -22,5 +24,6 @@ private:
     oaknut::VectorCodeGenerator& code_;
     bool big_endian_;
     AddressCache& addresses_;
+    VectorRegisters& vectors_;
 };
 }

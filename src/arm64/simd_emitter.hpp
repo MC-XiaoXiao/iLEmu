@@ -1,18 +1,23 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "arm/instruction.hpp"
+#include "vector_registers.hpp"
 #include <oaknut/oaknut.hpp>
 
 namespace ilemu::execution::arm64 {
 class SimdEmitter {
 public:
-    explicit SimdEmitter(oaknut::VectorCodeGenerator& code) : code_(code) { }
+    SimdEmitter(oaknut::VectorCodeGenerator& code, VectorRegisters& vectors)
+        : code_(code)
+        , vectors_(vectors)
+    {
+    }
     void duplicate(const arm::VectorDuplicateOperands&);
     void bitwise(const arm::VectorBitwiseOperands&);
 
 private:
-    void load(oaknut::VReg, unsigned d, bool quad);
-    void store(oaknut::VReg, unsigned d, bool quad);
+    oaknut::QReg source(oaknut::QReg scratch, unsigned d, bool quad);
     oaknut::VectorCodeGenerator& code_;
+    VectorRegisters& vectors_;
 };
 }
