@@ -2370,6 +2370,7 @@ std::size_t FilePageCache::reflect_descriptor_write(int file_descriptor,
 
     std::size_t updated_pages = 0;
     for (const auto& page : pages) {
+        auto instruction_write = page->lock_instruction_write();
         page->materialize();
         const auto page_begin = page->file_offset_;
         const auto page_end = page_begin + page->file_byte_count_;

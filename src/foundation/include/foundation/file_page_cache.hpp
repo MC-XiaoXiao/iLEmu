@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <utility>
@@ -301,6 +302,22 @@ struct GuestPageBacking {
     GuestPageBacking(const GuestPageBacking& other);
     GuestPageBacking& operator=(const GuestPageBacking&) = delete;
 
+    // Instruction views share this physical lock across address-space aliases.
+    // Checked shared writers hold the write lock through generation publication.
+    // Private writes are excluded by their AddressSpace lease or detach via COW.
+    [[nodiscard]] std::shared_lock<std::shared_mutex> lock_instruction_read() const
+    {
+        return std::shared_lock { instruction_mutex_ };
+    }
+    [[nodiscard]] std::unique_lock<std::shared_mutex> lock_instruction_write(
+        bool shared = true) const
+    {
+        std::unique_lock lock { instruction_mutex_, std::defer_lock };
+        if (shared)
+            lock.lock();
+        return lock;
+    }
+
     // Shared aliases use the same physical granule identity. Only writes to
     // that granule revoke it; copy-on-write starts a fresh set of identities.
     [[nodiscard]] std::uint64_t reservation_identity(
@@ -334,6 +351,7 @@ private:
     friend class FilePageCache;
 
     mutable std::mutex mutex_;
+    mutable std::shared_mutex instruction_mutex_;
     mutable std::shared_ptr<GuestFileBacking> file_backing_;
     std::shared_ptr<GuestFileBacking> file_writeback_;
     std::uint64_t file_offset_ { };

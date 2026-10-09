@@ -94,6 +94,13 @@ public:
     {
         return { };
     }
+    // A runtime source can lease just the entry region and any straddling
+    // instruction. The legacy overload remains available to whole-view sources.
+    virtual std::unique_ptr<InstructionLease> acquire_code_lease(
+        std::uint32_t, bool)
+    {
+        return acquire_code_lease();
+    }
     virtual MemoryAccess* data_memory() noexcept { return nullptr; }
     // Executed fetches install/validate runtime translations and charge guest
     // VM events. Inspection below must not charge them. Thumb-wide fetches

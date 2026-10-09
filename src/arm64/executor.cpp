@@ -46,7 +46,7 @@ public:
                 result.reason = StopReason::FetchFault;
                 return result;
             }
-            auto lease = source.acquire_code_lease();
+            auto lease = source.acquire_code_lease(result.pc, thumb);
             if (!lease)
                 throw std::runtime_error(
                     "ARM64 executor requires a stable instruction lease");
@@ -118,6 +118,9 @@ public:
                 native.reason == arm64::multiple_exit) {
                 if (!memory)
                     throw std::logic_error("memory exit has no bound memory");
+                // No generated code or direct pointer remains in use. Release
+                // physical code locks before a checked access can modify code.
+                lease.reset();
                 const bool memory_thumb = (state.cpsr & 0x20U) != 0;
                 const auto memory_it = arm::it_state(state.cpsr);
                 const bool multiple = native.reason == arm64::multiple_exit;

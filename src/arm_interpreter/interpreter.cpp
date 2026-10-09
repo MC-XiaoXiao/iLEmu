@@ -125,7 +125,7 @@ RunResult ArmInterpreter::run(
             result.reason = StopReason::FetchFault;
             return result;
         }
-        auto lease = source.acquire_code_lease();
+        auto lease = source.acquire_code_lease(result.pc, thumb);
         if (auto fault = source.prepare_instruction_fetch(
                 result.pc, thumb ? 2U : 4U)) {
             result.memory_fault = fault;
@@ -197,6 +197,7 @@ RunResult ArmInterpreter::run(
                 }
                 const auto transfer =
                     arm_memory::prepare_multiple(state, inst, offset);
+                lease.reset();
                 const auto completion =
                     arm_memory::complete_multiple(state, memory, transfer);
                 if (completion.reason != StopReason::None) {
@@ -217,6 +218,7 @@ RunResult ArmInterpreter::run(
                 }
                 const auto transfer =
                     arm_memory::prepare(state, inst, direct.pc_store_offset);
+                lease.reset();
                 const auto completion =
                     arm_memory::complete(state, memory, transfer);
                 if (completion.reason != StopReason::None) {

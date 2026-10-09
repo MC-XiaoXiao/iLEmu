@@ -2,8 +2,9 @@
 #include "app/arm_benchmark.hpp"
 #include "arm64/executor.hpp"
 #include "arm_interpreter/interpreter.hpp"
-#include "benchmark_memory.hpp"
 #include "foundation/address_space.hpp"
+#include "foundation/arm_cpu_model.hpp"
+#include "foundation/execution_memory.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/output.hpp"
 #include "host_execution/code_memory.hpp"
@@ -62,7 +63,7 @@ void run_arm_benchmark(std::uint32_t iterations, std::size_t cache_size,
     std::chrono::steady_clock::duration elapsed;
     execution::Arm64Statistics compiled_stats;
     if (backend != "dynarmic") {
-        BenchmarkMemory source { memory };
+        ExecutionMemory source { memory, default_arm_cpu_model() };
         std::unique_ptr<execution::CodeAllocator> allocator;
         std::unique_ptr<execution::Executor> executor;
         execution::Arm64Executor* compiled = nullptr;

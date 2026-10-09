@@ -167,6 +167,12 @@ public:
     // translations. Entries are presence tokens, never executable host bytes.
     [[nodiscard]] std::uint8_t** jit_instruction_page_table();
     [[nodiscard]] bool prepare_instruction_fetch(std::uint32_t address, std::size_t size);
+    // Requires this thread's ExclusiveAccess and an already prepared Execute
+    // translation. Empty optional is unavailable; an empty backing is a stable
+    // demand-zero page. The caller locks each distinct backing before inspection
+    // and retains it only for the current execution lease.
+    [[nodiscard]] std::optional<std::shared_ptr<GuestPageBacking>>
+    instruction_page_backing(std::uint32_t address);
     [[nodiscard]] std::uint8_t** jit_read_page_table();
     [[nodiscard]] std::uint8_t** jit_write_page_table();
     // Debug watchpoints can require every access to pass through callbacks.

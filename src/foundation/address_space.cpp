@@ -912,6 +912,8 @@ bool AddressSpace::copy_in_batch_locked(
                              ? *resident
                              : ensure_page_locked(operation.address);
             auto& backing = writable_backing_locked(page, nullptr, guest_write);
+            auto instruction_write =
+                backing.lock_instruction_write(page.shared_writable);
             std::copy(operation.data.begin(), operation.data.end(),
                 backing.bytes.begin() + offset);
             mark_shared_backing_written_locked(
@@ -942,6 +944,8 @@ bool AddressSpace::copy_in_batch_locked(
             const auto chunk = std::min<std::size_t>(
                 page_size - offset, operation.data.size() - copied);
             auto& backing = writable_backing_locked(page, nullptr, guest_write);
+            auto instruction_write =
+                backing.lock_instruction_write(page.shared_writable);
             std::copy_n(
                 operation.data.begin() + static_cast<std::ptrdiff_t>(copied),
                 chunk, backing.bytes.begin() + offset);
@@ -2019,6 +2023,8 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
                          : ensure_page_locked(address);
         bool jit_eligibility_changed = false;
         auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
+        auto instruction_write =
+            backing.lock_instruction_write(page.shared_writable);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
@@ -2042,6 +2048,8 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
                          : ensure_page_locked(current);
         bool jit_eligibility_changed = false;
         auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
+        auto instruction_write =
+            backing.lock_instruction_write(page.shared_writable);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] =
@@ -2073,6 +2081,10 @@ bool AddressSpace::compare_exchange_integer(
         auto& page = resident != nullptr && resident->backing
                          ? *resident
                          : ensure_page_locked(address);
+        auto instruction_write = page.backing
+                                     ? page.backing->lock_instruction_write(
+                                           page.shared_writable)
+                                     : std::unique_lock<std::shared_mutex> { };
         T current_value = 0;
         for (std::size_t index = 0; index < sizeof(T); ++index) {
             current_value |=
@@ -2122,6 +2134,8 @@ bool AddressSpace::compare_exchange_integer(
                          : ensure_page_locked(current);
         bool jit_eligibility_changed = false;
         auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
+        auto instruction_write =
+            backing.lock_instruction_write(page.shared_writable);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] =
@@ -2151,6 +2165,10 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
         auto& page = resident != nullptr && resident->backing
                          ? *resident
                          : ensure_page_locked(address);
+        auto instruction_write = page.backing
+                                     ? page.backing->lock_instruction_write(
+                                           page.shared_writable)
+                                     : std::unique_lock<std::shared_mutex> { };
         T previous = 0;
         for (std::size_t index = 0; index < sizeof(T); ++index) {
             previous |=
@@ -2190,6 +2208,8 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
                          : ensure_page_locked(current);
         bool jit_eligibility_changed = false;
         auto& backing = writable_backing_locked(page, &jit_eligibility_changed, true);
+        auto instruction_write =
+            backing.lock_instruction_write(page.shared_writable);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] = static_cast<std::byte>(
