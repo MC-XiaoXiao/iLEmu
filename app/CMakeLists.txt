@@ -27,13 +27,14 @@ if(ILEMU_ENABLE_SDL2 AND TARGET SDL2::SDL2)
 endif()
 
 add_library(ilemu_app_commands STATIC
-    command_line.cpp abi_command.cpp routes_command.cpp mig_command.cpp)
+    command_line.cpp arm_benchmark.cpp abi_command.cpp routes_command.cpp mig_command.cpp)
 add_library(iLEmu::app_commands ALIAS ilemu_app_commands)
 ilemu_configure_module(ilemu_app_commands)
 target_link_libraries(ilemu_app_commands PUBLIC
     iLEmu::syscall_routes
     iLEmu::host
-    iLEmu::runtime)
+    iLEmu::runtime
+    PRIVATE iLEmu::arm_interpreter)
 
 if(NOT ANDROID)
 add_executable(ilemu main.cpp desktop_host.cpp)

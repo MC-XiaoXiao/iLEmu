@@ -51,6 +51,7 @@
 #include "foundation/output.hpp"
 #include "foundation/performance.hpp"
 
+#include "app/arm_benchmark.hpp"
 #include "app/abi_command.hpp"
 #include "app/routes_command.hpp"
 #include "app/mig_command.hpp"
@@ -123,7 +124,7 @@ std::string usage()
            "  ilemu smoke [--cores N] [--jit-cache-mib 8..512] "
            "[--jit-compile-mode optimized|baseline] "
            "[--perf-summary] [--output FILE]\n"
-           "  ilemu benchmark arm [--iterations N] "
+           "  ilemu benchmark arm [--iterations N] [--executor dynarmic|interpreter] "
            "[--jit-cache-mib 8..512] [--perf-summary] "
            "[--output FILE]\n"
            "\nBoot/ABI selection reads SystemVersion.plist by default.\n"
@@ -1009,59 +1010,8 @@ void benchmark(const std::vector<std::string>& args, Output& output)
     }
     const auto iterations = static_cast<std::uint32_t>(parsed);
 
-    AddressSpace memory;
-    constexpr std::uint32_t code_address = 0x1000;
-    if (!memory.map(code_address, AddressSpace::page_size,
-            MemoryPermission::Read | MemoryPermission::Write |
-                MemoryPermission::Execute)) {
-        throw std::runtime_error { "ARM benchmark code mapping failed" };
-    }
-    std::array<std::byte, 16> code { };
-    append_word(code, 0, 0xe3a01000U); // mov r1, #0
-    append_word(code, 4, 0xe2811001U); // add r1, r1, #1
-    append_word(code, 8, 0xe2500001U); // subs r0, r0, #1
-    append_word(code, 12, 0x1afffffcU); // bne 0x1004
-    if (!memory.copy_in(code_address, code)) {
-        throw std::runtime_error { "ARM benchmark code upload failed" };
-    }
-    constexpr std::uint32_t svc_address = code_address + sizeof(code);
-    const std::array<std::byte, 4> svc { std::byte { 0x80 }, std::byte { 0x00 },
-        std::byte { 0x00 }, std::byte { 0xef } };
-    if (!memory.copy_in(svc_address, svc)) {
-        throw std::runtime_error { "ARM benchmark SVC upload failed" };
-    }
-
-    CpuCluster cluster { 1, memory };
-    cluster.set_jit_code_cache_size(jit_code_cache_size(args));
-    auto& cpu = cluster.cpu(0);
-    cpu.registers()[0] = iterations;
-    cpu.registers()[15] = code_address;
-    cpu.set_cpsr(0x10);
-    const auto tick_budget = static_cast<std::uint64_t>(iterations) * 16U + 32U;
-    const auto started = std::chrono::steady_clock::now();
-    const auto result = cpu.run(tick_budget);
-    const auto elapsed = std::chrono::steady_clock::now() - started;
-    if (cpu.registers()[0] != 0 || cpu.registers()[1] != iterations ||
-        result.svc != std::optional<std::uint32_t> { 0x80 }) {
-        throw std::runtime_error {
-            "ARM benchmark produced an unexpected CPU state"
-        };
-    }
-    const auto elapsed_nanoseconds =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
-    const auto iterations_per_second =
-        elapsed_nanoseconds > 0
-            ? static_cast<std::uint64_t>(
-                  static_cast<long double>(iterations) * 1'000'000'000.0L /
-                  static_cast<long double>(elapsed_nanoseconds))
-            : 0U;
-    output.line(
-        "[benchmark] baseline=arm iterations=" + std::to_string(iterations) +
-        " ticks=" + std::to_string(result.ticks_consumed) + " elapsed-ns=" +
-        std::to_string(elapsed_nanoseconds) + " jit-cache-mib=" +
-        std::to_string(jit_code_cache_size(args) / 1024U / 1024U) +
-        " iterations-per-second=" + std::to_string(iterations_per_second) +
-        " status=ok");
+    run_arm_benchmark(iterations, jit_code_cache_size(args),
+        option(args, "--executor").value_or("dynarmic"), output);
 }
 
 void boot(const std::vector<std::string>& args, SessionHost& host, Output& output)

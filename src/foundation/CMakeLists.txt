@@ -71,7 +71,7 @@ target_include_directories(ilemu_foundation SYSTEM PRIVATE
     "${ILEMU_BOOST_DIR}")
 target_link_libraries(ilemu_foundation PUBLIC
     dynarmic Threads::Threads iLEmu::xnu_adapter
-    iLEmu::foundation_memory
+    iLEmu::foundation_memory iLEmu::execution
     PRIVATE OpenSSL::Crypto)
 if(TARGET iLEmu::plist)
     target_link_libraries(ilemu_foundation PRIVATE iLEmu::plist)
