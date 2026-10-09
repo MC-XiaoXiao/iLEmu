@@ -23,7 +23,8 @@ namespace {
 
     struct Exit {
         Label label;
-        StopReason reason;
+        // Empty only when the control callback already published the reason.
+        std::optional<StopReason> reason;
         std::uint64_t ticks;
         std::uint32_t state_pc, report_pc, word, svc;
         bool dynamic_pc, instruction;
@@ -39,7 +40,8 @@ namespace {
             , thumb_(thumb)
         {
         }
-        Label& exit(StopReason reason, std::uint64_t ticks, std::uint32_t pc,
+        Label& exit(std::optional<StopReason> reason, std::uint64_t ticks,
+            std::uint32_t pc,
             std::optional<std::uint32_t> word = { }, std::uint32_t svc = 0,
             bool dynamic_pc = false, std::optional<unsigned> it = { })
         {
@@ -57,7 +59,7 @@ namespace {
         void retired(unsigned it) { it_ = it; }
         void prologue()
         {
-            code_.STP(X19, X20, SP, PreIndexed { }, -96);
+            code_.STP(X19, X20, SP, PreIndexed { }, -160);
             code_.STP(X21, X22, SP, 16);
             code_.STP(X23, X24, SP, 32);
             code_.STP(X25, X26, SP, 48);
@@ -68,6 +70,9 @@ namespace {
             code_.LDP(X25, X26, X20, offsetof(NativeOutcome, memory));
             code_.LDR(X23, X20, offsetof(NativeOutcome, groups));
             code_.MOV(X24, 0);
+            // LR is saved in the frame. Between control calls X30 counts
+            // groups until the next poll; BLR overwrites it only at a poll.
+            code_.MOV(X30, 1);
             code_.LDR(W22, X19, cpsr_offset);
             code_.MSR(SystemReg::NZCV, X22);
             for (int i = 0; i < 14; i += 2)
@@ -86,7 +91,27 @@ namespace {
                     code_.ADD(X24, X24, X16);
                 }
                 code_.SUB(X23, X23, 1);
-                code_.CBNZ(X23, head_);
+                code_.CBZ(X23, exit(StopReason::None, 0, pc));
+                code_.SUB(X30, X30, 1);
+                code_.CBNZ(X30, head_);
+                // Preserve caller-saved guest registers and flags across the
+                // noexcept control call. Callee-saved page caches stay live.
+                code_.MRS(X21, SystemReg::NZCV);
+                for (int i = 0; i < 14; i += 2)
+                    code_.STP(WReg { i }, WReg { i + 1 }, SP, 96 + i * 4);
+                code_.STR(W14, SP, 152);
+                code_.LDR(X16, X20, offsetof(NativeOutcome, poll));
+                code_.LDR(X0, X20, offsetof(NativeOutcome, control));
+                code_.BLR(X16);
+                code_.STR(W0, X20, offsetof(NativeOutcome, reason));
+                code_.MOV(W17, W0);
+                code_.MOV(X30, std::max(1U, 4096U / trace_.instructions));
+                for (int i = 0; i < 14; i += 2)
+                    code_.LDP(WReg { i }, WReg { i + 1 }, SP, 96 + i * 4);
+                code_.LDR(W14, SP, 152);
+                code_.MSR(SystemReg::NZCV, X21);
+                code_.CBNZ(W17, exit({}, 0, pc));
+                code_.B(head_);
             }
             code_.B(exit(StopReason::None,
                 trace_.closed ? 0 : trace_.maximum_ticks, pc));
@@ -104,8 +129,10 @@ namespace {
                     code_.MOV(W16, out.report_pc);
                     code_.STR(W16, X20, offsetof(NativeOutcome, pc));
                 }
-                code_.MOV(W16, static_cast<std::uint32_t>(out.reason));
-                code_.STR(W16, X20, offsetof(NativeOutcome, reason));
+                if (out.reason) {
+                    code_.MOV(W16, static_cast<std::uint32_t>(*out.reason));
+                    code_.STR(W16, X20, offsetof(NativeOutcome, reason));
+                }
                 code_.MOV(W16, out.word);
                 code_.STR(W16, X20, offsetof(NativeOutcome, word));
                 code_.MOV(W16, out.svc);
@@ -137,7 +164,7 @@ namespace {
             code_.LDP(X25, X26, SP, 48);
             code_.LDP(X27, X28, SP, 64);
             code_.LDP(X29, X30, SP, 80);
-            code_.LDP(X19, X20, SP, PostIndexed { }, 96);
+            code_.LDP(X19, X20, SP, PostIndexed { }, 160);
             code_.RET();
         }
         void conditional_skip(unsigned condition, Label& target)

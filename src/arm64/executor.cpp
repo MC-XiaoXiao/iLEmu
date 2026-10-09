@@ -2,6 +2,7 @@
 #include "arm64/executor.hpp"
 #include "arm/t32_decode.hpp"
 #include "compiler.hpp"
+#include "run_control.hpp"
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -17,7 +18,6 @@ public:
         std::unique_ptr<ExecutableCode> code;
         std::uint64_t maximum_ticks;
         std::uint64_t timing_limit;
-        unsigned instructions;
         bool closed;
         bool accesses_memory;
         std::optional<std::uint32_t> first_instruction;
@@ -71,7 +71,7 @@ public:
         stats_.emitted_bytes += bytes.size();
         auto [it, inserted] = cache_.emplace(
             key, Entry { std::move(allocation), compiled.maximum_ticks,
-                     timing_limit, compiled.instructions, compiled.closed,
+                     timing_limit, compiled.closed,
                      compiled.accesses_memory, compiled.first_instruction,
                      accounted });
         if (!inserted)
@@ -92,19 +92,16 @@ public:
         // binding. A later cache-sharing policy can provide stable identities.
         clear();
         std::optional<std::uint64_t> generation;
+        arm64::RunControl control { stops_, request };
         RunResult result;
         for (;;) {
             result.pc = state.registers[15];
             result.instruction.reset();
             result.memory_fault.reset();
-            result.reason = stops_.consume();
+            result.reason = control.poll();
             const bool step = request.mode == ExecutionMode::SingleStep;
             if (!step && result.ticks_consumed >= request.tick_budget)
                 result.reason = result.reason | StopReason::TickBudget;
-            if (request.deadline !=
-                    std::chrono::steady_clock::time_point::max() &&
-                std::chrono::steady_clock::now() >= request.deadline)
-                result.reason = result.reason | StopReason::HostDeadline;
             if (result.reason != StopReason::None)
                 return result;
             const bool thumb = (state.cpsr & 0x20U) != 0;
@@ -144,18 +141,21 @@ public:
                 selected = &entry(source, result.pc, true, big_endian, thumb,
                     it_state, allowance);
             arm64::NativeOutcome native;
+            native.poll = arm64::RunControl::poll;
+            native.control = &control;
             auto* memory = source.data_memory();
             if (memory && selected->accesses_memory)
                 native.memory = memory->direct_memory();
             if (selected->closed && selected->maximum_ticks != 0) {
                 native.groups = std::min<std::uint64_t>(
                     1024, remaining / selected->maximum_ticks);
-                if (request.deadline !=
-                    std::chrono::steady_clock::time_point::max())
-                    native.groups = std::min<std::uint64_t>(native.groups,
-                        std::max(1U, 4096U / selected->instructions));
                 native.groups = std::max<std::uint64_t>(1, native.groups);
             }
+            // Compilation and page binding can outlast a short deadline or
+            // receive a stop request. Do not execute a batch before rechecking.
+            result.reason = control.poll();
+            if (result.reason != StopReason::None)
+                return result;
 #if defined(__aarch64__) || defined(_M_ARM64)
             using Function = void (*)(CpuThreadState*, arm64::NativeOutcome*);
             const auto function = reinterpret_cast<Function>(

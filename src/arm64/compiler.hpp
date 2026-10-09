@@ -9,6 +9,10 @@ namespace ilemu::execution::arm64 {
 // in generated instructions, except the shared architectural state offsets.
 struct NativeOutcome {
     std::uint64_t groups = 1;
+    // Run-scoped, non-throwing control check. No guest state or memory changes
+    // are permitted while native registers and the instruction lease are live.
+    std::uint32_t (*poll)(void*) noexcept = nullptr;
+    void* control = nullptr;
     std::uint64_t ticks = 0;
     std::uint32_t reason = 0;
     std::uint32_t pc = 0;
