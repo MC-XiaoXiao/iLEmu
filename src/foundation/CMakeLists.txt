@@ -58,6 +58,7 @@ add_library(ilemu_foundation STATIC
     scene_coordinator.cpp
     sensor_input.cpp
     userland_hle.cpp
+    userland_hle_guard.cpp
     virtual_clock.cpp)
 add_library(iLEmu::foundation ALIAS ilemu_foundation)
 ilemu_configure_module(ilemu_foundation)

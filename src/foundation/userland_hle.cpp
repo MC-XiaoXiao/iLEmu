@@ -257,13 +257,15 @@ namespace {
     }
 
     std::vector<std::byte> make_persistent_arm_trampoline(
-        std::span<const std::byte, 4> original, std::uint32_t entry)
+        std::span<const std::byte> original, std::uint32_t entry)
     {
-        const auto instruction = word_from_little_endian(original);
+        const auto instruction = word_from_little_endian(
+            std::span<const std::byte, 4> { original.data(), 4U });
         constexpr std::uint32_t literal_load_mask = 0x0f7f0000U;
         constexpr std::uint32_t literal_word_load = 0x051f0000U;
         const auto target_register = (instruction >> 12U) & 0xfU;
-        if ((instruction & literal_load_mask) == literal_word_load &&
+        if (original.size() == 4U &&
+            (instruction & literal_load_mask) == literal_word_load &&
             target_register != 15U) {
             const auto condition = instruction & 0xf0000000U;
             const auto immediate = instruction & 0xfffU;
@@ -295,10 +297,11 @@ namespace {
         }
 
         std::vector<std::byte> code;
-        code.reserve(3U * sizeof(std::uint32_t));
+        code.reserve(original.size() + 2U * sizeof(std::uint32_t));
         code.insert(code.end(), original.begin(), original.end());
         const auto jump = little_endian_word(0xe51ff004U);
-        const auto target = little_endian_word(entry + 4U);
+        const auto target = little_endian_word(
+            entry + static_cast<std::uint32_t>(original.size()));
         code.insert(code.end(), jump.begin(), jump.end());
         code.insert(code.end(), target.begin(), target.end());
         return code;
@@ -981,7 +984,8 @@ void UserlandHleRegistry::register_function(std::string image_suffix,
 }
 
 void UserlandHleRegistry::register_prefix(
-    std::string image_suffix, std::string symbol_prefix, Handler handler)
+    std::string image_suffix, std::string symbol_prefix, Handler handler,
+    SymbolLookup lookup, EntryPatch patch)
 {
     if (!handler || registrations_.size() >= userland_hle_call_mask) {
         throw std::runtime_error {
@@ -991,7 +995,7 @@ void UserlandHleRegistry::register_prefix(
     registrations_.push_back(
         Registration { static_cast<std::uint16_t>(registrations_.size() + 1U),
             std::move(image_suffix), std::move(symbol_prefix), true,
-            std::nullopt, std::nullopt, false, std::move(handler) });
+            std::nullopt, std::nullopt, false, std::move(handler), lookup, patch });
     ++registration_generation_;
 }
 
@@ -2522,6 +2526,10 @@ bool UserlandHleRegistry::dispatch(
         cpu.set_cpsr(cpsr);
         return true;
     }
+    const auto original_entry =
+        installed != installed_calls_.end() && installed->second.original_entry
+            ? installed->second.original_entry
+            : entry;
     if (call.resume_original_persistently_) {
         const auto original_size = installed == installed_calls_.end()
                                        ? 0U
@@ -2531,11 +2539,13 @@ bool UserlandHleRegistry::dispatch(
             (installed->second.thumb
                     ? (original_size == sizeof(std::uint16_t) ||
                           original_size == 4U)
-                    : original_size == sizeof(std::uint32_t));
+                    : (original_size == sizeof(std::uint32_t) ||
+                          (original_size == 12U &&
+                              installed->second.original_entry != 0U)));
         if (!valid_original_size) {
             return false;
         }
-        auto trampoline = persistent_trampolines_.find(entry);
+        auto trampoline = persistent_trampolines_.find(original_entry);
         if (trampoline == persistent_trampolines_.end()) {
             const auto address = persistent_trampoline_cursor_;
             const auto code =
@@ -2544,11 +2554,9 @@ bool UserlandHleRegistry::dispatch(
                           std::span<const std::byte> {
                               installed->second.original.data(),
                               installed->second.original.size() },
-                          entry)
+                          original_entry)
                     : make_persistent_arm_trampoline(
-                          std::span<const std::byte, 4> {
-                              installed->second.original.data(), 4U },
-                          entry);
+                          installed->second.original, original_entry);
             const auto first_page = address & ~(AddressSpace::page_size - 1U);
             const auto last_page =
                 (address + static_cast<std::uint32_t>(code.size()) - 1U) &
@@ -2567,7 +2575,8 @@ bool UserlandHleRegistry::dispatch(
                 return false;
             }
             cpu.invalidate_cache_range(address, code.size());
-            trampoline = persistent_trampolines_.emplace(entry, address).first;
+            trampoline =
+                persistent_trampolines_.emplace(original_entry, address).first;
             persistent_trampoline_cursor_ +=
                 static_cast<std::uint32_t>(code.size());
         }
@@ -2592,18 +2601,21 @@ bool UserlandHleRegistry::dispatch(
         if (installed == installed_calls_.end())
             return false;
         const AddressSpace::CopyInOperation original {
-            entry, installed->second.original
+            original_entry, installed->second.original
         };
         const bool restored =
             registration->patch == EntryPatch::InstructionFetch
                 ? memory_.overlay_instructions({ &original, 1U })
-                : memory_.copy_in(entry, installed->second.original);
+                : memory_.copy_in(original_entry, installed->second.original);
         if (!restored)
             return false;
         const bool original_thumb = installed->second.thumb;
-        cpu.invalidate_cache_range(entry, installed->second.original.size());
+        cpu.invalidate_cache_range(
+            original_entry, installed->second.original.size());
         installed_calls_.erase(installed);
-        registers[15] = entry;
+        if (original_entry != entry)
+            installed_calls_.erase(original_entry);
+        registers[15] = original_entry;
         auto cpsr = cpu.cpsr();
         if (original_thumb) {
             cpsr |= arm_thumb_state_bit;

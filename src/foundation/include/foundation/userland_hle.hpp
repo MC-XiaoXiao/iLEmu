@@ -105,6 +105,12 @@ public:
     // zero, just like native Darwin callback registrations.
     [[nodiscard]] bool continue_deferred_guest_callback(std::uint32_t address,
         Continuation setup, Continuation completion = { });
+    // Install an ARMv7 argument gate so calls outside the inclusive range stay
+    // entirely in the guest. The handler must first verify the complete
+    // implementation and its ABI (including volatile condition flags). Only
+    // relocatable frame/IP prologues are supported; failure leaves it intact.
+    [[nodiscard]] bool guard_unsigned_argument(std::size_t index,
+        std::uint32_t minimum, std::uint32_t maximum);
     // Stop intercepting this entry in the current process and execute the
     // original guest implementation from its first instruction.
     void resume_original();
@@ -160,7 +166,9 @@ public:
         Handler handler, SymbolLookup lookup = SymbolLookup::Image,
         EntryPatch patch = EntryPatch::Memory);
     void register_prefix(
-        std::string image_suffix, std::string symbol_prefix, Handler handler);
+        std::string image_suffix, std::string symbol_prefix, Handler handler,
+        SymbolLookup lookup = SymbolLookup::Image,
+        EntryPatch patch = EntryPatch::Memory);
     // Resolve a defined guest function for call_guest_function without patching
     // its entry point. This is for adapters that compose existing firmware
     // logic.
@@ -284,6 +292,7 @@ private:
         bool thumb { };
         std::vector<std::byte> original;
         std::uint8_t prefix_arguments { };
+        std::uint32_t original_entry { };
     };
     struct CachedMappedSymbol {
         std::uint32_t symbol_index { };
