@@ -1690,6 +1690,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
         (translation & permission_bits(MemoryPermission::Write)) == 0U ||
         (parallel_access_ && page != nullptr && page->shared_writable) ||
         (flags & write_required) != write_required ||
+        (flags & permission_bits(MemoryPermission::Execute)) != 0U ||
         tracks_write_locked(base, page_size) ||
         (page != nullptr && page->backing &&
             page->backing->shared_write_tracking_enabled())) {
