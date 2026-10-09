@@ -2,6 +2,7 @@
 #include "app/arm_benchmark.hpp"
 #include "arm64/executor.hpp"
 #include "arm_interpreter/interpreter.hpp"
+#include "benchmark_memory.hpp"
 #include "foundation/address_space.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/output.hpp"
@@ -14,45 +15,6 @@
 
 namespace ilemu {
 namespace {
-    // This command owns already resident code. Firmware demand paging remains a
-    // responsibility of the runtime memory adapter when a full backend is
-    // added.
-    class BenchmarkInstructions final : public execution::InstructionSource {
-    public:
-        explicit BenchmarkInstructions(AddressSpace& memory)
-            : memory_(memory)
-        {
-        }
-        std::unique_ptr<execution::InstructionLease>
-        acquire_code_lease() override
-        {
-            class Lease final : public execution::InstructionLease {
-            public:
-                explicit Lease(AddressSpace& memory)
-                    : memory_(memory)
-                    , lock_(memory)
-                {
-                }
-                std::optional<std::uint64_t>
-                generation() const noexcept override
-                {
-                    return memory_.executable_content_generation();
-                }
-
-            private:
-                AddressSpace& memory_;
-                AddressSpace::ExclusiveAccess lock_;
-            };
-            return std::make_unique<Lease>(memory_);
-        }
-        std::optional<std::uint32_t> fetch32(std::uint32_t address) override
-        {
-            return memory_.read32(address, MemoryPermission::Execute);
-        }
-
-    private:
-        AddressSpace& memory_;
-    };
     void put_word(
         std::array<std::byte, 16>& code, std::size_t offset, std::uint32_t word)
     {
@@ -100,7 +62,7 @@ void run_arm_benchmark(std::uint32_t iterations, std::size_t cache_size,
     std::chrono::steady_clock::duration elapsed;
     execution::Arm64Statistics compiled_stats;
     if (backend != "dynarmic") {
-        BenchmarkInstructions source { memory };
+        BenchmarkMemory source { memory };
         std::unique_ptr<execution::CodeAllocator> allocator;
         std::unique_ptr<execution::Executor> executor;
         execution::Arm64Executor* compiled = nullptr;

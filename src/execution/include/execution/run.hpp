@@ -2,6 +2,7 @@
 #pragma once
 
 #include "execution/arm_state.hpp"
+#include "execution/memory.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -22,6 +23,7 @@ enum class StopReason : std::uint32_t {
     FetchFault = 1U << 6,
     UnsupportedInstruction = 1U << 7,
     InvalidTiming = 1U << 8,
+    DataFault = 1U << 9,
 };
 constexpr StopReason operator|(StopReason a, StopReason b) noexcept
 {
@@ -49,11 +51,15 @@ struct RunResult {
     // the next unexecuted instruction. Unsupported does not retire a step.
     std::uint32_t pc = 0;
     std::optional<std::uint32_t> instruction;
+    std::optional<MemoryFault> memory_fault;
 };
 
-// A lease excludes writes and mapping/protection changes until destruction.
-// A generation, when supplied, also covers instruction timing and all shared
-// aliases; otherwise compiled code must be revalidated at every lease entry.
+// A lease excludes external code writes and mapping/protection changes.
+// Owner checked accesses may change code/mappings, but must end native
+// execution before doing so and reacquire the lease before any subsequent
+// instruction. A generation, when supplied, also covers instruction timing and
+// all shared aliases; otherwise compiled code must be revalidated at every
+// lease entry.
 class InstructionLease {
 public:
     virtual ~InstructionLease() = default;
@@ -72,6 +78,7 @@ public:
     {
         return { };
     }
+    virtual MemoryAccess* data_memory() noexcept { return nullptr; }
     virtual std::optional<std::uint32_t> fetch32(std::uint32_t address) = 0;
     virtual std::uint64_t ticks_for_instruction(
         std::uint32_t, std::uint32_t) const

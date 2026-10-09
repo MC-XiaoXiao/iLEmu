@@ -12,6 +12,10 @@ public:
     }
     oaknut::WReg reg(unsigned index, std::uint32_t pc, oaknut::WReg scratch);
     void alu(const arm::A32Instruction&, std::uint32_t pc);
+    void address_offset(const arm::A32Instruction& inst, std::uint32_t pc)
+    {
+        shifter(inst, pc, false);
+    }
     void multiply(const arm::A32Instruction&);
 
 private:

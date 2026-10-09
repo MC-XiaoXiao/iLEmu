@@ -6,6 +6,7 @@
 #include <map>
 #include <span>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace ilemu::execution {
@@ -17,6 +18,7 @@ public:
         std::uint64_t timing_limit;
         unsigned instructions;
         bool closed;
+        bool accesses_memory;
         std::optional<std::uint32_t> first_instruction;
         std::size_t accounted_bytes;
     };
@@ -34,16 +36,17 @@ public:
         stats_.retained_bytes = 0;
     }
     Entry& entry(InstructionSource& source, std::uint32_t pc, bool step,
-        std::uint64_t timing_limit = UINT64_MAX)
+        bool big_endian, std::uint64_t timing_limit = UINT64_MAX)
     {
-        const auto key = std::pair { pc, step };
+        const auto key = std::tuple { pc, step, big_endian };
         if (const auto it = cache_.find(key);
             it != cache_.end() && it->second.timing_limit == timing_limit) {
             ++stats_.cache_hits;
             return it->second;
         }
         const auto started = std::chrono::steady_clock::now();
-        const auto compiled = arm64::compile(source, pc, step, timing_limit);
+        const auto compiled =
+            arm64::compile(source, pc, step, timing_limit, big_endian);
         const auto bytes = std::as_bytes(std::span { compiled.words });
         if (bytes.size() > 256U * 1024U)
             throw std::length_error("ARM64 trace exceeds code limit");
@@ -67,7 +70,8 @@ public:
         auto [it, inserted] = cache_.emplace(
             key, Entry { std::move(allocation), compiled.maximum_ticks,
                      timing_limit, compiled.instructions, compiled.closed,
-                     compiled.first_instruction, accounted });
+                     compiled.accesses_memory, compiled.first_instruction,
+                     accounted });
         if (!inserted)
             throw std::logic_error("duplicate ARM64 cache entry");
         stats_.retained_bytes += accounted;
@@ -90,6 +94,7 @@ public:
         for (;;) {
             result.pc = state.registers[15];
             result.instruction.reset();
+            result.memory_fault.reset();
             result.reason = stops_.consume();
             const bool step = request.mode == ExecutionMode::SingleStep;
             if (!step && result.ticks_consumed >= request.tick_budget)
@@ -117,7 +122,8 @@ public:
                 clear();
                 generation = current;
             }
-            auto* selected = &entry(source, result.pc, step);
+            const bool big_endian = (state.cpsr & (1U << 9U)) != 0;
+            auto* selected = &entry(source, result.pc, step, big_endian);
             const auto remaining =
                 step ? UINT64_MAX : request.tick_budget - result.ticks_consumed;
             // Short budget tails execute a native one-instruction entry. This
@@ -125,11 +131,15 @@ public:
             // Equality also prevents observing a fault immediately after the
             // final paid instruction, before the next budget check.
             if (!step && selected->maximum_ticks >= remaining)
-                selected = &entry(source, result.pc, true);
+                selected = &entry(source, result.pc, true, big_endian);
             const auto allowance = UINT64_MAX - result.ticks_consumed;
             if (selected->maximum_ticks > allowance)
-                selected = &entry(source, result.pc, true, allowance);
+                selected =
+                    &entry(source, result.pc, true, big_endian, allowance);
             arm64::NativeOutcome native;
+            auto* memory = source.data_memory();
+            if (memory && selected->accesses_memory)
+                native.memory = memory->direct_memory();
             if (selected->closed && selected->maximum_ticks != 0) {
                 native.groups = std::min<std::uint64_t>(
                     1024, remaining / selected->maximum_ticks);
@@ -149,6 +159,19 @@ public:
                 "ARM64 executor is unavailable on this host");
 #endif
             ++stats_.execution_calls;
+            if (native.reason == arm64::memory_exit) {
+                if (!memory)
+                    throw std::logic_error("memory exit has no bound memory");
+                const auto completion =
+                    arm_memory::complete(state, *memory, native.transfer);
+                native.reason = static_cast<std::uint32_t>(completion.reason);
+                result.memory_fault = completion.fault;
+                if (completion.reason == StopReason::None) {
+                    native.ticks += native.transfer.ticks;
+                    native.pc = state.registers[15];
+                    native.has_instruction = step ? 1U : 0U;
+                }
+            }
             result.ticks_consumed += native.ticks;
             result.reason = static_cast<StopReason>(native.reason);
             result.pc = native.pc;
@@ -170,7 +193,7 @@ public:
     std::size_t budget_;
     StopRequests stops_;
     Arm64Statistics stats_;
-    std::map<std::pair<std::uint32_t, bool>, Entry> cache_;
+    std::map<std::tuple<std::uint32_t, bool, bool>, Entry> cache_;
 };
 Arm64Executor::Arm64Executor(CodeAllocator& allocator, std::size_t budget)
     : impl_(std::make_unique<Impl>(allocator, budget))

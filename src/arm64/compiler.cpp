@@ -2,6 +2,7 @@
 #include "compiler.hpp"
 #include "arm/a32_decode.hpp"
 #include "integer_emitter.hpp"
+#include "memory_emitter.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <deque>
@@ -28,10 +29,11 @@ namespace {
     };
     class Emitter {
     public:
-        explicit Emitter(CompiledTrace& trace)
+        Emitter(CompiledTrace& trace, bool big_endian)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , integer_(code_)
+            , memory_(code_, integer_, big_endian)
         {
         }
         Label& exit(StopReason reason, std::uint64_t ticks, std::uint32_t pc,
@@ -45,12 +47,15 @@ namespace {
         }
         void prologue()
         {
-            code_.STP(X19, X20, SP, PreIndexed { }, -64);
+            code_.STP(X19, X20, SP, PreIndexed { }, -96);
             code_.STP(X21, X22, SP, 16);
             code_.STP(X23, X24, SP, 32);
-            code_.STP(X29, X30, SP, 48);
+            code_.STP(X25, X26, SP, 48);
+            code_.STP(X27, X28, SP, 64);
+            code_.STP(X29, X30, SP, 80);
             code_.MOV(X19, X0);
             code_.MOV(X20, X1);
+            code_.LDP(X25, X26, X20, offsetof(NativeOutcome, memory));
             code_.LDR(X23, X20, offsetof(NativeOutcome, groups));
             code_.MOV(X24, 0);
             code_.LDR(W22, X19, cpsr_offset);
@@ -109,8 +114,10 @@ namespace {
             code_.STR(W22, X19, cpsr_offset);
             code_.LDP(X21, X22, SP, 16);
             code_.LDP(X23, X24, SP, 32);
-            code_.LDP(X29, X30, SP, 48);
-            code_.LDP(X19, X20, SP, PostIndexed { }, 64);
+            code_.LDP(X25, X26, SP, 48);
+            code_.LDP(X27, X28, SP, 64);
+            code_.LDP(X29, X30, SP, 80);
+            code_.LDP(X19, X20, SP, PostIndexed { }, 96);
             code_.RET();
         }
         void conditional_skip(unsigned condition, Label& target)
@@ -144,23 +151,46 @@ namespace {
             code_.l(done);
             code_.B(exit(StopReason::None, ticks, 0, { }, 0, true));
         }
+        void invalidate_written_registers(const arm::A32Instruction& inst)
+        {
+            if ((inst.kind == arm::InstructionKind::DataProcessing &&
+                    (inst.opcode < 8 || inst.opcode > 11)) ||
+                inst.kind == arm::InstructionKind::Multiply ||
+                (inst.kind == arm::InstructionKind::Transfer && inst.load))
+                memory_.invalidate_register(inst.rd);
+            if (inst.kind == arm::InstructionKind::Transfer && inst.writeback)
+                memory_.invalidate_register(inst.rn);
+            if ((inst.kind == arm::InstructionKind::Branch ||
+                    inst.kind == arm::InstructionKind::BranchExchange) &&
+                inst.link)
+                memory_.invalidate_register(14);
+        }
         VectorCodeGenerator& code() { return code_; }
         IntegerEmitter& integer() { return integer_; }
+        void transfer(const arm::A32Instruction& inst, std::uint32_t pc,
+            std::uint32_t word, std::uint64_t before, std::uint64_t cost)
+        {
+            memory_.emit(inst, pc, cost,
+                exit(static_cast<StopReason>(memory_exit), before, pc, word),
+                exit(StopReason::UnsupportedInstruction, before, pc, word),
+                exit(StopReason::None, before + cost, 0, { }, 0, true));
+        }
 
     private:
         CompiledTrace& trace_;
         VectorCodeGenerator code_;
         IntegerEmitter integer_;
+        MemoryEmitter memory_;
         Label head_, epilogue_;
         std::deque<Exit> exits_;
     };
 }
 
 CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
-    bool single_step, std::uint64_t maximum_ticks)
+    bool single_step, std::uint64_t maximum_ticks, bool big_endian)
 {
     CompiledTrace out;
-    Emitter emit(out);
+    Emitter emit(out, big_endian);
     emit.prologue();
     const auto start = pc;
     unsigned cycles = 0, cycle_length = 0;
@@ -176,14 +206,16 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         }
         const auto inst = arm::decode_a32(*word);
         const auto before = out.maximum_ticks;
-        if (inst.condition == 15 ||
-            (inst.kind == arm::InstructionKind::Unsupported &&
-                inst.condition == 14)) {
+        const bool unsupported =
+            inst.kind == arm::InstructionKind::Unsupported ||
+            (inst.kind == arm::InstructionKind::Transfer &&
+                !source.data_memory());
+        if (inst.condition == 15 || (unsupported && inst.condition == 14)) {
             emit.code().B(emit.exit(
                 StopReason::UnsupportedInstruction, before, pc, word));
             break;
         }
-        if (inst.kind == arm::InstructionKind::Unsupported)
+        if (unsupported)
             emit.code().B(static_cast<Cond>(inst.condition),
                 emit.exit(
                     StopReason::UnsupportedInstruction, before, pc, word));
@@ -202,6 +234,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 emit.exit(StopReason::InvalidTiming, before, pc, word));
             break;
         }
+        if (!unsupported && inst.kind == arm::InstructionKind::Transfer)
+            out.accesses_memory = true;
         out.maximum_ticks += cost;
         ++out.instructions;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
@@ -229,10 +263,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             pc += 4;
         } else {
             Label skip;
-            if (inst.kind != arm::InstructionKind::Unsupported) {
+            if (!unsupported) {
                 emit.conditional_skip(inst.condition, skip);
                 if (inst.kind == arm::InstructionKind::Multiply)
                     emit.integer().multiply(inst);
+                else if (inst.kind == arm::InstructionKind::Transfer)
+                    emit.transfer(inst, pc, *word, before, cost);
                 else
                     emit.integer().alu(inst, pc);
                 if (inst.condition != 14)
@@ -240,6 +276,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
             pc += 4;
         }
+        emit.invalidate_written_registers(inst);
         if (!single_step && pc == start) {
             ++cycles;
             if (cycle_length == 0)

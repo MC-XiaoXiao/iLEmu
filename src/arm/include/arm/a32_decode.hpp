@@ -8,6 +8,7 @@ enum class InstructionKind {
     Unsupported,
     DataProcessing,
     Multiply,
+    Transfer,
     Branch,
     BranchExchange,
     Svc
@@ -28,6 +29,9 @@ struct A32Instruction {
     bool set_flags = false;
     bool link = false;
     bool accumulate = false;
+    unsigned access_size = 0;
+    bool load = false, sign_extend = false;
+    bool add = true, index = true, writeback = false;
 };
 
 A32Instruction decode_a32(std::uint32_t word) noexcept;

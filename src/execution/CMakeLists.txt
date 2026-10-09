@@ -12,6 +12,7 @@ target_include_directories(ilemu_execution INTERFACE
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_subdirectory(../arm arm)
+    add_subdirectory(../arm_memory arm_memory)
     add_subdirectory(../arm_interpreter arm_interpreter)
     add_subdirectory(../arm64 arm64)
     add_subdirectory(../host_execution host_execution)

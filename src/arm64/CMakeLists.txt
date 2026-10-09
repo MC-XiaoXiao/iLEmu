@@ -5,9 +5,9 @@ find_path(ILEMU_OAKNUT_INCLUDE_DIR oaknut/oaknut.hpp
 if(NOT ILEMU_OAKNUT_INCLUDE_DIR)
     message(FATAL_ERROR "Oaknut headers required; set ILEMU_OAKNUT_INCLUDE_DIR")
 endif()
-add_library(ilemu_arm64 STATIC compiler.cpp executor.cpp integer_emitter.cpp)
+add_library(ilemu_arm64 STATIC compiler.cpp executor.cpp integer_emitter.cpp memory_emitter.cpp)
 add_library(iLEmu::arm64 ALIAS ilemu_arm64)
-target_link_libraries(ilemu_arm64 PUBLIC iLEmu::execution PRIVATE iLEmu::arm)
+target_link_libraries(ilemu_arm64 PUBLIC iLEmu::execution PRIVATE iLEmu::arm iLEmu::arm_memory)
 target_include_directories(ilemu_arm64 PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
 target_include_directories(ilemu_arm64 SYSTEM PRIVATE "${ILEMU_OAKNUT_INCLUDE_DIR}")

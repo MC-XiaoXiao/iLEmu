@@ -2,6 +2,7 @@
 #include "arm_interpreter/interpreter.hpp"
 #include "arm/a32_decode.hpp"
 #include "arm/integer_semantics.hpp"
+#include "arm_memory/transfer.hpp"
 
 namespace ilemu::execution {
 namespace {
@@ -98,6 +99,7 @@ RunResult ArmInterpreter::run(
     for (;;) {
         result.pc = state.registers[15];
         result.instruction.reset();
+        result.memory_fault.reset();
         result.reason = stops_.consume();
         if (result.ticks_consumed >= request.tick_budget &&
             request.mode != ExecutionMode::SingleStep)
@@ -124,7 +126,9 @@ RunResult ArmInterpreter::run(
         const auto inst = arm::decode_a32(*result.instruction);
         const bool passed = arm::condition_passed(inst.condition, state.cpsr);
         if (inst.condition == 15 ||
-            (passed && inst.kind == arm::InstructionKind::Unsupported)) {
+            (passed && (inst.kind == arm::InstructionKind::Unsupported ||
+                           (inst.kind == arm::InstructionKind::Transfer &&
+                               !source.data_memory())))) {
             result.reason = StopReason::UnsupportedInstruction;
             return result;
         }
@@ -144,6 +148,26 @@ RunResult ArmInterpreter::run(
         }
         if (passed) {
             switch (inst.kind) {
+            case arm::InstructionKind::Transfer: {
+                auto& memory = *source.data_memory();
+                const auto direct = memory.direct_memory();
+                if (inst.rd == 15 && !inst.load &&
+                    direct.pc_store_offset != 8 &&
+                    direct.pc_store_offset != 12) {
+                    result.reason = StopReason::UnsupportedInstruction;
+                    return result;
+                }
+                const auto transfer =
+                    arm_memory::prepare(state, inst, direct.pc_store_offset);
+                const auto completion =
+                    arm_memory::complete(state, memory, transfer);
+                if (completion.reason != StopReason::None) {
+                    result.reason = completion.reason;
+                    result.memory_fault = completion.fault;
+                    return result;
+                }
+                break;
+            }
             case arm::InstructionKind::DataProcessing:
                 data_processing(state, inst);
                 break;
@@ -170,12 +194,13 @@ RunResult ArmInterpreter::run(
                 break;
             }
         }
-        state.registers[15] =
-            passed && inst.kind == arm::InstructionKind::Branch
-                ? result.pc + 8U + inst.immediate
-            : passed && inst.kind == arm::InstructionKind::BranchExchange
-                ? branch_target & ((branch_target & 1U) != 0 ? ~1U : ~3U)
-                : result.pc + 4U;
+        if (!(passed && inst.kind == arm::InstructionKind::Transfer))
+            state.registers[15] =
+                passed && inst.kind == arm::InstructionKind::Branch
+                    ? result.pc + 8U + inst.immediate
+                : passed && inst.kind == arm::InstructionKind::BranchExchange
+                    ? branch_target & ((branch_target & 1U) != 0 ? ~1U : ~3U)
+                    : result.pc + 4U;
         result.ticks_consumed += ticks;
         if (passed && inst.kind == arm::InstructionKind::Svc) {
             result.svc = inst.immediate;
