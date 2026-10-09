@@ -238,6 +238,8 @@ void EmulatorSession::run()
                                     : std::numeric_limits<std::uint64_t>::max();
     const bool disable_scheduler_preemption =
         options.disable_scheduler_preemption;
+    output.line("[jit] compilation-mode=" +
+        std::string { jit_compilation_mode_name(options.jit_compilation_mode) });
     const bool jit_observer_only = options.jit_observer_only;
     const auto jit_profile_mode = options.jit_profile_mode;
     const auto jit_catalog_warming_mode = options.jit_catalog_warming;
@@ -1226,7 +1228,8 @@ void EmulatorSession::run()
         maximum_guest_threads, *initial->memory, guest_processor_count,
         *cpu_model, shared_exclusive_monitor, allocate_shared_monitor_slots(),
         jit_artifacts, shared_exclusive_address_resolver,
-        std::max<std::size_t>(1U, translation_lanes));
+        std::max<std::size_t>(1U, translation_lanes),
+        options.jit_compilation_mode);
     initial->cpus->set_jit_code_cache_size(
         initial->jit_cache_reservation->shared_slab_bytes());
     initial->cpus->set_jit_work_signal(jit_work_signal);
@@ -1763,7 +1766,8 @@ void EmulatorSession::run()
                     *child->memory, guest_processor_count, *cpu_model,
                     shared_exclusive_monitor, allocate_shared_monitor_slots(),
                     jit_artifacts, shared_exclusive_address_resolver,
-                    std::max<std::size_t>(1U, translation_lanes));
+                    std::max<std::size_t>(1U, translation_lanes),
+        options.jit_compilation_mode);
                 child->cpus->set_jit_code_cache_size(
                     child->jit_cache_reservation->shared_slab_bytes());
                 child->cpus->set_jit_work_signal(jit_work_signal);

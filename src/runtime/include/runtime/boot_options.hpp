@@ -14,6 +14,7 @@
 
 #include "device_state/lockdown_state.hpp"
 #include "foundation/device_model.hpp"
+#include "foundation/jit_compilation_mode.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "network/host_network.hpp"
 
@@ -61,6 +62,7 @@ struct BootOptions {
     // History recording and predictive compilation are explicit experiments;
     // ordinary demand execution does not consume the saved location list.
     JitProfileMode jit_profile_mode { JitProfileMode::Off };
+    JitCompilationMode jit_compilation_mode { JitCompilationMode::Optimized };
     JitCatalogWarmingMode jit_catalog_warming {
         JitCatalogWarmingMode::NoEnqueue
     };

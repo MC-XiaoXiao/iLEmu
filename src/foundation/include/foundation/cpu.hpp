@@ -25,6 +25,7 @@
 #include "foundation/arm_cpu_model.hpp"
 #include "foundation/guest_exclusive_address_resolver.hpp"
 #include "foundation/jit_work_signal.hpp"
+#include "foundation/jit_compilation_mode.hpp"
 
 namespace ilemu {
 
@@ -327,7 +328,8 @@ public:
         Dynarmic::ExclusiveMonitor& monitor, std::size_t monitor_processor_base,
         std::shared_ptr<JitArtifactStore> artifact_store = { },
         std::shared_ptr<GuestExclusiveAddressResolver> address_resolver = { },
-        std::size_t precompile_lane_count = 1U);
+        std::size_t precompile_lane_count = 1U,
+        JitCompilationMode compilation_mode = JitCompilationMode::Optimized);
 
     [[nodiscard]] std::size_t size() const { return cpus_.size(); }
     [[nodiscard]] std::size_t capacity() const

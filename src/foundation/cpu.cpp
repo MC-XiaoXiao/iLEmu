@@ -601,6 +601,15 @@ namespace {
 
 class JitCallbacks final : public Dynarmic::A32::UserCallbacks {
 public:
+    void set_compilation_mode(JitCompilationMode mode) noexcept
+    {
+        compilation_mode_ = mode;
+    }
+    [[nodiscard]] JitCompilationMode compilation_mode() const noexcept
+    {
+        return compilation_mode_;
+    }
+
     struct ValidatedArtifactBlock {
         Dynarmic::IR::Block block;
         JitArtifactLookup lookup;
@@ -1931,7 +1940,10 @@ private:
             key.backend_abi_version = jit_artifact_backend_abi_version;
             key.dynarmic_build_fingerprint =
                 jit_artifact_dynarmic_build_fingerprint;
-            key.codegen_options = jit_artifact_codegen_options;
+            // Keep baseline artifacts out of optimized comparison runs and
+            // retain the existing optimized artifact key unchanged.
+            key.codegen_options = jit_artifact_codegen_options |
+                (static_cast<std::uint64_t>(compilation_mode_) << 8U);
             key.host_isa = jit_artifact_host_isa();
             key.host_feature_mask = jit_artifact_host_feature_mask();
             key.artifact_format_version = jit_artifact_format_version;
@@ -2128,6 +2140,7 @@ private:
         }
     }
 
+    JitCompilationMode compilation_mode_ { JitCompilationMode::Optimized };
     AddressSpace& memory_;
     const ArmCpuModel& cpu_model_;
     Cpu* owner_ { };
@@ -2302,7 +2315,8 @@ public:
         const ArmCpuModel& cpu_model,
         std::shared_ptr<JitArtifactStore> artifact_store,
         std::shared_ptr<ExecutionContext> execution_context,
-        std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker)
+        std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker,
+        JitCompilationMode compilation_mode = JitCompilationMode::Optimized)
         : processor_id_ { processor_id }
         , execution_slot_ { execution_slot }
         , memory_ { memory }
@@ -2318,6 +2332,7 @@ public:
                 "JIT executor requires execution state"
             };
         }
+        callbacks_->set_compilation_mode(compilation_mode);
         runtime_link_cell_ = execution_context_->create_link_cell();
         execution_context_->link(runtime_link_cell_,
             static_cast<std::uint64_t>(
@@ -3224,6 +3239,11 @@ private:
             throw std::logic_error { "JIT runtime callback link is not bound" };
         }
         Dynarmic::A32::UserConfig config { callbacks_.get() };
+        // Keep state-access elimination: without it, extra register loads and
+        // stores can cost more to emit than the removed pass saves. Baseline
+        // defers constant folding and read-only-memory specialization only.
+        if (callbacks_->compilation_mode() == JitCompilationMode::Baseline)
+            config.optimizations &= ~Dynarmic::OptimizationFlag::ConstProp;
         config.native_code_slab = execution_context_->native_code_slab();
         config.enable_native_code_templates = callbacks_->native_template_reuse_enabled();
         config.callbacks_link = runtime_link_cell_address_;
@@ -3612,7 +3632,8 @@ public:
         std::size_t execution_slot_count, std::size_t first_processor_id,
         const ArmCpuModel& cpu_model,
         std::shared_ptr<JitArtifactStore> artifact_store,
-        std::size_t precompile_lane_count = 1U)
+        std::size_t precompile_lane_count = 1U,
+        JitCompilationMode compilation_mode = JitCompilationMode::Optimized)
         : memory_ { memory }
         , execution_context_ { std::make_shared<ExecutionContext>() }
         , native_preimport_tracker_ { }
@@ -3636,7 +3657,7 @@ public:
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
                 first_processor_id + slot, slot, memory, monitor, cpu_model,
-                artifact_store_, execution_context_, nullptr));
+                artifact_store_, execution_context_, nullptr, compilation_mode));
         }
         if (precompile_lane_count == 0U) {
             throw std::invalid_argument {
@@ -3654,7 +3675,7 @@ public:
             precompile_executors_.push_back(
                 std::make_unique<JitExecutor>(first_processor_id,
                     execution_slot_count + lane, memory_, monitor_, cpu_model_,
-                    artifact_store_, execution_context_, nullptr));
+                    artifact_store_, execution_context_, nullptr, compilation_mode));
         }
     }
 
@@ -5546,7 +5567,7 @@ CpuCluster::CpuCluster(std::size_t initial_processor_count,
     Dynarmic::ExclusiveMonitor& monitor, std::size_t monitor_processor_base,
     std::shared_ptr<JitArtifactStore> artifact_store,
     std::shared_ptr<GuestExclusiveAddressResolver> address_resolver,
-    std::size_t precompile_lane_count)
+    std::size_t precompile_lane_count, JitCompilationMode compilation_mode)
     : memory_ { &memory }
     , maximum_processor_count_ { maximum_processor_count }
     , serialized_execution_ { execution_slot_count == 1 }
@@ -5558,7 +5579,8 @@ CpuCluster::CpuCluster(std::size_t initial_processor_count,
     , address_resolver_ { std::move(address_resolver) }
     , execution_pool_ { std::make_shared<CpuExecutionPool>(memory,
           *execution_monitor_, execution_slot_count, monitor_processor_base_,
-          cpu_model, std::move(artifact_store), precompile_lane_count) }
+          cpu_model, std::move(artifact_store), precompile_lane_count,
+          compilation_mode) }
 {
     if (initial_processor_count == 0) {
         throw std::invalid_argument {

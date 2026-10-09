@@ -112,6 +112,7 @@ std::string usage()
            "[--perf-summary] [--jit-observer-only] [--perf-frame-content] "
            "[--perf-cpu-phases] "
            "[--perf-jit-native-lookups] "
+           "[--jit-compile-mode optimized|baseline] "
            "[--jit-profile-mode "
            "adaptive|off|record-only|load-only|idle|startup] "
            "[--jit-startup-profile] "
@@ -1107,6 +1108,13 @@ void boot(const std::vector<std::string>& args, SessionHost& host, Output& outpu
     if (const auto value = option(args, "--jit-artifact-disk-mib"))
         options.artifact_disk_bytes = static_cast<std::size_t>(
             parse_mib_value(*value, "--jit-artifact-disk-mib", 0U, 4096U));
+    const auto compilation_mode = parse_jit_compilation_mode(
+        option(args, "--jit-compile-mode").value_or("optimized"));
+    if (!compilation_mode)
+        throw std::runtime_error {
+            "--jit-compile-mode must be optimized or baseline"
+        };
+    options.jit_compilation_mode = *compilation_mode;
     options.jit_profile_mode = parse_jit_profile_mode(args);
     options.jit_catalog_warming = parse_jit_catalog_warming_mode(args);
     options.startup_profile_blocks =
