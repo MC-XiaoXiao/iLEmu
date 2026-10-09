@@ -259,6 +259,7 @@ namespace {
                 .initial_apple_vector_abi =
                     DarwinInitialAppleVectorAbi::LegacyExecutablePath,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
                 .io_service_state =
