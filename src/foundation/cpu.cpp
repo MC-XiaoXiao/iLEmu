@@ -69,7 +69,7 @@ namespace {
 
     [[nodiscard]] bool jit_native_template_enabled() noexcept
     {
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || defined(_M_X64)
         // Same-process templates reuse the full artifact identity and live
         // dependencies. Keep a diagnostic opt-out for controlled comparisons.
         static const bool enabled =
