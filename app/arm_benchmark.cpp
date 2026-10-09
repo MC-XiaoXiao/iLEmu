@@ -1,11 +1,14 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "app/arm_benchmark.hpp"
+#include "arm64/executor.hpp"
 #include "arm_interpreter/interpreter.hpp"
 #include "foundation/address_space.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/output.hpp"
+#include "host_execution/code_memory.hpp"
 #include <array>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -19,6 +22,28 @@ namespace {
         explicit BenchmarkInstructions(AddressSpace& memory)
             : memory_(memory)
         {
+        }
+        std::unique_ptr<execution::InstructionLease>
+        acquire_code_lease() override
+        {
+            class Lease final : public execution::InstructionLease {
+            public:
+                explicit Lease(AddressSpace& memory)
+                    : memory_(memory)
+                    , lock_(memory)
+                {
+                }
+                std::optional<std::uint64_t>
+                generation() const noexcept override
+                {
+                    return memory_.executable_content_generation();
+                }
+
+            private:
+                AddressSpace& memory_;
+                AddressSpace::ExclusiveAccess lock_;
+            };
+            return std::make_unique<Lease>(memory_);
         }
         std::optional<std::uint32_t> fetch32(std::uint32_t address) override
         {
@@ -39,9 +64,9 @@ namespace {
 void run_arm_benchmark(std::uint32_t iterations, std::size_t cache_size,
     std::string_view backend, Output& output)
 {
-    if (backend != "dynarmic" && backend != "interpreter")
+    if (backend != "dynarmic" && backend != "interpreter" && backend != "arm64")
         throw std::runtime_error {
-            "--executor must be dynarmic or interpreter"
+            "--executor must be dynarmic, interpreter or arm64"
         };
     AddressSpace memory;
     constexpr std::uint32_t code_address = 0x1000;
@@ -73,14 +98,30 @@ void run_arm_benchmark(std::uint32_t iterations, std::size_t cache_size,
     std::uint64_t ticks = 0;
     std::optional<std::uint32_t> svc_result;
     std::chrono::steady_clock::duration elapsed;
-    if (backend == "interpreter") {
+    execution::Arm64Statistics compiled_stats;
+    if (backend != "dynarmic") {
         BenchmarkInstructions source { memory };
-        execution::ArmInterpreter interpreter;
+        std::unique_ptr<execution::CodeAllocator> allocator;
+        std::unique_ptr<execution::Executor> executor;
+        execution::Arm64Executor* compiled = nullptr;
+        if (backend == "arm64") {
+            if (!execution::Arm64Executor::available())
+                throw std::runtime_error(
+                    "ARM64 executor requires an AArch64 host");
+            allocator = host::make_code_allocator();
+            auto arm64 = std::make_unique<execution::Arm64Executor>(
+                *allocator, cache_size);
+            compiled = arm64.get();
+            executor = std::move(arm64);
+        } else
+            executor = std::make_unique<execution::ArmInterpreter>();
         const auto started = std::chrono::steady_clock::now();
-        const auto result = interpreter.run(state, source, { tick_budget });
+        const auto result = executor->run(state, source, { tick_budget });
         elapsed = std::chrono::steady_clock::now() - started;
         ticks = result.ticks_consumed;
         svc_result = result.svc;
+        if (compiled)
+            compiled_stats = compiled->statistics();
     } else {
         CpuCluster cluster { 1, memory };
         cluster.set_jit_code_cache_size(cache_size);
@@ -116,5 +157,15 @@ void run_arm_benchmark(std::uint32_t iterations, std::size_t cache_size,
             backend == "interpreter" ? 0 : cache_size / 1024U / 1024U) +
         " iterations-per-second=" + std::to_string(iterations_per_second) +
         " executor=" + std::string { backend } + " status=ok");
+    if (backend == "arm64")
+        output.line(
+            "[arm64] compiled-regions=" +
+            std::to_string(compiled_stats.compiled_regions) +
+            " cache-hits=" + std::to_string(compiled_stats.cache_hits) +
+            " native-calls=" + std::to_string(compiled_stats.execution_calls) +
+            " compilation-ns=" +
+            std::to_string(compiled_stats.compilation_nanoseconds) +
+            " emitted-bytes=" + std::to_string(compiled_stats.emitted_bytes) +
+            " retained-bytes=" + std::to_string(compiled_stats.retained_bytes));
 }
 }

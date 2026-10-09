@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 namespace ilemu::execution {
@@ -50,11 +51,27 @@ struct RunResult {
     std::optional<std::uint32_t> instruction;
 };
 
+// A lease excludes writes and mapping/protection changes until destruction.
+// A generation, when supplied, also covers instruction timing and all shared
+// aliases; otherwise compiled code must be revalidated at every lease entry.
+class InstructionLease {
+public:
+    virtual ~InstructionLease() = default;
+    virtual std::optional<std::uint64_t> generation() const noexcept
+    {
+        return { };
+    }
+};
+
 // Bound at Run entry; a source owns permissions, backing lifetime and timing.
 // No pointer into guest bytes or backend descriptor escapes this interface.
 class InstructionSource {
 public:
     virtual ~InstructionSource() = default;
+    virtual std::unique_ptr<InstructionLease> acquire_code_lease()
+    {
+        return { };
+    }
     virtual std::optional<std::uint32_t> fetch32(std::uint32_t address) = 0;
     virtual std::uint64_t ticks_for_instruction(
         std::uint32_t, std::uint32_t) const

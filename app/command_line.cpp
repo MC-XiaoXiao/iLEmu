@@ -124,7 +124,7 @@ std::string usage()
            "  ilemu smoke [--cores N] [--jit-cache-mib 8..512] "
            "[--jit-compile-mode optimized|baseline] "
            "[--perf-summary] [--output FILE]\n"
-           "  ilemu benchmark arm [--iterations N] [--executor dynarmic|interpreter] "
+           "  ilemu benchmark arm [--iterations N] [--executor dynarmic|interpreter|arm64] "
            "[--jit-cache-mib 8..512] [--perf-summary] "
            "[--output FILE]\n"
            "\nBoot/ABI selection reads SystemVersion.plist by default.\n"

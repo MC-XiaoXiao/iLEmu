@@ -1,0 +1,258 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+#include "compiler.hpp"
+#include "arm/a32_decode.hpp"
+#include "integer_emitter.hpp"
+#include <algorithm>
+#include <cstddef>
+#include <deque>
+#include <limits>
+#include <oaknut/oaknut.hpp>
+#include <type_traits>
+
+namespace ilemu::execution::arm64 {
+namespace {
+    using namespace oaknut;
+    using namespace oaknut::util;
+    static_assert(std::is_standard_layout_v<CpuThreadState>);
+    static_assert(std::is_standard_layout_v<NativeOutcome>);
+    constexpr auto cpsr_offset = offsetof(CpuThreadState, cpsr);
+    constexpr unsigned maximum_trace_instructions = 256;
+    constexpr unsigned maximum_cycle_copies = 32;
+
+    struct Exit {
+        Label label;
+        StopReason reason;
+        std::uint64_t ticks;
+        std::uint32_t state_pc, report_pc, word, svc;
+        bool dynamic_pc, instruction;
+    };
+    class Emitter {
+    public:
+        explicit Emitter(CompiledTrace& trace)
+            : trace_(trace)
+            , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
+            , integer_(code_)
+        {
+        }
+        Label& exit(StopReason reason, std::uint64_t ticks, std::uint32_t pc,
+            std::optional<std::uint32_t> word = { }, std::uint32_t svc = 0,
+            bool dynamic_pc = false)
+        {
+            exits_.push_back(
+                { { }, reason, ticks, reason == StopReason::Svc ? pc + 4U : pc,
+                    pc, word.value_or(0), svc, dynamic_pc, word.has_value() });
+            return exits_.back().label;
+        }
+        void prologue()
+        {
+            code_.STP(X19, X20, SP, PreIndexed { }, -64);
+            code_.STP(X21, X22, SP, 16);
+            code_.STP(X23, X24, SP, 32);
+            code_.STP(X29, X30, SP, 48);
+            code_.MOV(X19, X0);
+            code_.MOV(X20, X1);
+            code_.LDR(X23, X20, offsetof(NativeOutcome, groups));
+            code_.MOV(X24, 0);
+            code_.LDR(W22, X19, cpsr_offset);
+            code_.MSR(SystemReg::NZCV, X22);
+            for (int i = 0; i < 14; i += 2)
+                code_.LDP(WReg { i }, WReg { i + 1 }, X19, i * 4);
+            code_.LDR(W14, X19, 56);
+            code_.align(16);
+            code_.l(head_);
+        }
+        void finish(std::uint32_t pc)
+        {
+            if (trace_.closed) {
+                if (AddSubImm::is_valid(trace_.maximum_ticks))
+                    code_.ADD(X24, X24, AddSubImm { trace_.maximum_ticks });
+                else {
+                    code_.MOV(X16, trace_.maximum_ticks);
+                    code_.ADD(X24, X24, X16);
+                }
+                code_.SUB(X23, X23, 1);
+                code_.CBNZ(X23, head_);
+            }
+            code_.B(exit(StopReason::None,
+                trace_.closed ? 0 : trace_.maximum_ticks, pc));
+            for (auto& out : exits_) {
+                code_.l(out.label);
+                code_.MOV(X16, out.ticks);
+                code_.ADD(X16, X24, X16);
+                code_.STR(X16, X20, offsetof(NativeOutcome, ticks));
+                if (!out.dynamic_pc)
+                    code_.MOV(W15, out.state_pc);
+                code_.STR(W15, X19, 60);
+                if (out.dynamic_pc)
+                    code_.STR(W15, X20, offsetof(NativeOutcome, pc));
+                else {
+                    code_.MOV(W16, out.report_pc);
+                    code_.STR(W16, X20, offsetof(NativeOutcome, pc));
+                }
+                code_.MOV(W16, static_cast<std::uint32_t>(out.reason));
+                code_.STR(W16, X20, offsetof(NativeOutcome, reason));
+                code_.MOV(W16, out.word);
+                code_.STR(W16, X20, offsetof(NativeOutcome, word));
+                code_.MOV(W16, out.svc);
+                code_.STR(W16, X20, offsetof(NativeOutcome, svc));
+                code_.MOV(W16, out.instruction ? 1U : 0U);
+                code_.STR(W16, X20, offsetof(NativeOutcome, has_instruction));
+                code_.B(epilogue_);
+            }
+            code_.l(epilogue_);
+            for (int i = 0; i < 14; i += 2)
+                code_.STP(WReg { i }, WReg { i + 1 }, X19, i * 4);
+            code_.STR(W14, X19, 56);
+            code_.MRS(X21, SystemReg::NZCV);
+            code_.AND(W22, W22, 0x0fffffffU);
+            code_.ORR(W22, W22, W21);
+            code_.STR(W22, X19, cpsr_offset);
+            code_.LDP(X21, X22, SP, 16);
+            code_.LDP(X23, X24, SP, 32);
+            code_.LDP(X29, X30, SP, 48);
+            code_.LDP(X19, X20, SP, PostIndexed { }, 64);
+            code_.RET();
+        }
+        void conditional_skip(unsigned condition, Label& target)
+        {
+            if (condition != 14)
+                code_.B(static_cast<Cond>(condition ^ 1U), target);
+        }
+        // Target legality precedes timing/retirement, matching the interpreter.
+        void exchange_target(const arm::A32Instruction& inst, std::uint32_t pc,
+            std::uint32_t word, std::uint64_t ticks)
+        {
+            code_.MOV(W17, integer_.reg(inst.rm, pc, W17));
+            Label valid;
+            code_.TBNZ(W17, 0, valid);
+            code_.TBZ(W17, 1, valid);
+            code_.B(exit(StopReason::UnsupportedInstruction, ticks, pc, word));
+            code_.l(valid);
+        }
+        void exchange(const arm::A32Instruction& inst, std::uint32_t pc,
+            std::uint64_t ticks)
+        {
+            if (inst.link)
+                code_.MOV(W14, pc + 4U);
+            code_.BFI(W22, W17, 5, 1);
+            Label arm_target, done;
+            code_.TBZ(W17, 0, arm_target);
+            code_.AND(W15, W17, 0xfffffffeU);
+            code_.B(done);
+            code_.l(arm_target);
+            code_.AND(W15, W17, 0xfffffffcU);
+            code_.l(done);
+            code_.B(exit(StopReason::None, ticks, 0, { }, 0, true));
+        }
+        VectorCodeGenerator& code() { return code_; }
+        IntegerEmitter& integer() { return integer_; }
+
+    private:
+        CompiledTrace& trace_;
+        VectorCodeGenerator code_;
+        IntegerEmitter integer_;
+        Label head_, epilogue_;
+        std::deque<Exit> exits_;
+    };
+}
+
+CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
+    bool single_step, std::uint64_t maximum_ticks)
+{
+    CompiledTrace out;
+    Emitter emit(out);
+    emit.prologue();
+    const auto start = pc;
+    unsigned cycles = 0, cycle_length = 0;
+    const auto limit = single_step ? 1U : maximum_trace_instructions;
+    for (unsigned n = 0; n < limit; ++n) {
+        const auto word = source.fetch32(pc);
+        if (n == 0)
+            out.first_instruction = word;
+        if (!word) {
+            emit.code().B(
+                emit.exit(StopReason::FetchFault, out.maximum_ticks, pc));
+            break;
+        }
+        const auto inst = arm::decode_a32(*word);
+        const auto before = out.maximum_ticks;
+        if (inst.condition == 15 ||
+            (inst.kind == arm::InstructionKind::Unsupported &&
+                inst.condition == 14)) {
+            emit.code().B(emit.exit(
+                StopReason::UnsupportedInstruction, before, pc, word));
+            break;
+        }
+        if (inst.kind == arm::InstructionKind::Unsupported)
+            emit.code().B(static_cast<Cond>(inst.condition),
+                emit.exit(
+                    StopReason::UnsupportedInstruction, before, pc, word));
+        Label exchange_failed;
+        if (inst.kind == arm::InstructionKind::BranchExchange) {
+            emit.conditional_skip(inst.condition, exchange_failed);
+            emit.exchange_target(inst, pc, *word, before);
+        }
+        const auto cost = source.ticks_for_instruction(pc, *word);
+        const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
+        if (!valid_timing) {
+            if (inst.kind == arm::InstructionKind::BranchExchange &&
+                inst.condition != 14)
+                emit.code().l(exchange_failed);
+            emit.code().B(
+                emit.exit(StopReason::InvalidTiming, before, pc, word));
+            break;
+        }
+        out.maximum_ticks += cost;
+        ++out.instructions;
+        if (inst.kind == arm::InstructionKind::BranchExchange) {
+            emit.exchange(inst, pc, out.maximum_ticks);
+            if (inst.condition == 14)
+                break;
+            emit.code().l(exchange_failed);
+            pc += 4;
+        } else if (inst.kind == arm::InstructionKind::Branch) {
+            if (inst.condition != 14)
+                emit.conditional_skip(inst.condition,
+                    emit.exit(StopReason::None, out.maximum_ticks, pc + 4));
+            if (inst.link)
+                emit.code().MOV(W14, pc + 4U);
+            pc += 8U + inst.immediate;
+        } else if (inst.kind == arm::InstructionKind::Svc) {
+            if (inst.condition == 14) {
+                emit.code().B(emit.exit(StopReason::Svc, out.maximum_ticks, pc,
+                    word, inst.immediate));
+                break;
+            }
+            emit.code().B(static_cast<Cond>(inst.condition),
+                emit.exit(StopReason::Svc, out.maximum_ticks, pc, word,
+                    inst.immediate));
+            pc += 4;
+        } else {
+            Label skip;
+            if (inst.kind != arm::InstructionKind::Unsupported) {
+                emit.conditional_skip(inst.condition, skip);
+                if (inst.kind == arm::InstructionKind::Multiply)
+                    emit.integer().multiply(inst);
+                else
+                    emit.integer().alu(inst, pc);
+                if (inst.condition != 14)
+                    emit.code().l(skip);
+            }
+            pc += 4;
+        }
+        if (!single_step && pc == start) {
+            ++cycles;
+            if (cycle_length == 0)
+                cycle_length = n + 1;
+            const auto copies =
+                std::min(maximum_cycle_copies, limit / cycle_length);
+            if (cycles >= copies) {
+                out.closed = true;
+                break;
+            }
+        }
+    }
+    emit.finish(pc);
+    return out;
+}
+}

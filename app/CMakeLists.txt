@@ -34,7 +34,7 @@ target_link_libraries(ilemu_app_commands PUBLIC
     iLEmu::syscall_routes
     iLEmu::host
     iLEmu::runtime
-    PRIVATE iLEmu::arm_interpreter)
+    PRIVATE iLEmu::arm_interpreter iLEmu::arm64 iLEmu::host_execution)
 
 if(NOT ANDROID)
 add_executable(ilemu main.cpp desktop_host.cpp)

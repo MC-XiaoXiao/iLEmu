@@ -1,0 +1,27 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+#pragma once
+#include "execution/run.hpp"
+#include <cstdint>
+#include <vector>
+namespace ilemu::execution::arm64 {
+// Plain native ABI; no backend or standard-library object layout is embedded
+// in generated instructions, except the shared architectural state offsets.
+struct NativeOutcome {
+    std::uint64_t groups = 1;
+    std::uint64_t ticks = 0;
+    std::uint32_t reason = 0;
+    std::uint32_t pc = 0;
+    std::uint32_t word = 0;
+    std::uint32_t svc = 0;
+    std::uint32_t has_instruction = 0;
+};
+struct CompiledTrace {
+    std::vector<std::uint32_t> words;
+    std::uint64_t maximum_ticks = 0;
+    unsigned instructions = 0;
+    bool closed = false;
+    std::optional<std::uint32_t> first_instruction;
+};
+CompiledTrace compile(InstructionSource&, std::uint32_t pc, bool single_step,
+    std::uint64_t maximum_ticks = UINT64_MAX);
+}
