@@ -565,6 +565,8 @@ private:
         Page& page, std::uint32_t offset, std::size_t size);
     [[nodiscard]] bool tracks_write_locked(
         std::uint32_t address, std::size_t size) const;
+    void mark_scalar_written_locked(
+        std::uint32_t address, std::size_t size, Page& page);
     void mark_written_locked(std::uint32_t address, std::size_t size);
     void mark_written_batch_locked(std::span<const WrittenRange> ranges);
     void bump_executable_content_generation_locked() noexcept;

@@ -1852,6 +1852,20 @@ bool AddressSpace::tracks_write_locked(
     return false;
 }
 
+// Checked scalar stores share the same instruction-content notification as
+// bulk writes. Keep ordinary data-page stores on their existing cheap path.
+void AddressSpace::mark_scalar_written_locked(
+    std::uint32_t address, std::size_t size, Page& page)
+{
+    if (page.instructions ||
+        (page_permission_locked(address / page_size) &
+            permission_bits(MemoryPermission::Execute)) != 0U) {
+        mark_written_locked(address, size);
+    } else if (tracks_write_locked(address, size)) {
+        page.write_generation = ++write_generation_;
+    }
+}
+
 void AddressSpace::mark_written_locked(std::uint32_t address, std::size_t size)
 {
     if (size == 0)
@@ -2011,9 +2025,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
         mark_shared_backing_written_locked(page, offset, sizeof(T));
-        if (tracks_write_locked(address, sizeof(T))) {
-            page.write_generation = ++write_generation_;
-        }
+        mark_scalar_written_locked(address, sizeof(T), page);
         // Invalidate the physical reservation before removing its virtual
         // page guard. The refresh can then restore only an otherwise eligible
         // direct-write entry without a second AddressSpace pass.
@@ -2081,9 +2093,7 @@ bool AddressSpace::compare_exchange_integer(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
         mark_shared_backing_written_locked(page, offset, sizeof(T));
-        if (tracks_write_locked(address, sizeof(T))) {
-            page.write_generation = ++write_generation_;
-        }
+        mark_scalar_written_locked(address, sizeof(T), page);
         release_exclusive_write_tracking_locked(address, sizeof(T));
         return true;
     }
@@ -2156,9 +2166,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
         mark_shared_backing_written_locked(page, offset, sizeof(T));
-        if (tracks_write_locked(address, sizeof(T))) {
-            page.write_generation = ++write_generation_;
-        }
+        mark_scalar_written_locked(address, sizeof(T), page);
         release_exclusive_write_tracking_locked(address, sizeof(T));
         return previous;
     }
