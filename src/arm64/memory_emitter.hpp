@@ -18,6 +18,7 @@ public:
         oaknut::Label& checked_exit, oaknut::Label& unsupported_exit,
         oaknut::Label& branch_exit);
     void invalidate_register(unsigned reg);
+    void invalidate_all() { addresses_ = { }; }
 
 private:
     struct Address {

@@ -9,6 +9,7 @@ enum class InstructionKind {
     DataProcessing,
     Multiply,
     Transfer,
+    MultipleTransfer,
     Branch,
     BranchExchange,
     Svc,
@@ -35,6 +36,7 @@ struct Instruction {
     bool set_flags = false;
     bool link = false;
     bool accumulate = false;
+    std::uint32_t registers = 0;
     unsigned access_size = 0;
     bool load = false, sign_extend = false;
     bool add = true, index = true, writeback = false;

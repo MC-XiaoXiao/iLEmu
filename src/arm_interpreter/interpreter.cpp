@@ -3,6 +3,7 @@
 #include "arm/a32_decode.hpp"
 #include "arm/integer_semantics.hpp"
 #include "arm/t32_decode.hpp"
+#include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
 
 namespace ilemu::execution {
@@ -148,9 +149,11 @@ RunResult ArmInterpreter::run(
         }
         const bool passed = arm::condition_passed(inst.condition, state.cpsr);
         if (inst.condition == 15 ||
-            (passed && (inst.kind == arm::InstructionKind::Unsupported ||
-                           (inst.kind == arm::InstructionKind::Transfer &&
-                               !source.data_memory())))) {
+            (passed &&
+                (inst.kind == arm::InstructionKind::Unsupported ||
+                    ((inst.kind == arm::InstructionKind::Transfer ||
+                         inst.kind == arm::InstructionKind::MultipleTransfer) &&
+                        !source.data_memory())))) {
             result.reason = StopReason::UnsupportedInstruction;
             return result;
         }
@@ -170,6 +173,25 @@ RunResult ArmInterpreter::run(
         }
         if (passed) {
             switch (inst.kind) {
+            case arm::InstructionKind::MultipleTransfer: {
+                auto& memory = *source.data_memory();
+                const auto offset = memory.direct_memory().pc_store_offset;
+                if (!inst.load && (inst.registers & 0x8000U) != 0 &&
+                    offset != 8 && offset != 12) {
+                    result.reason = StopReason::UnsupportedInstruction;
+                    return result;
+                }
+                const auto transfer =
+                    arm_memory::prepare_multiple(state, inst, offset);
+                const auto completion =
+                    arm_memory::complete_multiple(state, memory, transfer);
+                if (completion.reason != StopReason::None) {
+                    result.reason = completion.reason;
+                    result.memory_fault = completion.fault;
+                    return result;
+                }
+                break;
+            }
             case arm::InstructionKind::Transfer: {
                 auto& memory = *source.data_memory();
                 const auto direct = memory.direct_memory();
@@ -215,7 +237,7 @@ RunResult ArmInterpreter::run(
                     state.registers[14] =
                         (result.pc + inst.size) | (thumb ? 1U : 0U);
                 if (inst.exchange)
-                    state.cpsr &= ~0x20U;
+                    state.cpsr ^= 0x20U;
                 break;
             case arm::InstructionKind::BranchExchange:
                 if (inst.link)
@@ -235,7 +257,9 @@ RunResult ArmInterpreter::run(
             inst.kind == arm::InstructionKind::CompareBranch &&
             ((state.registers[inst.rn] != 0) == (inst.opcode != 0));
         if (!(passed &&
-                (inst.kind == arm::InstructionKind::Transfer || alu_pc)))
+                (inst.kind == arm::InstructionKind::Transfer ||
+                    inst.kind == arm::InstructionKind::MultipleTransfer ||
+                    alu_pc)))
             state.registers[15] =
                 passed && (inst.kind == arm::InstructionKind::Branch ||
                               compare_branch)

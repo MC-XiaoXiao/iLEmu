@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
+#include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
 #include "execution/run.hpp"
 #include <cstdint>
@@ -21,7 +22,9 @@ struct NativeOutcome {
     std::uint32_t has_instruction = 0;
     DirectMemory memory;
     arm_memory::Transfer transfer;
+    arm_memory::MultipleTransfer multiple;
 };
+inline constexpr std::uint32_t multiple_exit = 1U << 30U;
 inline constexpr std::uint32_t memory_exit = 1U << 31U;
 struct CompiledTrace {
     std::vector<std::uint32_t> words;

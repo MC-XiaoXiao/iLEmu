@@ -72,6 +72,22 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
                             (((tail >> 12U) & 7U) << 8U) | (tail & 255U);
             out.opcode = (word >> 7U) & 1U;
         }
+        if ((word & 0xffd0U) == 0xe880U || (word & 0xffd0U) == 0xe890U ||
+            (word & 0xffd0U) == 0xe900U || (word & 0xffd0U) == 0xe910U) {
+            out.rn = word & 15U;
+            out.registers = tail;
+            out.load = (word & 16U) != 0;
+            out.writeback = (word & 32U) != 0;
+            out.add = (word & 0x100U) == 0;
+            out.index = !out.add;
+            if (out.rn == 15 || std::popcount(out.registers) < 2 ||
+                (out.registers & (out.load ? 0x2000U : 0xa000U)) != 0 ||
+                (out.load && (out.registers & 0xc000U) == 0xc000U) ||
+                (out.writeback && (out.registers & (1U << out.rn)) != 0) ||
+                (out.load && (out.registers & 0x8000U) != 0 && !last))
+                return out;
+            out.kind = InstructionKind::MultipleTransfer;
+        }
         return out;
     }
     if ((word & 0xe000U) == 0 && (word & 0x1800U) != 0x1800U) {
@@ -171,6 +187,30 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         out.align_pc = out.rn == 15;
         out.immediate_operand = true;
         out.immediate = (word & (adjust_sp ? 127U : 255U)) << 2U;
+    } else if ((word & 0xf600U) == 0xb400U) { // PUSH / POP
+        out.rn = 13;
+        out.load = (word & 0x800U) != 0;
+        out.registers =
+            (word & 255U) |
+            ((word & 0x100U) != 0 ? (out.load ? 0x8000U : 0x4000U) : 0U);
+        out.writeback = true;
+        out.add = out.load;
+        out.index = !out.load;
+        if (out.registers != 0 &&
+            (!out.load || (out.registers & 0x8000U) == 0 || last))
+            out.kind = InstructionKind::MultipleTransfer;
+    } else if ((word & 0xf000U) == 0xc000U) { // STM / LDM T1
+        out.rn = (word >> 8U) & 7U;
+        out.load = (word & 0x800U) != 0;
+        out.registers = word & 255U;
+        out.add = true;
+        out.index = false;
+        out.writeback = !out.load || (out.registers & (1U << out.rn)) == 0;
+        if (out.registers != 0 &&
+            (out.load || (out.registers & (1U << out.rn)) == 0 ||
+                static_cast<unsigned>(std::countr_zero(out.registers)) ==
+                    out.rn))
+            out.kind = InstructionKind::MultipleTransfer;
     } else if ((word & 0xf500U) == 0xb100U && it == 0) {
         out.kind = InstructionKind::CompareBranch;
         out.rn = word & 7U;

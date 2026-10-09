@@ -4,6 +4,7 @@
 #include "arm/t32_decode.hpp"
 #include "integer_emitter.hpp"
 #include "memory_emitter.hpp"
+#include "multiple_emitter.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <deque>
@@ -41,9 +42,9 @@ namespace {
         {
         }
         Label& exit(std::optional<StopReason> reason, std::uint64_t ticks,
-            std::uint32_t pc,
-            std::optional<std::uint32_t> word = { }, std::uint32_t svc = 0,
-            bool dynamic_pc = false, std::optional<unsigned> it = { })
+            std::uint32_t pc, std::optional<std::uint32_t> word = { },
+            std::uint32_t svc = 0, bool dynamic_pc = false,
+            std::optional<unsigned> it = { })
         {
             exits_.push_back({ { }, reason, ticks,
                 reason == StopReason::Svc ? pc + size_ : pc, pc,
@@ -110,7 +111,7 @@ namespace {
                     code_.LDP(WReg { i }, WReg { i + 1 }, SP, 96 + i * 4);
                 code_.LDR(W14, SP, 152);
                 code_.MSR(SystemReg::NZCV, X21);
-                code_.CBNZ(W17, exit({}, 0, pc));
+                code_.CBNZ(W17, exit({ }, 0, pc));
                 code_.B(head_);
             }
             code_.B(exit(StopReason::None,
@@ -210,6 +211,8 @@ namespace {
                 memory_.invalidate_register(inst.rd);
             if (inst.kind == arm::InstructionKind::Transfer && inst.writeback)
                 memory_.invalidate_register(inst.rn);
+            if (inst.kind == arm::InstructionKind::MultipleTransfer)
+                memory_.invalidate_all();
             if ((inst.kind == arm::InstructionKind::Branch ||
                     inst.kind == arm::InstructionKind::BranchExchange) &&
                 inst.link)
@@ -224,6 +227,19 @@ namespace {
             memory_.emit(inst, pc, cost,
                 exit(static_cast<StopReason>(memory_exit), before, pc, word, 0,
                     false, before_it),
+                exit(StopReason::UnsupportedInstruction, before, pc, word, 0,
+                    false, before_it),
+                exit(StopReason::None, before + cost, 0, { }, 0, true));
+        }
+
+        void multiple(const arm::Instruction& inst, std::uint32_t pc,
+            std::uint32_t word, std::uint64_t before, std::uint64_t cost,
+            unsigned before_it, bool big_endian)
+        {
+            memory_.invalidate_all();
+            MultipleEmitter { code_, big_endian }.emit(inst, pc, cost,
+                exit(static_cast<StopReason>(multiple_exit), before, pc, word,
+                    0, false, before_it),
                 exit(StopReason::UnsupportedInstruction, before, pc, word, 0,
                     false, before_it),
                 exit(StopReason::None, before + cost, 0, { }, 0, true));
@@ -281,7 +297,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         const auto before = out.maximum_ticks;
         const bool unsupported =
             inst.kind == arm::InstructionKind::Unsupported ||
-            (inst.kind == arm::InstructionKind::Transfer &&
+            ((inst.kind == arm::InstructionKind::Transfer ||
+                 inst.kind == arm::InstructionKind::MultipleTransfer) &&
                 !source.data_memory());
         if (inst.condition == 15 || (unsupported && inst.condition == 14)) {
             emit.code().B(emit.exit(
@@ -307,7 +324,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 emit.exit(StopReason::InvalidTiming, before, pc, word));
             break;
         }
-        if (!unsupported && inst.kind == arm::InstructionKind::Transfer)
+        if (!unsupported &&
+            (inst.kind == arm::InstructionKind::Transfer ||
+                inst.kind == arm::InstructionKind::MultipleTransfer))
             out.accesses_memory = true;
         out.maximum_ticks += cost;
         ++out.instructions;
@@ -332,7 +351,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             pc = ((pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) +
                  inst.immediate;
             if (inst.exchange) {
-                emit.code().AND(W22, W22, ~0x20U);
+                emit.code().EOR(W22, W22, 0x20U);
                 emit.code().B(
                     emit.exit(StopReason::None, out.maximum_ticks, pc));
                 break;
@@ -367,6 +386,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 switch (inst.kind) {
                 case arm::InstructionKind::Multiply:
                     emit.integer().multiply(inst);
+                    break;
+                case arm::InstructionKind::MultipleTransfer:
+                    emit.multiple(
+                        inst, pc, *word, before, cost, it, big_endian);
                     break;
                 case arm::InstructionKind::Transfer:
                     emit.transfer(inst, pc, *word, before, cost, it);

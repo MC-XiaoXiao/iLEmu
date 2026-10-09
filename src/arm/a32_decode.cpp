@@ -7,6 +7,16 @@ Instruction decode_a32(std::uint32_t word) noexcept
 {
     Instruction out;
     out.condition = word >> 28;
+    // BLX immediate occupies the unconditional branch encoding space.
+    if ((word & 0xfe000000U) == 0xfa000000U) {
+        out.condition = 14;
+        out.kind = InstructionKind::Branch;
+        out.link = out.exchange = true;
+        out.immediate = ((word & 0xffffffU) << 2U) | ((word >> 23U) & 2U);
+        if ((out.immediate & (1U << 25U)) != 0)
+            out.immediate |= 0xfc000000U;
+        return out;
+    }
     // Unconditional encoding space has different decode rules.
     if (out.condition == 15)
         return out;
@@ -43,6 +53,21 @@ Instruction decode_a32(std::uint32_t word) noexcept
             (out.accumulate ? out.rn == 15 : out.rn != 0))
             return out;
         out.kind = InstructionKind::Multiply;
+        return out;
+    }
+    if ((word & 0x0e000000U) == 0x08000000U) {
+        out.rn = (word >> 16U) & 15U;
+        out.registers = word & 0xffffU;
+        out.load = (word & (1U << 20U)) != 0;
+        out.writeback = (word & (1U << 21U)) != 0;
+        out.add = (word & (1U << 23U)) != 0;
+        out.index = (word & (1U << 24U)) != 0;
+        if ((word & (1U << 22U)) != 0 || out.rn == 15 || out.registers == 0 ||
+            (out.writeback && (out.registers & (1U << out.rn)) != 0 &&
+                (out.load || static_cast<unsigned>(
+                                 std::countr_zero(out.registers)) != out.rn)))
+            return out;
+        out.kind = InstructionKind::MultipleTransfer;
         return out;
     }
     const bool ordinary_transfer = (word & 0x0c000000U) == 0x04000000U;

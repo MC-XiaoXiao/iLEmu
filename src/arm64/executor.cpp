@@ -93,20 +93,26 @@ public:
                 "ARM64 executor is unavailable on this host");
 #endif
             ++stats_.execution_calls;
-            if (native.reason == arm64::memory_exit) {
+            if (native.reason == arm64::memory_exit ||
+                native.reason == arm64::multiple_exit) {
                 if (!memory)
                     throw std::logic_error("memory exit has no bound memory");
                 const bool memory_thumb = (state.cpsr & 0x20U) != 0;
                 const auto memory_it = arm::it_state(state.cpsr);
+                const bool multiple = native.reason == arm64::multiple_exit;
                 const auto completion =
-                    arm_memory::complete(state, *memory, native.transfer);
+                    multiple
+                        ? arm_memory::complete_multiple(
+                              state, *memory, native.multiple)
+                        : arm_memory::complete(state, *memory, native.transfer);
                 native.reason = static_cast<std::uint32_t>(completion.reason);
                 result.memory_fault = completion.fault;
                 if (completion.reason == StopReason::None) {
                     if (memory_thumb)
                         state.cpsr = arm::with_it_state(
                             state.cpsr, arm::advance_it(memory_it));
-                    native.ticks += native.transfer.ticks;
+                    native.ticks += multiple ? native.multiple.ticks
+                                             : native.transfer.ticks;
                     native.pc = state.registers[15];
                     native.has_instruction = step ? 1U : 0U;
                 }
