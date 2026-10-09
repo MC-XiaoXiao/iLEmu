@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm64/executor.hpp"
+#include "arm/t32_decode.hpp"
 #include "compiler.hpp"
 #include <algorithm>
 #include <limits>
@@ -36,17 +37,18 @@ public:
         stats_.retained_bytes = 0;
     }
     Entry& entry(InstructionSource& source, std::uint32_t pc, bool step,
-        bool big_endian, std::uint64_t timing_limit = UINT64_MAX)
+        bool big_endian, bool thumb, unsigned it_state,
+        std::uint64_t timing_limit = UINT64_MAX)
     {
-        const auto key = std::tuple { pc, step, big_endian };
+        const auto key = std::tuple { pc, step, big_endian, thumb, it_state };
         if (const auto it = cache_.find(key);
             it != cache_.end() && it->second.timing_limit == timing_limit) {
             ++stats_.cache_hits;
             return it->second;
         }
         const auto started = std::chrono::steady_clock::now();
-        const auto compiled =
-            arm64::compile(source, pc, step, timing_limit, big_endian);
+        const auto compiled = arm64::compile(
+            source, pc, step, timing_limit, big_endian, thumb, it_state);
         const auto bytes = std::as_bytes(std::span { compiled.words });
         if (bytes.size() > 256U * 1024U)
             throw std::length_error("ARM64 trace exceeds code limit");
@@ -105,11 +107,14 @@ public:
                 result.reason = result.reason | StopReason::HostDeadline;
             if (result.reason != StopReason::None)
                 return result;
-            if ((state.cpsr & (0x3fU | 0x01000000U | 0x0600fc00U)) != 0x10U) {
+            const bool thumb = (state.cpsr & 0x20U) != 0;
+            const auto it_state = arm::it_state(state.cpsr);
+            if ((state.cpsr & (0x1fU | 0x01000000U)) != 0x10U ||
+                (!thumb && it_state != 0)) {
                 result.reason = StopReason::UnsupportedInstruction;
                 return result;
             }
-            if ((result.pc & 3U) != 0) {
+            if ((result.pc & (thumb ? 1U : 3U)) != 0) {
                 result.reason = StopReason::FetchFault;
                 return result;
             }
@@ -123,7 +128,8 @@ public:
                 generation = current;
             }
             const bool big_endian = (state.cpsr & (1U << 9U)) != 0;
-            auto* selected = &entry(source, result.pc, step, big_endian);
+            auto* selected =
+                &entry(source, result.pc, step, big_endian, thumb, it_state);
             const auto remaining =
                 step ? UINT64_MAX : request.tick_budget - result.ticks_consumed;
             // Short budget tails execute a native one-instruction entry. This
@@ -131,11 +137,12 @@ public:
             // Equality also prevents observing a fault immediately after the
             // final paid instruction, before the next budget check.
             if (!step && selected->maximum_ticks >= remaining)
-                selected = &entry(source, result.pc, true, big_endian);
+                selected = &entry(
+                    source, result.pc, true, big_endian, thumb, it_state);
             const auto allowance = UINT64_MAX - result.ticks_consumed;
             if (selected->maximum_ticks > allowance)
-                selected =
-                    &entry(source, result.pc, true, big_endian, allowance);
+                selected = &entry(source, result.pc, true, big_endian, thumb,
+                    it_state, allowance);
             arm64::NativeOutcome native;
             auto* memory = source.data_memory();
             if (memory && selected->accesses_memory)
@@ -162,11 +169,16 @@ public:
             if (native.reason == arm64::memory_exit) {
                 if (!memory)
                     throw std::logic_error("memory exit has no bound memory");
+                const bool memory_thumb = (state.cpsr & 0x20U) != 0;
+                const auto memory_it = arm::it_state(state.cpsr);
                 const auto completion =
                     arm_memory::complete(state, *memory, native.transfer);
                 native.reason = static_cast<std::uint32_t>(completion.reason);
                 result.memory_fault = completion.fault;
                 if (completion.reason == StopReason::None) {
+                    if (memory_thumb)
+                        state.cpsr = arm::with_it_state(
+                            state.cpsr, arm::advance_it(memory_it));
                     native.ticks += native.transfer.ticks;
                     native.pc = state.registers[15];
                     native.has_instruction = step ? 1U : 0U;
@@ -193,7 +205,8 @@ public:
     std::size_t budget_;
     StopRequests stops_;
     Arm64Statistics stats_;
-    std::map<std::tuple<std::uint32_t, bool, bool>, Entry> cache_;
+    std::map<std::tuple<std::uint32_t, bool, bool, bool, unsigned>, Entry>
+        cache_;
 };
 Arm64Executor::Arm64Executor(CodeAllocator& allocator, std::size_t budget)
     : impl_(std::make_unique<Impl>(allocator, budget))

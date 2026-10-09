@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "compiler.hpp"
 #include "arm/a32_decode.hpp"
+#include "arm/t32_decode.hpp"
 #include "integer_emitter.hpp"
 #include "memory_emitter.hpp"
 #include <algorithm>
@@ -26,25 +27,34 @@ namespace {
         std::uint64_t ticks;
         std::uint32_t state_pc, report_pc, word, svc;
         bool dynamic_pc, instruction;
+        unsigned it;
     };
     class Emitter {
     public:
-        Emitter(CompiledTrace& trace, bool big_endian)
+        Emitter(CompiledTrace& trace, bool big_endian, bool thumb)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , integer_(code_)
             , memory_(code_, integer_, big_endian)
+            , thumb_(thumb)
         {
         }
         Label& exit(StopReason reason, std::uint64_t ticks, std::uint32_t pc,
             std::optional<std::uint32_t> word = { }, std::uint32_t svc = 0,
-            bool dynamic_pc = false)
+            bool dynamic_pc = false, std::optional<unsigned> it = { })
         {
-            exits_.push_back(
-                { { }, reason, ticks, reason == StopReason::Svc ? pc + 4U : pc,
-                    pc, word.value_or(0), svc, dynamic_pc, word.has_value() });
+            exits_.push_back({ { }, reason, ticks,
+                reason == StopReason::Svc ? pc + size_ : pc, pc,
+                word.value_or(0), svc, dynamic_pc, word.has_value(),
+                it.value_or(it_) });
             return exits_.back().label;
         }
+        void location(unsigned it, unsigned size)
+        {
+            it_ = it;
+            size_ = size;
+        }
+        void retired(unsigned it) { it_ = it; }
         void prologue()
         {
             code_.STP(X19, X20, SP, PreIndexed { }, -96);
@@ -102,6 +112,16 @@ namespace {
                 code_.STR(W16, X20, offsetof(NativeOutcome, svc));
                 code_.MOV(W16, out.instruction ? 1U : 0U);
                 code_.STR(W16, X20, offsetof(NativeOutcome, has_instruction));
+                // IT state is deterministic along the emitted path. Publish
+                // it at exits instead of adding work to every guest operation.
+                if (thumb_) {
+                    code_.BFI(W22, WZR, 10, 6);
+                    code_.BFI(W22, WZR, 25, 2);
+                    if (out.it != 0) {
+                        code_.MOV(W16, arm::with_it_state(0, out.it));
+                        code_.ORR(W22, W22, W16);
+                    }
+                }
                 code_.B(epilogue_);
             }
             code_.l(epilogue_);
@@ -129,18 +149,20 @@ namespace {
         void exchange_target(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t ticks)
         {
-            code_.MOV(W17, integer_.reg(inst.rm, pc, W17));
+            code_.MOV(W17,
+                integer_.reg(inst.rm,
+                    (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U), W17));
             Label valid;
             code_.TBNZ(W17, 0, valid);
             code_.TBZ(W17, 1, valid);
             code_.B(exit(StopReason::UnsupportedInstruction, ticks, pc, word));
             code_.l(valid);
         }
-        void exchange(const arm::Instruction& inst, std::uint32_t pc,
-            std::uint64_t ticks)
+        void exchange(
+            const arm::Instruction& inst, std::uint32_t pc, std::uint64_t ticks)
         {
             if (inst.link)
-                code_.MOV(W14, pc + 4U);
+                code_.MOV(W14, (pc + inst.size) | (thumb_ ? 1U : 0U));
             code_.BFI(W22, W17, 5, 1);
             Label arm_target, done;
             code_.TBZ(W17, 0, arm_target);
@@ -156,6 +178,7 @@ namespace {
             if ((inst.kind == arm::InstructionKind::DataProcessing &&
                     (inst.opcode < 8 || inst.opcode > 11)) ||
                 inst.kind == arm::InstructionKind::Multiply ||
+                inst.kind == arm::InstructionKind::WideImmediate ||
                 (inst.kind == arm::InstructionKind::Transfer && inst.load))
                 memory_.invalidate_register(inst.rd);
             if (inst.kind == arm::InstructionKind::Transfer && inst.writeback)
@@ -168,11 +191,14 @@ namespace {
         VectorCodeGenerator& code() { return code_; }
         IntegerEmitter& integer() { return integer_; }
         void transfer(const arm::Instruction& inst, std::uint32_t pc,
-            std::uint32_t word, std::uint64_t before, std::uint64_t cost)
+            std::uint32_t word, std::uint64_t before, std::uint64_t cost,
+            unsigned before_it)
         {
             memory_.emit(inst, pc, cost,
-                exit(static_cast<StopReason>(memory_exit), before, pc, word),
-                exit(StopReason::UnsupportedInstruction, before, pc, word),
+                exit(static_cast<StopReason>(memory_exit), before, pc, word, 0,
+                    false, before_it),
+                exit(StopReason::UnsupportedInstruction, before, pc, word, 0,
+                    false, before_it),
                 exit(StopReason::None, before + cost, 0, { }, 0, true));
         }
 
@@ -181,22 +207,42 @@ namespace {
         VectorCodeGenerator code_;
         IntegerEmitter integer_;
         MemoryEmitter memory_;
+        bool thumb_;
+        unsigned it_ = 0, size_ = 4;
         Label head_, epilogue_;
         std::deque<Exit> exits_;
     };
 }
 
 CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
-    bool single_step, std::uint64_t maximum_ticks, bool big_endian)
+    bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
+    unsigned it)
 {
     CompiledTrace out;
-    Emitter emit(out, big_endian);
+    Emitter emit(out, big_endian, thumb);
     emit.prologue();
     const auto start = pc;
+    const auto start_it = it;
     unsigned cycles = 0, cycle_length = 0;
     const auto limit = single_step ? 1U : maximum_trace_instructions;
     for (unsigned n = 0; n < limit; ++n) {
-        const auto word = source.fetch32(pc);
+        emit.location(it, thumb ? 2U : 4U);
+        std::optional<std::uint32_t> word;
+        arm::Instruction inst;
+        if (thumb) {
+            const auto first = source.fetch16(pc);
+            std::optional<std::uint16_t> second;
+            if (first && arm::thumb_is_wide(*first))
+                second = source.fetch16(pc + 2U);
+            if (first && (!arm::thumb_is_wide(*first) || second)) {
+                word = *first | (std::uint32_t { second.value_or(0) } << 16U);
+                inst = arm::decode_t32(*first, second, it);
+            }
+        } else {
+            word = source.fetch32(pc);
+            if (word)
+                inst = arm::decode_a32(*word);
+        }
         if (n == 0)
             out.first_instruction = word;
         if (!word) {
@@ -204,7 +250,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 emit.exit(StopReason::FetchFault, out.maximum_ticks, pc));
             break;
         }
-        const auto inst = arm::decode_a32(*word);
+        emit.location(it, inst.size);
         const auto before = out.maximum_ticks;
         const bool unsupported =
             inst.kind == arm::InstructionKind::Unsupported ||
@@ -238,19 +284,42 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             out.accesses_memory = true;
         out.maximum_ticks += cost;
         ++out.instructions;
+        const auto next_it = thumb ? (inst.kind == arm::InstructionKind::IfThen
+                                             ? inst.immediate
+                                             : arm::advance_it(it))
+                                   : 0U;
+        emit.retired(next_it);
+        const auto next_pc = pc + inst.size;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
             emit.exchange(inst, pc, out.maximum_ticks);
             if (inst.condition == 14)
                 break;
             emit.code().l(exchange_failed);
-            pc += 4;
+            pc = next_pc;
         } else if (inst.kind == arm::InstructionKind::Branch) {
             if (inst.condition != 14)
                 emit.conditional_skip(inst.condition,
-                    emit.exit(StopReason::None, out.maximum_ticks, pc + 4));
+                    emit.exit(StopReason::None, out.maximum_ticks, next_pc));
             if (inst.link)
-                emit.code().MOV(W14, pc + 4U);
-            pc += 8U + inst.immediate;
+                emit.code().MOV(W14, next_pc | (thumb ? 1U : 0U));
+            pc = ((pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) +
+                 inst.immediate;
+            if (inst.exchange) {
+                emit.code().AND(W22, W22, ~0x20U);
+                emit.code().B(
+                    emit.exit(StopReason::None, out.maximum_ticks, pc));
+                break;
+            }
+        } else if (inst.kind == arm::InstructionKind::CompareBranch) {
+            auto& fallthrough =
+                emit.exit(StopReason::None, out.maximum_ticks, next_pc);
+            if (inst.opcode == 0)
+                emit.code().CBNZ(
+                    WReg { static_cast<int>(inst.rn) }, fallthrough);
+            else
+                emit.code().CBZ(
+                    WReg { static_cast<int>(inst.rn) }, fallthrough);
+            pc += inst.pc_offset + inst.immediate;
         } else if (inst.kind == arm::InstructionKind::Svc) {
             if (inst.condition == 14) {
                 emit.code().B(emit.exit(StopReason::Svc, out.maximum_ticks, pc,
@@ -260,24 +329,45 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             emit.code().B(static_cast<Cond>(inst.condition),
                 emit.exit(StopReason::Svc, out.maximum_ticks, pc, word,
                     inst.immediate));
-            pc += 4;
+            pc = next_pc;
         } else {
             Label skip;
+            const bool writes_pc =
+                inst.kind == arm::InstructionKind::DataProcessing &&
+                inst.rd == 15 && (inst.opcode < 8 || inst.opcode > 11);
             if (!unsupported) {
                 emit.conditional_skip(inst.condition, skip);
-                if (inst.kind == arm::InstructionKind::Multiply)
+                switch (inst.kind) {
+                case arm::InstructionKind::Multiply:
                     emit.integer().multiply(inst);
-                else if (inst.kind == arm::InstructionKind::Transfer)
-                    emit.transfer(inst, pc, *word, before, cost);
-                else
+                    break;
+                case arm::InstructionKind::Transfer:
+                    emit.transfer(inst, pc, *word, before, cost, it);
+                    break;
+                case arm::InstructionKind::WideImmediate:
+                    emit.integer().wide_immediate(inst);
+                    break;
+                case arm::InstructionKind::DataProcessing:
                     emit.integer().alu(inst, pc);
+                    if (writes_pc) {
+                        emit.code().AND(W15, W15, ~1U);
+                        emit.code().B(emit.exit(StopReason::None,
+                            out.maximum_ticks, 0, { }, 0, true));
+                    }
+                    break;
+                default:
+                    break;
+                }
                 if (inst.condition != 14)
                     emit.code().l(skip);
             }
-            pc += 4;
+            pc = next_pc;
+            if (writes_pc && inst.condition == 14)
+                break;
         }
         emit.invalidate_written_registers(inst);
-        if (!single_step && pc == start) {
+        it = next_it;
+        if (!single_step && pc == start && it == start_it) {
             ++cycles;
             if (cycle_length == 0)
                 cycle_length = n + 1;

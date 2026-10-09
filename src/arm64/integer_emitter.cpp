@@ -15,7 +15,7 @@ WReg IntegerEmitter::reg(unsigned index, std::uint32_t pc, WReg scratch)
 {
     if (index != 15)
         return WReg { static_cast<int>(index) };
-    code_.MOV(scratch, pc + 8U);
+    code_.MOV(scratch, pc);
     return scratch;
 }
 void IntegerEmitter::carry_from(WReg value, unsigned bit)
@@ -137,8 +137,7 @@ void IntegerEmitter::shifter(
     code_.MOV(W16, rm);
     code_.l(done);
 }
-bool IntegerEmitter::shifted_alu(
-    const arm::Instruction& inst, std::uint32_t pc)
+bool IntegerEmitter::shifted_alu(const arm::Instruction& inst, std::uint32_t pc)
 {
     if (inst.immediate_operand || inst.register_shift ||
         (inst.shift != arm::ShiftKind::Lsl && inst.shift_amount == 0))
@@ -199,6 +198,7 @@ bool IntegerEmitter::shifted_alu(
 
 void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
 {
+    pc = (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U);
     if (shifted_alu(inst, pc))
         return;
     const bool logical = inst.opcode == 0 || inst.opcode == 1 ||
@@ -305,6 +305,15 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
         code_.ANDS(WZR, value, value);
         merge_nz();
     }
+}
+void IntegerEmitter::wide_immediate(const arm::Instruction& inst)
+{
+    const WReg destination { static_cast<int>(inst.rd) };
+    if (inst.opcode != 0)
+        code_.MOVK(destination, { static_cast<std::uint16_t>(inst.immediate),
+                                    MovImm16Shift::SHL_16 });
+    else
+        code_.MOV(destination, inst.immediate);
 }
 void IntegerEmitter::multiply(const arm::Instruction& inst)
 {

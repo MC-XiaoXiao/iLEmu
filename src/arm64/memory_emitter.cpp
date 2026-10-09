@@ -10,8 +10,7 @@ namespace {
     constexpr auto memory_offset = offsetof(NativeOutcome, memory);
     constexpr auto transfer_offset = offsetof(NativeOutcome, transfer);
 }
-void MemoryEmitter::store_value(
-    const arm::Instruction& inst, std::uint32_t pc)
+void MemoryEmitter::store_value(const arm::Instruction& inst, std::uint32_t pc)
 {
     if (inst.rd == 15) {
         code_.LDR(
@@ -116,7 +115,8 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     Label checked, done;
     // W16 holds the offset/new base; W15 the effective guest address.
     integer_.address_offset(inst, pc);
-    const auto base = integer_.reg(inst.rn, pc, W15);
+    const auto base = integer_.reg(
+        inst.rn, (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U), W15);
     if (inst.add)
         code_.ADD(W16, base, W16);
     else
