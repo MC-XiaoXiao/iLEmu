@@ -1,97 +1,28 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm64/executor.hpp"
 #include "arm/t32_decode.hpp"
+#include "code_cache.hpp"
 #include "compiler.hpp"
 #include "run_control.hpp"
 #include <algorithm>
 #include <limits>
-#include <map>
-#include <span>
 #include <stdexcept>
-#include <tuple>
 #include <utility>
 
 namespace ilemu::execution {
 class Arm64Executor::Impl {
 public:
-    struct Entry {
-        std::unique_ptr<ExecutableCode> code;
-        std::uint64_t maximum_ticks;
-        std::uint64_t timing_limit;
-        bool closed;
-        bool accesses_memory;
-        std::optional<std::uint32_t> first_instruction;
-        std::size_t accounted_bytes;
-    };
     Impl(CodeAllocator& allocator, std::size_t budget)
-        : allocator_(allocator)
-        , budget_(budget)
+        : cache_(allocator, budget, stats_)
     {
-        if (budget < 256U * 1024U)
-            throw std::invalid_argument(
-                "ARM64 code cache requires at least 256 KiB");
     }
-    void clear()
-    {
-        cache_.clear();
-        stats_.retained_bytes = 0;
-    }
-    Entry& entry(InstructionSource& source, std::uint32_t pc, bool step,
-        bool big_endian, bool thumb, unsigned it_state,
-        std::uint64_t timing_limit = UINT64_MAX)
-    {
-        const auto key = std::tuple { pc, step, big_endian, thumb, it_state };
-        if (const auto it = cache_.find(key);
-            it != cache_.end() && it->second.timing_limit == timing_limit) {
-            ++stats_.cache_hits;
-            return it->second;
-        }
-        const auto started = std::chrono::steady_clock::now();
-        const auto compiled = arm64::compile(
-            source, pc, step, timing_limit, big_endian, thumb, it_state);
-        const auto bytes = std::as_bytes(std::span { compiled.words });
-        if (bytes.size() > 256U * 1024U)
-            throw std::length_error("ARM64 trace exceeds code limit");
-        auto allocation = allocator_.allocate(bytes.size());
-        if (!allocation)
-            throw std::bad_alloc { };
-        constexpr auto metadata_bytes =
-            sizeof(Entry) + 64U; // bounded map node/key overhead
-        const auto capacity = allocation->capacity();
-        if (capacity > budget_ - metadata_bytes)
-            throw std::length_error("ARM64 trace exceeds cache budget");
-        const auto accounted = capacity + metadata_bytes;
-        // The owner is between native calls. No active entry can be reclaimed.
-        if (stats_.retained_bytes > budget_ - accounted || cache_.contains(key))
-            clear();
-        allocation->publish(bytes);
-        if (!allocation->entry())
-            throw std::runtime_error("ARM64 code was not published");
-        ++stats_.compiled_regions;
-        stats_.emitted_bytes += bytes.size();
-        auto [it, inserted] = cache_.emplace(
-            key, Entry { std::move(allocation), compiled.maximum_ticks,
-                     timing_limit, compiled.closed,
-                     compiled.accesses_memory, compiled.first_instruction,
-                     accounted });
-        if (!inserted)
-            throw std::logic_error("duplicate ARM64 cache entry");
-        stats_.retained_bytes += accounted;
-        stats_.compilation_nanoseconds += static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - started)
-                .count());
-        return it->second;
-    }
+    void clear() { cache_.clear(); }
     RunResult run(CpuThreadState& state, InstructionSource& source,
         const RunRequest& request)
     {
         if (!Arm64Executor::available())
             throw std::runtime_error("ARM64 executor requires an AArch64 host");
-        // No source pointer, address-space identity or lease survives a Run
-        // binding. A later cache-sharing policy can provide stable identities.
-        clear();
-        std::optional<std::uint64_t> generation;
+        cache_.begin_run();
         arm64::RunControl control { stops_, request };
         RunResult result;
         for (;;) {
@@ -119,14 +50,10 @@ public:
             if (!lease)
                 throw std::runtime_error(
                     "ARM64 executor requires a stable instruction lease");
-            const auto current = lease->generation();
-            if (!current || current != generation) {
-                clear();
-                generation = current;
-            }
+            const auto binding = cache_.bind(*lease);
             const bool big_endian = (state.cpsr & (1U << 9U)) != 0;
-            auto* selected =
-                &entry(source, result.pc, step, big_endian, thumb, it_state);
+            auto* selected = &cache_.entry(
+                source, binding, result.pc, step, big_endian, thumb, it_state);
             const auto remaining =
                 step ? UINT64_MAX : request.tick_budget - result.ticks_consumed;
             // Short budget tails execute a native one-instruction entry. This
@@ -134,12 +61,12 @@ public:
             // Equality also prevents observing a fault immediately after the
             // final paid instruction, before the next budget check.
             if (!step && selected->maximum_ticks >= remaining)
-                selected = &entry(
-                    source, result.pc, true, big_endian, thumb, it_state);
+                selected = &cache_.entry(source, binding, result.pc, true,
+                    big_endian, thumb, it_state);
             const auto allowance = UINT64_MAX - result.ticks_consumed;
             if (selected->maximum_ticks > allowance)
-                selected = &entry(source, result.pc, true, big_endian, thumb,
-                    it_state, allowance);
+                selected = &cache_.entry(source, binding, result.pc, true,
+                    big_endian, thumb, it_state, allowance);
             arm64::NativeOutcome native;
             native.poll = arm64::RunControl::poll;
             native.control = &control;
@@ -201,12 +128,9 @@ public:
                 return result;
         }
     }
-    CodeAllocator& allocator_;
-    std::size_t budget_;
     StopRequests stops_;
     Arm64Statistics stats_;
-    std::map<std::tuple<std::uint32_t, bool, bool, bool, unsigned>, Entry>
-        cache_;
+    arm64::CodeCache cache_;
 };
 Arm64Executor::Arm64Executor(CodeAllocator& allocator, std::size_t budget)
     : impl_(std::make_unique<Impl>(allocator, budget))

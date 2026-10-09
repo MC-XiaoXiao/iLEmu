@@ -54,15 +54,26 @@ struct RunResult {
     std::optional<MemoryFault> memory_fault;
 };
 
+// Opaque instruction-view identity. Tokens must not own guest backing or source
+// objects. Rotate the token if generation values can restart or be reused.
+struct CodeIdentity final { };
+
 // A lease excludes external code writes and mapping/protection changes.
 // Owner checked accesses may change code/mappings, but must end native
 // execution before doing so and reacquire the lease before any subsequent
 // instruction. A generation, when supplied, also covers instruction timing and
 // all shared aliases; otherwise compiled code must be revalidated at every
-// lease entry.
+// lease entry. An optional identity plus generation permits reuse across Run
+// calls. It identifies bytes, executable permissions, fetch support and timing,
+// including shared aliases; equal generations must mean equal instruction
+// views.
 class InstructionLease {
 public:
     virtual ~InstructionLease() = default;
+    virtual std::shared_ptr<const CodeIdentity> identity() const noexcept
+    {
+        return { };
+    }
     virtual std::optional<std::uint64_t> generation() const noexcept
     {
         return { };
@@ -81,7 +92,7 @@ public:
     virtual MemoryAccess* data_memory() noexcept { return nullptr; }
     // Thumb fetches must not require the neighbouring halfword to be mapped
     // executable. Sources without halfword support reject Thumb explicitly.
-    virtual std::optional<std::uint16_t> fetch16(std::uint32_t) { return {}; }
+    virtual std::optional<std::uint16_t> fetch16(std::uint32_t) { return { }; }
     virtual std::optional<std::uint32_t> fetch32(std::uint32_t address) = 0;
     virtual std::uint64_t ticks_for_instruction(
         std::uint32_t, std::uint32_t) const

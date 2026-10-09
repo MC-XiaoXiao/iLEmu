@@ -3,6 +3,7 @@
 #include "execution/run.hpp"
 #include "foundation/address_space.hpp"
 #include <stdexcept>
+#include <utility>
 
 namespace ilemu {
 // Benchmark commands own private resident pages. Firmware paging, shared-code
@@ -19,10 +20,17 @@ public:
     {
         class Lease final : public execution::InstructionLease {
         public:
-            explicit Lease(AddressSpace& memory)
+            Lease(AddressSpace& memory,
+                std::shared_ptr<const execution::CodeIdentity> identity)
                 : memory_(memory)
                 , lock_(memory)
+                , identity_(std::move(identity))
             {
+            }
+            std::shared_ptr<const execution::CodeIdentity>
+            identity() const noexcept override
+            {
+                return identity_;
             }
             std::optional<std::uint64_t> generation() const noexcept override
             {
@@ -32,8 +40,9 @@ public:
         private:
             AddressSpace& memory_;
             AddressSpace::ExclusiveAccess lock_;
+            std::shared_ptr<const execution::CodeIdentity> identity_;
         };
-        return std::make_unique<Lease>(memory_);
+        return std::make_unique<Lease>(memory_, identity_);
     }
     MemoryAccess* data_memory() noexcept override { return this; }
     std::optional<std::uint16_t> fetch16(std::uint32_t address) override
@@ -101,5 +110,7 @@ private:
                 (writing ? 1U << 11U : 0U) };
     }
     AddressSpace& memory_;
+    std::shared_ptr<const execution::CodeIdentity> identity_ =
+        std::make_shared<execution::CodeIdentity>();
 };
 }
