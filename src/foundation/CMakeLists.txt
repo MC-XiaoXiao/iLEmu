@@ -51,6 +51,7 @@ add_library(ilemu_foundation STATIC
     jit_work_policy.cpp
     jit_work_scheduler.cpp
     macho.cpp
+    memory_routine_hle.cpp
     output.cpp
     performance.cpp
     process_loader.cpp

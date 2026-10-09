@@ -268,6 +268,10 @@ public:
     void set_memory_write_watchpoint(
         std::uint32_t address, MemoryWriteHandler handler);
     void set_debug_breakpoints_enabled(bool enabled);
+    [[nodiscard]] bool guest_debugging_enabled() const
+    {
+        return debug_breakpoints_enabled_ || memory_write_watch_address_.has_value();
+    }
     void set_translation_profile(std::shared_ptr<JitTranslationProfile> profile,
         bool record = true, bool precompile = true);
     // The scheduler calls this when a different guest thread is dispatched on
