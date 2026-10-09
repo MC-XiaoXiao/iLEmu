@@ -345,6 +345,11 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             out.accesses_memory = true;
         out.maximum_ticks += cost;
         ++out.instructions;
+        if (inst.kind == arm::InstructionKind::Breakpoint) {
+            emit.code().B(emit.exit(StopReason::Breakpoint, out.maximum_ticks,
+                pc, word, 0, false, it));
+            break;
+        }
         const auto next_it = thumb ? (inst.kind == arm::InstructionKind::IfThen
                                              ? inst.immediate
                                              : arm::advance_it(it))

@@ -16,6 +16,8 @@ public:
         stops_.request(reason);
     }
 
+    void clear_stop() noexcept override { static_cast<void>(stops_.consume()); }
+
 private:
     StopRequests stops_;
 };

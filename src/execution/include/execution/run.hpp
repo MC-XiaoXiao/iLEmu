@@ -24,6 +24,7 @@ enum class StopReason : std::uint32_t {
     UnsupportedInstruction = 1U << 7,
     InvalidTiming = 1U << 8,
     DataFault = 1U << 9,
+    Breakpoint = 1U << 10,
 };
 constexpr StopReason operator|(StopReason a, StopReason b) noexcept
 {
@@ -140,6 +141,11 @@ public:
     virtual RunResult run(
         CpuThreadState&, InstructionSource&, const RunRequest&) = 0;
     virtual void request_stop(StopReason) noexcept = 0;
+    virtual void clear_stop() noexcept = 0;
+    // Owner-only, outside a backend invocation. Interpreters have no cache.
+    virtual void clear_cache() { }
+    virtual std::uint64_t retained_code_bytes() const noexcept { return 0; }
+    virtual std::uint64_t translation_count() const noexcept { return 0; }
 };
 
 // Only the execution owner accesses guest state. Other threads request a stop.

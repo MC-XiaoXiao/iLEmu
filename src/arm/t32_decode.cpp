@@ -216,6 +216,9 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         out.rn = word & 7U;
         out.opcode = (word >> 11U) & 1U;
         out.immediate = ((word & 0xf8U) >> 2U) | ((word & 0x200U) >> 3U);
+    } else if ((word & 0xff00U) == 0xbe00U && it == 0) {
+        out.kind = InstructionKind::Breakpoint;
+        out.immediate = word & 255U;
     } else if ((word & 0xff00U) == 0xbf00U) {
         const auto mask = word & 15U, cond = (word >> 4U) & 15U;
         if (mask == 0) {

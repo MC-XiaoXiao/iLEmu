@@ -185,6 +185,13 @@ RunResult ArmInterpreter::run(
             result.reason = StopReason::InvalidTiming;
             return result;
         }
+        if (passed && inst.kind == arm::InstructionKind::Breakpoint) {
+            result.ticks_consumed += ticks;
+            result.reason = StopReason::Breakpoint;
+            if (request.mode == ExecutionMode::SingleStep)
+                result.reason = result.reason | StopReason::SingleStep;
+            return result;
+        }
         if (passed) {
             switch (inst.kind) {
             case arm::InstructionKind::MultipleTransfer: {

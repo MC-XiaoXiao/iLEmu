@@ -149,7 +149,8 @@ public:
             if (has_reason(result.reason, StopReason::Svc))
                 result.svc = native.svc;
             if (step && (result.reason == StopReason::None ||
-                            has_reason(result.reason, StopReason::Svc))) {
+                            has_reason(result.reason, StopReason::Svc) ||
+                            has_reason(result.reason, StopReason::Breakpoint))) {
                 result.reason = result.reason | StopReason::SingleStep;
                 if (!result.instruction)
                     result.instruction = selected->first_instruction;
@@ -184,7 +185,19 @@ void Arm64Executor::request_stop(StopReason reason) noexcept
 {
     impl_->stops_.request(reason);
 }
+void Arm64Executor::clear_stop() noexcept
+{
+    static_cast<void>(impl_->stops_.consume());
+}
 void Arm64Executor::clear_cache() { impl_->clear(); }
+std::uint64_t Arm64Executor::retained_code_bytes() const noexcept
+{
+    return impl_->stats_.retained_bytes;
+}
+std::uint64_t Arm64Executor::translation_count() const noexcept
+{
+    return impl_->stats_.compiled_regions;
+}
 Arm64Statistics Arm64Executor::statistics() const noexcept
 {
     return impl_->stats_;

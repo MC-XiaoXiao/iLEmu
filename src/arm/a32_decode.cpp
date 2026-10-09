@@ -20,6 +20,11 @@ Instruction decode_a32(std::uint32_t word) noexcept
     // Unconditional encoding space has different decode rules.
     if (out.condition == 15)
         return out;
+    if ((word & 0xfff000f0U) == 0xe1200070U) {
+        out.kind = InstructionKind::Breakpoint;
+        out.immediate = ((word >> 4U) & 0xfff0U) | (word & 15U);
+        return out;
+    }
     if ((word & 0x0f000000U) == 0x0f000000U) {
         out.kind = InstructionKind::Svc;
         out.immediate = word & 0xffffffU;

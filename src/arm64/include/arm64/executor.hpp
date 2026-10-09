@@ -23,7 +23,10 @@ public:
         CpuThreadState&, InstructionSource&, const RunRequest&) override;
     void request_stop(StopReason) noexcept override;
     // Owner-only, with no native invocation active.
-    void clear_cache();
+    void clear_stop() noexcept override;
+    void clear_cache() override;
+    std::uint64_t retained_code_bytes() const noexcept override;
+    std::uint64_t translation_count() const noexcept override;
     Arm64Statistics statistics() const noexcept;
 
 private:

@@ -13,6 +13,7 @@ enum class InstructionKind {
     Branch,
     BranchExchange,
     Svc,
+    Breakpoint,
     IfThen,
     Nop,
     CompareBranch,
