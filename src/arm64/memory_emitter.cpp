@@ -34,20 +34,14 @@ void MemoryEmitter::endian(unsigned size, WReg value)
     else
         code_.REV(value, value);
 }
-void MemoryEmitter::invalidate_register(unsigned reg)
-{
-    for (auto& entry : addresses_)
-        if (entry && entry->base == reg)
-            entry.reset();
-}
-std::optional<MemoryEmitter::Address> MemoryEmitter::address(
+std::optional<AddressCache::Key> MemoryEmitter::address(
     const arm::Instruction& inst) const
 {
     if (!inst.immediate_operand || !inst.index || inst.writeback ||
         inst.rn == 15 || inst.rd == 15)
         return { };
-    return Address { inst.rn, inst.access_size, inst.immediate, inst.add,
-        inst.load };
+    return AddressCache::Key { inst.rn, inst.access_size, inst.immediate,
+        inst.add, inst.load, 1U, inst.access_size };
 }
 void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
     XReg pointer, Label& unsupported_exit, Label& branch_exit)
@@ -104,12 +98,9 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
 {
     const auto key = address(inst);
     if (key) {
-        for (unsigned slot = 0; slot < addresses_.size(); ++slot) {
-            if (addresses_[slot] == key) {
-                access(inst, pc, XReg { 27 + static_cast<int>(slot) },
-                    unsupported_exit, branch_exit);
-                return;
-            }
+        if (const auto pointer = addresses_.find(*key)) {
+            access(inst, pc, *pointer, unsupported_exit, branch_exit);
+            return;
         }
     }
     Label checked, done;
@@ -157,12 +148,8 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     code_.CBZ(X21, checked);
     code_.ADD(X21, X21, X15);
     XReg pointer = X21;
-    if (key && inst.condition == 14) {
-        const auto slot = next_address_++ % addresses_.size();
-        addresses_[slot] = key;
-        pointer = XReg { 27 + static_cast<int>(slot) };
-        code_.MOV(pointer, X21);
-    }
+    if (key && inst.condition == 14)
+        pointer = addresses_.remember(*key, pointer);
     access(inst, pc, pointer, unsupported_exit, branch_exit);
     code_.B(done);
     code_.l(checked);

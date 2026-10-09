@@ -6,15 +6,15 @@
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
-void VectorMemoryEmitter::access(const arm::Instruction& inst)
+void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
     constexpr auto vectors = offsetof(CpuThreadState, extension_registers);
     if (v.mode == arm::VectorTransferMode::Multiple) {
         for (unsigned r = 0; r < v.count; ++r) {
             const auto state_offset = vectors + (v.first + r) * 8U;
-            code_.LDR(
-                D0, inst.load ? X21 : X19, inst.load ? r * 8U : state_offset);
+            code_.LDR(D0, inst.load ? pointer : X19,
+                inst.load ? r * 8U : state_offset);
             if (big_endian_) {
                 if (v.element_size == 2)
                     code_.REV16(V0.B8(), V0.B8());
@@ -23,8 +23,8 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst)
                 else if (v.element_size == 8)
                     code_.REV64(V0.B8(), V0.B8());
             }
-            code_.STR(
-                D0, inst.load ? X19 : X21, inst.load ? state_offset : r * 8U);
+            code_.STR(D0, inst.load ? X19 : pointer,
+                inst.load ? state_offset : r * 8U);
         }
         return;
     }
@@ -38,11 +38,11 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst)
             code_.UMOV(W17, Q0.Selem()[v.lane]);
     } else {
         if (v.element_size == 1)
-            code_.LDRB(W17, X21);
+            code_.LDRB(W17, pointer);
         else if (v.element_size == 2)
-            code_.LDRH(W17, X21);
+            code_.LDRH(W17, pointer);
         else
-            code_.LDR(W17, X21);
+            code_.LDR(W17, pointer);
     }
     if (big_endian_) {
         if (v.element_size == 2)
@@ -52,11 +52,11 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst)
     }
     if (!inst.load) {
         if (v.element_size == 1)
-            code_.STRB(W17, X21);
+            code_.STRB(W17, pointer);
         else if (v.element_size == 2)
-            code_.STRH(W17, X21);
+            code_.STRH(W17, pointer);
         else
-            code_.STR(W17, X21);
+            code_.STR(W17, pointer);
     } else {
         if (v.mode == arm::VectorTransferMode::Replicate) {
             if (v.element_size == 1)
@@ -85,6 +85,14 @@ void VectorMemoryEmitter::emit(
     const auto length = v.mode == arm::VectorTransferMode::Multiple
                             ? v.count * 8U
                             : v.element_size;
+    const AddressCache::Key key { inst.rn, length, 0, true, inst.load,
+        v.alignment, v.element_size };
+    if (!inst.writeback) {
+        if (const auto pointer = addresses_.find(key)) {
+            access(inst, *pointer);
+            return;
+        }
+    }
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
     Label checked, aligned, done;
@@ -117,7 +125,10 @@ void VectorMemoryEmitter::emit(
     code_.LDR(X17, table, W17, IndexExt::UXTW, 3);
     code_.CBZ(X17, checked);
     code_.ADD(X21, X17, X15);
-    access(inst);
+    auto pointer = X21;
+    if (!inst.writeback && inst.condition == 14)
+        pointer = addresses_.remember(key, pointer);
+    access(inst, pointer);
     if (inst.writeback)
         code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
     code_.B(done);

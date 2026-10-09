@@ -229,9 +229,10 @@ namespace {
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
             unsigned before_it, bool big_endian)
         {
-            VectorMemoryEmitter { code_, big_endian }.emit(inst, cost,
-                exit(static_cast<StopReason>(vector_exit), before, pc, word,
-                    0, false, before_it));
+            VectorMemoryEmitter { code_, big_endian, memory_.addresses() }
+                .emit(inst, cost,
+                    exit(static_cast<StopReason>(vector_exit), before, pc,
+                        word, 0, false, before_it));
         }
         IntegerEmitter& integer() { return integer_; }
         void transfer(const arm::Instruction& inst, std::uint32_t pc,
