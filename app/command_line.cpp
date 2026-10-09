@@ -326,9 +326,13 @@ std::chrono::milliseconds parse_prepare_time(
 
 std::size_t jit_artifact_memory_limit(const std::vector<std::string>& args)
 {
-    const auto value = option(args, "--jit-artifact-memory-mib").value_or("64");
+    const auto value = option(args, "--jit-artifact-memory-mib");
+    if (!value) {
+        return JitWorkPolicy::recommended_artifact_resident_bytes(
+            host_memory_budget_snapshot());
+    }
     return static_cast<std::size_t>(
-        parse_mib_value(value, "--jit-artifact-memory-mib", 1U, 4096U));
+        parse_mib_value(*value, "--jit-artifact-memory-mib", 1U, 4096U));
 }
 
 GlesBackend parse_gles_backend(const std::vector<std::string>& args)

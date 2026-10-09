@@ -11,6 +11,7 @@
 #include <limits>
 
 #include "foundation/jit_code_cache_governor.hpp"
+#include "foundation/host_memory.hpp"
 #include "foundation/jit_translation_profile.hpp"
 
 namespace ilemu {
@@ -146,6 +147,24 @@ std::size_t JitWorkPolicy::recommended_native_slab_bytes(
         desired = maximum_x64_native_slab_bytes;
     }
     return std::min(desired, JitWorkPolicy::maximum_native_slab_bytes());
+}
+
+std::size_t JitWorkPolicy::recommended_artifact_resident_bytes(
+    const HostMemoryBudgetSnapshot& memory) noexcept
+{
+    const auto effective = effective_host_memory_limit(memory);
+    if (!effective || !memory.available_known)
+        return 64U * 1024U * 1024U;
+    auto available = memory.available_bytes;
+    if (memory.cgroup_limit_known && memory.cgroup_current_known) {
+        const auto remaining = memory.cgroup_limit_bytes > memory.cgroup_current_bytes
+                                   ? memory.cgroup_limit_bytes - memory.cgroup_current_bytes
+                                   : 0U;
+        available = std::min(available, remaining);
+    }
+    const bool spacious = *effective >= maximum_effective_memory_floor &&
+        available >= maximum_available_memory_floor;
+    return (spacious ? 256U : 64U) * 1024U * 1024U;
 }
 
 std::size_t JitWorkPolicy::recommended_translation_lanes(

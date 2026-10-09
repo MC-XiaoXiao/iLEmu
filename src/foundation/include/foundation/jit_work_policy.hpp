@@ -14,6 +14,8 @@
 
 namespace ilemu {
 
+struct HostMemoryBudgetSnapshot;
+
 inline constexpr std::size_t jit_work_policy_maximum_translation_lanes = 4U;
 
 struct JitNativePredictionPolicy {
@@ -109,6 +111,11 @@ public:
         std::uint64_t effective_memory_bytes, bool effective_memory_known,
         std::uint64_t available_memory_bytes,
         bool available_memory_known) noexcept;
+    // Transient templates share one resident budget across runtimes. Keep the
+    // conservative target unless both effective capacity and free headroom
+    // permit retaining a larger reusable working set.
+    [[nodiscard]] static std::size_t recommended_artifact_resident_bytes(
+        const HostMemoryBudgetSnapshot& memory) noexcept;
     // Preserve at least half of a multi-worker host pool for Guest-adjacent
     // services while allowing portable translation to outrun serial demand.
     // Native publication remains single-lane per shared code slab; this count
