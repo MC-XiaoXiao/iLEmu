@@ -350,7 +350,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         const auto before = out.maximum_ticks;
         const bool unsupported =
             inst.kind == arm::InstructionKind::Unsupported ||
-            ((inst.kind == arm::InstructionKind::Transfer ||
+            ((inst.kind == arm::InstructionKind::TableBranch ||
+                 inst.kind == arm::InstructionKind::Transfer ||
                  inst.kind == arm::InstructionKind::MultipleTransfer ||
                  inst.kind == arm::InstructionKind::VectorTransfer) &&
                 !source.data_memory());
@@ -379,7 +380,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             break;
         }
         if (!unsupported &&
-            (inst.kind == arm::InstructionKind::Transfer ||
+            (inst.kind == arm::InstructionKind::TableBranch ||
+                inst.kind == arm::InstructionKind::Transfer ||
                 inst.kind == arm::InstructionKind::MultipleTransfer ||
                 inst.kind == arm::InstructionKind::VectorTransfer))
             out.accesses_memory = true;
@@ -462,6 +464,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     emit.multiple(
                         inst, pc, *word, before, cost, it, big_endian);
                     break;
+                case arm::InstructionKind::TableBranch:
                 case arm::InstructionKind::Transfer:
                     emit.transfer(inst, pc, *word, before, cost, it);
                     break;
@@ -494,6 +497,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     emit.code().l(skip);
             }
             pc = next_pc;
+            if (inst.kind == arm::InstructionKind::TableBranch)
+                break;
             if (writes_pc && inst.condition == 14)
                 break;
             // ISB ends the instruction view even when conditional. A false

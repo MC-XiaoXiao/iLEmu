@@ -13,6 +13,7 @@ enum class InstructionKind {
     MultipleTransfer,
     Branch,
     BranchExchange,
+    TableBranch,
     Svc,
     Breakpoint,
     IfThen,

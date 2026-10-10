@@ -170,7 +170,8 @@ RunResult ArmInterpreter::run(
         if (inst.condition == 15 ||
             (passed &&
                 (inst.kind == arm::InstructionKind::Unsupported ||
-                    ((inst.kind == arm::InstructionKind::Transfer ||
+                    ((inst.kind == arm::InstructionKind::TableBranch ||
+                         inst.kind == arm::InstructionKind::Transfer ||
                          inst.kind == arm::InstructionKind::MultipleTransfer ||
                          inst.kind == arm::InstructionKind::VectorTransfer) &&
                         !source.data_memory())))) {
@@ -252,6 +253,7 @@ RunResult ArmInterpreter::run(
                 }
                 break;
             }
+            case arm::InstructionKind::TableBranch:
             case arm::InstructionKind::Transfer: {
                 auto& memory = *source.data_memory();
                 const auto direct = memory.direct_memory();
@@ -335,7 +337,8 @@ RunResult ArmInterpreter::run(
             inst.kind == arm::InstructionKind::CompareBranch &&
             ((state.registers[inst.rn] != 0) == (inst.opcode != 0));
         if (!(passed &&
-                (inst.kind == arm::InstructionKind::Transfer ||
+                (inst.kind == arm::InstructionKind::TableBranch ||
+                    inst.kind == arm::InstructionKind::Transfer ||
                     inst.kind == arm::InstructionKind::MultipleTransfer ||
                     inst.kind == arm::InstructionKind::VectorTransfer ||
                     alu_pc)))

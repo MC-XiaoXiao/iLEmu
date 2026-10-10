@@ -45,6 +45,18 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||
             decode_simd_transfer(out, (word << 16U) | tail, true))
             return out;
+        if ((word & 0xfff0U) == 0xe8d0U && (tail & 0xffe0U) == 0xf000U) {
+            out.rn = word & 15U;
+            out.rm = tail & 15U;
+            if (out.rn == 13 || out.rm == 13 || out.rm == 15 || !last)
+                return out;
+            out.kind = InstructionKind::TableBranch;
+            out.rd = 15;
+            out.load = true;
+            out.shift_amount = (tail >> 4U) & 1U;
+            out.access_size = 1U << out.shift_amount;
+            return out;
+        }
         if ((word & 0xfe00U) == 0xf800U) {
             decode_t32_transfer(out, word, tail, last);
         } else if ((word & 0xfe00U) == 0xea00U && (tail & 0x8000U) == 0) {

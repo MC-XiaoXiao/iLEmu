@@ -13,9 +13,11 @@ struct Transfer {
 constexpr std::uint32_t load_bit = 1U << 3;
 constexpr std::uint32_t signed_bit = 1U << 4;
 constexpr std::uint32_t writeback_bit = 1U << 5;
+constexpr std::uint32_t table_branch_bit = 1U << 6;
 constexpr std::uint32_t control(const arm::Instruction& inst)
 {
-    return inst.access_size | (inst.load ? load_bit : 0U) |
+    return (inst.kind == arm::InstructionKind::TableBranch ? table_branch_bit : 0U) |
+           inst.access_size | (inst.load ? load_bit : 0U) |
            (inst.sign_extend ? signed_bit : 0U) |
            (inst.writeback ? writeback_bit : 0U) | (inst.rd << 8U) |
            (inst.rn << 12U) | (inst.size << 16U);

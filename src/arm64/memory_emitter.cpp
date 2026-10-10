@@ -62,6 +62,12 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
             else
                 code_.SXTH(value, value);
         }
+        if (inst.kind == arm::InstructionKind::TableBranch) {
+            code_.MOV(W15, pc + 4U);
+            code_.ADD(W15, W15, W17, AddSubShift::LSL, 1);
+            code_.B(branch_exit);
+            return;
+        }
         if (inst.rd == 15) {
             Label valid;
             code_.TBNZ(W17, 0, valid);
@@ -115,7 +121,8 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     else
         code_.SUB(W16, base, W16);
     code_.MOV(W15, inst.index ? W16 : base);
-    if (inst.rd == 15 && inst.load) {
+    if (inst.rd == 15 && inst.load &&
+        inst.kind != arm::InstructionKind::TableBranch) {
         code_.AND(W17, W15, 3);
         code_.CBNZ(W17, unsupported_exit);
     }

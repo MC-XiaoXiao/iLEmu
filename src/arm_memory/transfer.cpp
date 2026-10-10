@@ -41,9 +41,10 @@ Completion complete(
     const auto size = transfer.control & 7U;
     const auto rd = (transfer.control >> 8U) & 15U;
     const auto rn = (transfer.control >> 12U) & 15U;
+    const bool table_branch = (transfer.control & table_branch_bit) != 0;
     const bool load = (transfer.control & load_bit) != 0;
     const bool big_endian = (state.cpsr & (1U << 9)) != 0;
-    if (load && rd == 15 && (transfer.address & 3U) != 0)
+    if (load && rd == 15 && !table_branch && (transfer.address & 3U) != 0)
         return { StopReason::UnsupportedInstruction, { } };
     std::optional<MemoryFault> fault;
     auto value = transfer.value;
@@ -67,8 +68,14 @@ Completion complete(
         state.abort_state = { fault->status, fault->address };
         return { StopReason::DataFault, fault };
     }
-    if (load && rd == 15 && (value & 3U) == 2U)
+    if (load && rd == 15 && !table_branch && (value & 3U) == 2U)
         return { StopReason::UnsupportedInstruction, { } };
+    if (table_branch) {
+        // Table offsets are unsigned and relative to the unaligned Thumb PC.
+        // BranchWritePC preserves execution state, unlike a load into PC.
+        state.registers[15] += 4U + (value << 1U);
+        return { };
+    }
     if ((transfer.control & writeback_bit) != 0)
         state.registers[rn] = transfer.updated_base;
     if (load && rd != 15)
