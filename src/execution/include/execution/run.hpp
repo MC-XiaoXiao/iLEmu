@@ -2,6 +2,7 @@
 #pragma once
 
 #include "execution/arm_state.hpp"
+#include "execution/instruction_profile.hpp"
 #include "execution/memory.hpp"
 
 #include <atomic>
@@ -101,6 +102,12 @@ public:
         std::uint32_t, bool)
     {
         return acquire_code_lease();
+    }
+    // Fixed throughout a Run. Native cache keys include the profile, so a
+    // source can change CPU policy between calls without reusing stale code.
+    virtual ThumbArithmeticProfile thumb_arithmetic_profile() const noexcept
+    {
+        return ThumbArithmeticProfile::Architectural;
     }
     virtual MemoryAccess* data_memory() noexcept { return nullptr; }
     // Executed fetches install/validate runtime translations and charge guest

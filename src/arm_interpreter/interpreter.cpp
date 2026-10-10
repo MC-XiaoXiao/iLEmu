@@ -107,6 +107,7 @@ RunResult ArmInterpreter::run(
     CpuThreadState& state, InstructionSource& source, const RunRequest& request)
 {
     RunResult result;
+    const auto profile = source.thumb_arithmetic_profile();
     for (;;) {
         result.pc = state.registers[15];
         result.instruction.reset();
@@ -156,7 +157,7 @@ RunResult ArmInterpreter::run(
             }
             result.instruction =
                 *first | (std::uint32_t { second.value_or(0) } << 16U);
-            inst = arm::decode_t32(*first, second, it);
+            inst = arm::decode_t32(*first, second, it, profile);
         } else {
             result.instruction = source.fetch32(result.pc);
             if (result.instruction)

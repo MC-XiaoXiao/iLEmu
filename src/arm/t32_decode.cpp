@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm/t32_decode.hpp"
 #include "t32_immediate.hpp"
+#include "t32_plain_immediate.hpp"
 #include "t32_shifted.hpp"
 #include "t32_transfer.hpp"
 #include "simd_duplicate.hpp"
@@ -18,7 +19,7 @@ namespace {
     }
 }
 Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
-    unsigned it) noexcept
+    unsigned it, execution::ThumbArithmeticProfile profile) noexcept
 {
     Instruction out;
     out.size = thumb_is_wide(first) ? 4U : 2U;
@@ -60,7 +61,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if ((word & 0xfe00U) == 0xf800U) {
             decode_t32_transfer(out, word, tail, last);
         } else if ((word & 0xfe00U) == 0xea00U && (tail & 0x8000U) == 0) {
-            decode_t32_shifted_register(out, word, tail);
+            decode_t32_shifted_register(out, word, tail, profile);
         } else if ((word & 0xf800U) == 0xf000U && (tail & 0x8000U) != 0) {
             const auto s = (word >> 10U) & 1U;
             const auto j1 = (tail >> 13U) & 1U, j2 = (tail >> 11U) & 1U;
@@ -90,7 +91,11 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             out.kind = InstructionKind::Branch;
         } else if ((word & 0xfa00U) == 0xf000U &&
                    (tail & 0x8000U) == 0) {
-            decode_t32_modified_immediate(out, word, tail);
+            decode_t32_modified_immediate(out, word, tail, profile);
+        } else if (((word & 0xfbf0U) == 0xf200U ||
+                       (word & 0xfbf0U) == 0xf2a0U) &&
+                   (tail & 0x8000U) == 0) {
+            decode_t32_plain_arithmetic(out, word, tail, profile);
         } else if (((word & 0xfbf0U) == 0xf240U ||
                        (word & 0xfbf0U) == 0xf2c0U) &&
                    (tail & 0x8000U) == 0) { // MOVW / MOVT

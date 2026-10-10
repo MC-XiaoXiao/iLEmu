@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "arm/instruction.hpp"
+#include "execution/instruction_profile.hpp"
 #include <optional>
 namespace ilemu::arm {
 constexpr bool thumb_is_wide(std::uint16_t first) noexcept
@@ -22,5 +23,6 @@ constexpr std::uint32_t with_it_state(
            ((value & 3U) << 25U);
 }
 Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
-    unsigned it) noexcept;
+    unsigned it, execution::ThumbArithmeticProfile =
+        execution::ThumbArithmeticProfile::Architectural) noexcept;
 }

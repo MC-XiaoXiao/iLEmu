@@ -83,7 +83,8 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     bool thumb, unsigned it_state, std::uint64_t timing_limit)
 {
     const Key key { pc, step, big_endian, thumb, it_state,
-        source.data_memory() != nullptr, timing_limit };
+        source.data_memory() != nullptr, timing_limit,
+        source.thumb_arithmetic_profile() };
     bool expand = false;
     if (auto* domain = find(binding)) {
         if (const auto it = domain->entries.find(key);

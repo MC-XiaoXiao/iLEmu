@@ -183,6 +183,14 @@ ExecutionMemory::ExecutionMemory(AddressSpace& memory, const ArmCpuModel& model,
 {
 }
 ExecutionMemory::~ExecutionMemory() = default;
+execution::ThumbArithmeticProfile
+ExecutionMemory::thumb_arithmetic_profile() const noexcept
+{
+    return impl_->model_.unpredictable_instruction_policy() ==
+                   ArmUnpredictableInstructionPolicy::CortexA8
+               ? execution::ThumbArithmeticProfile::GeneralPurposeStackPointer
+               : execution::ThumbArithmeticProfile::Architectural;
+}
 std::unique_ptr<execution::InstructionLease>
 ExecutionMemory::acquire_code_lease(std::uint32_t pc, bool thumb)
 {

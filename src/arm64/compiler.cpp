@@ -387,6 +387,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
     unsigned it, bool expand_dynamic_cycles)
 {
+    const auto profile = source.thumb_arithmetic_profile();
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
         region.end > (std::uint64_t { 1 } << 32U))
@@ -416,7 +417,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
             if (first && (!arm::thumb_is_wide(*first) || second)) {
                 word = *first | (std::uint32_t { second.value_or(0) } << 16U);
-                inst = arm::decode_t32(*first, second, it);
+                inst = arm::decode_t32(*first, second, it, profile);
             }
         } else {
             word = source.fetch32(pc);

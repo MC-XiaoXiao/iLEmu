@@ -4,7 +4,8 @@
 
 namespace ilemu::arm {
 void decode_t32_shifted_register(
-    Instruction& out, unsigned first, unsigned second) noexcept
+    Instruction& out, unsigned first, unsigned second,
+    execution::ThumbArithmeticProfile profile) noexcept
 {
     const auto op = (first >> 5U) & 15U;
     out.rn = first & 15U;
@@ -23,6 +24,7 @@ void decode_t32_shifted_register(
         return;
     }
     const bool arithmetic = op == 8 || op == 13;
+    const bool general_sp = permits_general_sp_arithmetic(profile, op);
     const bool move = (op == 2 || op == 3) && out.rn == 15;
     const bool test = out.rd == 15 && out.set_flags &&
                       (op == 0 || op == 4 || arithmetic);
@@ -34,11 +36,12 @@ void decode_t32_shifted_register(
             (out.rd == 13 && out.rm == 13))
             return;
     } else if ((out.rd == 15 && !test) ||
-               (out.rd == 13 &&
+               (out.rd == 13 && !general_sp &&
                    !(arithmetic && out.rn == 13 &&
                        out.shift == ShiftKind::Lsl && out.shift_amount <= 3)) ||
-               (out.rn == 13 && !arithmetic) ||
-               (out.rn == 15 && !move) || out.rm == 13 || out.rm == 15)
+               (out.rn == 13 && !general_sp && !arithmetic) ||
+               (out.rn == 15 && !move) || (out.rm == 13 && !general_sp) ||
+               out.rm == 15)
         return;
     const auto opcode = t32_data_opcode(op, move, test);
     if (!opcode)

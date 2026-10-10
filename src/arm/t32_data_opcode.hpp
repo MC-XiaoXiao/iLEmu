@@ -1,9 +1,17 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "arm/instruction.hpp"
+#include "execution/instruction_profile.hpp"
 #include <optional>
 
 namespace ilemu::arm {
+constexpr bool permits_general_sp_arithmetic(
+    execution::ThumbArithmeticProfile profile, unsigned op) noexcept
+{
+    return profile ==
+               execution::ThumbArithmeticProfile::GeneralPurposeStackPointer &&
+           (op == 8 || op == 10 || op == 11 || op == 13 || op == 14);
+}
 // Shared logical/arithmetic operation and alias allocation for wide Thumb.
 constexpr std::optional<unsigned> t32_data_opcode(
     unsigned op, bool move, bool test) noexcept
