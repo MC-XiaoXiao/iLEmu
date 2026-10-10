@@ -71,7 +71,10 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             out.access_size = 1U << out.shift_amount;
             return out;
         }
-        if ((word & 0xfe00U) == 0xf800U) {
+        if ((word & 0xff80U) == 0xfa00U && (tail & 0xf0f0U) == 0xf000U) {
+            if (architecture != execution::ArmInstructionProfile::Armv6)
+                decode_t32_register_shift(out, word, tail, profile);
+        } else if ((word & 0xfe00U) == 0xf800U) {
             decode_t32_transfer(out, word, tail, last, architecture);
         } else if ((word & 0xfe00U) == 0xea00U && (tail & 0x8000U) == 0) {
             decode_t32_shifted_register(out, word, tail, profile);

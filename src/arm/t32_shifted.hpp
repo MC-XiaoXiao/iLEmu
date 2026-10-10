@@ -7,4 +7,6 @@ namespace ilemu::arm {
 void decode_t32_shifted_register(
     Instruction&, unsigned first, unsigned second,
     execution::ThumbArithmeticProfile) noexcept;
+void decode_t32_register_shift(Instruction&, unsigned first, unsigned second,
+    execution::ThumbArithmeticProfile) noexcept;
 }

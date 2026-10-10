@@ -12,6 +12,14 @@ constexpr bool permits_general_sp_arithmetic(
                execution::ThumbArithmeticProfile::GeneralPurposeStackPointer &&
            (op == 8 || op == 10 || op == 11 || op == 13 || op == 14);
 }
+// MOV/MVN aliases include the immediate-shift family. The core policy
+// treats SP like a data register without relaxing PC or opcode allocation.
+constexpr bool permits_general_sp_move(
+    execution::ThumbArithmeticProfile profile, bool move) noexcept
+{
+    return move && profile ==
+                       execution::ThumbArithmeticProfile::GeneralPurposeStackPointer;
+}
 // Shared logical/arithmetic operation and alias allocation for wide Thumb.
 constexpr std::optional<unsigned> t32_data_opcode(
     unsigned op, bool move, bool test) noexcept

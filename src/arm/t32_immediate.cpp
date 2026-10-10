@@ -13,8 +13,9 @@ void decode_t32_modified_immediate(
     out.rd = (second >> 8U) & 15U;
     out.set_flags = (first & 16U) != 0;
     const bool arithmetic = op == 8 || op == 13;
-    const bool general_sp = permits_general_sp_arithmetic(profile, op);
     const bool move = (op == 2 || op == 3) && out.rn == 15;
+    const bool general_sp = permits_general_sp_arithmetic(profile, op) ||
+                            permits_general_sp_move(profile, move);
     const bool test = out.rd == 15 && out.set_flags &&
                       (op == 0 || op == 4 || arithmetic);
     if ((out.rd == 15 && !test) ||

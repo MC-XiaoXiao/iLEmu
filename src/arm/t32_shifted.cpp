@@ -24,8 +24,9 @@ void decode_t32_shifted_register(
         return;
     }
     const bool arithmetic = op == 8 || op == 13;
-    const bool general_sp = permits_general_sp_arithmetic(profile, op);
     const bool move = (op == 2 || op == 3) && out.rn == 15;
+    const bool general_sp = permits_general_sp_arithmetic(profile, op) ||
+                            permits_general_sp_move(profile, move);
     const bool test = out.rd == 15 && out.set_flags &&
                       (op == 0 || op == 4 || arithmetic);
     const bool plain_move = op == 2 && move && !out.set_flags &&
@@ -33,7 +34,7 @@ void decode_t32_shifted_register(
                             out.shift_amount == 0;
     if (plain_move) {
         if (out.rd == 15 || out.rm == 15 ||
-            (out.rd == 13 && out.rm == 13))
+            (out.rd == 13 && out.rm == 13 && !general_sp))
             return;
     } else if ((out.rd == 15 && !test) ||
                (out.rd == 13 && !general_sp &&
@@ -49,4 +50,21 @@ void decode_t32_shifted_register(
     out.opcode = *opcode;
     out.kind = InstructionKind::DataProcessing;
 }
+void decode_t32_register_shift(Instruction& out, unsigned first,
+    unsigned second, execution::ThumbArithmeticProfile profile) noexcept
+{
+    out.rd = (second >> 8U) & 15U;
+    out.rm = first & 15U;
+    out.rs = second & 15U;
+    if (out.rd == 15 || out.rm == 15 || out.rs == 15 ||
+        (profile == execution::ThumbArithmeticProfile::Architectural &&
+            (out.rd == 13 || out.rm == 13 || out.rs == 13)))
+        return;
+    out.opcode = 13;
+    out.shift = static_cast<ShiftKind>((first >> 5U) & 3U);
+    out.set_flags = (first & 16U) != 0;
+    out.register_shift = true;
+    out.kind = InstructionKind::DataProcessing;
+}
+
 }

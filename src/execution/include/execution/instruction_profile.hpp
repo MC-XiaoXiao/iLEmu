@@ -8,7 +8,7 @@ enum class ArmInstructionProfile { Armv6, Armv6T2 };
 // Both banks contain the same thirty-two single-precision S registers.
 enum class VfpRegisterProfile { D16, D32 };
 // Strict ARMv7 rejects unpredictable SP operands. The compatibility policy
-// executes SP as an ordinary arithmetic register. CPU adapters select it
+// executes SP as an ordinary arithmetic or move/shift register. CPU adapters select it
 // independently of firmware, guest addresses and backend implementation.
 enum class ThumbArithmeticProfile { Architectural, GeneralPurposeStackPointer };
 }
