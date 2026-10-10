@@ -16,11 +16,13 @@ public:
         , vectors_(vectors)
     {
     }
-    void emit(const arm::Instruction&, std::uint64_t cost,
+    void emit(const arm::Instruction&, std::uint32_t pc, std::uint64_t cost,
         oaknut::Label& checked_exit);
 
 private:
     void access(const arm::Instruction&, oaknut::XReg pointer);
+    void scalar_multiple(const arm::Instruction&, oaknut::XReg pointer);
+    void endian(oaknut::QReg, unsigned size, bool quad);
     oaknut::VectorCodeGenerator& code_;
     bool big_endian_;
     AddressCache& addresses_;

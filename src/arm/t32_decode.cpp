@@ -10,6 +10,7 @@
 #include "system_control.hpp"
 #include "exclusive.hpp"
 #include "transform_decode.hpp"
+#include "vfp_multiple.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -21,7 +22,8 @@ namespace {
     }
 }
 Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
-    unsigned it, execution::ThumbArithmeticProfile profile) noexcept
+    unsigned it, execution::ThumbArithmeticProfile profile,
+    execution::VfpRegisterProfile vfp) noexcept
 {
     Instruction out;
     out.size = thumb_is_wide(first) ? 4U : 2U;
@@ -45,7 +47,8 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if (decode_integer_transform(out, (word << 16U) | tail, true) ||
+        if (decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
+            decode_integer_transform(out, (word << 16U) | tail, true) ||
             decode_exclusive(out, (word << 16U) | tail, true) ||
             decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||

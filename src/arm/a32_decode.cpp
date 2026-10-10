@@ -6,14 +6,16 @@
 #include "system_control.hpp"
 #include "exclusive.hpp"
 #include "transform_decode.hpp"
+#include "vfp_multiple.hpp"
 #include <bit>
 
 namespace ilemu::arm {
-Instruction decode_a32(std::uint32_t word) noexcept
+Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp) noexcept
 {
     Instruction out;
     out.condition = word >> 28;
-    if (decode_integer_transform(out, word, false) ||
+    if (decode_vfp_multiple(out, word, false, vfp) ||
+        decode_integer_transform(out, word, false) ||
         decode_exclusive(out, word, false) ||
         decode_system_control(out, word, false) ||
         decode_simd_duplicate(out, word, false) ||

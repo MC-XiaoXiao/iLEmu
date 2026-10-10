@@ -109,6 +109,10 @@ public:
     {
         return ThumbArithmeticProfile::Architectural;
     }
+    virtual VfpRegisterProfile vfp_register_profile() const noexcept
+    {
+        return VfpRegisterProfile::D32;
+    }
     virtual MemoryAccess* data_memory() noexcept { return nullptr; }
     // Executed fetches install/validate runtime translations and charge guest
     // VM events. Inspection below must not charge them. Thumb-wide fetches

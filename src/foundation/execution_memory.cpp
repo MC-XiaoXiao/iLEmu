@@ -35,6 +35,13 @@ ExecutionMemory::thumb_arithmetic_profile() const noexcept
                ? execution::ThumbArithmeticProfile::GeneralPurposeStackPointer
                : execution::ThumbArithmeticProfile::Architectural;
 }
+execution::VfpRegisterProfile
+ExecutionMemory::vfp_register_profile() const noexcept
+{
+    return impl_->model_.kind() == ArmCpuModelKind::Arm1176JzfS
+               ? execution::VfpRegisterProfile::D16
+               : execution::VfpRegisterProfile::D32;
+}
 std::unique_ptr<execution::InstructionLease>
 ExecutionMemory::acquire_code_lease(std::uint32_t pc, bool thumb)
 {

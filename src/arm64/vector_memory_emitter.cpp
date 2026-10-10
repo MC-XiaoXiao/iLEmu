@@ -6,29 +6,31 @@
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
-namespace {
-    void endian(VectorCodeGenerator& code, QReg value, unsigned size, bool quad)
-    {
-        if (quad) {
-            if (size == 2)
-                code.REV16(value.B16(), value.B16());
-            else if (size == 4)
-                code.REV32(value.B16(), value.B16());
-            else if (size == 8)
-                code.REV64(value.B16(), value.B16());
-        } else {
-            if (size == 2)
-                code.REV16(value.toD().B8(), value.toD().B8());
-            else if (size == 4)
-                code.REV32(value.toD().B8(), value.toD().B8());
-            else if (size == 8)
-                code.REV64(value.toD().B8(), value.toD().B8());
-        }
+void VectorMemoryEmitter::endian(QReg value, unsigned size, bool quad)
+{
+    if (quad) {
+        if (size == 2)
+            code_.REV16(value.B16(), value.B16());
+        else if (size == 4)
+            code_.REV32(value.B16(), value.B16());
+        else if (size == 8)
+            code_.REV64(value.B16(), value.B16());
+    } else {
+        if (size == 2)
+            code_.REV16(value.toD().B8(), value.toD().B8());
+        else if (size == 4)
+            code_.REV32(value.toD().B8(), value.toD().B8());
+        else if (size == 8)
+            code_.REV64(value.toD().B8(), value.toD().B8());
     }
 }
 void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
+    if (v.mode == arm::VectorTransferMode::ScalarMultiple) {
+        scalar_multiple(inst, pointer);
+        return;
+    }
     if (v.mode == arm::VectorTransferMode::Multiple) {
         for (unsigned r = 0; r < v.count;) {
             const auto d = v.first + r;
@@ -42,7 +44,7 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
                 else
                     code_.LDR(value.toD(), pointer, r * 8U);
                 if (big_endian_)
-                    endian(code_, value, v.element_size, quad);
+                    endian(value, v.element_size, quad);
                 if (!quad)
                     vectors_.write_d(d, value);
             } else {
@@ -53,7 +55,7 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
                     if (quad)
                         code_.MOV(Q0.B16(), value.B16());
                     value = Q0;
-                    endian(code_, value, v.element_size, quad);
+                    endian(value, v.element_size, quad);
                 }
                 if (quad)
                     code_.STUR(value, pointer, r * 8U);
@@ -114,15 +116,17 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
     }
 }
 void VectorMemoryEmitter::emit(
-    const arm::Instruction& inst, std::uint64_t cost, Label& checked_exit)
+    const arm::Instruction& inst, std::uint32_t pc, std::uint64_t cost,
+    Label& checked_exit)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
-    const auto length = v.mode == arm::VectorTransferMode::Multiple
-                            ? v.count * 8U
-                            : v.element_size;
+    const auto length = arm_memory::vector_transfer_length(v);
+    const bool scalar = v.mode == arm::VectorTransferMode::ScalarMultiple;
+    const auto natural_alignment = scalar ? 4U : v.element_size;
+    const bool cacheable = !inst.writeback && inst.rn != 15;
     const AddressCache::Key key { inst.rn, length, 0, true, inst.load,
-        v.alignment, v.element_size };
-    if (!inst.writeback) {
+        v.alignment, natural_alignment };
+    if (cacheable) {
         if (const auto pointer = addresses_.find(key)) {
             access(inst, *pointer);
             return;
@@ -131,19 +135,29 @@ void VectorMemoryEmitter::emit(
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
     Label checked, aligned, done;
-    if (!inst.writeback && inst.condition == 14)
+    if (cacheable && inst.condition == 14)
         addresses_.begin_guard(key);
-    code_.MOV(W15, WReg { static_cast<int>(inst.rn) });
-    if (inst.rm == 13 || inst.rm == 15)
+    if (inst.rn == 15)
+        code_.MOV(W15, pc + inst.pc_offset);
+    else
+        code_.MOV(W15, WReg { static_cast<int>(inst.rn) });
+    if (scalar) {
+        if (inst.add)
+            code_.ADD(W16, W15, inst.immediate);
+        else {
+            code_.SUB(W16, W15, inst.immediate);
+            code_.MOV(W15, W16);
+        }
+    } else if (inst.rm == 13 || inst.rm == 15)
         code_.ADD(W16, W15, length);
     else
         code_.ADD(W16, W15, WReg { static_cast<int>(inst.rm) });
     // W21 carries the effective alignment to the checked transaction.
     code_.MOV(W21, v.alignment);
-    if (v.element_size > v.alignment) {
+    if (natural_alignment > v.alignment) {
         code_.LDR(W17, X20, memory + offsetof(DirectMemory, permits_unaligned));
         code_.CBNZ(W17, aligned);
-        code_.MOV(W21, v.element_size);
+        code_.MOV(W21, natural_alignment);
         code_.l(aligned);
     }
     code_.SUB(W17, W21, 1);
@@ -163,7 +177,7 @@ void VectorMemoryEmitter::emit(
     code_.CBZ(X17, checked);
     code_.ADD(X21, X17, X15);
     auto pointer = X21;
-    if (!inst.writeback && inst.condition == 14)
+    if (cacheable && inst.condition == 14)
         pointer = addresses_.remember(key, pointer);
     access(inst, pointer);
     if (inst.writeback)

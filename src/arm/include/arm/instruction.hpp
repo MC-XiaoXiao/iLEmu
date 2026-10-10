@@ -54,8 +54,10 @@ struct VectorBitwiseOperands {
     VectorBitwiseOperation operation = VectorBitwiseOperation::And;
     bool quad = false;
 };
-enum class VectorTransferMode { Multiple, Lane, Replicate };
+enum class VectorTransferMode { Multiple, Lane, Replicate, ScalarMultiple };
 struct VectorTransferOperands {
+    // first names D registers except ScalarMultiple with element_size=4,
+    // which names S registers. ScalarMultiple always requires word alignment.
     unsigned first = 0, count = 0, element_size = 0, alignment = 1;
     VectorTransferMode mode = VectorTransferMode::Multiple;
     unsigned lane = 0;

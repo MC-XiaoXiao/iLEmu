@@ -298,7 +298,7 @@ namespace {
         {
             VectorMemoryEmitter { code_, big_endian, memory_.addresses(),
                 vectors_ }
-                .emit(inst, cost,
+                .emit(inst, pc, cost,
                     exit(static_cast<StopReason>(vector_exit), before, pc,
                         word, 0, false, before_it));
         }
@@ -390,6 +390,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     unsigned it, bool expand_dynamic_cycles)
 {
     const auto profile = source.thumb_arithmetic_profile();
+    const auto vfp = source.vfp_register_profile();
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
         region.end > (std::uint64_t { 1 } << 32U))
@@ -419,12 +420,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
             if (first && (!arm::thumb_is_wide(*first) || second)) {
                 word = *first | (std::uint32_t { second.value_or(0) } << 16U);
-                inst = arm::decode_t32(*first, second, it, profile);
+                inst = arm::decode_t32(*first, second, it, profile, vfp);
             }
         } else {
             word = source.fetch32(pc);
             if (word)
-                inst = arm::decode_a32(*word);
+                inst = arm::decode_a32(*word, vfp);
         }
         if (n == 0)
             out.first_instruction = word;

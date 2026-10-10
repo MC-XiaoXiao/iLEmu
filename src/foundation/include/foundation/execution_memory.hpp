@@ -31,6 +31,7 @@ public:
     execution::MemoryAccess* data_memory() noexcept override { return this; }
     execution::ThumbArithmeticProfile
     thumb_arithmetic_profile() const noexcept override;
+    execution::VfpRegisterProfile vfp_register_profile() const noexcept override;
     std::optional<execution::MemoryFault> prepare_instruction_fetch(
         std::uint32_t, unsigned) override;
     execution::InstructionRegion instruction_region(

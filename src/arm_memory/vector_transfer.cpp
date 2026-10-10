@@ -7,10 +7,13 @@ VectorTransfer prepare_vector(const CpuThreadState& state,
     const arm::Instruction& inst, bool permits_unaligned)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
-    const auto base = state.registers[inst.rn];
-    const auto length = v.mode == arm::VectorTransferMode::Multiple
-                            ? v.count * 8U
-                            : v.element_size;
+    const auto base = state.registers[inst.rn] +
+        (inst.rn == 15 ? inst.pc_offset : 0U);
+    const auto length = vector_transfer_length(v);
+    if (v.mode == arm::VectorTransferMode::ScalarMultiple) {
+        const auto updated = inst.add ? base + inst.immediate : base - inst.immediate;
+        return { 0, inst.add ? base : updated, updated, vector_control(inst), 4U };
+    }
     const auto offset =
         inst.rm == 13 || inst.rm == 15 ? length : state.registers[inst.rm];
     return { 0, base, base + offset, vector_control(inst),
@@ -20,14 +23,14 @@ Completion complete_vector(
     CpuThreadState& state, MemoryAccess& memory, const VectorTransfer& transfer)
 {
     const auto first = transfer.control & 31U;
-    const auto count = (transfer.control >> 5U) & 7U;
-    const auto size = (transfer.control >> 8U) & 15U;
-    const auto rn = (transfer.control >> 12U) & 15U;
+    const auto count = (transfer.control >> 5U) & 63U;
+    const auto size = (transfer.control >> 11U) & 15U;
+    const auto rn = (transfer.control >> 15U) & 15U;
     const bool load = (transfer.control & vector_load) != 0;
     const bool big = (state.cpsr & 512U) != 0;
     const auto mode =
-        static_cast<arm::VectorTransferMode>((transfer.control >> 23U) & 3U);
-    const auto selected_lane = (transfer.control >> 25U) & 7U;
+        static_cast<arm::VectorTransferMode>((transfer.control >> 24U) & 3U);
+    const auto selected_lane = (transfer.control >> 26U) & 7U;
     const auto abort = [&](MemoryFault fault) {
         state.abort_state = { fault.status, fault.address };
         return Completion { StopReason::DataFault, fault };
@@ -35,6 +38,7 @@ Completion complete_vector(
     if ((transfer.address & (transfer.alignment - 1U)) != 0)
         return abort({ transfer.address, 1U | (load ? 0U : 1U << 11U) });
     auto address = transfer.address;
+    const bool scalar = mode == arm::VectorTransferMode::ScalarMultiple;
     for (unsigned r = 0; r < count; ++r) {
         const auto start =
             mode == arm::VectorTransferMode::Lane ? selected_lane * size : 0U;
@@ -45,7 +49,7 @@ Completion complete_vector(
             // consists of two MemU word accesses; completed earlier elements
             // and stores remain visible if a later access faults.
             std::uint64_t value = 0;
-            const auto index = (first + r) * 2U + lane / 4U;
+            const auto index = (first + r) * (scalar ? size / 4U : 2U) + lane / 4U;
             const auto shift = (lane % 4U) * 8U;
             if (!load) {
                 value = state.extension_registers[index] >> shift;
@@ -116,7 +120,7 @@ Completion complete_vector(
     }
     if ((transfer.control & vector_writeback) != 0)
         state.registers[rn] = transfer.updated_base;
-    state.registers[15] += (transfer.control >> 20U) & 7U;
+    state.registers[15] += (transfer.control >> 21U) & 7U;
     return { };
 }
 }

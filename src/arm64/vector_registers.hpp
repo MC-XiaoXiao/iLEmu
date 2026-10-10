@@ -34,6 +34,10 @@ public:
     {
         code_.INS(write(d).Delem()[d % 2U], value.Delem()[0]);
     }
+    void write_s(unsigned s, oaknut::QReg value)
+    {
+        code_.INS(write(s / 2U).Selem()[s % 4U], value.Selem()[0]);
+    }
     void restore(oaknut::VectorCodeGenerator& code) const
     {
         transfer(code, used_, true);
