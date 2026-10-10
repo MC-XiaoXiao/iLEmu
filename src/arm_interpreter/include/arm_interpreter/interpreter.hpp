@@ -16,10 +16,14 @@ public:
         stops_.request(reason);
     }
 
+    void clear_exclusive_state() override
+    { if (exclusive_) exclusive_->clear(); }
+
     void clear_stop() noexcept override { static_cast<void>(stops_.consume()); }
 
 private:
     StopRequests stops_;
+    std::unique_ptr<ExclusiveMonitor> exclusive_;
 };
 
 }

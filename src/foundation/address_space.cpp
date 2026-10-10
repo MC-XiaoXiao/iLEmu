@@ -417,6 +417,7 @@ void AddressSpace::disable_jit_write_page_table()
     direct_jit_write_pages_.clear();
     direct_shared_jit_write_pages_.clear();
     exclusive_write_tracked_pages_.clear();
+    exclusive_guard_stamps_.clear();
     exclusive_write_backings_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
 }
@@ -483,6 +484,7 @@ void AddressSpace::clear_exclusive_access_tracking()
         refresh_jit_page_locked(address);
     }
     exclusive_write_backings_.clear();
+    exclusive_guard_stamps_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
 }
 
@@ -778,6 +780,7 @@ void AddressSpace::clear()
         chunk.reset();
     clear_jit_page_table_locked();
     exclusive_write_tracked_pages_.clear();
+    exclusive_guard_stamps_.clear();
     exclusive_write_backings_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
     tracked_write_ranges_.clear();

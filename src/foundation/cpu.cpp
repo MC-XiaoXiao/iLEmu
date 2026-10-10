@@ -3757,11 +3757,9 @@ public:
 
     void clear_exclusive_state(std::size_t slot)
     {
-        if (!independent_executors_.empty()) {
-            static_cast<void>(independent_executors_.at(slot));
-            // Independent backends currently reject exclusive instructions;
-            // no local reservation can survive a scheduler context switch.
-        } else
+        if (!independent_executors_.empty())
+            independent_executors_.at(slot)->clear_exclusive_state();
+        else
             executor(slot).clear_exclusive_state();
         // Only a single-executor pool can prove that no other virtual
         // processor still owns a reservation in this address space.

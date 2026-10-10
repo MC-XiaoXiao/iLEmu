@@ -38,6 +38,12 @@ void IndependentCpuExecutor::clear_cache()
     if (executor_)
         executor_->clear_cache();
 }
+void IndependentCpuExecutor::clear_exclusive_state()
+{
+    const std::lock_guard lock { mutex_ };
+    if (executor_)
+        executor_->clear_exclusive_state();
+}
 void IndependentCpuExecutor::set_cache_size(std::size_t bytes)
 {
     const std::lock_guard lock { mutex_ };

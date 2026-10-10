@@ -40,6 +40,7 @@ public:
     std::uint64_t ticks_for_instruction(
         std::uint32_t, std::uint32_t) const override;
     execution::DirectMemory direct_memory() override;
+    std::unique_ptr<execution::ExclusiveMonitor> create_exclusive_monitor() override;
     execution::MemoryRead read(std::uint32_t, execution::AccessSize) override;
     std::optional<execution::MemoryFault> write(
         std::uint32_t, execution::AccessSize, std::uint32_t) override;
@@ -53,6 +54,6 @@ public:
 
 private:
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 }

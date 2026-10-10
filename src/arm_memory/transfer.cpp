@@ -1,19 +1,9 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm_memory/transfer.hpp"
 #include "arm/integer_semantics.hpp"
+#include "endian.hpp"
 
 namespace ilemu::execution::arm_memory {
-namespace {
-    std::uint32_t reverse(std::uint32_t value, unsigned size)
-    {
-        if (size == 1)
-            return value;
-        if (size == 2)
-            return ((value & 255U) << 8U) | ((value >> 8U) & 255U);
-        return ((value & 255U) << 24U) | ((value & 0xff00U) << 8U) |
-               ((value >> 8U) & 0xff00U) | (value >> 24U);
-    }
-}
 Transfer prepare(const CpuThreadState& state, const arm::Instruction& inst,
     std::uint32_t pc_store_offset)
 {

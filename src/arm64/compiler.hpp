@@ -2,6 +2,7 @@
 #pragma once
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
+#include "arm_memory/exclusive.hpp"
 #include "arm_memory/vector_transfer.hpp"
 #include "execution/run.hpp"
 #include <cstdint>
@@ -25,8 +26,10 @@ struct NativeOutcome {
     arm_memory::Transfer transfer;
     arm_memory::MultipleTransfer multiple;
     arm_memory::VectorTransfer vector;
+    arm_memory::ExclusiveTransfer exclusive;
     std::uint32_t thread_pointer_read_only = 0;
 };
+inline constexpr std::uint32_t exclusive_exit = 1U << 28U;
 inline constexpr std::uint32_t vector_exit = 1U << 29U;
 inline constexpr std::uint32_t multiple_exit = 1U << 30U;
 inline constexpr std::uint32_t memory_exit = 1U << 31U;

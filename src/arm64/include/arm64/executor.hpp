@@ -25,6 +25,7 @@ public:
     // Owner-only, with no native invocation active.
     void clear_stop() noexcept override;
     void clear_cache() override;
+    void clear_exclusive_state() override;
     std::uint64_t retained_code_bytes() const noexcept override;
     std::uint64_t translation_count() const noexcept override;
     Arm64Statistics statistics() const noexcept;

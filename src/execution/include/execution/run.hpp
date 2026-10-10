@@ -151,6 +151,8 @@ public:
     virtual void clear_stop() noexcept = 0;
     // Owner-only, outside a backend invocation. Interpreters have no cache.
     virtual void clear_cache() { }
+    // Real architectural context switches, not cooperative slices/cache work.
+    virtual void clear_exclusive_state() { }
     virtual std::uint64_t retained_code_bytes() const noexcept { return 0; }
     virtual std::uint64_t translation_count() const noexcept { return 0; }
 };

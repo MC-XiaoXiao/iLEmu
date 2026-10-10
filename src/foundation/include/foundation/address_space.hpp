@@ -379,6 +379,8 @@ public:
     [[nodiscard]] std::optional<bool> store_exclusive(std::uint32_t address,
         unsigned size, std::uint64_t value,
         const execution::ExclusiveReservation& reservation);
+    void retire_exclusive(std::uint32_t address,
+        const execution::ExclusiveReservation& reservation);
 
     bool compare_exchange8(
         std::uint32_t address, std::uint8_t expected, std::uint8_t value);
@@ -668,6 +670,9 @@ private:
     // counts avoid clustering the naturally page-aligned address keys.
     tsl::robin_pg_map<std::uint32_t, std::uint64_t>
         exclusive_write_tracked_pages_;
+    // Latest independent guard stamp per private granule. Retiring a stale
+    // monitor must not remove a newer monitor's guard. Bounded by live slots.
+    tsl::robin_pg_map<std::uint32_t, std::uint64_t> exclusive_guard_stamps_;
     // Conservative membership: stale entries are harmless, but every backing
     // of a guarded page must be present. Shared pixel stores can then reject
     // unrelated reservations without scanning all virtual page markers.

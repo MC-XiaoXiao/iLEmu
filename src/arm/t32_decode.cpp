@@ -8,6 +8,7 @@
 #include "simd_bitwise.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
+#include "exclusive.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -41,7 +42,8 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if (decode_system_control(out, (word << 16U) | tail, true) ||
+        if (decode_exclusive(out, (word << 16U) | tail, true) ||
+            decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||
             decode_simd_transfer(out, (word << 16U) | tail, true))

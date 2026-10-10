@@ -6,6 +6,7 @@
 #include "arm/t32_decode.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
+#include "arm_memory/exclusive.hpp"
 #include "arm_memory/vector_transfer.hpp"
 
 namespace ilemu::execution {
@@ -106,6 +107,9 @@ namespace {
 RunResult ArmInterpreter::run(
     CpuThreadState& state, InstructionSource& source, const RunRequest& request)
 {
+    if (exclusive_ && (!source.data_memory() ||
+        !exclusive_->bound_to(*source.data_memory())))
+        exclusive_.reset();
     RunResult result;
     const auto profile = source.thumb_arithmetic_profile();
     for (;;) {
@@ -173,6 +177,7 @@ RunResult ArmInterpreter::run(
                 (inst.kind == arm::InstructionKind::Unsupported ||
                     ((inst.kind == arm::InstructionKind::TableBranch ||
                          inst.kind == arm::InstructionKind::Transfer ||
+                         inst.kind == arm::InstructionKind::ExclusiveTransfer ||
                          inst.kind == arm::InstructionKind::MultipleTransfer ||
                          inst.kind == arm::InstructionKind::VectorTransfer) &&
                         !source.data_memory())))) {
@@ -202,6 +207,19 @@ RunResult ArmInterpreter::run(
         }
         if (passed) {
             switch (inst.kind) {
+            case arm::InstructionKind::ClearExclusive:
+            case arm::InstructionKind::ExclusiveTransfer: {
+                const auto transfer = arm_memory::prepare_exclusive(state, inst);
+                lease.reset();
+                const auto completion = arm_memory::complete_exclusive(
+                    state, source.data_memory(), exclusive_, transfer);
+                if (completion.reason != StopReason::None) {
+                    result.reason = completion.reason;
+                    result.memory_fault = completion.fault;
+                    return result;
+                }
+                break;
+            }
             case arm::InstructionKind::SystemControl:
                 switch (inst.system) {
                 case arm::SystemOperation::ThreadPointerReadWrite:
@@ -340,6 +358,8 @@ RunResult ArmInterpreter::run(
         if (!(passed &&
                 (inst.kind == arm::InstructionKind::TableBranch ||
                     inst.kind == arm::InstructionKind::Transfer ||
+                    inst.kind == arm::InstructionKind::ExclusiveTransfer ||
+                    inst.kind == arm::InstructionKind::ClearExclusive ||
                     inst.kind == arm::InstructionKind::MultipleTransfer ||
                     inst.kind == arm::InstructionKind::VectorTransfer ||
                     alu_pc)))

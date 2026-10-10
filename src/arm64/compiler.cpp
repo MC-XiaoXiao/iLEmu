@@ -9,6 +9,7 @@
 #include "multiple_emitter.hpp"
 #include "simd_emitter.hpp"
 #include "system_emitter.hpp"
+#include "exclusive_emitter.hpp"
 #include "vector_memory_emitter.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -442,6 +443,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             inst.kind == arm::InstructionKind::Unsupported ||
             ((inst.kind == arm::InstructionKind::TableBranch ||
                  inst.kind == arm::InstructionKind::Transfer ||
+                 inst.kind == arm::InstructionKind::ExclusiveTransfer ||
                  inst.kind == arm::InstructionKind::MultipleTransfer ||
                  inst.kind == arm::InstructionKind::VectorTransfer) &&
                 !source.data_memory());
@@ -537,6 +539,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             if (!unsupported) {
                 emit.conditional_skip(inst.condition, skip);
                 switch (inst.kind) {
+                case arm::InstructionKind::ClearExclusive:
+                case arm::InstructionKind::ExclusiveTransfer:
+                    ExclusiveEmitter { emit.code() }.emit(inst, cost,
+                        emit.exit(static_cast<StopReason>(exclusive_exit),
+                            before, pc, word, 0, false, it));
+                    break;
                 case arm::InstructionKind::SystemControl:
                     SystemEmitter { emit.code() }.emit(inst);
                     if (inst.system ==
@@ -591,6 +599,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             if (DynamicBackedge::ends_trace(inst)) {
                 dynamic_end = true;
             }
+            if ((inst.kind == arm::InstructionKind::ExclusiveTransfer ||
+                 inst.kind == arm::InstructionKind::ClearExclusive) && inst.condition == 14)
+                break;
             // ISB ends the instruction view even when conditional. A false
             // condition follows the normal retirement path without a barrier.
             if (inst.kind == arm::InstructionKind::SystemControl &&

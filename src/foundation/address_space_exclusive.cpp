@@ -26,7 +26,9 @@ AddressSpace::load_exclusive(std::uint32_t address, unsigned size)
         const auto enabled = backing.enable_shared_write_tracking();
         finish_shared_write_tracking_locked(epoch, enabled ? 1U : 0U, true);
     }
-    track_exclusive_access(address, size);
+    const bool guarded = !backing.shared_write_tracking_enabled();
+    if (guarded)
+        track_exclusive_access(address, size);
     const auto physical = backing.lock_instruction_read();
     execution::ExclusiveReservation result;
     result.size = size;
@@ -39,6 +41,29 @@ AddressSpace::load_exclusive(std::uint32_t address, unsigned size)
     // Never accept the legacy virtual fallback as a physical reservation.
     if ((result.key & (std::uint64_t { 1 } << 63U)) == 0)
         result.key = 0;
+    if (guarded && jit_write_page_table_enabled_)
+        exclusive_guard_stamps_[address & ~(guest_exclusive_granule_size - 1U)] =
+            result.key;
     return result;
+}
+void AddressSpace::retire_exclusive(std::uint32_t address,
+    const execution::ExclusiveReservation& reservation)
+{
+    ExclusiveAccess access { *this };
+    const auto granule = address & ~(guest_exclusive_granule_size - 1U);
+    const auto stamp = exclusive_guard_stamps_.find(granule);
+    if (stamp == exclusive_guard_stamps_.end() || stamp->second != reservation.key)
+        return;
+    // A same-stamp monitor can exist on another lane. Revoke the physical
+    // stamp before restoring direct writes (permitted spurious STREX failure).
+    // Even if a kernel copy revoked it already, a newer unstamped legacy
+    // monitor must not retain a valid reservation behind an unguarded page.
+    if (auto* page = find_page_locked(address); page && page->backing) {
+        auto physical = page->backing->lock_instruction_write(page->shared_writable);
+        page->backing->invalidate_reservation_identity(
+            address & (page_size - 1U), reservation.size);
+    }
+    exclusive_guard_stamps_.erase(stamp);
+    release_exclusive_write_tracking_locked(address, reservation.size);
 }
 }

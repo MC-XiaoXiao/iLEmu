@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 namespace ilemu::execution {
@@ -13,6 +14,26 @@ struct MemoryFault {
 struct MemoryRead {
     std::uint32_t value = 0;
     std::optional<MemoryFault> fault;
+};
+class MemoryAccess;
+struct ExclusiveRead {
+    std::uint64_t value = 0;
+    std::optional<MemoryFault> fault;
+};
+struct ExclusiveWrite {
+    bool stored = false;
+    std::optional<MemoryFault> fault;
+};
+// One local monitor per execution slot, supplied by the memory adapter. It
+// owns no guest backing. Replacement, clear and destruction retire guards;
+// cooperative Run boundaries preserve it. Adapter lifetime must be checked.
+class ExclusiveMonitor {
+public:
+    virtual ~ExclusiveMonitor() = default;
+    virtual bool bound_to(const MemoryAccess&) const noexcept = 0;
+    virtual ExclusiveRead load(std::uint32_t, unsigned) = 0;
+    virtual ExclusiveWrite store(std::uint32_t, unsigned, std::uint64_t) = 0;
+    virtual void clear() = 0;
 };
 // Optional A32 4 KiB page views, valid while the instruction lease is held.
 // Entry + full zero-extended guest address denotes the host byte address.
@@ -35,5 +56,9 @@ public:
     virtual std::optional<MemoryFault> write(
         std::uint32_t, AccessSize, std::uint32_t) = 0;
     virtual DirectMemory direct_memory() { return { }; }
+    virtual std::unique_ptr<ExclusiveMonitor> create_exclusive_monitor()
+    {
+        return { };
+    }
 };
 }

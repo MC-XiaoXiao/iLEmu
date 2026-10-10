@@ -22,6 +22,9 @@ public:
     {
         if (!Arm64Executor::available())
             throw std::runtime_error("ARM64 executor requires an AArch64 host");
+        if (exclusive_ && (!source.data_memory() ||
+            !exclusive_->bound_to(*source.data_memory())))
+            exclusive_.reset();
         cache_.begin_run();
         arm64::RunControl control { stops_, request };
         RunResult result;
@@ -116,10 +119,11 @@ public:
 #endif
             ++stats_.execution_calls;
             cache_.observe(*selected, native.ticks);
-            if (native.reason == arm64::memory_exit ||
+            if (native.reason == arm64::exclusive_exit ||
+                native.reason == arm64::memory_exit ||
                 native.reason == arm64::multiple_exit ||
                 native.reason == arm64::vector_exit) {
-                if (!memory)
+                if (!memory && native.reason != arm64::exclusive_exit)
                     throw std::logic_error("memory exit has no bound memory");
                 // No generated code or direct pointer remains in use. Release
                 // physical code locks before a checked access can modify code.
@@ -128,7 +132,11 @@ public:
                 const auto memory_it = arm::it_state(state.cpsr);
                 arm_memory::Completion completion;
                 std::uint64_t transfer_ticks;
-                if (native.reason == arm64::vector_exit) {
+                if (native.reason == arm64::exclusive_exit) {
+                    completion = arm_memory::complete_exclusive(
+                        state, memory, exclusive_, native.exclusive);
+                    transfer_ticks = native.exclusive.ticks;
+                } else if (native.reason == arm64::vector_exit) {
                     completion = arm_memory::complete_vector(
                         state, *memory, native.vector);
                     transfer_ticks = native.vector.ticks;
@@ -170,6 +178,7 @@ public:
                 return result;
         }
     }
+    std::unique_ptr<ExclusiveMonitor> exclusive_;
     StopRequests stops_;
     Arm64Statistics stats_;
     arm64::CodeCache cache_;
@@ -201,6 +210,8 @@ void Arm64Executor::clear_stop() noexcept
     static_cast<void>(impl_->stops_.consume());
 }
 void Arm64Executor::clear_cache() { impl_->clear(); }
+void Arm64Executor::clear_exclusive_state()
+{ if (impl_->exclusive_) impl_->exclusive_->clear(); }
 std::uint64_t Arm64Executor::retained_code_bytes() const noexcept
 {
     return impl_->stats_.retained_bytes;

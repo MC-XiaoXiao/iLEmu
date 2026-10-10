@@ -16,6 +16,7 @@ public:
         bool cooperative, std::chrono::nanoseconds host_budget);
     void prepare();
     void clear_cache();
+    void clear_exclusive_state();
     void set_cache_size(std::size_t bytes);
     std::uint64_t code_cache_used();
     void halt(Dynarmic::HaltReason) noexcept;

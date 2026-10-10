@@ -10,6 +10,8 @@ enum class InstructionKind {
     DataProcessing,
     Multiply,
     Transfer,
+    ExclusiveTransfer,
+    ClearExclusive,
     MultipleTransfer,
     Branch,
     BranchExchange,
