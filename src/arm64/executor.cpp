@@ -115,6 +115,7 @@ public:
                 "ARM64 executor is unavailable on this host");
 #endif
             ++stats_.execution_calls;
+            cache_.observe(*selected, native.ticks);
             if (native.reason == arm64::memory_exit ||
                 native.reason == arm64::multiple_exit ||
                 native.reason == arm64::vector_exit) {

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "compiler.hpp"
+#include "cycle_tier.hpp"
 #include "dynamic_backedge.hpp"
 #include "arm/a32_decode.hpp"
 #include "arm/t32_decode.hpp"
@@ -13,9 +14,11 @@
 #include <cstddef>
 #include <deque>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <oaknut/oaknut.hpp>
 #include <type_traits>
+#include <tuple>
 
 namespace ilemu::execution::arm64 {
 namespace {
@@ -25,7 +28,6 @@ namespace {
     static_assert(std::is_standard_layout_v<NativeOutcome>);
     constexpr auto cpsr_offset = offsetof(CpuThreadState, cpsr);
     constexpr unsigned maximum_trace_instructions = 256;
-    constexpr unsigned maximum_cycle_copies = 32;
 
     struct Exit {
         Label label;
@@ -35,6 +37,11 @@ namespace {
         std::uint32_t state_pc, report_pc, word, svc;
         bool dynamic_pc, instruction;
         unsigned it;
+        auto payload() const
+        {
+            return std::tuple { reason, state_pc, report_pc, word, svc,
+                dynamic_pc, instruction, it };
+        }
     };
     class Emitter {
     public:
@@ -67,6 +74,28 @@ namespace {
         }
         void retired(unsigned it) { it_ = it; }
         void disable_backedges() { backedge_.disable(); }
+        bool continue_cycle(std::uint32_t fallthrough)
+        {
+            Exit* continuation = nullptr;
+            for (auto& out : exits_) {
+                if (!accepts_backedge(out))
+                    continue;
+                if (continuation)
+                    return false;
+                continuation = &out;
+            }
+            if (!continuation)
+                return false;
+            // A failed instruction condition follows its ordinary paid exit.
+            code_.B(exit(StopReason::None, trace_.maximum_ticks, fallthrough));
+            code_.l(continuation->label);
+            // Binding resolved every incoming branch. A new label keeps the
+            // precise prefix exit; a matching target falls into the next copy.
+            continuation->label = Label { };
+            backedge_.branch_on_mismatch(code_, continuation->label);
+            continued_cycle_ = true;
+            return true;
+        }
         void prologue()
         {
             code_.STP(X19, X20, SP, PreIndexed { }, -160);
@@ -97,6 +126,7 @@ namespace {
             const bool natural_backedge = trace_.closed;
             trace_.closed |= std::any_of(exits_.begin(), exits_.end(),
                 [&](const Exit& out) { return accepts_backedge(out); });
+            trace_.guarded_cycle = trace_.closed && !natural_backedge;
             // Only a guarded dynamic edge may loop. An ordinary fallthrough
             // still publishes its paid prefix and next PC to the dispatcher.
             if (!natural_backedge)
@@ -138,43 +168,42 @@ namespace {
             }
             if (natural_backedge)
                 code_.B(exit(StopReason::None, 0, pc));
+            struct SharedExit {
+                Label label;
+                const Exit* example = nullptr;
+                unsigned count = 0;
+            };
+            std::map<decltype(Exit { }.payload()), SharedExit> shared;
+            // Compact cold edges have no repeated cycle payloads. Avoid
+            // building the sharing table until code actually contains copies.
+            const bool share = natural_backedge || continued_cycle_;
+            if (share) {
+                for (const auto& out : exits_) {
+                    auto& payload = shared[out.payload()];
+                    payload.example = &out;
+                    ++payload.count;
+                }
+            }
             for (auto& out : exits_) {
                 code_.l(out.label);
                 if (accepts_backedge(out))
                     backedge_.emit(code_, loop_tail_);
                 code_.MOV(X16, out.ticks);
-                code_.ADD(X16, X24, X16);
-                code_.STR(X16, X20, offsetof(NativeOutcome, ticks));
-                if (!out.dynamic_pc)
-                    code_.MOV(W15, out.state_pc);
-                code_.STR(W15, X19, 60);
-                if (out.dynamic_pc)
-                    code_.STR(W15, X20, offsetof(NativeOutcome, pc));
-                else {
-                    code_.MOV(W16, out.report_pc);
-                    code_.STR(W16, X20, offsetof(NativeOutcome, pc));
+                if (!share) {
+                    publish_exit(out);
+                    continue;
                 }
-                if (out.reason) {
-                    code_.MOV(W16, static_cast<std::uint32_t>(*out.reason));
-                    code_.STR(W16, X20, offsetof(NativeOutcome, reason));
-                }
-                code_.MOV(W16, out.word);
-                code_.STR(W16, X20, offsetof(NativeOutcome, word));
-                code_.MOV(W16, out.svc);
-                code_.STR(W16, X20, offsetof(NativeOutcome, svc));
-                code_.MOV(W16, out.instruction ? 1U : 0U);
-                code_.STR(W16, X20, offsetof(NativeOutcome, has_instruction));
-                // IT state is deterministic along the emitted path. Publish
-                // it at exits instead of adding work to every guest operation.
-                if (thumb_) {
-                    code_.BFI(W22, WZR, 10, 6);
-                    code_.BFI(W22, WZR, 25, 2);
-                    if (out.it != 0) {
-                        code_.MOV(W16, arm::with_it_state(0, out.it));
-                        code_.ORR(W22, W22, W16);
-                    }
-                }
-                code_.B(epilogue_);
+                auto& payload = shared.at(out.payload());
+                if (payload.count == 1)
+                    publish_exit(out);
+                else
+                    code_.B(payload.label);
+            }
+            for (auto& [key, payload] : shared) {
+                if (payload.count == 1)
+                    continue;
+                code_.l(payload.label);
+                publish_exit(*payload.example);
             }
             code_.l(epilogue_);
             vectors_.flush();
@@ -299,6 +328,41 @@ namespace {
         }
 
     private:
+        void publish_exit(const Exit& out)
+        {
+            code_.ADD(X16, X24, X16);
+            code_.STR(X16, X20, offsetof(NativeOutcome, ticks));
+            if (!out.dynamic_pc)
+                code_.MOV(W15, out.state_pc);
+            code_.STR(W15, X19, 60);
+            if (out.dynamic_pc)
+                code_.STR(W15, X20, offsetof(NativeOutcome, pc));
+            else {
+                code_.MOV(W16, out.report_pc);
+                code_.STR(W16, X20, offsetof(NativeOutcome, pc));
+            }
+            if (out.reason) {
+                code_.MOV(W16, static_cast<std::uint32_t>(*out.reason));
+                code_.STR(W16, X20, offsetof(NativeOutcome, reason));
+            }
+            code_.MOV(W16, out.word);
+            code_.STR(W16, X20, offsetof(NativeOutcome, word));
+            code_.MOV(W16, out.svc);
+            code_.STR(W16, X20, offsetof(NativeOutcome, svc));
+            code_.MOV(W16, out.instruction ? 1U : 0U);
+            code_.STR(W16, X20, offsetof(NativeOutcome, has_instruction));
+            // IT state is deterministic along the emitted path. Publish
+            // it at exits instead of adding work to every guest operation.
+            if (thumb_) {
+                code_.BFI(W22, WZR, 10, 6);
+                code_.BFI(W22, WZR, 25, 2);
+                if (out.it != 0) {
+                    code_.MOV(W16, arm::with_it_state(0, out.it));
+                    code_.ORR(W22, W22, W16);
+                }
+            }
+            code_.B(epilogue_);
+        }
         bool accepts_backedge(const Exit& out) const
         {
             return backedge_.accepts(out.reason, out.ticks, out.dynamic_pc,
@@ -310,6 +374,7 @@ namespace {
         IntegerEmitter integer_;
         MemoryEmitter memory_;
         bool thumb_;
+        bool continued_cycle_ = false;
         DynamicBackedge backedge_;
         std::size_t entry_end_ = 0;
         unsigned it_ = 0, size_ = 4;
@@ -320,7 +385,7 @@ namespace {
 
 CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
-    unsigned it)
+    unsigned it, bool expand_dynamic_cycles)
 {
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
@@ -422,14 +487,13 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                                    : 0U;
         emit.retired(next_it);
         const auto next_pc = pc + inst.size;
+        bool dynamic_end = false;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
             emit.exchange(inst, pc, out.maximum_ticks);
-            emit.invalidate_written_registers(inst);
-            if (inst.condition == 14)
-                break;
-            emit.code().l(exchange_failed);
+            if (inst.condition != 14)
+                emit.code().l(exchange_failed);
             pc = next_pc;
-            break;
+            dynamic_end = true;
         } else if (inst.kind == arm::InstructionKind::Branch) {
             if (inst.condition != 14)
                 emit.conditional_skip(inst.condition,
@@ -524,8 +588,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
             pc = next_pc;
             if (DynamicBackedge::ends_trace(inst)) {
-                emit.invalidate_written_registers(inst);
-                break;
+                dynamic_end = true;
             }
             // ISB ends the instruction view even when conditional. A false
             // condition follows the normal retirement path without a barrier.
@@ -538,12 +601,26 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         it = next_it;
         if (straddles)
             break;
+        if (dynamic_end) {
+            if (!single_step && expand_dynamic_cycles) {
+                if (cycle_length == 0)
+                    cycle_length = n + 1;
+                const auto copies =
+                    std::min(CycleTier::maximum_copies, limit / cycle_length);
+                if (++cycles < copies && emit.continue_cycle(pc)) {
+                    pc = start;
+                    it = start_it;
+                    continue;
+                }
+            }
+            break;
+        }
         if (!single_step && pc == start && it == start_it) {
             ++cycles;
             if (cycle_length == 0)
                 cycle_length = n + 1;
             const auto copies =
-                std::min(maximum_cycle_copies, limit / cycle_length);
+                std::min(CycleTier::maximum_copies, limit / cycle_length);
             if (cycles >= copies) {
                 out.closed = true;
                 break;

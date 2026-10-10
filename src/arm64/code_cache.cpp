@@ -28,7 +28,14 @@ void CodeCache::clear()
     domains_.clear();
     stats_.retained_bytes = 0;
 }
-void CodeCache::begin_run() { invalidate(anonymous_); }
+void CodeCache::begin_run()
+{
+    invalidate(anonymous_);
+    if (++run_ == 0) {
+        clear();
+        run_ = 1;
+    }
+}
 CodeCache::Domain* CodeCache::find(const Binding& binding)
 {
     if (!binding.identity)
@@ -77,16 +84,20 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
 {
     const Key key { pc, step, big_endian, thumb, it_state,
         source.data_memory() != nullptr, timing_limit };
+    bool expand = false;
     if (auto* domain = find(binding)) {
         if (const auto it = domain->entries.find(key);
             it != domain->entries.end()) {
-            ++stats_.cache_hits;
-            return it->second;
+            expand = it->second.tier.ready(run_);
+            if (!expand) {
+                ++stats_.cache_hits;
+                return it->second;
+            }
         }
     }
     const auto started = std::chrono::steady_clock::now();
-    const auto compiled =
-        compile(source, pc, step, timing_limit, big_endian, thumb, it_state);
+    const auto compiled = compile(
+        source, pc, step, timing_limit, big_endian, thumb, it_state, expand);
     const auto bytes = std::as_bytes(std::span { compiled.words });
     if (bytes.size() > 256U * 1024U)
         throw std::length_error("ARM64 trace exceeds code limit");
@@ -99,18 +110,29 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     if (capacity > budget_ - overhead)
         throw std::length_error("ARM64 trace exceeds cache budget");
     const auto accounted = capacity + entry_bytes;
+    allocation->publish(bytes);
+    if (!allocation->entry())
+        throw std::runtime_error("ARM64 code was not published");
+    // Entry lookup happens between native invocations under a fresh code
+    // lease. Publish successfully before replacing the cold allocation.
+    if (auto* domain = find(binding)) {
+        if (auto previous = domain->entries.find(key);
+            previous != domain->entries.end()) {
+            domain->retained_bytes -= previous->second.accounted_bytes;
+            stats_.retained_bytes -= previous->second.accounted_bytes;
+            domain->entries.erase(previous);
+        }
+    }
     const auto needed =
         accounted + (binding.identity && !find(binding) ? domain_bytes : 0);
     // Only called between native invocations; no active entry is reclaimed.
     if (stats_.retained_bytes > budget_ - needed)
         clear();
-    allocation->publish(bytes);
-    if (!allocation->entry())
-        throw std::runtime_error("ARM64 code was not published");
     auto& domain = obtain(binding);
     auto [it, inserted] = domain.entries.emplace(key,
         Entry { std::move(allocation), compiled.maximum_ticks, compiled.closed,
-            compiled.accesses_memory, compiled.first_instruction, accounted });
+            compiled.accesses_memory, compiled.first_instruction, accounted,
+            CycleTier { compiled.guarded_cycle, expand } });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");
     domain.retained_bytes += accounted;

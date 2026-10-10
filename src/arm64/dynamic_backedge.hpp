@@ -36,11 +36,11 @@ public:
         return enabled_ && dynamic_pc && reason == StopReason::None &&
                ticks == maximum_ticks && it == it_;
     }
-    void emit(oaknut::VectorCodeGenerator& code, oaknut::Label& tail) const
+    void branch_on_mismatch(
+        oaknut::VectorCodeGenerator& code, oaknut::Label& mismatch) const
     {
         using namespace oaknut;
         using namespace oaknut::util;
-        Label mismatch;
         if (thumb_)
             code.TBZ(W22, 5, mismatch);
         else
@@ -49,6 +49,11 @@ public:
         code.MOV(W16, pc_);
         code.EOR(W16, W15, W16);
         code.CBNZ(W16, mismatch);
+    }
+    void emit(oaknut::VectorCodeGenerator& code, oaknut::Label& tail) const
+    {
+        oaknut::Label mismatch;
+        branch_on_mismatch(code, mismatch);
         code.B(tail);
         code.l(mismatch);
     }
