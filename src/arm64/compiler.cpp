@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "compiler.hpp"
+#include "dynamic_backedge.hpp"
 #include "arm/a32_decode.hpp"
 #include "arm/t32_decode.hpp"
 #include "integer_emitter.hpp"
@@ -37,13 +38,15 @@ namespace {
     };
     class Emitter {
     public:
-        Emitter(CompiledTrace& trace, bool big_endian, bool thumb)
+        Emitter(CompiledTrace& trace, bool big_endian, bool thumb,
+            std::uint32_t pc, unsigned it, bool single_step)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_)
             , integer_(code_)
             , memory_(code_, integer_, big_endian)
             , thumb_(thumb)
+            , backedge_(pc, it, thumb, !single_step)
         {
         }
         Label& exit(std::optional<StopReason> reason, std::uint64_t ticks,
@@ -63,6 +66,7 @@ namespace {
             size_ = size;
         }
         void retired(unsigned it) { it_ = it; }
+        void disable_backedges() { backedge_.disable(); }
         void prologue()
         {
             code_.STP(X19, X20, SP, PreIndexed { }, -160);
@@ -90,7 +94,15 @@ namespace {
         }
         void finish(std::uint32_t pc)
         {
+            const bool natural_backedge = trace_.closed;
+            trace_.closed |= std::any_of(exits_.begin(), exits_.end(),
+                [&](const Exit& out) { return accepts_backedge(out); });
+            // Only a guarded dynamic edge may loop. An ordinary fallthrough
+            // still publishes its paid prefix and next PC to the dispatcher.
+            if (!natural_backedge)
+                code_.B(exit(StopReason::None, trace_.maximum_ticks, pc));
             if (trace_.closed) {
+                code_.l(loop_tail_);
                 if (AddSubImm::is_valid(trace_.maximum_ticks))
                     code_.ADD(X24, X24, AddSubImm { trace_.maximum_ticks });
                 else {
@@ -98,7 +110,8 @@ namespace {
                     code_.ADD(X24, X24, X16);
                 }
                 code_.SUB(X23, X23, 1);
-                code_.CBZ(X23, exit(StopReason::None, 0, pc));
+                code_.CBZ(X23, exit(StopReason::None, 0, backedge_.pc(), { },
+                    0, false, backedge_.it()));
                 code_.SUB(X30, X30, 1);
                 code_.CBNZ(X30, head_);
                 // Preserve caller-saved guest registers and flags across the
@@ -119,13 +132,16 @@ namespace {
                     code_.LDP(WReg { i }, WReg { i + 1 }, SP, 96 + i * 4);
                 code_.LDR(W14, SP, 152);
                 code_.MSR(SystemReg::NZCV, X21);
-                code_.CBNZ(W17, exit({ }, 0, pc));
+                code_.CBNZ(W17, exit({ }, 0, backedge_.pc(), { }, 0, false,
+                    backedge_.it()));
                 code_.B(head_);
             }
-            code_.B(exit(StopReason::None,
-                trace_.closed ? 0 : trace_.maximum_ticks, pc));
+            if (natural_backedge)
+                code_.B(exit(StopReason::None, 0, pc));
             for (auto& out : exits_) {
                 code_.l(out.label);
+                if (accepts_backedge(out))
+                    backedge_.emit(code_, loop_tail_);
                 code_.MOV(X16, out.ticks);
                 code_.ADD(X16, X24, X16);
                 code_.STR(X16, X20, offsetof(NativeOutcome, ticks));
@@ -283,15 +299,21 @@ namespace {
         }
 
     private:
+        bool accepts_backedge(const Exit& out) const
+        {
+            return backedge_.accepts(out.reason, out.ticks, out.dynamic_pc,
+                out.it, trace_.maximum_ticks);
+        }
         CompiledTrace& trace_;
         VectorCodeGenerator code_;
         VectorRegisters vectors_;
         IntegerEmitter integer_;
         MemoryEmitter memory_;
         bool thumb_;
+        DynamicBackedge backedge_;
         std::size_t entry_end_ = 0;
         unsigned it_ = 0, size_ = 4;
-        Label head_, epilogue_;
+        Label head_, loop_tail_, epilogue_;
         std::deque<Exit> exits_;
     };
 }
@@ -305,7 +327,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         region.end > (std::uint64_t { 1 } << 32U))
         throw std::invalid_argument("invalid instruction region");
     CompiledTrace out;
-    Emitter emit(out, big_endian, thumb);
+    Emitter emit(out, big_endian, thumb, pc, it, single_step);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
@@ -346,6 +368,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         if (n != 0 && std::uint64_t { pc } + inst.size > region.end)
             break;
         const bool straddles = std::uint64_t { pc } + inst.size > region.end;
+        if (straddles)
+            emit.disable_backedges();
         emit.location(it, inst.size);
         const auto before = out.maximum_ticks;
         const bool unsupported =
@@ -400,10 +424,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         const auto next_pc = pc + inst.size;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
             emit.exchange(inst, pc, out.maximum_ticks);
+            emit.invalidate_written_registers(inst);
             if (inst.condition == 14)
                 break;
             emit.code().l(exchange_failed);
             pc = next_pc;
+            break;
         } else if (inst.kind == arm::InstructionKind::Branch) {
             if (inst.condition != 14)
                 emit.conditional_skip(inst.condition,
@@ -497,10 +523,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     emit.code().l(skip);
             }
             pc = next_pc;
-            if (inst.kind == arm::InstructionKind::TableBranch)
+            if (DynamicBackedge::ends_trace(inst)) {
+                emit.invalidate_written_registers(inst);
                 break;
-            if (writes_pc && inst.condition == 14)
-                break;
+            }
             // ISB ends the instruction view even when conditional. A false
             // condition follows the normal retirement path without a barrier.
             if (inst.kind == arm::InstructionKind::SystemControl &&
