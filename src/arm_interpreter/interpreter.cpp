@@ -4,6 +4,7 @@
 #include "arm/a32_decode.hpp"
 #include "arm/integer_semantics.hpp"
 #include "arm/t32_decode.hpp"
+#include "arm/integer_transform.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
 #include "arm_memory/exclusive.hpp"
@@ -298,6 +299,10 @@ RunResult ArmInterpreter::run(
                 data_processing(state, inst);
                 if (inst.rd == 15 && (inst.opcode < 8 || inst.opcode > 11))
                     state.registers[15] &= ~1U; // Thumb ALUWritePC
+                break;
+            case arm::InstructionKind::IntegerTransform:
+                state.registers[inst.rd] = arm::integer_transform(inst,
+                    state.registers[inst.rm], state.registers[inst.rn]);
                 break;
             case arm::InstructionKind::PackHalfword: {
                 const auto shifted = arm::shift(state.registers[inst.rm],

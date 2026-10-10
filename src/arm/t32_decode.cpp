@@ -9,6 +9,7 @@
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
 #include "exclusive.hpp"
+#include "transform_decode.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -28,6 +29,8 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     out.condition = it == 0 ? 14U : it >> 4U;
     const bool last = it == 0 || (it & 7U) == 0;
     const unsigned word = first;
+    if (out.size == 2 && decode_integer_transform(out, word, true))
+        return out;
     const auto alu = [&](unsigned op, bool flags) {
         out.kind = InstructionKind::DataProcessing;
         out.opcode = op;
@@ -42,7 +45,8 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if (decode_exclusive(out, (word << 16U) | tail, true) ||
+        if (decode_integer_transform(out, (word << 16U) | tail, true) ||
+            decode_exclusive(out, (word << 16U) | tail, true) ||
             decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||

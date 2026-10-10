@@ -275,6 +275,7 @@ namespace {
                     (inst.opcode < 8 || inst.opcode > 11)) ||
                 inst.kind == arm::InstructionKind::Multiply ||
                 inst.kind == arm::InstructionKind::PackHalfword ||
+                inst.kind == arm::InstructionKind::IntegerTransform ||
                 inst.kind == arm::InstructionKind::WideImmediate ||
                 (inst.kind == arm::InstructionKind::Transfer && inst.load) ||
                 (inst.kind == arm::InstructionKind::SystemControl && inst.load))
@@ -572,6 +573,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::PackHalfword:
                     emit.integer().pack_halfword(inst);
+                    break;
+                case arm::InstructionKind::IntegerTransform:
+                    emit.integer().transform(inst);
                     break;
                 case arm::InstructionKind::VectorDuplicate:
                     SimdEmitter { emit.code(), emit.vectors() }.duplicate(

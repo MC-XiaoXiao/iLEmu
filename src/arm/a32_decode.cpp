@@ -5,6 +5,7 @@
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
 #include "exclusive.hpp"
+#include "transform_decode.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -12,7 +13,8 @@ Instruction decode_a32(std::uint32_t word) noexcept
 {
     Instruction out;
     out.condition = word >> 28;
-    if (decode_exclusive(out, word, false) ||
+    if (decode_integer_transform(out, word, false) ||
+        decode_exclusive(out, word, false) ||
         decode_system_control(out, word, false) ||
         decode_simd_duplicate(out, word, false) ||
         decode_simd_bitwise(out, word, false) ||

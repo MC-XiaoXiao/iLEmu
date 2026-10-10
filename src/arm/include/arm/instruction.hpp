@@ -23,6 +23,7 @@ enum class InstructionKind {
     CompareBranch,
     WideImmediate,
     PackHalfword,
+    IntegerTransform,
     VectorDuplicate,
     VectorBitwise,
     VectorTransfer,
