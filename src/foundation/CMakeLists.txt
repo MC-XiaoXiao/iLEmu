@@ -16,6 +16,7 @@ target_link_libraries(ilemu_foundation_memory PRIVATE OpenSSL::Crypto)
 
 add_library(ilemu_foundation STATIC
     address_space.cpp
+    address_space_exclusive.cpp
     address_space_instructions.cpp
     address_space_instruction_view.cpp
     execution_memory.cpp

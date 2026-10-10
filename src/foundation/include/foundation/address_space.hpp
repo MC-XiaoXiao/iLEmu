@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <vector>
 #include "foundation/task_vm_events.hpp"
+#include "execution/exclusive_memory.hpp"
 #include <tsl/robin_map.h>
 #include <tsl/robin_set.h>
 
@@ -369,6 +370,16 @@ public:
         std::uint32_t address, std::uint32_t size);
     [[nodiscard]] bool translation_profile_stable(
         std::uint32_t address, std::size_t size) const;
+    // Naturally aligned 1/2/4/8-byte transactions. Loading materializes the
+    // page and samples value + physical stamp under the shared backing lock.
+    // Store returns null on access failure, false on a revoked/mismatched
+    // reservation, true on commit. Neither operation partially writes bytes.
+    [[nodiscard]] std::optional<execution::ExclusiveReservation>
+    load_exclusive(std::uint32_t address, unsigned size);
+    [[nodiscard]] std::optional<bool> store_exclusive(std::uint32_t address,
+        unsigned size, std::uint64_t value,
+        const execution::ExclusiveReservation& reservation);
+
     bool compare_exchange8(
         std::uint32_t address, std::uint8_t expected, std::uint8_t value);
     bool compare_exchange16(
@@ -510,8 +521,13 @@ private:
     [[nodiscard]] std::optional<T> read_integer(
         std::uint32_t address, MemoryPermission access) const;
     template <typename T> bool write_integer(std::uint32_t address, T value);
-    template <typename T>
-    bool compare_exchange_integer(std::uint32_t address, T expected, T value);
+    struct ExclusiveAttempt {
+        std::uint64_t key;
+        bool accessible = false;
+    };
+    template <typename T, bool Reserved = false>
+    bool compare_exchange_integer(std::uint32_t address, T expected, T value,
+        ExclusiveAttempt* attempt = nullptr);
     template <typename T>
     [[nodiscard]] std::optional<T> exchange_integer(
         std::uint32_t address, T value);

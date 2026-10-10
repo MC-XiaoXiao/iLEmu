@@ -2062,18 +2062,21 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
     return true;
 }
 
-template <typename T>
+template <typename T, bool Reserved>
 bool AddressSpace::compare_exchange_integer(
-    std::uint32_t address, T expected, T value)
+    std::uint32_t address, T expected, T value, ExclusiveAttempt* attempt)
 {
     static_assert(std::is_unsigned_v<T>);
     auto lock = write_lock();
     account_vm_access_locked(address, sizeof(T), MemoryPermission::Read);
     if (!range_accessible_locked(address, sizeof(T),
             MemoryPermission::Read | MemoryPermission::Write)) {
-        release_exclusive_write_tracking_locked(address, sizeof(T));
+        if constexpr (!Reserved)
+            release_exclusive_write_tracking_locked(address, sizeof(T));
         return false;
     }
+    if constexpr (Reserved)
+        attempt->accessible = true;
     ensure_unique_page_map_locked();
     const auto offset = address & (page_size - 1U);
     if (offset <= page_size - sizeof(T)) {
@@ -2085,6 +2088,13 @@ bool AddressSpace::compare_exchange_integer(
                                      ? page.backing->lock_instruction_write(
                                            page.shared_writable)
                                      : std::unique_lock<std::shared_mutex> { };
+        if constexpr (Reserved) {
+            // Validate while holding the same physical lock used by writers.
+            // Value comparison alone misses intervening writes that restore it.
+            if (!page.backing ||
+                backing_reservation_key(*page.backing, address) != attempt->key)
+                return false;
+        }
         T current_value = 0;
         for (std::size_t index = 0; index < sizeof(T); ++index) {
             current_value |=
@@ -2093,7 +2103,8 @@ bool AddressSpace::compare_exchange_integer(
                                << (index * 8U));
         }
         if (current_value != expected) {
-            release_exclusive_write_tracking_locked(address, sizeof(T));
+            if constexpr (!Reserved)
+                release_exclusive_write_tracking_locked(address, sizeof(T));
             return false;
         }
         account_vm_access_locked(address, sizeof(T), MemoryPermission::Write);
@@ -2110,6 +2121,8 @@ bool AddressSpace::compare_exchange_integer(
         release_exclusive_write_tracking_locked(address, sizeof(T));
         return true;
     }
+    if constexpr (Reserved)
+        return false;
     T current_value = 0;
     for (std::size_t i = 0; i < sizeof(T); ++i) {
         const auto current = address + static_cast<std::uint32_t>(i);
@@ -2146,6 +2159,42 @@ bool AddressSpace::compare_exchange_integer(
     mark_written_locked(address, sizeof(T));
     release_exclusive_write_tracking_locked(address, sizeof(T));
     return true;
+}
+
+std::optional<bool> AddressSpace::store_exclusive(std::uint32_t address,
+    unsigned size, std::uint64_t value,
+    const execution::ExclusiveReservation& reservation)
+{
+    if ((size != 1 && size != 2 && size != 4 && size != 8) ||
+        (address & (size - 1U)) != 0)
+        return std::nullopt;
+    if (reservation.key == 0 || reservation.size != size ||
+        reservation.offset != (address & (guest_exclusive_granule_size - 1U)))
+        return false;
+    ExclusiveAttempt attempt { reservation.key };
+    bool stored = false;
+    switch (size) {
+    case 1:
+        stored = compare_exchange_integer<std::uint8_t, true>(address,
+            static_cast<std::uint8_t>(reservation.value),
+            static_cast<std::uint8_t>(value), &attempt);
+        break;
+    case 2:
+        stored = compare_exchange_integer<std::uint16_t, true>(address,
+            static_cast<std::uint16_t>(reservation.value),
+            static_cast<std::uint16_t>(value), &attempt);
+        break;
+    case 4:
+        stored = compare_exchange_integer<std::uint32_t, true>(address,
+            static_cast<std::uint32_t>(reservation.value),
+            static_cast<std::uint32_t>(value), &attempt);
+        break;
+    case 8:
+        stored = compare_exchange_integer<std::uint64_t, true>(
+            address, reservation.value, value, &attempt);
+        break;
+    }
+    return attempt.accessible ? std::optional { stored } : std::nullopt;
 }
 
 template <typename T>
