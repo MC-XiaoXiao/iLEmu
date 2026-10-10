@@ -4,7 +4,7 @@
 
 namespace ilemu::arm {
 bool decode_integer_transform(Instruction& out, std::uint32_t word,
-    bool thumb) noexcept
+    bool thumb, execution::ArmInstructionProfile architecture) noexcept
 {
     using Operation = IntegerTransformOperation;
     Operation operation;
@@ -35,15 +35,21 @@ bool decode_integer_transform(Instruction& out, std::uint32_t word,
             sign = (op & 1U) == 0;
             rn = head & 15U;
             rotation = ((tail >> 4U) & 3U) * 8U;
-        } else if ((head & 0xfff0U) == 0xfa90U && (tail & 0xf0c0U) == 0xf080U) {
+        } else if (((head & 0xfff0U) == 0xfa90U &&
+                       (tail & 0xf0c0U) == 0xf080U) ||
+                   ((head & 0xfff0U) == 0xfab0U &&
+                       (tail & 0xf0f0U) == 0xf080U)) {
             constexpr Operation operations[] = { Operation::ReverseBytes,
                 Operation::ReverseHalfwords, Operation::ReverseBits,
                 Operation::ReverseSignedHalfword };
-            operation = operations[(tail >> 4U) & 3U];
+            operation = (head & 0x20U) != 0 ? Operation::CountLeadingZeros
+                                          : operations[(tail >> 4U) & 3U];
             if ((head & 15U) != (tail & 15U))
                 return true;
         } else
             return false;
+        if (architecture == execution::ArmInstructionProfile::Armv6)
+            return true; // These wide Thumb encodings require ARMv6T2.
         rd = (tail >> 8U) & 15U;
         rm = tail & 15U;
         if (rd == 13 || rm == 13 || rn == 13)
@@ -62,12 +68,16 @@ bool decode_integer_transform(Instruction& out, std::uint32_t word,
             rotation = ((word >> 10U) & 3U) * 8U;
         } else {
             switch (word & 0x0fff0ff0U) {
+            case 0x016f0f10U: operation = Operation::CountLeadingZeros; break;
             case 0x06bf0f30U: operation = Operation::ReverseBytes; break;
             case 0x06bf0fb0U: operation = Operation::ReverseHalfwords; break;
             case 0x06ff0fb0U: operation = Operation::ReverseSignedHalfword; break;
             case 0x06ff0f30U: operation = Operation::ReverseBits; break;
             default: return false;
             }
+            if (operation == Operation::ReverseBits &&
+                architecture == execution::ArmInstructionProfile::Armv6)
+                return true;
         }
         rd = (word >> 12U) & 15U;
         rm = word & 15U;

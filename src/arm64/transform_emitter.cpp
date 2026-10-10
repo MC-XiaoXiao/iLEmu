@@ -12,6 +12,7 @@ void IntegerEmitter::transform(const arm::Instruction& inst)
     const WReg d { static_cast<int>(inst.rd) }, m { static_cast<int>(inst.rm) },
         n { static_cast<int>(inst.rn) };
     switch (operation) {
+    case Operation::CountLeadingZeros: code_.CLZ(d, m); return;
     case Operation::ReverseBytes: code_.REV(d, m); return;
     case Operation::ReverseHalfwords: code_.REV16(d, m); return;
     case Operation::ReverseSignedHalfword:

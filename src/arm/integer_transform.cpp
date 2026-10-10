@@ -19,6 +19,8 @@ std::uint32_t integer_transform(const Instruction& inst, std::uint32_t source,
     using Operation = IntegerTransformOperation;
     const auto value = std::rotr(source, static_cast<int>(inst.shift_amount));
     switch (static_cast<Operation>(inst.opcode)) {
+    case Operation::CountLeadingZeros:
+        return static_cast<std::uint32_t>(std::countl_zero(value));
     case Operation::ExtendByte:
     case Operation::ExtendHalfword:
         return extend(value, inst.opcode == static_cast<unsigned>(Operation::ExtendByte)

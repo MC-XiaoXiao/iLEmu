@@ -34,7 +34,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     const unsigned word = first;
     if (out.size == 2 &&
         (decode_multiply(out, word, true, architecture, it != 0) ||
-            decode_integer_transform(out, word, true)))
+            decode_integer_transform(out, word, true, architecture)))
         return out;
     const auto alu = [&](unsigned op, bool flags) {
         out.kind = InstructionKind::DataProcessing;
@@ -52,7 +52,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         const unsigned tail = *second;
         if (decode_multiply(out, (word << 16U) | tail, true, architecture) ||
             decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
-            decode_integer_transform(out, (word << 16U) | tail, true) ||
+            decode_integer_transform(out, (word << 16U) | tail, true, architecture) ||
             decode_exclusive(out, (word << 16U) | tail, true) ||
             decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||

@@ -7,7 +7,8 @@ namespace ilemu::arm {
 // signedness, accumulate for the optional addend, and shift_amount for ROR.
 enum class IntegerTransformOperation {
     ExtendByte, ExtendHalfword, ExtendBytePair,
-    ReverseBytes, ReverseHalfwords, ReverseSignedHalfword, ReverseBits
+    ReverseBytes, ReverseHalfwords, ReverseSignedHalfword, ReverseBits,
+    CountLeadingZeros
 };
 std::uint32_t integer_transform(const Instruction&, std::uint32_t source,
     std::uint32_t addend) noexcept;

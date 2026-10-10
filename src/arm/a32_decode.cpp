@@ -19,7 +19,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
     out.condition = word >> 28;
     if (decode_multiply(out, word, false, architecture) ||
         decode_vfp_multiple(out, word, false, vfp) ||
-        decode_integer_transform(out, word, false) ||
+        decode_integer_transform(out, word, false, architecture) ||
         decode_exclusive(out, word, false) ||
         decode_system_control(out, word, false) ||
         decode_simd_duplicate(out, word, false) ||
