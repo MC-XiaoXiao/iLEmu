@@ -4,17 +4,26 @@
 #include <cstdint>
 
 namespace ilemu::execution::arm64 {
-// Cold dynamic edges stay compact. Only observed repeated native groups earn
+enum class CycleExpansion { Compact, Untracked, Hot };
+
+// Cold cycles stay compact. Only observed repeated native groups earn
 // bounded expansion; no guest target, memory value or host pointer is retained.
 class CycleTier {
 public:
-    static constexpr unsigned maximum_copies = 32;
-    CycleTier(bool guarded = false, bool expanded = false)
-        : eligible_(guarded && !expanded)
+    static constexpr unsigned maximum_copies = 64;
+    // Guarded copies repeat target/ISA checks and cost more native code.
+    static constexpr unsigned guarded_copies = 32;
+    static constexpr unsigned natural_copies(CycleExpansion expansion)
+    {
+        // Views without an epoch cannot retain heat across code leases.
+        return expansion == CycleExpansion::Compact ? 1U
+             : expansion == CycleExpansion::Untracked ? 32U : maximum_copies;
+    }
+    CycleTier(bool closed = false, bool expanded = false)
+        : eligible_(closed && !expanded)
     {
     }
-    void observe(std::uint64_t ticks, std::uint64_t group_ticks,
-        std::uint64_t run)
+    void observe(std::uint64_t ticks, std::uint64_t group_ticks)
     {
         if (!eligible_ || remaining_ == 0 || group_ticks == 0)
             return;
@@ -23,17 +32,14 @@ public:
         const auto groups = ticks / group_ticks;
         remaining_ -= static_cast<unsigned>(
             std::min<std::uint64_t>(remaining_, groups == 0 ? 0 : groups - 1));
-        if (remaining_ == 0)
-            observed_run_ = run;
     }
-    bool ready(std::uint64_t run) const
+    bool ready() const
     {
-        return eligible_ && remaining_ == 0 && observed_run_ != run;
+        return eligible_ && remaining_ == 0;
     }
 
 private:
     unsigned remaining_ = 64;
     bool eligible_;
-    std::uint64_t observed_run_ = 0;
 };
 }

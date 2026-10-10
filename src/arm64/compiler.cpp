@@ -128,7 +128,6 @@ namespace {
             const bool natural_backedge = trace_.closed;
             trace_.closed |= std::any_of(exits_.begin(), exits_.end(),
                 [&](const Exit& out) { return accepts_backedge(out); });
-            trace_.guarded_cycle = trace_.closed && !natural_backedge;
             // Only a guarded dynamic edge may loop. An ordinary fallthrough
             // still publishes its paid prefix and next PC to the dispatcher.
             if (!natural_backedge)
@@ -399,7 +398,7 @@ namespace {
 
 CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
-    unsigned it, bool expand_dynamic_cycles)
+    unsigned it, CycleExpansion expansion)
 {
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
@@ -487,9 +486,16 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                                    : 0U;
         emit.retired(next_it);
         const auto next_pc = pc + inst.size;
+        const bool closes_natural_cycle = next_pc == start &&
+            next_it == start_it && cycles + 1U >=
+                std::min(CycleTier::natural_copies(expansion),
+                    limit / (cycle_length == 0 ? n + 1U : cycle_length));
         // Short budgets and SingleStep use precise one-instruction entries.
         // A normal entry has no poll inside a proven register-only segment.
-        if (!single_step && !straddles && inst.set_flags &&
+        // A cycle's final linear instruction also publishes its flags. Its
+        // next producer belongs to a later group and may never execute.
+        if (!single_step && !straddles && !closes_natural_cycle &&
+            inst.set_flags &&
             window.flags_dead(inst, next_pc, next_it, limit - n - 1U,
                 maximum_ticks - out.maximum_ticks))
             inst.set_flags = false;
@@ -624,11 +630,11 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         if (straddles)
             break;
         if (dynamic_end) {
-            if (!single_step && expand_dynamic_cycles) {
+            if (!single_step && expansion == CycleExpansion::Hot) {
                 if (cycle_length == 0)
                     cycle_length = n + 1;
                 const auto copies =
-                    std::min(CycleTier::maximum_copies, limit / cycle_length);
+                    std::min(CycleTier::guarded_copies, limit / cycle_length);
                 if (++cycles < copies && emit.continue_cycle(pc)) {
                     pc = start;
                     it = start_it;
@@ -642,7 +648,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             if (cycle_length == 0)
                 cycle_length = n + 1;
             const auto copies =
-                std::min(CycleTier::maximum_copies, limit / cycle_length);
+                std::min(CycleTier::natural_copies(expansion), limit / cycle_length);
             if (cycles >= copies) {
                 out.closed = true;
                 break;

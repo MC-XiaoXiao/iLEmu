@@ -31,10 +31,6 @@ void CodeCache::clear()
 void CodeCache::begin_run()
 {
     invalidate(anonymous_);
-    if (++run_ == 0) {
-        clear();
-        run_ = 1;
-    }
 }
 CodeCache::Domain* CodeCache::find(const Binding& binding)
 {
@@ -86,20 +82,21 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         source.data_memory() != nullptr, timing_limit,
         source.thumb_arithmetic_profile(), source.vfp_register_profile(),
         source.arm_instruction_profile() };
-    bool expand = false;
+    auto expansion = binding.generation ? CycleExpansion::Compact
+                                       : CycleExpansion::Untracked;
     if (auto* domain = find(binding)) {
         if (const auto it = domain->entries.find(key);
             it != domain->entries.end()) {
-            expand = it->second.tier.ready(run_);
-            if (!expand) {
+            if (!it->second.tier.ready()) {
                 ++stats_.cache_hits;
                 return it->second;
             }
+            expansion = CycleExpansion::Hot;
         }
     }
     const auto started = std::chrono::steady_clock::now();
     const auto compiled = compile(
-        source, pc, step, timing_limit, big_endian, thumb, it_state, expand);
+        source, pc, step, timing_limit, big_endian, thumb, it_state, expansion);
     const auto bytes = std::as_bytes(std::span { compiled.words });
     if (bytes.size() > 256U * 1024U)
         throw std::length_error("ARM64 trace exceeds code limit");
@@ -134,7 +131,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     auto [it, inserted] = domain.entries.emplace(key,
         Entry { std::move(allocation), compiled.maximum_ticks, compiled.closed,
             compiled.accesses_memory, compiled.first_instruction, accounted,
-            CycleTier { compiled.guarded_cycle, expand } });
+            CycleTier { compiled.closed, expansion == CycleExpansion::Hot } });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");
     domain.retained_bytes += accounted;

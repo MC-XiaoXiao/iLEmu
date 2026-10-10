@@ -5,6 +5,7 @@
 #include "arm_memory/exclusive.hpp"
 #include "arm_memory/vector_transfer.hpp"
 #include "execution/run.hpp"
+#include "cycle_tier.hpp"
 #include <cstdint>
 #include <vector>
 namespace ilemu::execution::arm64 {
@@ -39,10 +40,10 @@ struct CompiledTrace {
     unsigned instructions = 0;
     bool closed = false;
     bool accesses_memory = false;
-    bool guarded_cycle = false;
     std::optional<std::uint32_t> first_instruction;
 };
 CompiledTrace compile(InstructionSource&, std::uint32_t pc, bool single_step,
     std::uint64_t maximum_ticks = UINT64_MAX, bool big_endian = false,
-    bool thumb = false, unsigned it = 0, bool expand_dynamic_cycles = false);
+    bool thumb = false, unsigned it = 0,
+    CycleExpansion = CycleExpansion::Untracked);
 }

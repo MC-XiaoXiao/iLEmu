@@ -28,7 +28,7 @@ public:
     void begin_run();
     void observe(Entry& entry, std::uint64_t ticks)
     {
-        entry.tier.observe(ticks, entry.maximum_ticks, run_);
+        entry.tier.observe(ticks, entry.maximum_ticks);
     }
     Binding bind(const InstructionLease&);
     Entry& entry(InstructionSource&, const Binding&, std::uint32_t pc,
@@ -50,7 +50,6 @@ private:
     CodeAllocator& allocator_;
     std::size_t budget_;
     Arm64Statistics& stats_;
-    std::uint64_t run_ = 0;
     Domain anonymous_;
     std::map<const CodeIdentity*, Domain> domains_;
     static constexpr std::size_t domain_bytes = sizeof(Domain) + 128U;
