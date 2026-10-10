@@ -25,6 +25,7 @@ struct NativeOutcome {
     arm_memory::Transfer transfer;
     arm_memory::MultipleTransfer multiple;
     arm_memory::VectorTransfer vector;
+    std::uint32_t thread_pointer_read_only = 0;
 };
 inline constexpr std::uint32_t vector_exit = 1U << 29U;
 inline constexpr std::uint32_t multiple_exit = 1U << 30U;

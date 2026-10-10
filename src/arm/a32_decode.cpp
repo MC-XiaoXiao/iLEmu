@@ -3,6 +3,7 @@
 #include "simd_duplicate.hpp"
 #include "simd_bitwise.hpp"
 #include "simd_transfer.hpp"
+#include "system_control.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -10,7 +11,8 @@ Instruction decode_a32(std::uint32_t word) noexcept
 {
     Instruction out;
     out.condition = word >> 28;
-    if (decode_simd_duplicate(out, word, false) ||
+    if (decode_system_control(out, word, false) ||
+        decode_simd_duplicate(out, word, false) ||
         decode_simd_bitwise(out, word, false) ||
         decode_simd_transfer(out, word, false))
         return out;

@@ -89,6 +89,7 @@ public:
                 selected = &cache_.entry(source, binding, result.pc, true,
                     big_endian, thumb, it_state, allowance);
             arm64::NativeOutcome native;
+            native.thread_pointer_read_only = state.cthread_self.value_or(0);
             native.poll = arm64::RunControl::poll;
             native.control = &control;
             auto* memory = source.data_memory();

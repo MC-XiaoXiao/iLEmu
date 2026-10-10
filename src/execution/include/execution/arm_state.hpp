@@ -21,6 +21,9 @@ struct CpuThreadState {
     std::uint32_t fpscr { };
     std::optional<std::uint32_t> cthread_self;
     CpuAbortState abort_state;
+    // TPIDRURW is guest-writable and context-switched independently of the
+    // kernel-provided cthread_self value exposed through TPIDRURO.
+    std::uint32_t thread_pointer_user_rw { };
 };
 
 

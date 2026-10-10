@@ -6,6 +6,7 @@
 #include "memory_emitter.hpp"
 #include "multiple_emitter.hpp"
 #include "simd_emitter.hpp"
+#include "system_emitter.hpp"
 #include "vector_memory_emitter.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -229,7 +230,8 @@ namespace {
                 inst.kind == arm::InstructionKind::Multiply ||
                 inst.kind == arm::InstructionKind::PackHalfword ||
                 inst.kind == arm::InstructionKind::WideImmediate ||
-                (inst.kind == arm::InstructionKind::Transfer && inst.load))
+                (inst.kind == arm::InstructionKind::Transfer && inst.load) ||
+                (inst.kind == arm::InstructionKind::SystemControl && inst.load))
                 memory_.invalidate_register(inst.rd);
             if ((inst.kind == arm::InstructionKind::Transfer ||
                     inst.kind == arm::InstructionKind::VectorTransfer) &&
@@ -442,6 +444,13 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             if (!unsupported) {
                 emit.conditional_skip(inst.condition, skip);
                 switch (inst.kind) {
+                case arm::InstructionKind::SystemControl:
+                    SystemEmitter { emit.code() }.emit(inst);
+                    if (inst.system ==
+                        arm::SystemOperation::InstructionSynchronizationBarrier)
+                        emit.code().B(emit.exit(StopReason::None,
+                            out.maximum_ticks, next_pc));
+                    break;
                 case arm::InstructionKind::VectorTransfer:
                     emit.vector_transfer(
                         inst, pc, *word, before, cost, it, big_endian);
@@ -486,6 +495,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
             pc = next_pc;
             if (writes_pc && inst.condition == 14)
+                break;
+            // ISB ends the instruction view even when conditional. A false
+            // condition follows the normal retirement path without a barrier.
+            if (inst.kind == arm::InstructionKind::SystemControl &&
+                inst.system ==
+                    arm::SystemOperation::InstructionSynchronizationBarrier)
                 break;
         }
         emit.invalidate_written_registers(inst);

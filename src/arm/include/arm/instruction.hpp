@@ -22,7 +22,15 @@ enum class InstructionKind {
     PackHalfword,
     VectorDuplicate,
     VectorBitwise,
-    VectorTransfer
+    VectorTransfer,
+    SystemControl
+};
+enum class SystemOperation {
+    ThreadPointerReadWrite,
+    ThreadPointerReadOnly,
+    DataMemoryBarrier,
+    DataSynchronizationBarrier,
+    InstructionSynchronizationBarrier
 };
 enum class ShiftKind { Lsl, Lsr, Asr, Ror };
 // Data-processing uses A32 opcode numbers; Thumb adds ORN to that set.
@@ -72,6 +80,7 @@ struct Instruction {
     bool load = false, sign_extend = false;
     bool add = true, index = true, writeback = false;
     VectorOperands vector;
+    SystemOperation system = SystemOperation::ThreadPointerReadWrite;
 };
 
 }

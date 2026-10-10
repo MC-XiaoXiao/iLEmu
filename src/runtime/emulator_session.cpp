@@ -1811,14 +1811,9 @@ void EmulatorSession::run()
             }
             if (inheritance == CompatibilityKernel::ProcessInheritance::Fork) {
                 auto& child_cpu = child->cpus->cpu(0);
-                child_cpu.registers() = parent_cpu.registers();
-                child_cpu.extension_registers() =
-                    parent_cpu.extension_registers();
+                child_cpu.restore_thread_state(parent_cpu.capture_thread_state());
                 child_cpu.registers()[0] = 0;
-                child_cpu.set_cpsr(parent_cpu.cpsr() & ~(1U << 29U));
-                child_cpu.set_fpscr(parent_cpu.fpscr());
-                child_cpu.set_abort_state(parent_cpu.abort_state());
-                child_cpu.set_cthread_self(parent_cpu.cthread_self());
+                child_cpu.set_cpsr(child_cpu.cpsr() & ~(1U << 29U));
             }
             child->allocated[0] = true;
             static_cast<void>(

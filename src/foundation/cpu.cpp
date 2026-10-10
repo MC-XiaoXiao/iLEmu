@@ -5537,6 +5537,25 @@ void Cpu::set_cthread_self(std::optional<std::uint32_t> value)
 {
     state_.cthread_self = value;
 }
+CpuThreadState Cpu::capture_thread_state() const
+{
+    auto state = state_;
+    state.registers = registers();
+    state.extension_registers = extension_registers();
+    state.cpsr = cpsr();
+    state.fpscr = fpscr();
+    return state;
+}
+void Cpu::restore_thread_state(CpuThreadState state)
+{
+    state_ = std::move(state);
+    // Register accessors also update a currently bound backend. System and
+    // abort registers live in Cpu regardless of the selected executor.
+    registers() = state_.registers;
+    extension_registers() = state_.extension_registers;
+    set_cpsr(state_.cpsr);
+    set_fpscr(state_.fpscr);
+}
 void Cpu::set_svc_handler(SvcHandler handler)
 {
     svc_handler_ = std::move(handler);

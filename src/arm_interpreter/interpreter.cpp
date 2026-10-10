@@ -200,6 +200,24 @@ RunResult ArmInterpreter::run(
         }
         if (passed) {
             switch (inst.kind) {
+            case arm::InstructionKind::SystemControl:
+                switch (inst.system) {
+                case arm::SystemOperation::ThreadPointerReadWrite:
+                    if (inst.load)
+                        state.registers[inst.rd] = state.thread_pointer_user_rw;
+                    else
+                        state.thread_pointer_user_rw = state.registers[inst.rd];
+                    break;
+                case arm::SystemOperation::ThreadPointerReadOnly:
+                    state.registers[inst.rd] = state.cthread_self.value_or(0);
+                    break;
+                default:
+                    // Checked accesses complete synchronously; the next
+                    // instruction reacquires its code view, including for ISB.
+                    std::atomic_thread_fence(std::memory_order_seq_cst);
+                    break;
+                }
+                break;
             case arm::InstructionKind::VectorTransfer: {
                 auto& memory = *source.data_memory();
                 const auto transfer = arm_memory::prepare_vector(state, inst,

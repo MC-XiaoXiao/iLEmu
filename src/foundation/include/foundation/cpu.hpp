@@ -250,6 +250,10 @@ public:
     void set_abort_state(CpuAbortState state) { state_.abort_state = state; }
     [[nodiscard]] std::optional<std::uint32_t> cthread_self() const;
     void set_cthread_self(std::optional<std::uint32_t> value);
+    // Owner-only snapshots, including live backend register views at SVC
+    // boundaries and all guest-thread system/abort state.
+    [[nodiscard]] CpuThreadState capture_thread_state() const;
+    void restore_thread_state(CpuThreadState state);
     void set_svc_handler(SvcHandler handler);
     void set_svc_dispatch_mode(SvcDispatchMode mode);
     void set_parallel_memory_allowed(bool enabled) { parallel_memory_allowed_ = enabled; }
