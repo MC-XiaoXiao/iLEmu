@@ -24,7 +24,7 @@ namespace {
 }
 Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     unsigned it, execution::ThumbArithmeticProfile profile,
-    execution::VfpRegisterProfile vfp, execution::MultiplyProfile multiply) noexcept
+    execution::VfpRegisterProfile vfp, execution::ArmInstructionProfile architecture) noexcept
 {
     Instruction out;
     out.size = thumb_is_wide(first) ? 4U : 2U;
@@ -33,7 +33,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     const bool last = it == 0 || (it & 7U) == 0;
     const unsigned word = first;
     if (out.size == 2 &&
-        (decode_multiply(out, word, true, multiply, it != 0) ||
+        (decode_multiply(out, word, true, architecture, it != 0) ||
             decode_integer_transform(out, word, true)))
         return out;
     const auto alu = [&](unsigned op, bool flags) {
@@ -50,7 +50,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if (decode_multiply(out, (word << 16U) | tail, true, multiply) ||
+        if (decode_multiply(out, (word << 16U) | tail, true, architecture) ||
             decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
             decode_integer_transform(out, (word << 16U) | tail, true) ||
             decode_exclusive(out, (word << 16U) | tail, true) ||
@@ -72,7 +72,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             return out;
         }
         if ((word & 0xfe00U) == 0xf800U) {
-            decode_t32_transfer(out, word, tail, last);
+            decode_t32_transfer(out, word, tail, last, architecture);
         } else if ((word & 0xfe00U) == 0xea00U && (tail & 0x8000U) == 0) {
             decode_t32_shifted_register(out, word, tail, profile);
         } else if ((word & 0xf800U) == 0xf000U && (tail & 0x8000U) != 0) {

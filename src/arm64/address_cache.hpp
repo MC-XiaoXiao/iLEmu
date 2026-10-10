@@ -23,9 +23,12 @@ public:
         std::optional<unsigned> index = { };
         arm::ShiftKind shift = arm::ShiftKind::Lsl;
         unsigned shift_amount = 0;
+        // An architectural PC base is constant at this instruction, whereas
+        // the offset register remains an ordinary invalidation dependency.
+        std::optional<std::uint32_t> pc_base = { };
         std::uint32_t inputs() const
         {
-            return (1U << base) | (index ? 1U << *index : 0U);
+            return (pc_base ? 0U : 1U << base) | (index ? 1U << *index : 0U);
         }
         bool operator==(const Key&) const = default;
     };

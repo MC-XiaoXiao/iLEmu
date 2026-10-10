@@ -23,7 +23,8 @@ public:
     AddressCache& addresses() { return addresses_; }
 
 private:
-    std::optional<AddressCache::Key> address(const arm::Instruction&) const;
+    std::optional<AddressCache::Key> address(
+        const arm::Instruction&, std::uint32_t pc) const;
     void access(const arm::Instruction&, std::uint32_t pc, oaknut::XReg,
         oaknut::Label& unsupported_exit, oaknut::Label& branch_exit);
     void store_value(const arm::Instruction&, std::uint32_t pc);

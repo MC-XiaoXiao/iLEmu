@@ -35,9 +35,9 @@ void MemoryEmitter::endian(unsigned size, WReg value)
         code_.REV(value, value);
 }
 std::optional<AddressCache::Key> MemoryEmitter::address(
-    const arm::Instruction& inst) const
+    const arm::Instruction& inst, std::uint32_t pc) const
 {
-    if (!inst.index || inst.writeback || inst.rn == 15 ||
+    if (!inst.index || inst.writeback ||
         (!inst.load && inst.rd == 15))
         return { };
     // Load-PC requires word alignment even when ordinary reads permit
@@ -47,6 +47,8 @@ std::optional<AddressCache::Key> MemoryEmitter::address(
     AddressCache::Key key { inst.rn, inst.access_size,
         inst.immediate_operand ? inst.immediate : 0U, inst.add, inst.load,
         load_pc ? 4U : 1U, inst.access_size };
+    if (inst.rn == 15)
+        key.pc_base = (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U);
     if (!inst.immediate_operand) {
         // RRX reads the incoming carry, which can change within a trace.
         // Register-controlled shifts would add a third address dependency.
@@ -65,19 +67,25 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
     if (inst.load) {
         const auto value =
             inst.rd == 15 ? W17 : WReg { static_cast<int>(inst.rd) };
-        if (inst.access_size == 1)
-            code_.LDRB(value, pointer);
-        else if (inst.access_size == 2)
-            code_.LDRH(value, pointer);
-        else
+        // Byte loads are endian-independent; little-endian halfwords can
+        // also fold extension into the host memory instruction.
+        const bool signed_load = inst.sign_extend &&
+                                 (!big_endian_ || inst.access_size == 1);
+        if (inst.access_size == 1) {
+            if (signed_load)
+                code_.LDRSB(value, pointer);
+            else
+                code_.LDRB(value, pointer);
+        } else if (inst.access_size == 2) {
+            if (signed_load)
+                code_.LDRSH(value, pointer);
+            else
+                code_.LDRH(value, pointer);
+        } else
             code_.LDR(value, pointer);
         endian(inst.access_size, value);
-        if (inst.sign_extend) {
-            if (inst.access_size == 1)
-                code_.SXTB(value, value);
-            else
-                code_.SXTH(value, value);
-        }
+        if (inst.sign_extend && !signed_load)
+            code_.SXTH(value, value);
         if (inst.kind == arm::InstructionKind::TableBranch) {
             code_.MOV(W15, pc + 4U);
             code_.ADD(W15, W15, W17, AddSubShift::LSL, 1);
@@ -118,7 +126,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     std::uint64_t cost, Label& checked_exit, Label& unsupported_exit,
     Label& branch_exit)
 {
-    const auto key = address(inst);
+    const auto key = address(inst, pc);
     if (key) {
         if (const auto pointer = addresses_.find(*key)) {
             access(inst, pc, *pointer, unsupported_exit, branch_exit);

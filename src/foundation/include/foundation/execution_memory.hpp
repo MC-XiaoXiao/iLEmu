@@ -32,7 +32,7 @@ public:
     execution::ThumbArithmeticProfile
     thumb_arithmetic_profile() const noexcept override;
     execution::VfpRegisterProfile vfp_register_profile() const noexcept override;
-    execution::MultiplyProfile multiply_profile() const noexcept override;
+    execution::ArmInstructionProfile arm_instruction_profile() const noexcept override;
     std::optional<execution::MemoryFault> prepare_instruction_fetch(
         std::uint32_t, unsigned) override;
     execution::InstructionRegion instruction_region(

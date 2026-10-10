@@ -113,9 +113,9 @@ public:
     {
         return VfpRegisterProfile::D32;
     }
-    virtual MultiplyProfile multiply_profile() const noexcept
+    virtual ArmInstructionProfile arm_instruction_profile() const noexcept
     {
-        return MultiplyProfile::Armv6T2;
+        return ArmInstructionProfile::Armv6T2;
     }
     virtual MemoryAccess* data_memory() noexcept { return nullptr; }
     // Executed fetches install/validate runtime translations and charge guest

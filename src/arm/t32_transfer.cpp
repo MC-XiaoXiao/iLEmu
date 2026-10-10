@@ -3,8 +3,11 @@
 
 namespace ilemu::arm {
 void decode_t32_transfer(Instruction& out, unsigned first, unsigned second,
-    bool last_in_it) noexcept
+    bool last_in_it, execution::ArmInstructionProfile architecture) noexcept
 {
+    if (architecture == execution::ArmInstructionProfile::Armv6)
+        return;
+    bool unprivileged = false;
     const auto size = (first >> 5U) & 3U;
     const bool signed_load = (first & 0x100U) != 0;
     out.load = (first & 16U) != 0;
@@ -34,13 +37,16 @@ void decode_t32_transfer(Instruction& out, unsigned first, unsigned second,
         out.index = (second & 0x0400U) != 0;
         out.add = (second & 0x0200U) != 0;
         out.writeback = (second & 0x0100U) != 0;
-        // P=1,U=1,W=0 is the separate unprivileged-access family.
-        if ((!out.index && !out.writeback) ||
-            (out.index && out.add && !out.writeback))
+        // In User mode the unprivileged family uses the same checked memory
+        // contract, with offset addressing and no base writeback.
+        unprivileged = out.index && out.add && !out.writeback;
+        if (!out.index && !out.writeback)
             return;
         out.immediate_operand = true;
         out.immediate = second & 255U;
     }
+    if (unprivileged && (out.rd == 13 || out.rd == 15))
+        return;
     if (out.load && size != 2 && out.rd == 15) {
         if (out.writeback)
             return;

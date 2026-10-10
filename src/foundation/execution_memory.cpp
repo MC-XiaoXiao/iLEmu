@@ -42,12 +42,12 @@ ExecutionMemory::vfp_register_profile() const noexcept
                ? execution::VfpRegisterProfile::D16
                : execution::VfpRegisterProfile::D32;
 }
-execution::MultiplyProfile
-ExecutionMemory::multiply_profile() const noexcept
+execution::ArmInstructionProfile
+ExecutionMemory::arm_instruction_profile() const noexcept
 {
     return impl_->model_.architecture_version() == ArmArchitectureVersion::Armv6K
-               ? execution::MultiplyProfile::Armv6
-               : execution::MultiplyProfile::Armv6T2;
+               ? execution::ArmInstructionProfile::Armv6
+               : execution::ArmInstructionProfile::Armv6T2;
 }
 std::unique_ptr<execution::InstructionLease>
 ExecutionMemory::acquire_code_lease(std::uint32_t pc, bool thumb)

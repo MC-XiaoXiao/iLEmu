@@ -4,5 +4,5 @@
 #include "execution/instruction_profile.hpp"
 namespace ilemu::arm {
 bool decode_multiply(Instruction&, std::uint32_t, bool thumb,
-    execution::MultiplyProfile, bool in_it_block = false) noexcept;
+    execution::ArmInstructionProfile, bool in_it_block = false) noexcept;
 }

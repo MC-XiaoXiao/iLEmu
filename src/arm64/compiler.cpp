@@ -395,7 +395,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
 {
     const auto profile = source.thumb_arithmetic_profile();
     const auto vfp = source.vfp_register_profile();
-    const auto multiply = source.multiply_profile();
+    const auto architecture = source.arm_instruction_profile();
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
         region.end > (std::uint64_t { 1 } << 32U))
@@ -425,12 +425,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
             if (first && (!arm::thumb_is_wide(*first) || second)) {
                 word = *first | (std::uint32_t { second.value_or(0) } << 16U);
-                inst = arm::decode_t32(*first, second, it, profile, vfp, multiply);
+                inst = arm::decode_t32(*first, second, it, profile, vfp, architecture);
             }
         } else {
             word = source.fetch32(pc);
             if (word)
-                inst = arm::decode_a32(*word, vfp, multiply);
+                inst = arm::decode_a32(*word, vfp, architecture);
         }
         if (n == 0)
             out.first_instruction = word;

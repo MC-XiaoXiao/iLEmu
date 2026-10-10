@@ -4,7 +4,7 @@
 
 namespace ilemu::arm {
 bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
-    execution::MultiplyProfile profile, bool in_it_block) noexcept
+    execution::ArmInstructionProfile profile, bool in_it_block) noexcept
 {
     using Operation = MultiplyOperation;
     Operation operation = Operation::Word;
@@ -44,7 +44,7 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
         }
         rm = (word >> 16U) & 15U;
         rs = word & 15U;
-        if (profile == execution::MultiplyProfile::Armv6 ||
+        if (profile == execution::ArmInstructionProfile::Armv6 ||
             rd == 13 || rn == 13 || rm == 13 || rs == 13)
             return true;
     } else {
@@ -61,7 +61,7 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
             if (!accumulate && rn != 0)
                 return true;
         } else if (op == 6) {
-            if (profile == execution::MultiplyProfile::Armv6)
+            if (profile == execution::ArmInstructionProfile::Armv6)
                 return true;
             operation = Operation::Subtract;
             rd = (word >> 16U) & 15U;

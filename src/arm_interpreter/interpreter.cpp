@@ -115,7 +115,7 @@ RunResult ArmInterpreter::run(
     RunResult result;
     const auto profile = source.thumb_arithmetic_profile();
     const auto vfp = source.vfp_register_profile();
-    const auto multiply = source.multiply_profile();
+    const auto architecture = source.arm_instruction_profile();
     for (;;) {
         result.pc = state.registers[15];
         result.instruction.reset();
@@ -165,11 +165,11 @@ RunResult ArmInterpreter::run(
             }
             result.instruction =
                 *first | (std::uint32_t { second.value_or(0) } << 16U);
-            inst = arm::decode_t32(*first, second, it, profile, vfp, multiply);
+            inst = arm::decode_t32(*first, second, it, profile, vfp, architecture);
         } else {
             result.instruction = source.fetch32(result.pc);
             if (result.instruction)
-                inst = arm::decode_a32(*result.instruction, vfp, multiply);
+                inst = arm::decode_a32(*result.instruction, vfp, architecture);
         }
         if (!result.instruction) {
             result.reason = StopReason::FetchFault;
