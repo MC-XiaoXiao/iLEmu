@@ -26,6 +26,7 @@ public:
 
 private:
     void merge_nz();
+    oaknut::WReg lhs(const arm::Instruction&, std::uint32_t pc);
     void carry_from(oaknut::WReg value, unsigned bit);
     void shifter(const arm::Instruction&, std::uint32_t pc, bool carry_output);
     bool shifted_alu(const arm::Instruction&, std::uint32_t pc);

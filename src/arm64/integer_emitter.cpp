@@ -18,6 +18,12 @@ WReg IntegerEmitter::reg(unsigned index, std::uint32_t pc, WReg scratch)
     code_.MOV(scratch, pc);
     return scratch;
 }
+WReg IntegerEmitter::lhs(const arm::Instruction& inst, std::uint32_t pc)
+{
+    // MOV/MVN have no first source. In Thumb aliases Rn encodes PC, but
+    // materializing that value would only add a dead host instruction.
+    return inst.opcode == 13 || inst.opcode == 15 ? WZR : reg(inst.rn, pc, W15);
+}
 void IntegerEmitter::carry_from(WReg value, unsigned bit)
 {
     if (bit != 0)
@@ -81,6 +87,12 @@ void IntegerEmitter::shifter(
             }
             break;
         }
+        return;
+    }
+    if (inst.shift == arm::ShiftKind::Ror && !carry_output) {
+        // Register ROR uses the low byte, then modulo 32. A64 RORV's low
+        // five-bit count is equivalent, including zero, without flag changes.
+        code_.RORV(W16, rm, WReg { static_cast<int>(inst.rs) });
         return;
     }
     Label zero, large, done, carry_zero;
@@ -150,7 +162,7 @@ bool IntegerEmitter::shifted_alu(const arm::Instruction& inst, std::uint32_t pc)
     if ((!logical || inst.set_flags) &&
         (!arithmetic || inst.shift == arm::ShiftKind::Ror))
         return false;
-    const auto a = reg(inst.rn, pc, W15), b = reg(inst.rm, pc, W16);
+    const auto a = lhs(inst, pc), b = reg(inst.rm, pc, W16);
     const WReg d = inst.opcode == 10 || inst.opcode == 11
                        ? WZR
                        : WReg { static_cast<int>(inst.rd) };
@@ -242,7 +254,7 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
         b = reg(inst.rm, pc, W16);
     else
         shifter(inst, pc, logical && inst.set_flags);
-    const auto a = reg(inst.rn, pc, W15);
+    const auto a = lhs(inst, pc);
     switch (inst.opcode) {
     case 0:
     case 8:
