@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
+#include "arm/instruction.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +12,7 @@ namespace ilemu::execution::arm64 {
 // Dominating unconditional guards publish into X27/X28. Only proven invariant
 // slots survive a closed trace backedge; no pointer survives a native
 // invocation or checked exit. Callers revoke entries on every architectural
-// base write.
+// address input write.
 class AddressCache {
 public:
     struct Key {
@@ -19,6 +20,13 @@ public:
         std::uint32_t offset;
         bool add, load;
         unsigned alignment, natural_alignment;
+        std::optional<unsigned> index = { };
+        arm::ShiftKind shift = arm::ShiftKind::Lsl;
+        unsigned shift_amount = 0;
+        std::uint32_t inputs() const
+        {
+            return (1U << base) | (index ? 1U << *index : 0U);
+        }
         bool operator==(const Key&) const = default;
     };
     explicit AddressCache(oaknut::VectorCodeGenerator& code)
@@ -51,13 +59,13 @@ public:
             first->target = code_.offset();
         return reg;
     }
-    void invalidate(unsigned base)
+    void invalidate(unsigned reg)
     {
         // Track writes even before the first guard or after slot eviction.
-        // Restoring a previous base value is deliberately not analyzed.
-        written_ |= 1U << base;
+        // Restoring a previous input value is deliberately not analyzed.
+        written_ |= 1U << reg;
         for (auto& entry : entries_)
-            if (entry && entry->base == base)
+            if (entry && (entry->inputs() & (1U << reg)) != 0)
                 entry.reset();
     }
     void clear()
@@ -73,7 +81,7 @@ public:
         for (unsigned slot = 0; slot < first_.size(); ++slot) {
             const auto& first = first_[slot];
             if (!first || first->target == 0 || entries_[slot] != first->key ||
-                (written_ & (1U << first->key.base)) != 0)
+                (written_ & first->key.inputs()) != 0)
                 continue;
             const oaknut::XReg reg { 27 + static_cast<int>(slot) };
             // The first access still runs its guard at its original PC. Only

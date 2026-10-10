@@ -37,11 +37,27 @@ void MemoryEmitter::endian(unsigned size, WReg value)
 std::optional<AddressCache::Key> MemoryEmitter::address(
     const arm::Instruction& inst) const
 {
-    if (!inst.immediate_operand || !inst.index || inst.writeback ||
-        inst.rn == 15 || inst.rd == 15)
+    if (!inst.index || inst.writeback || inst.rn == 15 ||
+        (!inst.load && inst.rd == 15))
         return { };
-    return AddressCache::Key { inst.rn, inst.access_size, inst.immediate,
-        inst.add, inst.load, 1U, inst.access_size };
+    // Load-PC requires word alignment even when ordinary reads permit
+    // unaligned data. PC stores retain their separate PC-value policy guard.
+    const bool load_pc = inst.load && inst.rd == 15 &&
+                         inst.kind != arm::InstructionKind::TableBranch;
+    AddressCache::Key key { inst.rn, inst.access_size,
+        inst.immediate_operand ? inst.immediate : 0U, inst.add, inst.load,
+        load_pc ? 4U : 1U, inst.access_size };
+    if (!inst.immediate_operand) {
+        // RRX reads the incoming carry, which can change within a trace.
+        // Register-controlled shifts would add a third address dependency.
+        if (inst.register_shift || inst.rm == 15 ||
+            (inst.shift == arm::ShiftKind::Ror && inst.shift_amount == 0))
+            return { };
+        key.index = inst.rm;
+        key.shift = inst.shift;
+        key.shift_amount = inst.shift_amount;
+    }
+    return key;
 }
 void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
     XReg pointer, Label& unsupported_exit, Label& branch_exit)
