@@ -34,7 +34,6 @@ public:
     {
         code_.INS(write(d).Delem()[d % 2U], value.Delem()[0]);
     }
-    bool used() const { return used_ != 0; }
     void restore(oaknut::VectorCodeGenerator& code) const
     {
         transfer(code, used_, true);

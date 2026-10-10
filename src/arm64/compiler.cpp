@@ -175,13 +175,14 @@ namespace {
             code_.LDP(X29, X30, SP, 80);
             code_.LDP(X19, X20, SP, PostIndexed { }, 160);
             code_.RET();
-            if (vectors_.used()) {
+            std::vector<std::uint32_t> initial;
+            VectorCodeGenerator entry(initial);
+            vectors_.restore(entry);
+            memory_.addresses().finalize(trace_.closed, trace_.words, entry);
+            if (!initial.empty()) {
                 // Only the entry prefix precedes this boundary and it contains
                 // no branches. All body labels/relative branches move together;
                 // backedges skip initialization. Preserve head alignment.
-                std::vector<std::uint32_t> initial;
-                VectorCodeGenerator entry(initial);
-                vectors_.restore(entry);
                 entry.align(16);
                 trace_.words.insert(trace_.words.begin() +
                         static_cast<std::ptrdiff_t>(entry_end_),

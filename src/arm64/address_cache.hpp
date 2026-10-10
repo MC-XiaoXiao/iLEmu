@@ -1,14 +1,17 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <oaknut/oaknut.hpp>
 #include <optional>
+#include <vector>
 
 namespace ilemu::execution::arm64 {
-// Dominating unconditional guards publish into X27/X28. Every trace-head
-// traversal initializes these pointers again; no pointer survives a native
-// invocation or a checked memory exit. Callers revoke entries on base writes.
+// Dominating unconditional guards publish into X27/X28. Only proven invariant
+// slots survive a closed trace backedge; no pointer survives a native
+// invocation or checked exit. Callers revoke entries on every architectural
+// base write.
 class AddressCache {
 public:
     struct Key {
@@ -29,25 +32,68 @@ public:
                 return oaknut::XReg { 27 + static_cast<int>(slot) };
         return { };
     }
+    void begin_guard(const Key& key)
+    {
+        const auto slot = next_ % entries_.size();
+        if (!first_[slot]) {
+            first_[slot] = Guard { key, code_.offset(), 0 };
+            code_.NOP();
+        }
+    }
     oaknut::XReg remember(const Key& key, oaknut::XReg pointer)
     {
         const auto slot = next_++ % entries_.size();
         entries_[slot] = key;
         const auto reg = oaknut::XReg { 27 + static_cast<int>(slot) };
         code_.MOV(reg, pointer);
+        if (auto& first = first_[slot];
+            first && first->target == 0 && first->key == key)
+            first->target = code_.offset();
         return reg;
     }
     void invalidate(unsigned base)
     {
+        // Track writes even before the first guard or after slot eviction.
+        // Restoring a previous base value is deliberately not analyzed.
+        written_ |= 1U << base;
         for (auto& entry : entries_)
             if (entry && entry->base == base)
                 entry.reset();
     }
-    void clear() { entries_ = { }; }
+    void clear()
+    {
+        entries_ = { };
+        written_ = 0xffffU;
+    }
+    void finalize(bool closed, std::vector<std::uint32_t>& words,
+        oaknut::VectorCodeGenerator& entry) const
+    {
+        if (!closed)
+            return;
+        for (unsigned slot = 0; slot < first_.size(); ++slot) {
+            const auto& first = first_[slot];
+            if (!first || first->target == 0 || entries_[slot] != first->key ||
+                (written_ & (1U << first->key.base)) != 0)
+                continue;
+            const oaknut::XReg reg { 27 + static_cast<int>(slot) };
+            // The first access still runs its guard at its original PC. Only
+            // later traversals reuse the leased pointer. All body offsets move
+            // together when the compiler inserts this entry initialization.
+            entry.MOV(reg, 0);
+            oaknut::CodeGenerator patch(words.data() + first->branch / 4);
+            patch.CBNZ(reg, first->target - first->branch);
+        }
+    }
 
 private:
+    struct Guard {
+        Key key;
+        std::ptrdiff_t branch, target;
+    };
     oaknut::VectorCodeGenerator& code_;
     std::array<std::optional<Key>, 2> entries_;
+    std::array<std::optional<Guard>, 2> first_;
     unsigned next_ = 0;
+    unsigned written_ = 0;
 };
 }

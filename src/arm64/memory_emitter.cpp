@@ -104,6 +104,8 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         }
     }
     Label checked, done;
+    if (key && inst.condition == 14)
+        addresses_.begin_guard(*key);
     // W16 holds the offset/new base; W15 the effective guest address.
     integer_.address_offset(inst, pc);
     const auto base = integer_.reg(

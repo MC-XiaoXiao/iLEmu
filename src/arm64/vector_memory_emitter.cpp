@@ -131,6 +131,8 @@ void VectorMemoryEmitter::emit(
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
     Label checked, aligned, done;
+    if (!inst.writeback && inst.condition == 14)
+        addresses_.begin_guard(key);
     code_.MOV(W15, WReg { static_cast<int>(inst.rn) });
     if (inst.rm == 13 || inst.rm == 15)
         code_.ADD(W16, W15, length);
