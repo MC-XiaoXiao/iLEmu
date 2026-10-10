@@ -316,6 +316,10 @@ RunResult ArmInterpreter::run(
                     : (a & 0xffff0000U) | (shifted & 0xffffU);
                 break;
             }
+            case arm::InstructionKind::VectorCoreMove:
+                move_core_vector(state,
+                    std::get<arm::VectorCoreMoveOperands>(inst.vector));
+                break;
             case arm::InstructionKind::VectorDuplicate:
                 duplicate_vector(state,
                     std::get<arm::VectorDuplicateOperands>(inst.vector));

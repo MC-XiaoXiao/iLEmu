@@ -6,6 +6,7 @@
 #include "system_control.hpp"
 #include "exclusive.hpp"
 #include "transform_decode.hpp"
+#include "core_vector_move.hpp"
 #include "vfp_multiple.hpp"
 #include "multiply_decode.hpp"
 #include "a32_transfer.hpp"
@@ -17,7 +18,8 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
 {
     Instruction out;
     out.condition = word >> 28;
-    if (decode_multiply(out, word, false, architecture) ||
+    if (decode_core_vector_move(out, word, false, vfp, architecture) ||
+        decode_multiply(out, word, false, architecture) ||
         decode_vfp_multiple(out, word, false, vfp) ||
         decode_integer_transform(out, word, false, architecture) ||
         decode_exclusive(out, word, false) ||

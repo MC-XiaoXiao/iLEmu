@@ -2,6 +2,28 @@
 #include "simd.hpp"
 
 namespace ilemu::execution {
+void move_core_vector(CpuThreadState& state, const arm::VectorCoreMoveOperands& v)
+{
+    if (v.pair) {
+        if (v.to_core) {
+            state.registers[v.core] = state.extension_registers[v.first_word];
+            state.registers[v.core2] = state.extension_registers[v.first_word + 1U];
+        } else {
+            state.extension_registers[v.first_word] = state.registers[v.core];
+            state.extension_registers[v.first_word + 1U] = state.registers[v.core2];
+        }
+        return;
+    }
+    const auto mask = 0xffffffffU >> (32U - v.element_bits);
+    auto& word = state.extension_registers[v.first_word];
+    if (v.to_core) {
+        const auto value = (word >> v.bit_offset) & mask;
+        const auto sign = v.sign_extend ? 1U << (v.element_bits - 1U) : 0U;
+        state.registers[v.core] = (value ^ sign) - sign;
+    } else
+        word = (word & ~(mask << v.bit_offset)) |
+               ((state.registers[v.core] & mask) << v.bit_offset);
+}
 void duplicate_vector(
     CpuThreadState& state, const arm::VectorDuplicateOperands& v)
 {

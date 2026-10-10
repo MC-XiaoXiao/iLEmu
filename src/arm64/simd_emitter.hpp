@@ -14,6 +14,7 @@ public:
     }
     void duplicate(const arm::VectorDuplicateOperands&);
     void bitwise(const arm::VectorBitwiseOperands&);
+    void core_move(const arm::VectorCoreMoveOperands&);
 
 private:
     oaknut::QReg source(oaknut::QReg scratch, unsigned d, bool quad);

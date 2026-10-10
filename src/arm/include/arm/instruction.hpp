@@ -26,6 +26,7 @@ enum class InstructionKind {
     IntegerTransform,
     VectorDuplicate,
     VectorBitwise,
+    VectorCoreMove,
     VectorTransfer,
     SystemControl
 };
@@ -62,8 +63,15 @@ struct VectorTransferOperands {
     VectorTransferMode mode = VectorTransferMode::Multiple;
     unsigned lane = 0;
 };
+struct VectorCoreMoveOperands {
+    // Word indices address the shared extension bank, including D16..D31.
+    // A paired S transfer may cross a D or Q boundary.
+    unsigned first_word = 0, bit_offset = 0, element_bits = 32;
+    unsigned core = 0, core2 = 0;
+    bool pair = false, to_core = false, sign_extend = false;
+};
 using VectorOperands = std::variant<VectorDuplicateOperands,
-    VectorBitwiseOperands, VectorTransferOperands>;
+    VectorBitwiseOperands, VectorTransferOperands, VectorCoreMoveOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.

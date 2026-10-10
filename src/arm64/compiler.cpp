@@ -272,6 +272,14 @@ namespace {
         }
         void invalidate_written_registers(const arm::Instruction& inst)
         {
+            if (inst.kind == arm::InstructionKind::VectorCoreMove) {
+                const auto& v = std::get<arm::VectorCoreMoveOperands>(inst.vector);
+                if (v.to_core) {
+                    memory_.invalidate_register(v.core);
+                    if (v.pair)
+                        memory_.invalidate_register(v.core2);
+                }
+            }
             if ((inst.kind == arm::InstructionKind::DataProcessing &&
                     (inst.opcode < 8 || inst.opcode > 11)) ||
                 inst.kind == arm::InstructionKind::Multiply ||
@@ -582,6 +590,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::IntegerTransform:
                     emit.integer().transform(inst);
+                    break;
+                case arm::InstructionKind::VectorCoreMove:
+                    SimdEmitter { emit.code(), emit.vectors() }.core_move(
+                        std::get<arm::VectorCoreMoveOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::VectorDuplicate:
                     SimdEmitter { emit.code(), emit.vectors() }.duplicate(
