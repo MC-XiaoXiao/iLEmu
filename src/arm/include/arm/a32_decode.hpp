@@ -4,5 +4,6 @@
 #include "execution/instruction_profile.hpp"
 namespace ilemu::arm {
 Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile =
-    execution::VfpRegisterProfile::D32) noexcept;
+    execution::VfpRegisterProfile::D32, execution::MultiplyProfile =
+    execution::MultiplyProfile::Armv6T2) noexcept;
 }

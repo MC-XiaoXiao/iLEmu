@@ -37,7 +37,7 @@ public:
 
 private:
     using Key = std::tuple<std::uint32_t, bool, bool, bool, unsigned, bool,
-        std::uint64_t, ThumbArithmeticProfile, VfpRegisterProfile>;
+        std::uint64_t, ThumbArithmeticProfile, VfpRegisterProfile, MultiplyProfile>;
     struct Domain {
         std::shared_ptr<const CodeIdentity> identity;
         std::optional<std::uint64_t> generation;

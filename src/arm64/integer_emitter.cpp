@@ -334,19 +334,5 @@ void IntegerEmitter::wide_immediate(const arm::Instruction& inst)
     else
         code_.MOV(destination, inst.immediate);
 }
-void IntegerEmitter::multiply(const arm::Instruction& inst)
-{
-    const WReg rd { static_cast<int>(inst.rd) },
-        rm { static_cast<int>(inst.rm) }, rs { static_cast<int>(inst.rs) };
-    if (inst.accumulate)
-        code_.MADD(rd, rm, rs, WReg { static_cast<int>(inst.rn) });
-    else
-        code_.MUL(rd, rm, rs);
-    if (inst.set_flags) {
-        code_.MRS(X21, SystemReg::NZCV);
-        code_.ANDS(WZR, rd, rd);
-        merge_nz();
-    }
-}
 
 }

@@ -11,6 +11,7 @@
 #include "exclusive.hpp"
 #include "transform_decode.hpp"
 #include "vfp_multiple.hpp"
+#include "multiply_decode.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -23,7 +24,7 @@ namespace {
 }
 Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     unsigned it, execution::ThumbArithmeticProfile profile,
-    execution::VfpRegisterProfile vfp) noexcept
+    execution::VfpRegisterProfile vfp, execution::MultiplyProfile multiply) noexcept
 {
     Instruction out;
     out.size = thumb_is_wide(first) ? 4U : 2U;
@@ -31,7 +32,9 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     out.condition = it == 0 ? 14U : it >> 4U;
     const bool last = it == 0 || (it & 7U) == 0;
     const unsigned word = first;
-    if (out.size == 2 && decode_integer_transform(out, word, true))
+    if (out.size == 2 &&
+        (decode_multiply(out, word, true, multiply, it != 0) ||
+            decode_integer_transform(out, word, true)))
         return out;
     const auto alu = [&](unsigned op, bool flags) {
         out.kind = InstructionKind::DataProcessing;
@@ -47,7 +50,8 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if (decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
+        if (decode_multiply(out, (word << 16U) | tail, true, multiply) ||
+            decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
             decode_integer_transform(out, (word << 16U) | tail, true) ||
             decode_exclusive(out, (word << 16U) | tail, true) ||
             decode_system_control(out, (word << 16U) | tail, true) ||
@@ -173,10 +177,6 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         } else if (op == 9) {
             out.rn = out.rm;
             out.immediate_operand = true;
-        } else if (op == 13) {
-            out.kind = InstructionKind::Multiply;
-            out.rs = out.rm;
-            out.rm = out.rd;
         }
     } else if ((word & 0xfc00U) == 0x4400U) {
         const auto op = (word >> 8U) & 3U;

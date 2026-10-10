@@ -4,6 +4,7 @@
 #include "arm/a32_decode.hpp"
 #include "arm/integer_semantics.hpp"
 #include "arm/t32_decode.hpp"
+#include "arm/multiply.hpp"
 #include "arm/integer_transform.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
@@ -114,6 +115,7 @@ RunResult ArmInterpreter::run(
     RunResult result;
     const auto profile = source.thumb_arithmetic_profile();
     const auto vfp = source.vfp_register_profile();
+    const auto multiply = source.multiply_profile();
     for (;;) {
         result.pc = state.registers[15];
         result.instruction.reset();
@@ -163,11 +165,11 @@ RunResult ArmInterpreter::run(
             }
             result.instruction =
                 *first | (std::uint32_t { second.value_or(0) } << 16U);
-            inst = arm::decode_t32(*first, second, it, profile, vfp);
+            inst = arm::decode_t32(*first, second, it, profile, vfp, multiply);
         } else {
             result.instruction = source.fetch32(result.pc);
             if (result.instruction)
-                inst = arm::decode_a32(*result.instruction, vfp);
+                inst = arm::decode_a32(*result.instruction, vfp, multiply);
         }
         if (!result.instruction) {
             result.reason = StopReason::FetchFault;
@@ -329,12 +331,14 @@ RunResult ArmInterpreter::run(
                                      : inst.immediate;
                 break;
             case arm::InstructionKind::Multiply: {
-                const auto value =
-                    state.registers[inst.rm] * state.registers[inst.rs] +
-                    (inst.accumulate ? state.registers[inst.rn] : 0U);
-                state.registers[inst.rd] = value;
+                const auto value = arm::multiply(inst, state.registers[inst.rm],
+                    state.registers[inst.rs], state.registers[inst.rd],
+                    state.registers[inst.rn]);
+                state.registers[inst.rd] = static_cast<std::uint32_t>(value);
+                if (arm::multiply_writes_pair(inst))
+                    state.registers[inst.rn] = static_cast<std::uint32_t>(value >> 32U);
                 if (inst.set_flags)
-                    state.cpsr = arm::set_nz(state.cpsr, value);
+                    state.cpsr = arm::multiply_nz(inst, state.cpsr, value);
                 break;
             }
             case arm::InstructionKind::Branch:

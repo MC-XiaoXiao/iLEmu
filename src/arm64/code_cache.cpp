@@ -84,7 +84,8 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
 {
     const Key key { pc, step, big_endian, thumb, it_state,
         source.data_memory() != nullptr, timing_limit,
-        source.thumb_arithmetic_profile(), source.vfp_register_profile() };
+        source.thumb_arithmetic_profile(), source.vfp_register_profile(),
+        source.multiply_profile() };
     bool expand = false;
     if (auto* domain = find(binding)) {
         if (const auto it = domain->entries.find(key);

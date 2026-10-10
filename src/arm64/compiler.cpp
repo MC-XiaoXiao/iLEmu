@@ -4,6 +4,7 @@
 #include "dynamic_backedge.hpp"
 #include "arm/a32_decode.hpp"
 #include "arm/t32_decode.hpp"
+#include "arm/multiply.hpp"
 #include "integer_emitter.hpp"
 #include "memory_emitter.hpp"
 #include "multiple_emitter.hpp"
@@ -280,6 +281,9 @@ namespace {
                 (inst.kind == arm::InstructionKind::Transfer && inst.load) ||
                 (inst.kind == arm::InstructionKind::SystemControl && inst.load))
                 memory_.invalidate_register(inst.rd);
+            if (inst.kind == arm::InstructionKind::Multiply &&
+                arm::multiply_writes_pair(inst))
+                memory_.invalidate_register(inst.rn);
             if ((inst.kind == arm::InstructionKind::Transfer ||
                     inst.kind == arm::InstructionKind::VectorTransfer) &&
                 inst.writeback)
@@ -391,6 +395,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
 {
     const auto profile = source.thumb_arithmetic_profile();
     const auto vfp = source.vfp_register_profile();
+    const auto multiply = source.multiply_profile();
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
         region.end > (std::uint64_t { 1 } << 32U))
@@ -420,12 +425,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
             if (first && (!arm::thumb_is_wide(*first) || second)) {
                 word = *first | (std::uint32_t { second.value_or(0) } << 16U);
-                inst = arm::decode_t32(*first, second, it, profile, vfp);
+                inst = arm::decode_t32(*first, second, it, profile, vfp, multiply);
             }
         } else {
             word = source.fetch32(pc);
             if (word)
-                inst = arm::decode_a32(*word, vfp);
+                inst = arm::decode_a32(*word, vfp, multiply);
         }
         if (n == 0)
             out.first_instruction = word;

@@ -25,5 +25,6 @@ constexpr std::uint32_t with_it_state(
 Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     unsigned it, execution::ThumbArithmeticProfile =
         execution::ThumbArithmeticProfile::Architectural,
-    execution::VfpRegisterProfile = execution::VfpRegisterProfile::D32) noexcept;
+    execution::VfpRegisterProfile = execution::VfpRegisterProfile::D32,
+    execution::MultiplyProfile = execution::MultiplyProfile::Armv6T2) noexcept;
 }

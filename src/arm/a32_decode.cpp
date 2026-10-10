@@ -7,14 +7,17 @@
 #include "exclusive.hpp"
 #include "transform_decode.hpp"
 #include "vfp_multiple.hpp"
+#include "multiply_decode.hpp"
 #include <bit>
 
 namespace ilemu::arm {
-Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp) noexcept
+Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
+    execution::MultiplyProfile multiply) noexcept
 {
     Instruction out;
     out.condition = word >> 28;
-    if (decode_vfp_multiple(out, word, false, vfp) ||
+    if (decode_multiply(out, word, false, multiply) ||
+        decode_vfp_multiple(out, word, false, vfp) ||
         decode_integer_transform(out, word, false) ||
         decode_exclusive(out, word, false) ||
         decode_system_control(out, word, false) ||
@@ -60,19 +63,6 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp) no
         if (out.link && out.rm == 15)
             return out;
         out.kind = InstructionKind::BranchExchange;
-        return out;
-    }
-    if ((word & 0x0fc000f0U) == 0x00000090U) {
-        out.rd = (word >> 16) & 15U;
-        out.rn = (word >> 12) & 15U;
-        out.rs = (word >> 8) & 15U;
-        out.rm = word & 15U;
-        out.accumulate = (word & (1U << 21)) != 0;
-        out.set_flags = (word & (1U << 20)) != 0;
-        if (out.rd == 15 || out.rs == 15 || out.rm == 15 ||
-            (out.accumulate ? out.rn == 15 : out.rn != 0))
-            return out;
-        out.kind = InstructionKind::Multiply;
         return out;
     }
     if ((word & 0x0e000000U) == 0x08000000U) {
