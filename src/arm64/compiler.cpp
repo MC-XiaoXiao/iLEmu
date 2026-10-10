@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "compiler.hpp"
 #include "cycle_tier.hpp"
+#include "instruction_window.hpp"
 #include "dynamic_backedge.hpp"
-#include "arm/a32_decode.hpp"
 #include "arm/t32_decode.hpp"
 #include "arm/multiply.hpp"
 #include "integer_emitter.hpp"
@@ -401,13 +401,11 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
     unsigned it, bool expand_dynamic_cycles)
 {
-    const auto profile = source.thumb_arithmetic_profile();
-    const auto vfp = source.vfp_register_profile();
-    const auto architecture = source.arm_instruction_profile();
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
         region.end > (std::uint64_t { 1 } << 32U))
         throw std::invalid_argument("invalid instruction region");
+    InstructionWindow window(source, region, thumb);
     CompiledTrace out;
     Emitter emit(out, big_endian, thumb, pc, it, single_step);
     emit.prologue();
@@ -419,27 +417,11 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         if (pc < region.begin || pc >= region.end)
             break;
         emit.location(it, thumb ? 2U : 4U);
-        std::optional<std::uint32_t> word;
-        arm::Instruction inst;
-        if (thumb) {
-            const auto first = source.fetch16(pc);
-            std::optional<std::uint16_t> second;
-            if (first && arm::thumb_is_wide(*first)) {
-                // A straddling instruction must enter through the dispatcher,
-                // which prepares both actual halfwords before native execution.
-                if (n != 0 && std::uint64_t { pc } + 4U > region.end)
-                    break;
-                second = source.fetch16(pc + 2U);
-            }
-            if (first && (!arm::thumb_is_wide(*first) || second)) {
-                word = *first | (std::uint32_t { second.value_or(0) } << 16U);
-                inst = arm::decode_t32(*first, second, it, profile, vfp, architecture);
-            }
-        } else {
-            word = source.fetch32(pc);
-            if (word)
-                inst = arm::decode_a32(*word, vfp, architecture);
-        }
+        auto decoded = window.take(pc, it, n == 0);
+        if (!decoded)
+            break;
+        const auto word = decoded->word;
+        auto inst = decoded->instruction;
         if (n == 0)
             out.first_instruction = word;
         if (!word) {
@@ -476,7 +458,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             emit.conditional_skip(inst.condition, exchange_failed);
             emit.exchange_target(inst, pc, *word, before);
         }
-        const auto cost = source.ticks_for_instruction(pc, *word);
+        const auto cost = window.timing(*decoded);
         const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
         if (!valid_timing) {
             if (inst.kind == arm::InstructionKind::BranchExchange &&
@@ -505,6 +487,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                                    : 0U;
         emit.retired(next_it);
         const auto next_pc = pc + inst.size;
+        // Short budgets and SingleStep use precise one-instruction entries.
+        // A normal entry has no poll inside a proven register-only segment.
+        if (!single_step && !straddles && inst.set_flags &&
+            window.flags_dead(inst, next_pc, next_it, limit - n - 1U,
+                maximum_ticks - out.maximum_ticks))
+            inst.set_flags = false;
         bool dynamic_end = false;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
             emit.exchange(inst, pc, out.maximum_ticks);

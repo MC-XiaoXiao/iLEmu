@@ -213,6 +213,9 @@ bool IntegerEmitter::shifted_alu(const arm::Instruction& inst, std::uint32_t pc)
 
 void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
 {
+    // The compiler may prove a test/compare's only result (NZCV) dead.
+    if (!inst.set_flags && inst.opcode >= 8 && inst.opcode <= 11)
+        return;
     pc = (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U);
     if (shifted_alu(inst, pc))
         return;
