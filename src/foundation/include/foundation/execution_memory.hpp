@@ -46,6 +46,8 @@ public:
     execution::MemoryRead read(std::uint32_t, execution::AccessSize) override;
     std::optional<execution::MemoryFault> write(
         std::uint32_t, execution::AccessSize, std::uint32_t) override;
+    std::optional<execution::MemoryRead> exchange(
+        std::uint32_t, execution::AccessSize, std::uint32_t) override;
     [[nodiscard]] std::size_t instruction_view_count() const noexcept;
     // Checked write observation for runtime debugging. Setting an observer
     // suppresses direct stores; it is invoked only after a successful write.

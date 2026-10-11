@@ -55,6 +55,15 @@ public:
     virtual MemoryRead read(std::uint32_t, AccessSize) = 0;
     virtual std::optional<MemoryFault> write(
         std::uint32_t, AccessSize, std::uint32_t) = 0;
+    // Atomic exchange of one byte or naturally aligned word, in address order.
+    // Nullopt means unsupported with no memory side effects; a fault also
+    // leaves the entire location unchanged. Never approximate with read/write.
+    // Like other checked callbacks, the instruction lease must be released.
+    virtual std::optional<MemoryRead> exchange(
+        std::uint32_t, AccessSize, std::uint32_t)
+    {
+        return { };
+    }
     virtual DirectMemory direct_memory() { return { }; }
     virtual std::unique_ptr<ExclusiveMonitor> create_exclusive_monitor()
     {

@@ -21,6 +21,7 @@ add_library(ilemu_foundation STATIC
     address_space_instruction_view.cpp
     execution_memory.cpp
     execution_memory_exclusive.cpp
+    execution_memory_exchange.cpp
     memory/protection.cpp
     memory/shared_mapping.cpp
     memory/immutable_page.cpp
