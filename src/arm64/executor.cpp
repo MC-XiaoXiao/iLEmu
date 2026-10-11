@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm64/executor.hpp"
+#include "execution/context.hpp"
 #include "arm/t32_decode.hpp"
 #include "code_cache.hpp"
 #include "compiler.hpp"
@@ -22,11 +23,9 @@ public:
     {
         if (!Arm64Executor::available())
             throw std::runtime_error("ARM64 executor requires an AArch64 host");
-        if (exclusive_ && (!source.data_memory() ||
-            !exclusive_->bound_to(*source.data_memory())))
-            exclusive_.reset();
+        context_.bind_memory(source.data_memory());
         cache_.begin_run();
-        arm64::RunControl control { stops_, request };
+        arm64::RunControl control { context_.stops, request };
         RunResult result;
         for (;;) {
             result.pc = state.registers[15];
@@ -136,7 +135,7 @@ public:
                 std::uint64_t transfer_ticks;
                 if (native.reason == arm64::exclusive_exit) {
                     completion = arm_memory::complete_exclusive(
-                        state, memory, exclusive_, native.exclusive);
+                        state, memory, context_.exclusive, native.exclusive);
                     transfer_ticks = native.exclusive.ticks;
                 } else if (native.reason == arm64::vector_exit) {
                     completion = arm_memory::complete_vector(
@@ -180,8 +179,7 @@ public:
                 return result;
         }
     }
-    std::unique_ptr<ExclusiveMonitor> exclusive_;
-    StopRequests stops_;
+    ExecutorContext context_;
     Arm64Statistics stats_;
     arm64::CodeCache cache_;
 };
@@ -205,15 +203,15 @@ RunResult Arm64Executor::run(
 }
 void Arm64Executor::request_stop(StopReason reason) noexcept
 {
-    impl_->stops_.request(reason);
+    impl_->context_.stops.request(reason);
 }
 void Arm64Executor::clear_stop() noexcept
 {
-    static_cast<void>(impl_->stops_.consume());
+    static_cast<void>(impl_->context_.stops.consume());
 }
 void Arm64Executor::clear_cache() { impl_->clear(); }
 void Arm64Executor::clear_exclusive_state()
-{ if (impl_->exclusive_) impl_->exclusive_->clear(); }
+{ impl_->context_.clear_exclusive_state(); }
 std::uint64_t Arm64Executor::retained_code_bytes() const noexcept
 {
     return impl_->stats_.retained_bytes;

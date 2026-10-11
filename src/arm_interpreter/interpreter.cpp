@@ -50,10 +50,17 @@ namespace {
 RunResult ArmInterpreter::run(
     CpuThreadState& state, InstructionSource& source, const RunRequest& request)
 {
-    if (exclusive_ && (!source.data_memory() ||
-        !exclusive_->bound_to(*source.data_memory())))
-        exclusive_.reset();
+    return run_slice(state, source, request, context_, UINT64_MAX);
+}
+
+RunResult ArmInterpreter::run_slice(CpuThreadState& state,
+    InstructionSource& source, const RunRequest& request, ExecutorContext& context,
+    std::uint64_t instruction_limit, std::uint64_t ticks_consumed)
+{
+    context.bind_memory(source.data_memory());
     RunResult result;
+    result.ticks_consumed = ticks_consumed;
+    std::uint64_t instructions = 0;
     const auto profile = source.thumb_arithmetic_profile();
     const auto vfp = source.vfp_register_profile();
     const auto floating_instructions = source.vfp_instruction_profile();
@@ -62,13 +69,16 @@ RunResult ArmInterpreter::run(
         result.pc = state.registers[15];
         result.instruction.reset();
         result.memory_fault.reset();
-        result.reason = stops_.consume();
+        result.reason = context.stops.consume();
         if (result.ticks_consumed >= request.tick_budget &&
             request.mode != ExecutionMode::SingleStep)
             result.reason = result.reason | StopReason::TickBudget;
-        if (std::chrono::steady_clock::now() >= request.deadline)
+        if (request.deadline != std::chrono::steady_clock::time_point::max() &&
+            std::chrono::steady_clock::now() >= request.deadline)
             result.reason = result.reason | StopReason::HostDeadline;
         if (result.reason != StopReason::None)
+            return result;
+        if (instructions == instruction_limit)
             return result;
         const bool thumb = (state.cpsr & 0x20U) != 0;
         const auto it = arm::it_state(state.cpsr);
@@ -195,7 +205,7 @@ RunResult ArmInterpreter::run(
                 const auto transfer = arm_memory::prepare_exclusive(state, inst);
                 lease.reset();
                 const auto completion = arm_memory::complete_exclusive(
-                    state, source.data_memory(), exclusive_, transfer);
+                    state, source.data_memory(), context.exclusive, transfer);
                 if (completion.reason != StopReason::None) {
                     result.reason = completion.reason;
                     result.memory_fault = completion.fault;
@@ -439,6 +449,7 @@ RunResult ArmInterpreter::run(
             result.reason = StopReason::SingleStep;
             return result;
         }
+        ++instructions;
     }
 }
 }
