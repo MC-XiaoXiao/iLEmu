@@ -5,8 +5,22 @@
 // Define session startup options and resolve runtime cache defaults.
 
 #include "runtime/boot_options.hpp"
+#include <stdexcept>
 
 namespace ilemu {
+
+std::vector<std::string> BootOptions::initial_arguments() const
+{
+    if (guest_command) {
+        if (!guest_arguments.empty())
+            throw std::invalid_argument(
+                "guest arguments cannot be combined with --guest-command");
+        return { binary, "-c", *guest_command };
+    }
+    std::vector<std::string> result { binary };
+    result.insert(result.end(), guest_arguments.begin(), guest_arguments.end());
+    return result;
+}
 
 std::filesystem::path default_host_cache_directory(
     const std::filesystem::path& rootfs)

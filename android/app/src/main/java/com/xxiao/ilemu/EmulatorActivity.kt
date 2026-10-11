@@ -22,7 +22,11 @@ class EmulatorActivity : SDLActivity() {
 
     override fun getArguments(): Array<String> {
         val arguments = intent.getStringArrayExtra("arguments") ?: arrayOf("help")
-        return arguments + arrayOf("--output", File(filesDir, "session.log").path)
+        val delimiter = if (arguments.firstOrNull() == "boot") arguments.indexOf("--") else -1
+        val hostEnd = if (delimiter >= 0) delimiter else arguments.size
+        return arguments.take(hostEnd).toTypedArray() +
+            arrayOf("--output", File(filesDir, "session.log").path) +
+            arguments.drop(hostEnd).toTypedArray()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "device_state/lockdown_state.hpp"
 #include "foundation/device_model.hpp"
@@ -45,6 +46,8 @@ struct BootOptions {
     std::optional<DisplayGeometry> display_geometry;
     std::string binary { "/sbin/launchd" };
     std::optional<std::string> guest_command;
+    std::vector<std::string> guest_arguments;
+    [[nodiscard]] std::vector<std::string> initial_arguments() const;
     LockdownActivation activation { LockdownActivation::Activated };
     HostNetworkPolicy network { HostNetworkPolicy::Host };
     GlesBackend gles_backend { GlesBackend::Auto };

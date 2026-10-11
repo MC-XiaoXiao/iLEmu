@@ -157,16 +157,7 @@ void EmulatorSession::run()
     configure_gles_pipeline_cache(host_cache / "vulkan-pipeline-cache.bin");
     configure_gles_backend(gles_backend);
     const auto binary = options.binary;
-    const auto guest_command = options.guest_command;
-    std::vector<std::string> initial_arguments;
-    if (guest_command) {
-        // This is intentionally an argv-level test hook for firmware profiles
-        // that ship a shell but do not ship SpringBoard. It never changes the
-        // normal launchd/SpringBoard boot path.
-        initial_arguments = { binary, "-c", *guest_command };
-    } else {
-        initial_arguments = { binary };
-    }
+    const auto initial_arguments = options.initial_arguments();
     if (const auto display_size = options.display_geometry) {
         const auto profile_display = device.screen.panel;
         device.screen.panel = *display_size;

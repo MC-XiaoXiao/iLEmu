@@ -121,7 +121,7 @@ std::string usage()
            "[--jit-startup-profile-blocks N] "
            "[--jit-startup-profile-budget-us N] "
            "[--jit-catalog-warming no-enqueue] "
-           "[--output FILE]\n"
+           "[--output FILE] [-- GUEST_ARG...]\n"
            "  ilemu smoke [--cores N] [--jit-cache-mib 8..512] "
            "[--jit-compile-mode optimized|baseline] "
            "[--perf-summary] [--output FILE]\n"
@@ -1015,7 +1015,9 @@ void benchmark(const std::vector<std::string>& args, Output& output)
         option(args, "--executor").value_or("dynarmic"), output);
 }
 
-void boot(const std::vector<std::string>& args, SessionHost& host, Output& output)
+void boot(const std::vector<std::string>& args,
+    const std::vector<std::string>& guest_arguments, SessionHost& host,
+    Output& output)
 {
     const auto rootfs = option(args, "--rootfs");
     if (!rootfs)
@@ -1031,6 +1033,9 @@ void boot(const std::vector<std::string>& args, SessionHost& host, Output& outpu
     options.gles_backend = parse_gles_backend(args);
     options.binary = option(args, "--binary").value_or("/sbin/launchd");
     options.guest_command = option(args, "--guest-command");
+    options.guest_arguments = guest_arguments;
+    // Validate the argv contract before session startup changes device state.
+    static_cast<void>(options.initial_arguments());
     if (const auto value = option(args, "--display-size"))
         options.display_geometry = parse_display_geometry(*value);
     const auto activation = parse_lockdown_activation(
@@ -1124,11 +1129,16 @@ int ilemu::run_command_line(int argc, char** argv, SessionHost& host)
             std::cerr << usage();
             return 2;
         }
-        std::vector<std::string> args;
+        const std::string_view command { argv[1] };
+        std::vector<std::string> args, guest_arguments;
         for (int i = 2; i < argc; ++i) {
+            if (command == "boot" && std::string_view { argv[i] } == "--") {
+                for (++i; i < argc; ++i)
+                    guest_arguments.emplace_back(argv[i]);
+                break;
+            }
             args.emplace_back(argv[i]);
         }
-        const std::string_view command { argv[1] };
         if (command == "help" || command == "--help" || command == "-h" ||
             flag(args, "--help") || flag(args, "-h")) {
             std::cout << usage();
@@ -1199,7 +1209,7 @@ int ilemu::run_command_line(int argc, char** argv, SessionHost& host)
             } else if (command == "benchmark") {
                 benchmark(args, *output);
             } else if (command == "boot") {
-                boot(args, host, *output);
+                boot(args, guest_arguments, host, *output);
             } else {
                 throw std::runtime_error { "unknown command: " +
                                            std::string { command } };
