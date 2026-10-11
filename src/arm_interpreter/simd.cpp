@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "simd.hpp"
+#include <array>
 
 namespace ilemu::execution {
 void move_core_vector(CpuThreadState& state, const arm::VectorCoreMoveOperands& v)
@@ -58,6 +59,24 @@ void bitwise_vector(CpuThreadState& state, const arm::VectorBitwiseOperands& v)
         case Op::Not: result = ~b; break;
         }
         state.extension_registers[v.destination * 2U + i] = result;
+    }
+}
+void extract_vector(CpuThreadState& state, const arm::VectorExtractOperands& v)
+{
+    const auto words = v.quad ? 4U : 2U;
+    // Snapshot both vectors before writing any aliased destination word.
+    std::array<std::uint32_t, 8> input;
+    for (unsigned i = 0; i < words; ++i) {
+        input[i] = state.extension_registers[v.first * 2U + i];
+        input[words + i] = state.extension_registers[v.second * 2U + i];
+    }
+    const auto shift = (v.byte_offset % 4U) * 8U;
+    for (unsigned i = 0; i < words; ++i) {
+        const auto index = v.byte_offset / 4U + i;
+        auto value = input[index] >> shift;
+        if (shift != 0)
+            value |= input[index + 1U] << (32U - shift);
+        state.extension_registers[v.destination * 2U + i] = value;
     }
 }
 }

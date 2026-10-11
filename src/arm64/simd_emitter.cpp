@@ -80,4 +80,17 @@ void SimdEmitter::bitwise(const arm::VectorBitwiseOperands& v)
     if (!v.quad)
         vectors_.write_d(v.destination, destination);
 }
+void SimdEmitter::extract(const arm::VectorExtractOperands& v)
+{
+    const auto destination = v.quad ? vectors_.write(v.destination) : Q0;
+    const auto first = source(Q1, v.first, v.quad);
+    const auto second = source(Q2, v.second, v.quad);
+    if (v.quad)
+        code_.EXT(destination.B16(), first.B16(), second.B16(), v.byte_offset);
+    else {
+        code_.EXT(destination.toD().B8(), first.toD().B8(), second.toD().B8(),
+            v.byte_offset);
+        vectors_.write_d(v.destination, destination);
+    }
+}
 }

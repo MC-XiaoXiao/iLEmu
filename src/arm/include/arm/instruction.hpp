@@ -27,6 +27,7 @@ enum class InstructionKind {
     IntegerTransform,
     VectorDuplicate,
     VectorBitwise,
+    VectorExtract,
     VectorCoreMove,
     FloatingConversion,
     FloatingArithmetic,
@@ -56,6 +57,11 @@ enum class VectorBitwiseOperation {
 struct VectorBitwiseOperands {
     unsigned destination = 0, first = 0, second = 0;
     VectorBitwiseOperation operation = VectorBitwiseOperation::And;
+    bool quad = false;
+};
+struct VectorExtractOperands {
+    // D register indices, even for quad operands. Offsets always name bytes.
+    unsigned destination = 0, first = 0, second = 0, byte_offset = 0;
     bool quad = false;
 };
 enum class VectorTransferMode { Multiple, Lane, Replicate, ScalarMultiple };
@@ -94,7 +100,7 @@ struct FloatingArithmeticOperands {
     bool wide = false;
 };
 using VectorOperands = std::variant<VectorDuplicateOperands,
-    VectorBitwiseOperands, VectorTransferOperands, VectorCoreMoveOperands,
+    VectorBitwiseOperands, VectorExtractOperands, VectorTransferOperands, VectorCoreMoveOperands,
     FloatingConversionOperands, FloatingArithmeticOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or

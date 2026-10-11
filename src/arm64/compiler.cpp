@@ -703,6 +703,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     SimdEmitter { emit.code(), emit.vectors() }.bitwise(
                         std::get<arm::VectorBitwiseOperands>(inst.vector));
                     break;
+                case arm::InstructionKind::VectorExtract:
+                    SimdEmitter { emit.code(), emit.vectors() }.extract(
+                        std::get<arm::VectorExtractOperands>(inst.vector));
+                    break;
                 case arm::InstructionKind::DataProcessing:
                     emit.integer().alu(inst, pc);
                     if (writes_pc) {

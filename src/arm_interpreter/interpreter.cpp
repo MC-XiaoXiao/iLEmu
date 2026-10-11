@@ -365,6 +365,10 @@ RunResult ArmInterpreter::run(
                 bitwise_vector(state,
                     std::get<arm::VectorBitwiseOperands>(inst.vector));
                 break;
+            case arm::InstructionKind::VectorExtract:
+                extract_vector(state,
+                    std::get<arm::VectorExtractOperands>(inst.vector));
+                break;
             case arm::InstructionKind::WideImmediate:
                 state.registers[inst.rd] =
                     inst.opcode != 0 ? (state.registers[inst.rd] & 0xffffU) |

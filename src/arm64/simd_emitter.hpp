@@ -14,6 +14,7 @@ public:
     }
     void duplicate(const arm::VectorDuplicateOperands&);
     void bitwise(const arm::VectorBitwiseOperands&);
+    void extract(const arm::VectorExtractOperands&);
     void core_move(const arm::VectorCoreMoveOperands&);
 
 private:

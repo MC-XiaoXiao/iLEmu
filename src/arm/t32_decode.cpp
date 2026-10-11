@@ -6,6 +6,7 @@
 #include "t32_transfer.hpp"
 #include "simd_duplicate.hpp"
 #include "simd_bitwise.hpp"
+#include "simd_extract.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
 #include "exclusive.hpp"
@@ -65,6 +66,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||
+            decode_simd_extract(out, (word << 16U) | tail, true) ||
             decode_simd_transfer(out, (word << 16U) | tail, true))
             return out;
         if ((word & 0xfff0U) == 0xe8d0U && (tail & 0xffe0U) == 0xf000U) {

@@ -64,6 +64,7 @@ FlagEffects flag_effects(const arm::Instruction& inst) noexcept
     case Kind::IntegerTransform:
     case Kind::VectorDuplicate:
     case Kind::VectorBitwise:
+    case Kind::VectorExtract:
     case Kind::VectorCoreMove:
         break;
     default:

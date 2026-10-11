@@ -2,6 +2,7 @@
 #include "arm/a32_decode.hpp"
 #include "simd_duplicate.hpp"
 #include "simd_bitwise.hpp"
+#include "simd_extract.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
 #include "exclusive.hpp"
@@ -34,6 +35,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         decode_system_control(out, word, false) ||
         decode_simd_duplicate(out, word, false) ||
         decode_simd_bitwise(out, word, false) ||
+        decode_simd_extract(out, word, false) ||
         decode_simd_transfer(out, word, false))
         return out;
     // BLX immediate occupies the unconditional branch encoding space.
