@@ -32,10 +32,11 @@ public:
         std::uint32_t guarded_controls);
 
 private:
+    enum class FlagProofKind { Overwrite, TerminalFailure, BoundedFailure };
     struct FlagProof {
-        // Zero instructions records a terminal failure before full overwrite.
         unsigned reusable_prefix, instructions;
         std::uint64_t ticks;
+        FlagProofKind kind;
     };
     std::optional<DecodedInstruction> decode(std::uint64_t pc, unsigned it,
         bool allow_straddle);

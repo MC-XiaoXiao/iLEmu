@@ -61,8 +61,9 @@ std::optional<DecodedInstruction> InstructionWindow::take(
     if (comparison_flags_dead_) {
         if (--comparison_flags_dead_->reusable_prefix == 0)
             comparison_flags_dead_.reset();
-        else if (comparison_flags_dead_->instructions != 0) {
-            --comparison_flags_dead_->instructions;
+        else if (comparison_flags_dead_->kind != FlagProofKind::TerminalFailure) {
+            if (comparison_flags_dead_->instructions != 0)
+                --comparison_flags_dead_->instructions;
             comparison_flags_dead_->ticks -= *out.ticks;
         }
     }
@@ -95,9 +96,17 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
         guarded_controls == arm::floating_comparison_controls;
     if (reusable && comparison_flags_dead_) {
         const auto& proof = *comparison_flags_dead_;
-        return proof.instructions != 0 &&
-            proof.instructions <= remaining_instructions &&
-            proof.ticks <= remaining_ticks;
+        if (proof.kind == FlagProofKind::TerminalFailure)
+            return false;
+        if (proof.kind == FlagProofKind::Overwrite)
+            return proof.instructions <= remaining_instructions &&
+                proof.ticks <= remaining_ticks;
+        // An exhausted search only excludes overwrites inside its covered
+        // instruction or tick boundary. Larger queries must inspect again.
+        if (remaining_instructions <= proof.instructions ||
+            remaining_ticks <= proof.ticks)
+            return false;
+        comparison_flags_dead_.reset();
     }
     const auto initial_ticks = remaining_ticks;
     unsigned reusable_prefix = 0;
@@ -105,7 +114,14 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
     auto it = next_it;
     const auto terminal_failure = [&] {
         if (reusable_prefix != 0)
-            comparison_flags_dead_ = FlagProof { reusable_prefix, 0, 0 };
+            comparison_flags_dead_ = FlagProof { reusable_prefix, 0, 0,
+                FlagProofKind::TerminalFailure };
+        return false;
+    };
+    const auto bounded_failure = [&](unsigned instructions, std::uint64_t ticks) {
+        if (reusable_prefix != 0)
+            comparison_flags_dead_ = FlagProof { reusable_prefix, instructions,
+                ticks, FlagProofKind::BoundedFailure };
         return false;
     };
     for (unsigned i = 0; i < remaining_instructions; ++i) {
@@ -133,7 +149,7 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
         if (cost == 0)
             return terminal_failure();
         if (cost > remaining_ticks)
-            return false;
+            return bounded_failure(i, initial_ticks);
         remaining_ticks -= cost;
         live &= ~effects.guaranteed_write;
         if (live == 0) {
@@ -142,7 +158,8 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
             // of comparisons, without relaxing either compilation limit.
             if (reusable_prefix != 0)
                 comparison_flags_dead_ = FlagProof { reusable_prefix,
-                    i + 1U, initial_ticks - remaining_ticks };
+                    i + 1U, initial_ticks - remaining_ticks,
+                    FlagProofKind::Overwrite };
             return true;
         }
         if (entry.instruction.kind == arm::InstructionKind::FloatingSystem &&
@@ -153,6 +170,7 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
                           ? entry.instruction.immediate : arm::advance_it(it))
                     : 0U;
     }
-    return false;
+    return bounded_failure(
+        remaining_instructions, initial_ticks - remaining_ticks);
 }
 }
