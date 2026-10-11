@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "simd.hpp"
+#include "arm/simd_immediate.hpp"
 #include <array>
 
 namespace ilemu::execution {
@@ -38,6 +39,21 @@ void duplicate_vector(
         value = (value & 65535U) * 0x00010001U;
     for (unsigned i = 0; i < (v.quad ? 4U : 2U); ++i)
         state.extension_registers[v.destination * 2U + i] = value;
+}
+void immediate_vector(CpuThreadState& state, const arm::VectorImmediateOperands& v)
+{
+    auto value = arm::expand_simd_immediate(v);
+    if (v.op && v.cmode < 14)
+        value = ~value;
+    const bool modify = v.cmode < 12 && (v.cmode & 1U) != 0;
+    for (unsigned i = 0; i < (v.quad ? 4U : 2U); ++i) {
+        const auto word = static_cast<std::uint32_t>(value >> ((i % 2U) * 32U));
+        auto& destination = state.extension_registers[v.destination * 2U + i];
+        if (modify)
+            destination = v.op ? destination & word : destination | word;
+        else
+            destination = word;
+    }
 }
 void bitwise_vector(CpuThreadState& state, const arm::VectorBitwiseOperands& v)
 {

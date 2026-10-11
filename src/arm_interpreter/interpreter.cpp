@@ -373,6 +373,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 bitwise_vector(state,
                     std::get<arm::VectorBitwiseOperands>(inst.vector));
                 break;
+            case arm::InstructionKind::VectorImmediate:
+                immediate_vector(state,
+                    std::get<arm::VectorImmediateOperands>(inst.vector));
+                break;
             case arm::InstructionKind::VectorExtract:
                 extract_vector(state,
                     std::get<arm::VectorExtractOperands>(inst.vector));

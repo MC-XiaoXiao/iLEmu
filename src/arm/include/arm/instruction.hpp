@@ -36,7 +36,8 @@ enum class InstructionKind {
     FloatingSystem,
     VectorTransfer,
     SystemControl,
-    DualTransfer
+    DualTransfer,
+    VectorImmediate
 };
 enum class SystemOperation {
     ThreadPointerReadWrite,
@@ -67,6 +68,11 @@ struct VectorExtractOperands {
     // D register indices, even for quad operands. Offsets always name bytes.
     unsigned destination = 0, first = 0, second = 0, byte_offset = 0;
     bool quad = false;
+};
+struct VectorImmediateOperands {
+    unsigned destination = 0; // D register index, even for Q destinations.
+    std::uint8_t imm8 = 0, cmode = 0;
+    bool op = false, quad = false;
 };
 enum class VectorTransferMode { Multiple, Lane, Replicate, ScalarMultiple };
 struct VectorTransferOperands {
@@ -121,7 +127,7 @@ struct FloatingSystemOperands {
 };
 using VectorOperands = std::variant<VectorDuplicateOperands,
     VectorBitwiseOperands, VectorExtractOperands, VectorTransferOperands, VectorCoreMoveOperands,
-    FloatingConversionOperands, FloatingArithmeticOperands, FloatingComparisonOperands, FloatingImmediateOperands, FloatingSystemOperands>;
+    FloatingConversionOperands, FloatingArithmeticOperands, FloatingComparisonOperands, FloatingImmediateOperands, FloatingSystemOperands, VectorImmediateOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.

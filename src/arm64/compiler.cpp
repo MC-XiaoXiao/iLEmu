@@ -844,6 +844,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     SimdEmitter { emit.code(), emit.vectors() }.duplicate(
                         std::get<arm::VectorDuplicateOperands>(inst.vector));
                     break;
+                case arm::InstructionKind::VectorImmediate:
+                    SimdEmitter { emit.code(), emit.vectors() }.immediate(
+                        std::get<arm::VectorImmediateOperands>(inst.vector));
+                    break;
                 case arm::InstructionKind::VectorBitwise:
                     SimdEmitter { emit.code(), emit.vectors() }.bitwise(
                         std::get<arm::VectorBitwiseOperands>(inst.vector));

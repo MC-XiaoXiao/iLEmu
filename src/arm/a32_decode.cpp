@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm/a32_decode.hpp"
 #include "simd_duplicate.hpp"
+#include "simd_immediate_decode.hpp"
 #include "simd_bitwise.hpp"
 #include "simd_extract.hpp"
 #include "simd_transfer.hpp"
@@ -42,6 +43,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         decode_dual_transfer(out, word, false, architecture) ||
         decode_exclusive(out, word, false) ||
         decode_system_control(out, word, false) ||
+        decode_simd_immediate(out, word, false, vfp, architecture) ||
         decode_simd_duplicate(out, word, false) ||
         decode_simd_bitwise(out, word, false) ||
         decode_simd_extract(out, word, false) ||

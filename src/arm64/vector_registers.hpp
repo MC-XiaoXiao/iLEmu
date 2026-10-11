@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "execution/arm_state.hpp"
+#include "simd_immediate_emitter.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -9,7 +10,7 @@
 
 namespace ilemu::execution::arm64 {
 // Sixteen guest Q registers alias all thirty-two D registers. V16..V31 are
-// caller-saved; V0..V2 remain scratch, V3..V7 hold immutable scalar constants,
+// caller-saved; V0..V2 remain scratch, V3..V7 hold immutable constants,
 // and host callee-saved V8..V15 are untouched. Masks describe the whole trace, including conditional
 // paths. Entry loads preserve neighbours even for a write-only D or lane
 // destination.
@@ -68,12 +69,13 @@ public:
     }
     void remember_constant(unsigned word, bool wide, std::uint8_t imm8)
     {
-        known_constants_[word] = Constant { wide, imm8 };
+        known_constants_[word] = ScalarConstant { wide, imm8 };
     }
     oaknut::QReg constant(bool wide, std::uint8_t imm8)
     {
         for (unsigned i = 0; i < constant_count_; ++i)
-            if (constants_[i].wide == wide && constants_[i].imm8 == imm8)
+            if (!constants_[i].vector && constants_[i].wide == wide &&
+                constants_[i].imm8 == imm8)
                 return oaknut::QReg { 3 + static_cast<int>(i) };
         if (constant_count_ < constants_.size()) {
             const auto slot = constant_count_++;
@@ -82,6 +84,26 @@ public:
         }
         // A bounded plan keeps larger constant sets on the ordinary scratch path.
         materialize(code_, 0, { wide, imm8 });
+        return oaknut::util::Q0;
+    }
+    oaknut::QReg simd_constant(
+        const arm::VectorImmediateOperands& value, bool upper)
+    {
+        const Constant requested { false, value.imm8, true, value.cmode,
+            value.op, upper };
+        for (unsigned i = 0; i < constant_count_; ++i) {
+            const auto& entry = constants_[i];
+            if (entry.vector && entry.imm8 == value.imm8 &&
+                entry.cmode == value.cmode && entry.op == value.op &&
+                entry.upper == upper)
+                return oaknut::QReg { 3 + static_cast<int>(i) };
+        }
+        if (constant_count_ < constants_.size()) {
+            const auto slot = constant_count_++;
+            constants_[slot] = requested;
+            return oaknut::QReg { 3 + static_cast<int>(slot) };
+        }
+        materialize(code_, 0, requested);
         return oaknut::util::Q0;
     }
     void restore(oaknut::VectorCodeGenerator& code) const
@@ -96,14 +118,31 @@ public:
     void flush() const { transfer(code_, dirty_, false); }
 
 private:
+    struct ScalarConstant {
+        bool wide;
+        std::uint8_t imm8;
+    };
     struct Constant {
         bool wide = false;
         std::uint8_t imm8 = 0;
+        bool vector = false;
+        std::uint8_t cmode = 0;
+        bool op = false, upper = false;
     };
     static void materialize(oaknut::VectorCodeGenerator& code, int reg,
         Constant value)
     {
-        if (value.wide)
+        if (value.vector) {
+            const oaknut::QReg destination { reg };
+            emit_simd_immediate(code, destination,
+                { 0, value.imm8, value.cmode, value.op, true });
+            // A scalar write clears the other half; rotating places a mask
+            // in the upper D without touching the neighbouring guest lane.
+            code.FMOV(destination.toD(), destination.toD());
+            if (value.upper)
+                code.EXT(destination.B16(), destination.B16(),
+                    destination.B16(), 8);
+        } else if (value.wide)
             code.FMOV(oaknut::DReg { reg }, oaknut::FImm8 { value.imm8 });
         else
             code.FMOV(oaknut::SReg { reg }, oaknut::FImm8 { value.imm8 });
@@ -136,6 +175,6 @@ private:
     std::array<Constant, 5> constants_ { };
     unsigned constant_count_ = 0;
     // Compile-time knowledge only; every entry still emits its first write.
-    std::array<std::optional<Constant>, 64> known_constants_ { };
+    std::array<std::optional<ScalarConstant>, 64> known_constants_ { };
 };
 }
