@@ -35,7 +35,8 @@ enum class InstructionKind {
     FloatingImmediate,
     FloatingSystem,
     VectorTransfer,
-    SystemControl
+    SystemControl,
+    DualTransfer
 };
 enum class SystemOperation {
     ThreadPointerReadWrite,

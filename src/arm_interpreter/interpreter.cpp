@@ -143,6 +143,7 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                         (state.fpscr & arm::floating_exception_enables) != 0) ||
                     ((inst.kind == arm::InstructionKind::TableBranch ||
                          inst.kind == arm::InstructionKind::Transfer ||
+                         inst.kind == arm::InstructionKind::DualTransfer ||
                          inst.kind == arm::InstructionKind::ExclusiveTransfer ||
                          inst.kind == arm::InstructionKind::Swap ||
                          inst.kind == arm::InstructionKind::MultipleTransfer ||
@@ -266,6 +267,7 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 break;
             }
             case arm::InstructionKind::TableBranch:
+            case arm::InstructionKind::DualTransfer:
             case arm::InstructionKind::Transfer: {
                 auto& memory = *source.data_memory();
                 const auto direct = memory.direct_memory();
@@ -416,6 +418,7 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
         if (!(passed &&
                 (inst.kind == arm::InstructionKind::TableBranch ||
                     inst.kind == arm::InstructionKind::Transfer ||
+                    inst.kind == arm::InstructionKind::DualTransfer ||
                     inst.kind == arm::InstructionKind::ExclusiveTransfer ||
                     inst.kind == arm::InstructionKind::Swap ||
                     inst.kind == arm::InstructionKind::ClearExclusive ||

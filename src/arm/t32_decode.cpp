@@ -4,6 +4,7 @@
 #include "t32_plain_immediate.hpp"
 #include "t32_shifted.hpp"
 #include "t32_transfer.hpp"
+#include "dual_transfer.hpp"
 #include "simd_duplicate.hpp"
 #include "simd_bitwise.hpp"
 #include "simd_extract.hpp"
@@ -70,6 +71,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
             decode_integer_transform(out, (word << 16U) | tail, true, architecture) ||
             decode_exclusive(out, (word << 16U) | tail, true) ||
+            decode_dual_transfer(out, (word << 16U) | tail, true, architecture) ||
             decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||

@@ -9,18 +9,22 @@ namespace ilemu::execution::arm_memory {
 struct Transfer {
     std::uint64_t ticks = 0;
     std::uint32_t address = 0, updated_base = 0, value = 0, control = 0;
+    std::uint32_t second_value = 0;
 };
 constexpr std::uint32_t load_bit = 1U << 3;
 constexpr std::uint32_t signed_bit = 1U << 4;
 constexpr std::uint32_t writeback_bit = 1U << 5;
 constexpr std::uint32_t table_branch_bit = 1U << 6;
+constexpr std::uint32_t dual_bit = 1U << 7;
 constexpr std::uint32_t control(const arm::Instruction& inst)
 {
     return (inst.kind == arm::InstructionKind::TableBranch ? table_branch_bit : 0U) |
            inst.access_size | (inst.load ? load_bit : 0U) |
            (inst.sign_extend ? signed_bit : 0U) |
            (inst.writeback ? writeback_bit : 0U) | (inst.rd << 8U) |
-           (inst.rn << 12U) | (inst.size << 16U);
+           (inst.rn << 12U) | (inst.size << 16U) |
+           (inst.kind == arm::InstructionKind::DualTransfer
+                   ? dual_bit | (inst.rs << 20U) : 0U);
 }
 Transfer prepare(const CpuThreadState&, const arm::Instruction&,
     std::uint32_t pc_store_offset);

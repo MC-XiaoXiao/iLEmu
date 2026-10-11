@@ -44,9 +44,10 @@ std::optional<AddressCache::Key> MemoryEmitter::address(
     // unaligned data. PC stores retain their separate PC-value policy guard.
     const bool load_pc = inst.load && inst.rd == 15 &&
                          inst.kind != arm::InstructionKind::TableBranch;
-    AddressCache::Key key { inst.rn, inst.access_size,
+    const bool dual = inst.kind == arm::InstructionKind::DualTransfer;
+    AddressCache::Key key { inst.rn, dual ? 8U : inst.access_size,
         inst.immediate_operand ? inst.immediate : 0U, inst.add, inst.load,
-        load_pc ? 4U : 1U, inst.access_size };
+        load_pc || dual ? 4U : 1U, inst.access_size };
     if (inst.rn == 15)
         key.pc_base = (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U);
     if (!inst.immediate_operand) {
@@ -64,6 +65,23 @@ std::optional<AddressCache::Key> MemoryEmitter::address(
 void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
     XReg pointer, Label& unsupported_exit, Label& branch_exit)
 {
+    if (inst.kind == arm::InstructionKind::DualTransfer) {
+        const WReg first { static_cast<int>(inst.rd) };
+        const WReg second { static_cast<int>(inst.rs) };
+        if (inst.load) {
+            code_.LDP(first, second, pointer);
+            endian(4, first);
+            endian(4, second);
+        } else if (big_endian_) {
+            code_.REV(W15, first);
+            code_.REV(W17, second);
+            code_.STP(W15, W17, pointer);
+        } else
+            code_.STP(first, second, pointer);
+        if (inst.writeback)
+            code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
+        return;
+    }
     if (inst.load) {
         const auto value =
             inst.rd == 15 ? W17 : WReg { static_cast<int>(inst.rd) };
@@ -134,6 +152,8 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         }
     }
     Label checked, done;
+    const bool dual = inst.kind == arm::InstructionKind::DualTransfer;
+    const auto length = dual ? 8U : inst.access_size;
     if (key && inst.condition == 14)
         addresses_.begin_guard(*key);
     // W16 holds the offset/new base; W15 the effective guest address.
@@ -161,6 +181,10 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         code_.l(valid);
     }
     const auto table = inst.load ? X25 : X26;
+    if (dual) {
+        code_.AND(W17, W15, 3);
+        code_.CBNZ(W17, checked);
+    }
     code_.CBZ(table, checked);
     if (inst.access_size != 1) {
         Label unaligned_allowed;
@@ -172,7 +196,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         code_.l(unaligned_allowed);
         // Cross-page and wraparound accesses require one checked transaction.
         code_.AND(W17, W15, 4095);
-        code_.ADD(W17, W17, inst.access_size - 1U);
+        code_.ADD(W17, W17, length - 1U);
         code_.LSR(W17, W17, 12);
         code_.CBNZ(W17, checked);
     }
@@ -196,6 +220,9 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         code_.MOV(W17, 0);
     code_.STR(
         W17, X20, transfer_offset + offsetof(arm_memory::Transfer, value));
+    if (dual)
+        code_.STR(WReg { static_cast<int>(inst.rs) }, X20,
+            transfer_offset + offsetof(arm_memory::Transfer, second_value));
     code_.MOV(W17, arm_memory::control(inst));
     code_.STR(
         W17, X20, transfer_offset + offsetof(arm_memory::Transfer, control));

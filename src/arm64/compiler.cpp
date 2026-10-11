@@ -374,13 +374,17 @@ namespace {
                 inst.kind == arm::InstructionKind::IntegerTransform ||
                 inst.kind == arm::InstructionKind::WideImmediate ||
                 inst.kind == arm::InstructionKind::Swap ||
-                (inst.kind == arm::InstructionKind::Transfer && inst.load) ||
+                ((inst.kind == arm::InstructionKind::Transfer ||
+                     inst.kind == arm::InstructionKind::DualTransfer) && inst.load) ||
                 (inst.kind == arm::InstructionKind::SystemControl && inst.load))
                 invalidate(inst.rd);
+            if (inst.kind == arm::InstructionKind::DualTransfer && inst.load)
+                invalidate(inst.rs);
             if (inst.kind == arm::InstructionKind::Multiply &&
                 arm::multiply_writes_pair(inst))
                 invalidate(inst.rn);
             if ((inst.kind == arm::InstructionKind::Transfer ||
+                    inst.kind == arm::InstructionKind::DualTransfer ||
                     inst.kind == arm::InstructionKind::VectorTransfer) &&
                 inst.writeback)
                 invalidate(inst.rn);
@@ -612,6 +616,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             inst.kind == arm::InstructionKind::Unsupported ||
             ((inst.kind == arm::InstructionKind::TableBranch ||
                  inst.kind == arm::InstructionKind::Transfer ||
+                 inst.kind == arm::InstructionKind::DualTransfer ||
                  inst.kind == arm::InstructionKind::ExclusiveTransfer ||
                  inst.kind == arm::InstructionKind::Swap ||
                  inst.kind == arm::InstructionKind::MultipleTransfer ||
@@ -683,6 +688,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         if (!unsupported &&
             (inst.kind == arm::InstructionKind::TableBranch ||
                 inst.kind == arm::InstructionKind::Transfer ||
+                inst.kind == arm::InstructionKind::DualTransfer ||
                 inst.kind == arm::InstructionKind::MultipleTransfer ||
                 inst.kind == arm::InstructionKind::VectorTransfer))
             out.accesses_memory = true;
@@ -792,6 +798,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::TableBranch:
                 case arm::InstructionKind::Transfer:
+                case arm::InstructionKind::DualTransfer:
                     emit.transfer(inst, pc, *word, before, cost, it);
                     break;
                 case arm::InstructionKind::WideImmediate:

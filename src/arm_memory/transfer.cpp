@@ -2,6 +2,7 @@
 #include "arm_memory/transfer.hpp"
 #include "arm/integer_semantics.hpp"
 #include "endian.hpp"
+#include "dual_transfer.hpp"
 
 namespace ilemu::execution::arm_memory {
 Transfer prepare(const CpuThreadState& state, const arm::Instruction& inst,
@@ -23,11 +24,14 @@ Transfer prepare(const CpuThreadState& state, const arm::Instruction& inst,
     const auto updated = inst.add ? base + offset : base - offset;
     return { 0, inst.index ? updated : base, updated,
         inst.rd == 15 ? state.registers[15] + pc_store_offset : read(inst.rd),
-        control(inst) };
+        control(inst), inst.kind == arm::InstructionKind::DualTransfer
+                           ? read(inst.rs) : 0U };
 }
 Completion complete(
     CpuThreadState& state, MemoryAccess& memory, const Transfer& transfer)
 {
+    if ((transfer.control & dual_bit) != 0)
+        return complete_dual(state, memory, transfer);
     const auto size = transfer.control & 7U;
     const auto rd = (transfer.control >> 8U) & 15U;
     const auto rn = (transfer.control >> 12U) & 15U;

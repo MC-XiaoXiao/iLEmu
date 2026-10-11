@@ -13,6 +13,7 @@
 #include "vfp_scalar.hpp"
 #include "multiply_decode.hpp"
 #include "a32_transfer.hpp"
+#include "dual_transfer.hpp"
 #include "floating_decode.hpp"
 #include "floating_arithmetic_decode.hpp"
 #include "floating_comparison_decode.hpp"
@@ -38,6 +39,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         decode_vfp_multiple(out, word, false, vfp) ||
         decode_integer_transform(out, word, false, architecture) ||
         decode_swap(out, word) ||
+        decode_dual_transfer(out, word, false, architecture) ||
         decode_exclusive(out, word, false) ||
         decode_system_control(out, word, false) ||
         decode_simd_duplicate(out, word, false) ||
