@@ -14,6 +14,7 @@
 #include "floating_environment.hpp"
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
+#include "arm/floating_comparison.hpp"
 #include "arm/floating_system.hpp"
 #include "arm/pc_write.hpp"
 #include "system_emitter.hpp"
@@ -420,6 +421,11 @@ namespace {
             floating_.use();
             FloatingEmitter { code_, vectors_ }.arithmetic(v);
         }
+        void comparison(const arm::FloatingComparisonOperands& v)
+        {
+            floating_.use();
+            FloatingEmitter { code_, vectors_ }.comparison(v);
+        }
         void conversion(const arm::FloatingConversionOperands& v)
         {
             floating_.use();
@@ -595,7 +601,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                                              ? inst.immediate
                                              : arm::advance_it(it))
                                    : 0U;
-        const auto floating_mask = inst.kind == arm::InstructionKind::FloatingConversion
+        const auto floating_mask = inst.kind == arm::InstructionKind::FloatingComparison
+            ? arm::floating_comparison_controls
+            : inst.kind == arm::InstructionKind::FloatingConversion
             ? arm::floating_exception_enables
             : inst.kind == arm::InstructionKind::FloatingArithmetic
                 ? arm::floating_arithmetic_controls(
@@ -764,6 +772,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 case arm::InstructionKind::FloatingArithmetic:
                     emit.arithmetic(
                         std::get<arm::FloatingArithmeticOperands>(inst.vector));
+                    break;
+                case arm::InstructionKind::FloatingComparison:
+                    emit.comparison(
+                        std::get<arm::FloatingComparisonOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::FloatingConversion:
                     emit.conversion(

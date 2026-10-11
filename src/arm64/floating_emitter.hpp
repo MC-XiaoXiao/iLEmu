@@ -10,6 +10,7 @@ public:
         , vectors_(vectors)
     {
     }
+    void comparison(const arm::FloatingComparisonOperands&);
     void arithmetic(const arm::FloatingArithmeticOperands&);
     void conversion(const arm::FloatingConversionOperands&);
 

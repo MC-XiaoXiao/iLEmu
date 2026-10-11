@@ -8,6 +8,21 @@ extern "C" {
 #undef THREAD_LOCAL
 
 namespace ilemu::arm::floating {
+// ARM flush-to-zero input handling, shared by scalar arithmetic and comparison.
+inline std::uint64_t input(bool wide, std::uint64_t value,
+    std::uint32_t fpscr, std::uint32_t& exceptions) noexcept
+{
+    if (!wide)
+        value = static_cast<std::uint32_t>(value);
+    const auto exponent = wide ? 0x7ff0000000000000ULL : 0x7f800000ULL;
+    const auto fraction = wide ? 0x000fffffffffffffULL : 0x007fffffULL;
+    if ((fpscr & (1U << 24U)) != 0 && (value & exponent) == 0 &&
+        (value & fraction) != 0) {
+        value &= wide ? 0x8000000000000000ULL : 0x80000000ULL;
+        exceptions |= 0x80U;
+    }
+    return value;
+}
 // SoftFloat context is per host thread and restored even for nested use.
 class Context {
 public:

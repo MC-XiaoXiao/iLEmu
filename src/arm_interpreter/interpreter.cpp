@@ -8,6 +8,7 @@
 #include "arm/integer_transform.hpp"
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
+#include "arm/floating_comparison.hpp"
 #include "arm/floating_system.hpp"
 #include "arm/pc_write.hpp"
 #include "arm_memory/multiple.hpp"
@@ -121,6 +122,8 @@ RunResult ArmInterpreter::run(
                     (inst.kind == arm::InstructionKind::FloatingArithmetic &&
                         (state.fpscr & arm::floating_arithmetic_controls(
                             std::get<arm::FloatingArithmeticOperands>(inst.vector).operation)) != 0) ||
+                    (inst.kind == arm::InstructionKind::FloatingComparison &&
+                        (state.fpscr & arm::floating_comparison_controls) != 0) ||
                     (inst.kind == arm::InstructionKind::FloatingConversion &&
                         (state.fpscr & arm::floating_exception_enables) != 0) ||
                     ((inst.kind == arm::InstructionKind::TableBranch ||
@@ -308,6 +311,18 @@ RunResult ArmInterpreter::run(
                 if (v.wide)
                     state.extension_registers[v.destination + 1U] = static_cast<std::uint32_t>(result.value >> 32U);
                 state.fpscr |= result.exceptions;
+                break;
+            }
+            case arm::InstructionKind::FloatingComparison: {
+                const auto& v = std::get<arm::FloatingComparisonOperands>(inst.vector);
+                const auto value = [&](unsigned word) {
+                    return std::uint64_t { state.extension_registers[word] } |
+                        (v.wide ? std::uint64_t { state.extension_registers[word + 1U] } << 32U : 0U);
+                };
+                const auto comparison = arm::compare_floating(v,
+                    value(v.first), v.with_zero ? 0U : value(v.second), state.fpscr);
+                state.fpscr = (state.fpscr & 0x0fffffffU) |
+                    comparison.nzcv | comparison.exceptions;
                 break;
             }
             case arm::InstructionKind::FloatingConversion: {

@@ -15,6 +15,7 @@
 #include "a32_transfer.hpp"
 #include "floating_decode.hpp"
 #include "floating_arithmetic_decode.hpp"
+#include "floating_comparison_decode.hpp"
 #include "floating_system_decode.hpp"
 #include <bit>
 
@@ -25,6 +26,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
     Instruction out;
     out.condition = word >> 28;
     if (decode_floating_system(out, word, false, architecture) ||
+        decode_floating_comparison(out, word, false, vfp, architecture) ||
         decode_floating_arithmetic(out, word, false, vfp, architecture) ||
         decode_floating_conversion(out, word, false, vfp, architecture) ||
         decode_core_vector_move(out, word, false, vfp, architecture) ||

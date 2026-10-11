@@ -16,14 +16,7 @@ namespace {
         }
         std::uint64_t input(std::uint64_t value)
         {
-            if (!wide_)
-                value = static_cast<std::uint32_t>(value);
-            if ((fpscr_ & (1U << 24U)) != 0 && (value & exponent()) == 0 &&
-                (value & fraction()) != 0) {
-                value &= sign();
-                flags_ |= 0x80U;
-            }
-            return value;
+            return floating::input(wide_, value, fpscr_, flags_);
         }
         std::uint64_t add(std::uint64_t a, std::uint64_t b)
         {
