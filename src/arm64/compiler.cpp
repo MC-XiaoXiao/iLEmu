@@ -601,7 +601,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                                              ? inst.immediate
                                              : arm::advance_it(it))
                                    : 0U;
-        const auto floating_mask = inst.kind == arm::InstructionKind::FloatingComparison
+        const auto floating_mask = inst.kind == arm::InstructionKind::FloatingImmediate
+            ? arm::floating_vector_controls
+            : inst.kind == arm::InstructionKind::FloatingComparison
             ? arm::floating_comparison_controls
             : inst.kind == arm::InstructionKind::FloatingConversion
             ? arm::floating_exception_enables
@@ -772,6 +774,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 case arm::InstructionKind::FloatingArithmetic:
                     emit.arithmetic(
                         std::get<arm::FloatingArithmeticOperands>(inst.vector));
+                    break;
+                case arm::InstructionKind::FloatingImmediate:
+                    FloatingEmitter { emit.code(), emit.vectors() }.immediate(
+                        std::get<arm::FloatingImmediateOperands>(inst.vector), inst.condition == 14);
                     break;
                 case arm::InstructionKind::FloatingComparison:
                     emit.comparison(

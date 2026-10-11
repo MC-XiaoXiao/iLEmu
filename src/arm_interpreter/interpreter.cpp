@@ -9,6 +9,7 @@
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
 #include "arm/floating_comparison.hpp"
+#include "arm/floating_immediate.hpp"
 #include "arm/floating_system.hpp"
 #include "arm/pc_write.hpp"
 #include "arm_memory/multiple.hpp"
@@ -55,6 +56,7 @@ RunResult ArmInterpreter::run(
     RunResult result;
     const auto profile = source.thumb_arithmetic_profile();
     const auto vfp = source.vfp_register_profile();
+    const auto floating_instructions = source.vfp_instruction_profile();
     const auto architecture = source.arm_instruction_profile();
     for (;;) {
         result.pc = state.registers[15];
@@ -105,11 +107,11 @@ RunResult ArmInterpreter::run(
             }
             result.instruction =
                 *first | (std::uint32_t { second.value_or(0) } << 16U);
-            inst = arm::decode_t32(*first, second, it, profile, vfp, architecture);
+            inst = arm::decode_t32(*first, second, it, profile, vfp, architecture, floating_instructions);
         } else {
             result.instruction = source.fetch32(result.pc);
             if (result.instruction)
-                inst = arm::decode_a32(*result.instruction, vfp, architecture);
+                inst = arm::decode_a32(*result.instruction, vfp, architecture, floating_instructions);
         }
         if (!result.instruction) {
             result.reason = StopReason::FetchFault;
@@ -122,6 +124,8 @@ RunResult ArmInterpreter::run(
                     (inst.kind == arm::InstructionKind::FloatingArithmetic &&
                         (state.fpscr & arm::floating_arithmetic_controls(
                             std::get<arm::FloatingArithmeticOperands>(inst.vector).operation)) != 0) ||
+                    (inst.kind == arm::InstructionKind::FloatingImmediate &&
+                        (state.fpscr & arm::floating_vector_controls) != 0) ||
                     (inst.kind == arm::InstructionKind::FloatingComparison &&
                         (state.fpscr & arm::floating_comparison_controls) != 0) ||
                     (inst.kind == arm::InstructionKind::FloatingConversion &&
@@ -311,6 +315,14 @@ RunResult ArmInterpreter::run(
                 if (v.wide)
                     state.extension_registers[v.destination + 1U] = static_cast<std::uint32_t>(result.value >> 32U);
                 state.fpscr |= result.exceptions;
+                break;
+            }
+            case arm::InstructionKind::FloatingImmediate: {
+                const auto& v = std::get<arm::FloatingImmediateOperands>(inst.vector);
+                const auto value = arm::expand_floating_immediate(v);
+                state.extension_registers[v.destination] = static_cast<std::uint32_t>(value);
+                if (v.wide)
+                    state.extension_registers[v.destination + 1U] = static_cast<std::uint32_t>(value >> 32U);
                 break;
             }
             case arm::InstructionKind::FloatingComparison: {

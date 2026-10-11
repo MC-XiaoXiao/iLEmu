@@ -42,6 +42,13 @@ ExecutionMemory::vfp_register_profile() const noexcept
                ? execution::VfpRegisterProfile::D16
                : execution::VfpRegisterProfile::D32;
 }
+execution::VfpInstructionProfile
+ExecutionMemory::vfp_instruction_profile() const noexcept
+{
+    return impl_->model_.kind() == ArmCpuModelKind::Arm1176JzfS
+               ? execution::VfpInstructionProfile::Vfpv2
+               : execution::VfpInstructionProfile::Vfpv3;
+}
 execution::ArmInstructionProfile
 ExecutionMemory::arm_instruction_profile() const noexcept
 {

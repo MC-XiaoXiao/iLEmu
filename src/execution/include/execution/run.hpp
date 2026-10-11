@@ -113,6 +113,10 @@ public:
     {
         return VfpRegisterProfile::D32;
     }
+    virtual VfpInstructionProfile vfp_instruction_profile() const noexcept
+    {
+        return VfpInstructionProfile::Vfpv3;
+    }
     virtual ArmInstructionProfile arm_instruction_profile() const noexcept
     {
         return ArmInstructionProfile::Armv6T2;

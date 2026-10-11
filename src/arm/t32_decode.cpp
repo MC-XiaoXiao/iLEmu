@@ -18,6 +18,7 @@
 #include "floating_decode.hpp"
 #include "floating_arithmetic_decode.hpp"
 #include "floating_comparison_decode.hpp"
+#include "floating_immediate_decode.hpp"
 #include "floating_system_decode.hpp"
 #include <bit>
 
@@ -31,7 +32,8 @@ namespace {
 }
 Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     unsigned it, execution::ThumbArithmeticProfile profile,
-    execution::VfpRegisterProfile vfp, execution::ArmInstructionProfile architecture) noexcept
+    execution::VfpRegisterProfile vfp, execution::ArmInstructionProfile architecture,
+    execution::VfpInstructionProfile floating_instructions) noexcept
 {
     Instruction out;
     out.size = thumb_is_wide(first) ? 4U : 2U;
@@ -58,6 +60,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             return out;
         const unsigned tail = *second;
         if (decode_floating_system(out, (word << 16U) | tail, true, architecture) ||
+            decode_floating_immediate(out, (word << 16U) | tail, true, vfp, architecture, floating_instructions) ||
             decode_floating_comparison(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_floating_arithmetic(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_floating_conversion(out, (word << 16U) | tail, true, vfp, architecture) ||

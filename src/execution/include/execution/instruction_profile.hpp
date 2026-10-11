@@ -10,6 +10,9 @@ enum class AluPcWriteProfile { Branch, Interworking };
 // VFPv2 and VFPv3-D16 expose D0..D15; full VFPv3 exposes D0..D31.
 // Both banks contain the same thirty-two single-precision S registers.
 enum class VfpRegisterProfile { D16, D32 };
+// Instruction revisions are independent of the D16/D32 register bank.
+// VFPv3 and later add scalar floating-point immediate moves.
+enum class VfpInstructionProfile { Vfpv2, Vfpv3 };
 // VFPv3/v4 exception enables are RAZ/WI. VFPv2 and the U variants
 // expose trap controls independently of the size of the register bank.
 enum class FloatingExceptionProfile { Untrapped, TrapEnables };

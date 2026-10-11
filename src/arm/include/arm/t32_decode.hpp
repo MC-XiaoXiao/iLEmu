@@ -26,5 +26,6 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     unsigned it, execution::ThumbArithmeticProfile =
         execution::ThumbArithmeticProfile::Architectural,
     execution::VfpRegisterProfile = execution::VfpRegisterProfile::D32,
-    execution::ArmInstructionProfile = execution::ArmInstructionProfile::Armv6T2) noexcept;
+    execution::ArmInstructionProfile = execution::ArmInstructionProfile::Armv6T2,
+    execution::VfpInstructionProfile = execution::VfpInstructionProfile::Vfpv3) noexcept;
 }

@@ -10,6 +10,7 @@ InstructionWindow::InstructionWindow(InstructionSource& source,
     : source_(source), region_(region), thumb_(thumb)
     , arithmetic_(source.thumb_arithmetic_profile())
     , vfp_(source.vfp_register_profile())
+    , floating_instructions_(source.vfp_instruction_profile())
     , architecture_(source.arm_instruction_profile())
 {
 }
@@ -30,12 +31,12 @@ std::optional<DecodedInstruction> InstructionWindow::decode(
         if (first && (!arm::thumb_is_wide(*first) || second)) {
             out.word = *first | (std::uint32_t { second.value_or(0) } << 16U);
             out.instruction = arm::decode_t32(*first, second, it,
-                arithmetic_, vfp_, architecture_);
+                arithmetic_, vfp_, architecture_, floating_instructions_);
         }
     } else {
         out.word = source_.fetch32(out.pc);
         if (out.word)
-            out.instruction = arm::decode_a32(*out.word, vfp_, architecture_);
+            out.instruction = arm::decode_a32(*out.word, vfp_, architecture_, floating_instructions_);
     }
     return out;
 }

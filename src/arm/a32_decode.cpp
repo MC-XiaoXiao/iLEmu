@@ -16,16 +16,19 @@
 #include "floating_decode.hpp"
 #include "floating_arithmetic_decode.hpp"
 #include "floating_comparison_decode.hpp"
+#include "floating_immediate_decode.hpp"
 #include "floating_system_decode.hpp"
 #include <bit>
 
 namespace ilemu::arm {
 Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
-    execution::ArmInstructionProfile architecture) noexcept
+    execution::ArmInstructionProfile architecture,
+    execution::VfpInstructionProfile floating_instructions) noexcept
 {
     Instruction out;
     out.condition = word >> 28;
     if (decode_floating_system(out, word, false, architecture) ||
+        decode_floating_immediate(out, word, false, vfp, architecture, floating_instructions) ||
         decode_floating_comparison(out, word, false, vfp, architecture) ||
         decode_floating_arithmetic(out, word, false, vfp, architecture) ||
         decode_floating_conversion(out, word, false, vfp, architecture) ||

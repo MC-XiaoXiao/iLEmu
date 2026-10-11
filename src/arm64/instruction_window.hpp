@@ -34,6 +34,7 @@ private:
     bool thumb_;
     ThumbArithmeticProfile arithmetic_;
     VfpRegisterProfile vfp_;
+    VfpInstructionProfile floating_instructions_;
     ArmInstructionProfile architecture_;
     std::deque<DecodedInstruction> pending_;
 };
