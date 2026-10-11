@@ -36,6 +36,23 @@ public:
     {
         code_.DUP(scratch.D2(), read(d).Delem()[d % 2U]);
     }
+    // Read-only scalar views need a copy only for an upper lane.
+    oaknut::SReg scalar_s(unsigned s, oaknut::QReg scratch)
+    {
+        const auto bank = read(s / 2U);
+        if (s % 4U == 0)
+            return oaknut::SReg { bank.index() };
+        code_.DUP(scratch.S4(), bank.Selem()[s % 4U]);
+        return oaknut::SReg { scratch.index() };
+    }
+    oaknut::DReg scalar_d(unsigned d, oaknut::QReg scratch)
+    {
+        const auto bank = read(d);
+        if (d % 2U == 0)
+            return oaknut::DReg { bank.index() };
+        code_.DUP(scratch.D2(), bank.Delem()[d % 2U]);
+        return oaknut::DReg { scratch.index() };
+    }
     void write_d(unsigned d, oaknut::QReg value)
     {
         code_.INS(write(d).Delem()[d % 2U], value.Delem()[0]);

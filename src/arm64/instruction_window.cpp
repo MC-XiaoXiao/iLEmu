@@ -3,6 +3,7 @@
 #include "flag_effects.hpp"
 #include "arm/a32_decode.hpp"
 #include "arm/t32_decode.hpp"
+#include "arm/floating_comparison.hpp"
 
 namespace ilemu::execution::arm64 {
 InstructionWindow::InstructionWindow(InstructionSource& source,
@@ -43,8 +44,10 @@ std::optional<DecodedInstruction> InstructionWindow::decode(
 void InstructionWindow::match(std::uint32_t pc, unsigned it)
 {
     if (!pending_.empty() &&
-        (pending_.front().pc != pc || pending_.front().it != it))
+        (pending_.front().pc != pc || pending_.front().it != it)) {
         pending_.clear();
+        comparison_flags_dead_.reset();
+    }
 }
 std::optional<DecodedInstruction> InstructionWindow::take(
     std::uint32_t pc, unsigned it, bool allow_straddle)
@@ -54,6 +57,14 @@ std::optional<DecodedInstruction> InstructionWindow::take(
         return decode(pc, it, allow_straddle);
     auto out = pending_.front();
     pending_.pop_front();
+    if (comparison_flags_dead_) {
+        if (--comparison_flags_dead_->reusable_prefix == 0)
+            comparison_flags_dead_.reset();
+        else {
+            --comparison_flags_dead_->instructions;
+            comparison_flags_dead_->ticks -= *out.ticks;
+        }
+    }
     return out;
 }
 std::uint64_t InstructionWindow::timing(DecodedInstruction& entry)
@@ -67,10 +78,27 @@ bool InstructionWindow::flags_dead(const arm::Instruction& inst,
     std::uint64_t remaining_ticks)
 {
     const auto producer = flag_effects(inst);
-    auto live = producer.possible_write;
-    if (live == 0 || producer.boundary)
+    if (producer.possible_write == 0 || producer.boundary)
+        return false;
+    return flags_dead(producer.possible_write, next_pc, next_it,
+        remaining_instructions, remaining_ticks, 0);
+}
+bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
+    unsigned next_it, unsigned remaining_instructions,
+    std::uint64_t remaining_ticks, std::uint32_t guarded_controls)
+{
+    if (live == 0)
         return false;
     match(next_pc, next_it);
+    const bool reusable = live == 0xfU &&
+        guarded_controls == arm::floating_comparison_controls;
+    if (reusable && comparison_flags_dead_) {
+        const auto& proof = *comparison_flags_dead_;
+        return proof.instructions <= remaining_instructions &&
+            proof.ticks <= remaining_ticks;
+    }
+    const auto initial_ticks = remaining_ticks;
+    unsigned reusable_prefix = 0;
     std::uint64_t pc = next_pc;
     auto it = next_it;
     for (unsigned i = 0; i < remaining_instructions; ++i) {
@@ -81,9 +109,17 @@ bool InstructionWindow::flags_dead(const arm::Instruction& inst,
             pending_.push_back(*entry);
         }
         auto& entry = pending_[i];
+        if (reusable && live == 0xfU &&
+            guarded_controls == arm::floating_comparison_controls)
+            reusable_prefix = i + 1U;
         if (!entry.word || pc + entry.instruction.size > region_.end)
             return false;
-        const auto effects = flag_effects(entry.instruction);
+        auto effects = flag_effects(entry.instruction);
+        if (entry.instruction.kind == arm::InstructionKind::FloatingComparison &&
+            entry.instruction.condition != 15 &&
+            (guarded_controls & arm::floating_comparison_controls) ==
+                arm::floating_comparison_controls)
+            effects.boundary = false;
         if (effects.boundary || (effects.read & live) != 0)
             return false;
         const auto cost = timing(entry);
@@ -91,8 +127,18 @@ bool InstructionWindow::flags_dead(const arm::Instruction& inst,
             return false;
         remaining_ticks -= cost;
         live &= ~effects.guaranteed_write;
-        if (live == 0)
+        if (live == 0) {
+            // Transparent prefixes share the same overwrite proof. Keeping
+            // its paid length avoids rescanning every suffix of a long run
+            // of comparisons, without relaxing either compilation limit.
+            if (reusable_prefix != 0)
+                comparison_flags_dead_ = FlagProof { reusable_prefix,
+                    i + 1U, initial_ticks - remaining_ticks };
             return true;
+        }
+        if (entry.instruction.kind == arm::InstructionKind::FloatingSystem &&
+            !std::get<arm::FloatingSystemOperands>(entry.instruction.vector).to_core)
+            guarded_controls = 0;
         pc += entry.instruction.size;
         it = thumb_ ? (entry.instruction.kind == arm::InstructionKind::IfThen
                           ? entry.instruction.immediate : arm::advance_it(it))

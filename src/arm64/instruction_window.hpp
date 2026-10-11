@@ -24,8 +24,17 @@ public:
     bool flags_dead(const arm::Instruction&, std::uint32_t next_pc,
         unsigned next_it, unsigned remaining_instructions,
         std::uint64_t remaining_ticks);
+    // A host clobber may cross comparisons whose trap controls were checked
+    // clear on the executing path. FPSCR writes revoke that guarantee.
+    bool flags_dead(unsigned mask, std::uint32_t next_pc, unsigned next_it,
+        unsigned remaining_instructions, std::uint64_t remaining_ticks,
+        std::uint32_t guarded_controls);
 
 private:
+    struct FlagProof {
+        unsigned reusable_prefix, instructions;
+        std::uint64_t ticks;
+    };
     std::optional<DecodedInstruction> decode(std::uint64_t pc, unsigned it,
         bool allow_straddle);
     void match(std::uint32_t pc, unsigned it);
@@ -37,5 +46,6 @@ private:
     VfpInstructionProfile floating_instructions_;
     ArmInstructionProfile architecture_;
     std::deque<DecodedInstruction> pending_;
+    std::optional<FlagProof> comparison_flags_dead_;
 };
 }

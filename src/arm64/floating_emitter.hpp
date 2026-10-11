@@ -11,7 +11,7 @@ public:
     {
     }
     void immediate(const arm::FloatingImmediateOperands&, bool unconditional);
-    void comparison(const arm::FloatingComparisonOperands&);
+    void comparison(const arm::FloatingComparisonOperands&, bool preserve_apsr);
     void arithmetic(const arm::FloatingArithmeticOperands&);
     void conversion(const arm::FloatingConversionOperands&);
 

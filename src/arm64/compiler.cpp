@@ -29,6 +29,7 @@
 #include <oaknut/oaknut.hpp>
 #include <type_traits>
 #include <tuple>
+#include <utility>
 
 namespace ilemu::execution::arm64 {
 namespace {
@@ -421,10 +422,11 @@ namespace {
             floating_.use();
             FloatingEmitter { code_, vectors_ }.arithmetic(v);
         }
-        void comparison(const arm::FloatingComparisonOperands& v)
+        void comparison(const arm::FloatingComparisonOperands& v, bool preserve_apsr)
         {
             floating_.use();
-            FloatingEmitter { code_, vectors_ }.comparison(v);
+            floating_.use_status();
+            FloatingEmitter { code_, vectors_ }.comparison(v, preserve_apsr);
         }
         void conversion(const arm::FloatingConversionOperands& v)
         {
@@ -432,13 +434,12 @@ namespace {
             FloatingEmitter { code_, vectors_ }.conversion(v);
         }
         void floating_system(const arm::FloatingSystemOperands& v,
-            FloatingExceptionProfile profile)
+            FloatingExceptionProfile profile, bool comparison_flags)
         {
+            floating_.use_status();
             if (v.to_core && v.core == 15) {
-                // Cumulative exceptions cannot change FPSCR.NZCV. Its
-                // condition bits are already in the architectural state.
-                code_.LDR(W16, X19, offsetof(CpuThreadState, fpscr));
-                code_.MSR(SystemReg::NZCV, X16);
+                if (!comparison_flags)
+                    code_.MSR(SystemReg::NZCV, X29);
                 return;
             }
             floating_.use();
@@ -555,8 +556,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     const auto start = pc;
     const auto start_it = it;
     unsigned cycles = 0, cycle_length = 0;
+    bool comparison_flags_live = false;
     const auto limit = single_step ? 1U : maximum_trace_instructions;
     for (unsigned n = 0; n < limit; ++n) {
+        const bool comparison_flags = std::exchange(comparison_flags_live, false);
         if (pc < region.begin || pc >= region.end)
             break;
         emit.location(it, thumb ? 2U : 4U);
@@ -733,7 +736,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 case arm::InstructionKind::FloatingSystem:
                     emit.floating_system(
                         std::get<arm::FloatingSystemOperands>(inst.vector),
-                        source.floating_exception_profile());
+                        source.floating_exception_profile(),
+                        comparison_flags && inst.condition == 14);
                     break;
                 case arm::InstructionKind::ClearExclusive:
                 case arm::InstructionKind::Swap:
@@ -781,10 +785,20 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     FloatingEmitter { emit.code(), emit.vectors() }.immediate(
                         std::get<arm::FloatingImmediateOperands>(inst.vector), inst.condition == 14);
                     break;
-                case arm::InstructionKind::FloatingComparison:
+                case arm::InstructionKind::FloatingComparison: {
+                    const bool preserve_apsr = single_step || straddles ||
+                        closes_natural_cycle ||
+                        !window.flags_dead(0xfU, next_pc, next_it,
+                            limit - n - 1U, maximum_ticks - out.maximum_ticks,
+                            arm::floating_comparison_controls);
                     emit.comparison(
-                        std::get<arm::FloatingComparisonOperands>(inst.vector));
+                        std::get<arm::FloatingComparisonOperands>(inst.vector),
+                        preserve_apsr);
+                    // Only an adjacent unconditional VMRS can inherit these
+                    // hardware flags. Other instructions revoke the shortcut.
+                    comparison_flags_live = !preserve_apsr && inst.condition == 14;
                     break;
+                }
                 case arm::InstructionKind::FloatingConversion:
                     emit.conversion(
                         std::get<arm::FloatingConversionOperands>(inst.vector));
