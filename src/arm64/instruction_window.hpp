@@ -32,6 +32,7 @@ public:
 
 private:
     struct FlagProof {
+        // Zero instructions records a terminal failure before full overwrite.
         unsigned reusable_prefix, instructions;
         std::uint64_t ticks;
     };

@@ -60,7 +60,7 @@ std::optional<DecodedInstruction> InstructionWindow::take(
     if (comparison_flags_dead_) {
         if (--comparison_flags_dead_->reusable_prefix == 0)
             comparison_flags_dead_.reset();
-        else {
+        else if (comparison_flags_dead_->instructions != 0) {
             --comparison_flags_dead_->instructions;
             comparison_flags_dead_->ticks -= *out.ticks;
         }
@@ -94,18 +94,24 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
         guarded_controls == arm::floating_comparison_controls;
     if (reusable && comparison_flags_dead_) {
         const auto& proof = *comparison_flags_dead_;
-        return proof.instructions <= remaining_instructions &&
+        return proof.instructions != 0 &&
+            proof.instructions <= remaining_instructions &&
             proof.ticks <= remaining_ticks;
     }
     const auto initial_ticks = remaining_ticks;
     unsigned reusable_prefix = 0;
     std::uint64_t pc = next_pc;
     auto it = next_it;
+    const auto terminal_failure = [&] {
+        if (reusable_prefix != 0)
+            comparison_flags_dead_ = FlagProof { reusable_prefix, 0, 0 };
+        return false;
+    };
     for (unsigned i = 0; i < remaining_instructions; ++i) {
         if (i == pending_.size()) {
             auto entry = decode(pc, it, false);
             if (!entry)
-                return false;
+                return terminal_failure();
             pending_.push_back(*entry);
         }
         auto& entry = pending_[i];
@@ -113,7 +119,7 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
             guarded_controls == arm::floating_comparison_controls)
             reusable_prefix = i + 1U;
         if (!entry.word || pc + entry.instruction.size > region_.end)
-            return false;
+            return terminal_failure();
         auto effects = flag_effects(entry.instruction);
         if (entry.instruction.kind == arm::InstructionKind::FloatingComparison &&
             entry.instruction.condition != 15 &&
@@ -121,9 +127,11 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
                 arm::floating_comparison_controls)
             effects.boundary = false;
         if (effects.boundary || (effects.read & live) != 0)
-            return false;
+            return terminal_failure();
         const auto cost = timing(entry);
-        if (cost == 0 || cost > remaining_ticks)
+        if (cost == 0)
+            return terminal_failure();
+        if (cost > remaining_ticks)
             return false;
         remaining_ticks -= cost;
         live &= ~effects.guaranteed_write;
