@@ -11,6 +11,7 @@ enum class InstructionKind {
     Multiply,
     Transfer,
     ExclusiveTransfer,
+    Swap,
     ClearExclusive,
     MultipleTransfer,
     Branch,

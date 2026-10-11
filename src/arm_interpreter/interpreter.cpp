@@ -189,6 +189,7 @@ RunResult ArmInterpreter::run(
                     ((inst.kind == arm::InstructionKind::TableBranch ||
                          inst.kind == arm::InstructionKind::Transfer ||
                          inst.kind == arm::InstructionKind::ExclusiveTransfer ||
+                         inst.kind == arm::InstructionKind::Swap ||
                          inst.kind == arm::InstructionKind::MultipleTransfer ||
                          inst.kind == arm::InstructionKind::VectorTransfer) &&
                         !source.data_memory())))) {
@@ -219,6 +220,7 @@ RunResult ArmInterpreter::run(
         if (passed) {
             switch (inst.kind) {
             case arm::InstructionKind::ClearExclusive:
+            case arm::InstructionKind::Swap:
             case arm::InstructionKind::ExclusiveTransfer: {
                 const auto transfer = arm_memory::prepare_exclusive(state, inst);
                 lease.reset();
@@ -408,6 +410,7 @@ RunResult ArmInterpreter::run(
                 (inst.kind == arm::InstructionKind::TableBranch ||
                     inst.kind == arm::InstructionKind::Transfer ||
                     inst.kind == arm::InstructionKind::ExclusiveTransfer ||
+                    inst.kind == arm::InstructionKind::Swap ||
                     inst.kind == arm::InstructionKind::ClearExclusive ||
                     inst.kind == arm::InstructionKind::MultipleTransfer ||
                     inst.kind == arm::InstructionKind::VectorTransfer ||

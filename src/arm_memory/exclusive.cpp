@@ -17,7 +17,11 @@ ExclusiveTransfer prepare_exclusive(const CpuThreadState& state,
 Completion complete_exclusive(CpuThreadState& state, MemoryAccess* memory,
     std::unique_ptr<ExclusiveMonitor>& monitor, const ExclusiveTransfer& transfer)
 {
-    if ((transfer.control & exclusive_clear) != 0) {
+    if ((transfer.control & exclusive_exchange) != 0) {
+        const auto completion = complete_exchange(state, memory, transfer);
+        if (completion.reason != StopReason::None)
+            return completion;
+    } else if ((transfer.control & exclusive_clear) != 0) {
         if (monitor)
             monitor->clear();
     } else {

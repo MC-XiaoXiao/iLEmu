@@ -325,6 +325,7 @@ namespace {
                 inst.kind == arm::InstructionKind::PackHalfword ||
                 inst.kind == arm::InstructionKind::IntegerTransform ||
                 inst.kind == arm::InstructionKind::WideImmediate ||
+                inst.kind == arm::InstructionKind::Swap ||
                 (inst.kind == arm::InstructionKind::Transfer && inst.load) ||
                 (inst.kind == arm::InstructionKind::SystemControl && inst.load))
                 invalidate(inst.rd);
@@ -513,6 +514,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             ((inst.kind == arm::InstructionKind::TableBranch ||
                  inst.kind == arm::InstructionKind::Transfer ||
                  inst.kind == arm::InstructionKind::ExclusiveTransfer ||
+                 inst.kind == arm::InstructionKind::Swap ||
                  inst.kind == arm::InstructionKind::MultipleTransfer ||
                  inst.kind == arm::InstructionKind::VectorTransfer) &&
                 !source.data_memory());
@@ -644,6 +646,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 emit.conditional_skip(inst.condition, skip);
                 switch (inst.kind) {
                 case arm::InstructionKind::ClearExclusive:
+                case arm::InstructionKind::Swap:
                 case arm::InstructionKind::ExclusiveTransfer:
                     ExclusiveEmitter { emit.code() }.emit(inst, cost,
                         emit.exit(static_cast<StopReason>(exclusive_exit),
@@ -719,6 +722,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 dynamic_end = true;
             }
             if ((inst.kind == arm::InstructionKind::ExclusiveTransfer ||
+                 inst.kind == arm::InstructionKind::Swap ||
                  inst.kind == arm::InstructionKind::ClearExclusive) && inst.condition == 14)
                 break;
             // ISB ends the instruction view even when conditional. A false

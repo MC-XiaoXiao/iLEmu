@@ -9,13 +9,16 @@ struct ExclusiveTransfer {
 };
 inline constexpr std::uint32_t exclusive_load = 1U << 4U;
 inline constexpr std::uint32_t exclusive_clear = 1U << 5U;
+inline constexpr std::uint32_t exclusive_exchange = 1U << 6U;
 constexpr std::uint32_t exclusive_control(const arm::Instruction& inst)
 {
     return inst.access_size | (inst.load ? exclusive_load : 0U) |
         (inst.kind == arm::InstructionKind::ClearExclusive ? exclusive_clear : 0U) |
+        (inst.kind == arm::InstructionKind::Swap ? exclusive_exchange : 0U) |
         (inst.rd << 8U) | (inst.rs << 12U) | (inst.size << 16U);
 }
 ExclusiveTransfer prepare_exclusive(const CpuThreadState&, const arm::Instruction&);
+Completion complete_exchange(CpuThreadState&, MemoryAccess*, const ExclusiveTransfer&);
 Completion complete_exclusive(CpuThreadState&, MemoryAccess*,
     std::unique_ptr<ExclusiveMonitor>&, const ExclusiveTransfer&);
 }
