@@ -1,10 +1,35 @@
 # Berkeley SoftFloat Release 3e, official source archive:
 # https://www.jhauser.us/arithmetic/SoftFloat-3e.zip
-# Only the dependency closure for scalar int32/float32/float64 conversions.
+# Dependency closure for scalar int32 conversions and float32/float64 arithmetic.
 if(NOT CMAKE_C_COMPILER_LOADED)
     enable_language(C)
 endif()
 add_library(ilemu_softfloat STATIC
+    source/ARM-VFPv2/s_propagateNaNF32UI.c
+    source/ARM-VFPv2/s_propagateNaNF64UI.c
+    source/f32_add.c
+    source/f32_div.c
+    source/f32_mul.c
+    source/f32_sqrt.c
+    source/f32_sub.c
+    source/f64_add.c
+    source/f64_div.c
+    source/f64_mul.c
+    source/f64_sqrt.c
+    source/f64_sub.c
+    source/s_addMagsF32.c
+    source/s_addMagsF64.c
+    source/s_approxRecip32_1.c
+    source/s_approxRecipSqrt32_1.c
+    source/s_approxRecipSqrt_1Ks.c
+    source/s_approxRecip_1Ks.c
+    source/s_countLeadingZeros64.c
+    source/s_mul64To128.c
+    source/s_normRoundPackToF64.c
+    source/s_normSubnormalF64Sig.c
+    source/s_roundPackToF64.c
+    source/s_subMagsF32.c
+    source/s_subMagsF64.c
     source/f32_to_f64.c
     source/f32_to_i32.c
     source/f32_to_ui32.c
