@@ -7,12 +7,14 @@ VectorTransfer prepare_vector(const CpuThreadState& state,
     const arm::Instruction& inst, bool permits_unaligned)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
-    const auto base = state.registers[inst.rn] +
+    auto base = state.registers[inst.rn] +
         (inst.rn == 15 ? inst.pc_offset : 0U);
+    if (inst.rn == 15 && inst.align_pc)
+        base &= ~3U;
     const auto length = vector_transfer_length(v);
     if (v.mode == arm::VectorTransferMode::ScalarMultiple) {
         const auto updated = inst.add ? base + inst.immediate : base - inst.immediate;
-        return { 0, inst.add ? base : updated, updated, vector_control(inst), 4U };
+        return { 0, inst.index ? updated : base, updated, vector_control(inst), 4U };
     }
     const auto offset =
         inst.rm == 13 || inst.rm == 15 ? length : state.registers[inst.rm];

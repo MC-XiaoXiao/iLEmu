@@ -31,6 +31,7 @@ bool decode_vfp_multiple(Instruction& out, std::uint32_t word, bool thumb,
     out.rn = rn;
     out.load = (word & (1U << 20U)) != 0;
     out.add = add;
+    out.index = pre;
     out.writeback = writeback;
     // Deprecated FLDMX/FSTMX odd counts skip the final word but include it in
     // address calculation/writeback, as specified by the ARMv7 pseudocode.

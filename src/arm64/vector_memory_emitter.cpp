@@ -124,7 +124,8 @@ void VectorMemoryEmitter::emit(
     const bool scalar = v.mode == arm::VectorTransferMode::ScalarMultiple;
     const auto natural_alignment = scalar ? 4U : v.element_size;
     const bool cacheable = !inst.writeback && inst.rn != 15;
-    const AddressCache::Key key { inst.rn, length, 0, true, inst.load,
+    const AddressCache::Key key { inst.rn, length,
+        scalar && inst.index ? inst.immediate : 0U, inst.add, inst.load,
         v.alignment, natural_alignment };
     if (cacheable) {
         if (const auto pointer = addresses_.find(key)) {
@@ -138,16 +139,17 @@ void VectorMemoryEmitter::emit(
     if (cacheable && inst.condition == 14)
         addresses_.begin_guard(key);
     if (inst.rn == 15)
-        code_.MOV(W15, pc + inst.pc_offset);
+        code_.MOV(W15, inst.align_pc ? (pc + inst.pc_offset) & ~3U
+                                   : pc + inst.pc_offset);
     else
         code_.MOV(W15, WReg { static_cast<int>(inst.rn) });
     if (scalar) {
         if (inst.add)
             code_.ADD(W16, W15, inst.immediate);
-        else {
+        else
             code_.SUB(W16, W15, inst.immediate);
+        if (inst.index)
             code_.MOV(W15, W16);
-        }
     } else if (inst.rm == 13 || inst.rm == 15)
         code_.ADD(W16, W15, length);
     else

@@ -60,7 +60,8 @@ struct VectorBitwiseOperands {
 enum class VectorTransferMode { Multiple, Lane, Replicate, ScalarMultiple };
 struct VectorTransferOperands {
     // first names D registers except ScalarMultiple with element_size=4,
-    // which names S registers. ScalarMultiple always requires word alignment.
+    // which names S registers. ScalarMultiple always requires word alignment;
+    // Instruction.index selects base+/-immediate rather than base addressing.
     unsigned first = 0, count = 0, element_size = 0, alignment = 1;
     VectorTransferMode mode = VectorTransferMode::Multiple;
     unsigned lane = 0;
