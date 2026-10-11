@@ -58,6 +58,17 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
     // Unconditional encoding space has different decode rules.
     if (out.condition == 15)
         return out;
+    // MOVW/MOVT share the existing Thumb wide-immediate execution path.
+    if ((word & 0x0fb00000U) == 0x03000000U) {
+        out.rd = (word >> 12U) & 15U;
+        if (architecture == execution::ArmInstructionProfile::Armv6 ||
+            out.rd == 15)
+            return out;
+        out.kind = InstructionKind::WideImmediate;
+        out.immediate = ((word >> 4U) & 0xf000U) | (word & 0xfffU);
+        out.opcode = (word >> 22U) & 1U;
+        return out;
+    }
     if ((word & 0xfff000f0U) == 0xe1200070U) {
         out.kind = InstructionKind::Breakpoint;
         out.immediate = ((word >> 4U) & 0xfff0U) | (word & 15U);
