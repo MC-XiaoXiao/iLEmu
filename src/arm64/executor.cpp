@@ -82,9 +82,11 @@ public:
                 step ? UINT64_MAX : request.tick_budget - result.ticks_consumed;
             // Short budget tails execute a native one-instruction entry. This
             // preserves the interpreter's budget boundary without per-op polls.
-            // Equality also prevents observing a fault immediately after the
-            // final paid instruction, before the next budget check.
-            if (!step && selected->maximum_ticks >= remaining)
+            // At equality an unconditional paid stop returns before fetching
+            // a successor. Other traces must not observe a successor fault
+            // before the next budget check.
+            if (!step && selected->maximum_ticks >= remaining &&
+                (!selected->ends_with_stop || selected->maximum_ticks != remaining))
                 selected = &cache_.entry(source, binding, result.pc, true,
                     big_endian, thumb, it_state);
             const auto allowance = UINT64_MAX - result.ticks_consumed;

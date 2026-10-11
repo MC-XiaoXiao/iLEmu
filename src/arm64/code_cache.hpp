@@ -19,6 +19,7 @@ public:
         std::uint64_t maximum_ticks;
         bool closed;
         bool accesses_memory;
+        bool ends_with_stop;
         std::optional<std::uint32_t> first_instruction;
         std::size_t accounted_bytes;
         CycleTier tier;

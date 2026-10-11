@@ -40,6 +40,9 @@ struct CompiledTrace {
     unsigned instructions = 0;
     bool closed = false;
     bool accesses_memory = false;
+    // Every path reaching maximum_ticks returns an architectural stop before
+    // fetching a successor. Earlier exits have strictly smaller paid costs.
+    bool ends_with_stop = false;
     std::optional<std::uint32_t> first_instruction;
 };
 CompiledTrace compile(InstructionSource&, std::uint32_t pc, bool single_step,

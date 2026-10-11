@@ -131,7 +131,8 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     auto& domain = obtain(binding);
     auto [it, inserted] = domain.entries.emplace(key,
         Entry { std::move(allocation), compiled.maximum_ticks, compiled.closed,
-            compiled.accesses_memory, compiled.first_instruction, accounted,
+            compiled.accesses_memory, compiled.ends_with_stop,
+            compiled.first_instruction, accounted,
             CycleTier { compiled.closed, expansion == CycleExpansion::Hot } });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");

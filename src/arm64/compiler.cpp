@@ -660,6 +660,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         out.maximum_ticks += cost;
         ++out.instructions;
         if (inst.kind == arm::InstructionKind::Breakpoint) {
+            out.ends_with_stop = inst.condition == 14;
             emit.code().B(emit.exit(StopReason::Breakpoint, out.maximum_ticks,
                 pc, word, 0, false, it));
             break;
@@ -714,6 +715,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             pc += inst.pc_offset + inst.immediate;
         } else if (inst.kind == arm::InstructionKind::Svc) {
             if (inst.condition == 14) {
+                out.ends_with_stop = true;
                 emit.code().B(emit.exit(StopReason::Svc, out.maximum_ticks, pc,
                     word, inst.immediate));
                 break;
