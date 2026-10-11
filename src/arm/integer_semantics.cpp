@@ -94,4 +94,78 @@ std::uint32_t set_nz(std::uint32_t cpsr, std::uint32_t value) noexcept
     return (cpsr & 0x3fffffffU) | (value & 0x80000000U) |
            (value == 0 ? 0x40000000U : 0);
 }
+AluResult calculate_alu(unsigned opcode, bool set_flags, std::uint32_t a,
+    ShiftResult shifted, std::uint32_t cpsr) noexcept
+{
+    const bool carry = (cpsr & (1U << 29)) != 0;
+    const auto b = shifted.value;
+    std::uint32_t value = 0;
+    arm::ArithmeticResult arithmetic { };
+    bool arithmetic_flags = false;
+    switch (opcode) {
+    case 0:
+    case 8:
+        value = a & b;
+        break;
+    case 1:
+    case 9:
+        value = a ^ b;
+        break;
+    case 2:
+    case 10:
+        arithmetic = arm::add_with_carry(a, ~b, true);
+        arithmetic_flags = true;
+        break;
+    case 3:
+        arithmetic = arm::add_with_carry(b, ~a, true);
+        arithmetic_flags = true;
+        break;
+    case 4:
+    case 11:
+        arithmetic = arm::add_with_carry(a, b, false);
+        arithmetic_flags = true;
+        break;
+    case 5:
+        arithmetic = arm::add_with_carry(a, b, carry);
+        arithmetic_flags = true;
+        break;
+    case 6:
+        arithmetic = arm::add_with_carry(a, ~b, carry);
+        arithmetic_flags = true;
+        break;
+    case 7:
+        arithmetic = arm::add_with_carry(b, ~a, carry);
+        arithmetic_flags = true;
+        break;
+    case 12:
+        value = a | b;
+        break;
+    case 13:
+        value = b;
+        break;
+    case 14:
+        value = a & ~b;
+        break;
+    case 15:
+        value = ~b;
+        break;
+    case arm::opcode_orn:
+        value = a | ~b;
+        break;
+    }
+    if (arithmetic_flags)
+        value = arithmetic.value;
+    if (set_flags) {
+        cpsr = arm::set_nz(cpsr, value);
+        cpsr = (cpsr & ~(1U << 29)) |
+               (std::uint32_t {
+                    arithmetic_flags ? arithmetic.carry : shifted.carry }
+                   << 29);
+        if (arithmetic_flags)
+            cpsr = (cpsr & ~(1U << 28)) |
+                   (std::uint32_t { arithmetic.overflow } << 28);
+    }
+    return { value, cpsr };
+}
+
 }

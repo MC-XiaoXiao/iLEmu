@@ -4,6 +4,9 @@ namespace ilemu::execution {
 // Select base ARMv6 or the ARMv6T2 integer instruction extensions.
 // Shared by multiply and single-transfer decoding; separate from core quirks.
 enum class ArmInstructionProfile { Armv6, Armv6T2 };
+// ARM-state ALU writes preserve the ISA through ARMv6; ARMv7 interworks.
+// Thumb ALU writes always preserve the ISA, independently of this policy.
+enum class AluPcWriteProfile { Branch, Interworking };
 // VFPv2 and VFPv3-D16 expose D0..D15; full VFPv3 exposes D0..D31.
 // Both banks contain the same thirty-two single-precision S registers.
 enum class VfpRegisterProfile { D16, D32 };

@@ -9,6 +9,7 @@
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
 #include "arm/floating_system.hpp"
+#include "arm/pc_write.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
 #include "arm_memory/exclusive.hpp"
@@ -25,7 +26,9 @@ namespace {
         return inst.align_pc ? pc & ~3U : pc;
     }
 
-    void data_processing(CpuThreadState& state, const arm::Instruction& inst)
+    using arm::AluResult;
+    AluResult data_processing(
+        const CpuThreadState& state, const arm::Instruction& inst)
     {
         const bool carry = (state.cpsr & (1U << 29)) != 0;
         const auto shifted =
@@ -37,75 +40,8 @@ namespace {
                       inst.register_shift ? state.registers[inst.rs] & 255U
                                           : inst.shift_amount,
                       carry, inst.register_shift);
-        const auto a = read_register(state, inst.rn, inst), b = shifted.value;
-        std::uint32_t value = 0;
-        arm::ArithmeticResult arithmetic { };
-        bool arithmetic_flags = false;
-        switch (inst.opcode) {
-        case 0:
-        case 8:
-            value = a & b;
-            break;
-        case 1:
-        case 9:
-            value = a ^ b;
-            break;
-        case 2:
-        case 10:
-            arithmetic = arm::add_with_carry(a, ~b, true);
-            arithmetic_flags = true;
-            break;
-        case 3:
-            arithmetic = arm::add_with_carry(b, ~a, true);
-            arithmetic_flags = true;
-            break;
-        case 4:
-        case 11:
-            arithmetic = arm::add_with_carry(a, b, false);
-            arithmetic_flags = true;
-            break;
-        case 5:
-            arithmetic = arm::add_with_carry(a, b, carry);
-            arithmetic_flags = true;
-            break;
-        case 6:
-            arithmetic = arm::add_with_carry(a, ~b, carry);
-            arithmetic_flags = true;
-            break;
-        case 7:
-            arithmetic = arm::add_with_carry(b, ~a, carry);
-            arithmetic_flags = true;
-            break;
-        case 12:
-            value = a | b;
-            break;
-        case 13:
-            value = b;
-            break;
-        case 14:
-            value = a & ~b;
-            break;
-        case 15:
-            value = ~b;
-            break;
-        case arm::opcode_orn:
-            value = a | ~b;
-            break;
-        }
-        if (arithmetic_flags)
-            value = arithmetic.value;
-        if (inst.opcode < 8 || inst.opcode > 11)
-            state.registers[inst.rd] = value;
-        if (inst.set_flags) {
-            state.cpsr = arm::set_nz(state.cpsr, value);
-            state.cpsr = (state.cpsr & ~(1U << 29)) |
-                         (std::uint32_t { arithmetic_flags ? arithmetic.carry
-                                                           : shifted.carry }
-                             << 29);
-            if (arithmetic_flags)
-                state.cpsr = (state.cpsr & ~(1U << 28)) |
-                             (std::uint32_t { arithmetic.overflow } << 28);
-        }
+        return arm::calculate_alu(inst.opcode, inst.set_flags,
+            read_register(state, inst.rn, inst), shifted, state.cpsr);
     }
 }
 
@@ -196,6 +132,20 @@ RunResult ArmInterpreter::run(
                         !source.data_memory())))) {
             result.reason = StopReason::UnsupportedInstruction;
             return result;
+        }
+        const bool alu_pc = arm::alu_writes_pc(inst);
+        AluResult alu { };
+        std::optional<arm::PcWrite> alu_target;
+        if (passed && inst.kind == arm::InstructionKind::DataProcessing) {
+            alu = data_processing(state, inst);
+            if (alu_pc) {
+                alu_target = arm::alu_write_pc(
+                    alu.value, thumb, source.alu_pc_write_profile());
+                if (!alu_target) {
+                    result.reason = StopReason::UnsupportedInstruction;
+                    return result;
+                }
+            }
         }
         std::uint32_t branch_target = 0;
         if (passed && inst.kind == arm::InstructionKind::BranchExchange) {
@@ -321,9 +271,15 @@ RunResult ArmInterpreter::run(
                 break;
             }
             case arm::InstructionKind::DataProcessing:
-                data_processing(state, inst);
-                if (inst.rd == 15 && (inst.opcode < 8 || inst.opcode > 11))
-                    state.registers[15] &= ~1U; // Thumb ALUWritePC
+                if (alu_pc) {
+                    state.registers[15] = alu_target->address;
+                    state.cpsr = (alu.cpsr & ~0x20U) |
+                        (alu_target->thumb ? 0x20U : 0U);
+                } else {
+                    if (inst.opcode < 8 || inst.opcode > 11)
+                        state.registers[inst.rd] = alu.value;
+                    state.cpsr = alu.cpsr;
+                }
                 break;
             case arm::InstructionKind::IntegerTransform:
                 state.registers[inst.rd] = arm::integer_transform(inst,
@@ -417,9 +373,6 @@ RunResult ArmInterpreter::run(
                 break;
             }
         }
-        const bool alu_pc = inst.kind == arm::InstructionKind::DataProcessing &&
-                            inst.rd == 15 &&
-                            (inst.opcode < 8 || inst.opcode > 11);
         const bool compare_branch =
             inst.kind == arm::InstructionKind::CompareBranch &&
             ((state.registers[inst.rn] != 0) == (inst.opcode != 0));

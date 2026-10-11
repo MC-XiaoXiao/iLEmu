@@ -49,6 +49,13 @@ ExecutionMemory::arm_instruction_profile() const noexcept
                ? execution::ArmInstructionProfile::Armv6
                : execution::ArmInstructionProfile::Armv6T2;
 }
+execution::AluPcWriteProfile
+ExecutionMemory::alu_pc_write_profile() const noexcept
+{
+    return impl_->model_.architecture_version() == ArmArchitectureVersion::Armv7
+               ? execution::AluPcWriteProfile::Interworking
+               : execution::AluPcWriteProfile::Branch;
+}
 execution::FloatingExceptionProfile
 ExecutionMemory::floating_exception_profile() const noexcept
 {

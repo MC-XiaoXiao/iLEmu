@@ -107,7 +107,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
     out.rn = (word >> 16) & 15U;
     out.set_flags = (word & (1U << 20)) != 0;
     const bool test = out.opcode >= 8 && out.opcode <= 11;
-    if (test ? (!out.set_flags || out.rd != 0) : out.rd == 15)
+    if (test ? (!out.set_flags || out.rd != 0) : (out.rd == 15 && out.set_flags))
         return out;
     if ((out.opcode == 13 || out.opcode == 15) && out.rn != 0)
         return out;
@@ -122,7 +122,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         out.register_shift = (word & 16U) != 0;
         if (out.register_shift) {
             out.rs = (word >> 8) & 15U;
-            if (out.rn == 15 || out.rm == 15 || out.rs == 15)
+            if (out.rd == 15 || out.rn == 15 || out.rm == 15 || out.rs == 15)
                 return out;
         } else {
             out.shift_amount = (word >> 7) & 31U;

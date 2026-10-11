@@ -18,4 +18,10 @@ struct ArithmeticResult {
 ArithmeticResult add_with_carry(
     std::uint32_t a, std::uint32_t b, bool carry) noexcept;
 std::uint32_t set_nz(std::uint32_t cpsr, std::uint32_t value) noexcept;
+struct AluResult {
+    std::uint32_t value, cpsr;
+};
+AluResult calculate_alu(unsigned opcode, bool set_flags, std::uint32_t first,
+    ShiftResult operand, std::uint32_t cpsr) noexcept;
+
 }

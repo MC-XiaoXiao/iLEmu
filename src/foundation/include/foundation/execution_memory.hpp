@@ -33,6 +33,7 @@ public:
     thumb_arithmetic_profile() const noexcept override;
     execution::VfpRegisterProfile vfp_register_profile() const noexcept override;
     execution::ArmInstructionProfile arm_instruction_profile() const noexcept override;
+    execution::AluPcWriteProfile alu_pc_write_profile() const noexcept override;
     execution::FloatingExceptionProfile floating_exception_profile() const noexcept override;
     std::optional<execution::MemoryFault> prepare_instruction_fetch(
         std::uint32_t, unsigned) override;

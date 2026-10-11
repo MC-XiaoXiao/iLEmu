@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "execution/run.hpp"
-#include "arm/instruction.hpp"
+#include "arm/pc_write.hpp"
 #include <oaknut/oaknut.hpp>
 
 namespace ilemu::execution::arm64 {
@@ -25,7 +25,7 @@ public:
         case InstructionKind::MultipleTransfer:
             return inst.load && (inst.registers & 0x8000U) != 0;
         case InstructionKind::DataProcessing:
-            return inst.rd == 15 && (inst.opcode < 8 || inst.opcode > 11);
+            return arm::alu_writes_pc(inst);
         default:
             return false;
         }

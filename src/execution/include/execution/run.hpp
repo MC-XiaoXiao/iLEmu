@@ -117,6 +117,10 @@ public:
     {
         return ArmInstructionProfile::Armv6T2;
     }
+    virtual AluPcWriteProfile alu_pc_write_profile() const noexcept
+    {
+        return AluPcWriteProfile::Interworking;
+    }
     virtual FloatingExceptionProfile floating_exception_profile() const noexcept
     {
         return FloatingExceptionProfile::Untrapped;

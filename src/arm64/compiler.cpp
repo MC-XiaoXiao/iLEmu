@@ -15,6 +15,7 @@
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
 #include "arm/floating_system.hpp"
+#include "arm/pc_write.hpp"
 #include "system_emitter.hpp"
 #include "exclusive_emitter.hpp"
 #include "vector_memory_emitter.hpp"
@@ -181,12 +182,20 @@ namespace {
             for (auto& fallback : exchanges_.pending()) {
                 code_.l(fallback.label);
                 location(fallback.it, fallback.instruction.size);
-                exchange_target(fallback.instruction, fallback.pc,
-                    fallback.word, fallback.before);
-                retired(fallback.next_it);
-                // Raw-target mismatch cannot return to this trace's entry.
-                exchange(fallback.instruction, fallback.pc,
-                    fallback.ticks, false);
+                if (arm::alu_writes_pc(fallback.instruction)) {
+                    alu_target(fallback.instruction, fallback.pc,
+                        fallback.word, fallback.before, fallback.interworks);
+                    retired(fallback.next_it);
+                    alu_branch(fallback.instruction, fallback.pc,
+                        fallback.ticks, fallback.interworks, false);
+                } else {
+                    exchange_target(fallback.instruction, fallback.pc,
+                        fallback.word, fallback.before);
+                    retired(fallback.next_it);
+                    // A mismatched target cannot return to the trace entry.
+                    exchange(fallback.instruction, fallback.pc,
+                        fallback.ticks, false);
+                }
             }
             struct SharedExit {
                 Label label;
@@ -269,6 +278,11 @@ namespace {
             code_.MOV(W17,
                 integer_.reg(inst.rm,
                     (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U), W17));
+            guard_exchange_target(pc, word, ticks);
+        }
+        void guard_exchange_target(std::uint32_t pc,
+            std::uint32_t word, std::uint64_t ticks)
+        {
             Label valid;
             code_.TBNZ(W17, 0, valid);
             code_.TBZ(W17, 1, valid);
@@ -292,9 +306,29 @@ namespace {
             code_.B(exit(StopReason::None, ticks, 0, { }, 0, true,
                 { }, backedge));
         }
-        bool fast_exchange(const arm::Instruction& inst, std::uint32_t pc,
+        void alu_target(const arm::Instruction& inst, std::uint32_t pc,
+            std::uint32_t word, std::uint64_t before, bool interworks)
+        {
+            // PC is scratch until retirement; fixed-PC exits restore it.
+            // The decoder excludes flag-writing exception-return forms.
+            integer_.alu(inst, pc);
+            code_.MOV(W17, W15);
+            if (interworks)
+                guard_exchange_target(pc, word, before);
+        }
+        void alu_branch(const arm::Instruction& inst, std::uint32_t pc,
+            std::uint64_t ticks, bool interworks, bool backedge = true)
+        {
+            if (interworks)
+                exchange(inst, pc, ticks, backedge);
+            else {
+                code_.AND(W15, W17, thumb_ ? ~1U : ~3U);
+                code_.B(exit(StopReason::None, ticks, 0, { }, 0, true, { }, backedge));
+            }
+        }
+        bool fast_indirect(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t before, std::uint64_t ticks,
-            unsigned next_it)
+            unsigned next_it, bool interworks)
         {
             if (!backedge_.accepts(StopReason::None, ticks, true, next_it, ticks))
                 return false;
@@ -303,9 +337,10 @@ namespace {
                     exit(StopReason::None, ticks, pc + inst.size,
                         { }, 0, false, next_it));
             exchanges_.emit(inst, pc, word, before, ticks, it_, next_it,
-                backedge_.pc());
+                backedge_.pc(), interworks);
             return true;
         }
+        bool invariant_indirect() const { return exchanges_.invariant(); }
         void invalidate_written_registers(const arm::Instruction& inst)
         {
             const auto invalidate = [&](unsigned reg) {
@@ -574,18 +609,29 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             if (inst.condition != 14)
                 emit.code().l(skipped);
         }
+        const bool writes_pc = arm::alu_writes_pc(inst);
+        const bool alu_interworks =
+            arm::alu_interworks(thumb, source.alu_pc_write_profile());
         const auto cost = window.timing(*decoded);
         const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
         Label exchange_failed;
-        const bool fast_exchange =
-            inst.kind == arm::InstructionKind::BranchExchange &&
+        const bool fast_indirect =
+            (inst.kind == arm::InstructionKind::BranchExchange || writes_pc) &&
             expansion == CycleExpansion::Hot &&
-            valid_timing && emit.fast_exchange(inst, pc, *word, before,
-                before + cost, next_it);
+            valid_timing && emit.fast_indirect(inst, pc, *word, before,
+                before + cost, next_it,
+                inst.kind == arm::InstructionKind::BranchExchange || alu_interworks);
         if (inst.kind == arm::InstructionKind::BranchExchange &&
-            !fast_exchange) {
+            !fast_indirect) {
             emit.conditional_skip(inst.condition, exchange_failed);
             emit.exchange_target(inst, pc, *word, before);
+        }
+        if (writes_pc && !fast_indirect) {
+            Label skipped;
+            emit.conditional_skip(inst.condition, skipped);
+            emit.alu_target(inst, pc, *word, before, alu_interworks);
+            if (inst.condition != 14)
+                emit.code().l(skipped);
         }
         if (!valid_timing) {
             if (inst.kind == arm::InstructionKind::BranchExchange &&
@@ -625,7 +671,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             inst.set_flags = false;
         bool dynamic_end = false;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
-            if (!fast_exchange) {
+            if (!fast_indirect) {
                 emit.exchange(inst, pc, out.maximum_ticks);
                 if (inst.condition != 14)
                     emit.code().l(exchange_failed);
@@ -668,11 +714,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             pc = next_pc;
         } else {
             Label skip;
-            const bool writes_pc =
-                inst.kind == arm::InstructionKind::DataProcessing &&
-                inst.rd == 15 && (inst.opcode < 8 || inst.opcode > 11);
             if (!unsupported) {
-                emit.conditional_skip(inst.condition, skip);
+                if (!fast_indirect)
+                    emit.conditional_skip(inst.condition, skip);
                 switch (inst.kind) {
                 case arm::InstructionKind::FloatingSystem:
                     emit.floating_system(
@@ -742,17 +786,17 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                         std::get<arm::VectorExtractOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::DataProcessing:
-                    emit.integer().alu(inst, pc);
                     if (writes_pc) {
-                        emit.code().AND(W15, W15, ~1U);
-                        emit.code().B(emit.exit(StopReason::None,
-                            out.maximum_ticks, 0, { }, 0, true));
-                    }
+                        if (!fast_indirect)
+                            emit.alu_branch(
+                                inst, pc, out.maximum_ticks, alu_interworks);
+                    } else
+                        emit.integer().alu(inst, pc);
                     break;
                 default:
                     break;
                 }
-                if (inst.condition != 14)
+                if (inst.condition != 14 && !fast_indirect)
                     emit.code().l(skip);
             }
             pc = next_pc;
@@ -778,16 +822,20 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             if (!single_step && expansion == CycleExpansion::Hot) {
                 if (cycle_length == 0)
                     cycle_length = n + 1;
+                // An invariant target is checked once per group, so copies
+                // have the same code cost as a natural branch cycle.
+                const auto maximum_copies = fast_indirect && emit.invariant_indirect()
+                    ? CycleTier::maximum_copies : CycleTier::guarded_copies;
                 const auto copies =
-                    std::min(CycleTier::guarded_copies, limit / cycle_length);
+                    std::min(maximum_copies, limit / cycle_length);
                 if (++cycles < copies &&
-                    (fast_exchange || emit.continue_cycle(pc))) {
+                    (fast_indirect || emit.continue_cycle(pc))) {
                     pc = start;
                     it = start_it;
                     continue;
                 }
             }
-            if (fast_exchange)
+            if (fast_indirect)
                 out.closed = true;
             break;
         }
