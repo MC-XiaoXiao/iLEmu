@@ -3,6 +3,7 @@
 #include "cycle_tier.hpp"
 #include "instruction_window.hpp"
 #include "dynamic_backedge.hpp"
+#include "exchange_paths.hpp"
 #include "arm/t32_decode.hpp"
 #include "arm/multiply.hpp"
 #include "integer_emitter.hpp"
@@ -37,7 +38,7 @@ namespace {
         std::optional<StopReason> reason;
         std::uint64_t ticks;
         std::uint32_t state_pc, report_pc, word, svc;
-        bool dynamic_pc, instruction;
+        bool dynamic_pc, instruction, backedge;
         unsigned it;
         auto payload() const
         {
@@ -53,6 +54,7 @@ namespace {
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_)
             , integer_(code_)
+            , exchanges_(code_, integer_, thumb)
             , memory_(code_, integer_, big_endian)
             , thumb_(thumb)
             , backedge_(pc, it, thumb, !single_step)
@@ -61,11 +63,11 @@ namespace {
         Label& exit(std::optional<StopReason> reason, std::uint64_t ticks,
             std::uint32_t pc, std::optional<std::uint32_t> word = { },
             std::uint32_t svc = 0, bool dynamic_pc = false,
-            std::optional<unsigned> it = { })
+            std::optional<unsigned> it = { }, bool backedge = true)
         {
             exits_.push_back({ { }, reason, ticks,
                 reason == StopReason::Svc ? pc + size_ : pc, pc,
-                word.value_or(0), svc, dynamic_pc, word.has_value(),
+                word.value_or(0), svc, dynamic_pc, word.has_value(), backedge,
                 it.value_or(it_) });
             return exits_.back().label;
         }
@@ -169,6 +171,16 @@ namespace {
             }
             if (natural_backedge)
                 code_.B(exit(StopReason::None, 0, pc));
+            for (auto& fallback : exchanges_.pending()) {
+                code_.l(fallback.label);
+                location(fallback.it, fallback.instruction.size);
+                exchange_target(fallback.instruction, fallback.pc,
+                    fallback.word, fallback.before);
+                retired(fallback.next_it);
+                // Raw-target mismatch cannot return to this trace's entry.
+                exchange(fallback.instruction, fallback.pc,
+                    fallback.ticks, false);
+            }
             struct SharedExit {
                 Label label;
                 const Exit* example = nullptr;
@@ -255,7 +267,8 @@ namespace {
             code_.l(valid);
         }
         void exchange(
-            const arm::Instruction& inst, std::uint32_t pc, std::uint64_t ticks)
+            const arm::Instruction& inst, std::uint32_t pc, std::uint64_t ticks,
+            bool backedge = true)
         {
             if (inst.link)
                 code_.MOV(W14, (pc + inst.size) | (thumb_ ? 1U : 0U));
@@ -267,16 +280,35 @@ namespace {
             code_.l(arm_target);
             code_.AND(W15, W17, 0xfffffffcU);
             code_.l(done);
-            code_.B(exit(StopReason::None, ticks, 0, { }, 0, true));
+            code_.B(exit(StopReason::None, ticks, 0, { }, 0, true,
+                { }, backedge));
+        }
+        bool fast_exchange(const arm::Instruction& inst, std::uint32_t pc,
+            std::uint32_t word, std::uint64_t before, std::uint64_t ticks,
+            unsigned next_it)
+        {
+            if (!backedge_.accepts(StopReason::None, ticks, true, next_it, ticks))
+                return false;
+            if (inst.condition != 14)
+                conditional_skip(inst.condition,
+                    exit(StopReason::None, ticks, pc + inst.size,
+                        { }, 0, false, next_it));
+            exchanges_.emit(inst, pc, word, before, ticks, it_, next_it,
+                backedge_.pc());
+            return true;
         }
         void invalidate_written_registers(const arm::Instruction& inst)
         {
+            const auto invalidate = [&](unsigned reg) {
+                memory_.invalidate_register(reg);
+                exchanges_.invalidate(reg);
+            };
             if (inst.kind == arm::InstructionKind::VectorCoreMove) {
                 const auto& v = std::get<arm::VectorCoreMoveOperands>(inst.vector);
                 if (v.to_core) {
-                    memory_.invalidate_register(v.core);
+                    invalidate(v.core);
                     if (v.pair)
-                        memory_.invalidate_register(v.core2);
+                        invalidate(v.core2);
                 }
             }
             if ((inst.kind == arm::InstructionKind::DataProcessing &&
@@ -287,20 +319,22 @@ namespace {
                 inst.kind == arm::InstructionKind::WideImmediate ||
                 (inst.kind == arm::InstructionKind::Transfer && inst.load) ||
                 (inst.kind == arm::InstructionKind::SystemControl && inst.load))
-                memory_.invalidate_register(inst.rd);
+                invalidate(inst.rd);
             if (inst.kind == arm::InstructionKind::Multiply &&
                 arm::multiply_writes_pair(inst))
-                memory_.invalidate_register(inst.rn);
+                invalidate(inst.rn);
             if ((inst.kind == arm::InstructionKind::Transfer ||
                     inst.kind == arm::InstructionKind::VectorTransfer) &&
                 inst.writeback)
-                memory_.invalidate_register(inst.rn);
-            if (inst.kind == arm::InstructionKind::MultipleTransfer)
+                invalidate(inst.rn);
+            if (inst.kind == arm::InstructionKind::MultipleTransfer) {
                 memory_.invalidate_all();
+                exchanges_.invalidate_all();
+            }
             if ((inst.kind == arm::InstructionKind::Branch ||
                     inst.kind == arm::InstructionKind::BranchExchange) &&
                 inst.link)
-                memory_.invalidate_register(14);
+                invalidate(14);
         }
         VectorCodeGenerator& code() { return code_; }
         void vector_transfer(const arm::Instruction& inst, std::uint32_t pc,
@@ -378,13 +412,15 @@ namespace {
         }
         bool accepts_backedge(const Exit& out) const
         {
-            return backedge_.accepts(out.reason, out.ticks, out.dynamic_pc,
-                out.it, trace_.maximum_ticks);
+            return out.backedge &&
+                backedge_.accepts(out.reason, out.ticks, out.dynamic_pc,
+                    out.it, trace_.maximum_ticks);
         }
         CompiledTrace& trace_;
         VectorCodeGenerator code_;
         VectorRegisters vectors_;
         IntegerEmitter integer_;
+        ExchangePaths exchanges_;
         MemoryEmitter memory_;
         bool thumb_;
         bool continued_cycle_ = false;
@@ -452,13 +488,23 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             emit.code().B(static_cast<Cond>(inst.condition),
                 emit.exit(
                     StopReason::UnsupportedInstruction, before, pc, word));
+        const auto next_it = thumb ? (inst.kind == arm::InstructionKind::IfThen
+                                             ? inst.immediate
+                                             : arm::advance_it(it))
+                                   : 0U;
+        const auto cost = window.timing(*decoded);
+        const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
         Label exchange_failed;
-        if (inst.kind == arm::InstructionKind::BranchExchange) {
+        const bool fast_exchange =
+            inst.kind == arm::InstructionKind::BranchExchange &&
+            expansion == CycleExpansion::Hot &&
+            valid_timing && emit.fast_exchange(inst, pc, *word, before,
+                before + cost, next_it);
+        if (inst.kind == arm::InstructionKind::BranchExchange &&
+            !fast_exchange) {
             emit.conditional_skip(inst.condition, exchange_failed);
             emit.exchange_target(inst, pc, *word, before);
         }
-        const auto cost = window.timing(*decoded);
-        const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
         if (!valid_timing) {
             if (inst.kind == arm::InstructionKind::BranchExchange &&
                 inst.condition != 14)
@@ -480,10 +526,6 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 pc, word, 0, false, it));
             break;
         }
-        const auto next_it = thumb ? (inst.kind == arm::InstructionKind::IfThen
-                                             ? inst.immediate
-                                             : arm::advance_it(it))
-                                   : 0U;
         emit.retired(next_it);
         const auto next_pc = pc + inst.size;
         const bool closes_natural_cycle = next_pc == start &&
@@ -501,9 +543,11 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             inst.set_flags = false;
         bool dynamic_end = false;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
-            emit.exchange(inst, pc, out.maximum_ticks);
-            if (inst.condition != 14)
-                emit.code().l(exchange_failed);
+            if (!fast_exchange) {
+                emit.exchange(inst, pc, out.maximum_ticks);
+                if (inst.condition != 14)
+                    emit.code().l(exchange_failed);
+            }
             pc = next_pc;
             dynamic_end = true;
         } else if (inst.kind == arm::InstructionKind::Branch) {
@@ -635,12 +679,15 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     cycle_length = n + 1;
                 const auto copies =
                     std::min(CycleTier::guarded_copies, limit / cycle_length);
-                if (++cycles < copies && emit.continue_cycle(pc)) {
+                if (++cycles < copies &&
+                    (fast_exchange || emit.continue_cycle(pc))) {
                     pc = start;
                     it = start_it;
                     continue;
                 }
             }
+            if (fast_exchange)
+                out.closed = true;
             break;
         }
         if (!single_step && pc == start && it == start_it) {
