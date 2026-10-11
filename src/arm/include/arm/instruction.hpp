@@ -31,6 +31,7 @@ enum class InstructionKind {
     VectorCoreMove,
     FloatingConversion,
     FloatingArithmetic,
+    FloatingSystem,
     VectorTransfer,
     SystemControl
 };
@@ -99,9 +100,14 @@ struct FloatingArithmeticOperands {
     FloatingArithmeticOperation operation = FloatingArithmeticOperation::Add;
     bool wide = false;
 };
+struct FloatingSystemOperands {
+    // VMRS with core=15 transfers FPSCR.NZCV to APSR.NZCV, never PC.
+    unsigned core = 0;
+    bool to_core = false;
+};
 using VectorOperands = std::variant<VectorDuplicateOperands,
     VectorBitwiseOperands, VectorExtractOperands, VectorTransferOperands, VectorCoreMoveOperands,
-    FloatingConversionOperands, FloatingArithmeticOperands>;
+    FloatingConversionOperands, FloatingArithmeticOperands, FloatingSystemOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.

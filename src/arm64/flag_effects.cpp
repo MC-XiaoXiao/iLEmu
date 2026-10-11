@@ -57,6 +57,12 @@ FlagEffects flag_effects(const arm::Instruction& inst) noexcept
         if (inst.set_flags)
             out.possible_write = out.guaranteed_write = n | z;
         break;
+    case Kind::FloatingSystem: {
+        const auto& operands = std::get<arm::FloatingSystemOperands>(inst.vector);
+        if (operands.to_core && operands.core == 15)
+            out.possible_write = out.guaranteed_write = n | z | c | v;
+        break;
+    }
     case Kind::IfThen:
     case Kind::Nop:
     case Kind::WideImmediate:

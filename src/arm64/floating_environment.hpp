@@ -32,7 +32,7 @@ public:
         code.AND(W16, W16, W17);
         code.MSR(SystemReg::FPSR, X16);
     }
-    void leave(oaknut::VectorCodeGenerator& code) const
+    void synchronize(oaknut::VectorCodeGenerator& code) const
     {
         if (!used_)
             return;
@@ -44,6 +44,14 @@ public:
         code.LDR(W17, X19, offsetof(CpuThreadState, fpscr));
         code.ORR(W16, W16, W17);
         code.STR(W16, X19, offsetof(CpuThreadState, fpscr));
+    }
+    void leave(oaknut::VectorCodeGenerator& code) const
+    {
+        if (!used_)
+            return;
+        using namespace oaknut;
+        using namespace oaknut::util;
+        synchronize(code);
         code.LDP(X16, X17, SP, 160);
         code.MSR(SystemReg::FPCR, X16);
         code.MSR(SystemReg::FPSR, X17);

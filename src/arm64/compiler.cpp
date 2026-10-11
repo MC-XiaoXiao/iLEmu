@@ -14,6 +14,7 @@
 #include "floating_environment.hpp"
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
+#include "arm/floating_system.hpp"
 #include "system_emitter.hpp"
 #include "exclusive_emitter.hpp"
 #include "vector_memory_emitter.hpp"
@@ -311,6 +312,11 @@ namespace {
                 memory_.invalidate_register(reg);
                 exchanges_.invalidate(reg);
             };
+            if (inst.kind == arm::InstructionKind::FloatingSystem) {
+                const auto& v = std::get<arm::FloatingSystemOperands>(inst.vector);
+                if (v.to_core && v.core != 15)
+                    invalidate(v.core);
+            }
             if (inst.kind == arm::InstructionKind::VectorCoreMove) {
                 const auto& v = std::get<arm::VectorCoreMoveOperands>(inst.vector);
                 if (v.to_core) {
@@ -364,8 +370,8 @@ namespace {
         void floating_guard(Label& failure, unsigned condition,
             std::uint32_t mask)
         {
-            // No supported instruction changes FPSCR control in a trace.
-            // An unconditional check therefore covers later conversions.
+            // An unconditional check covers later operations until a VMSR
+            // invalidates it, including a conditionally executed VMSR.
             mask &= ~floating_checked_;
             if (condition == 14)
                 floating_checked_ |= mask;
@@ -383,6 +389,29 @@ namespace {
         {
             floating_.use();
             FloatingEmitter { code_, vectors_ }.conversion(v);
+        }
+        void floating_system(const arm::FloatingSystemOperands& v,
+            FloatingExceptionProfile profile)
+        {
+            if (v.to_core && v.core == 15) {
+                // Cumulative exceptions cannot change FPSCR.NZCV. Its
+                // condition bits are already in the architectural state.
+                code_.LDR(W16, X19, offsetof(CpuThreadState, fpscr));
+                code_.MSR(SystemReg::NZCV, X16);
+                return;
+            }
+            floating_.use();
+            if (v.to_core) {
+                floating_.synchronize(code_);
+                code_.LDR(WReg { static_cast<int>(v.core) }, X19,
+                    offsetof(CpuThreadState, fpscr));
+            } else {
+                code_.MOV(W17, arm::fpscr_write_mask(profile));
+                code_.AND(W16, WReg { static_cast<int>(v.core) }, W17);
+                code_.STR(W16, X19, offsetof(CpuThreadState, fpscr));
+                floating_.resume(code_);
+                floating_checked_ = 0;
+            }
         }
         IntegerEmitter& integer() { return integer_; }
         void transfer(const arm::Instruction& inst, std::uint32_t pc,
@@ -645,6 +674,11 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             if (!unsupported) {
                 emit.conditional_skip(inst.condition, skip);
                 switch (inst.kind) {
+                case arm::InstructionKind::FloatingSystem:
+                    emit.floating_system(
+                        std::get<arm::FloatingSystemOperands>(inst.vector),
+                        source.floating_exception_profile());
+                    break;
                 case arm::InstructionKind::ClearExclusive:
                 case arm::InstructionKind::Swap:
                 case arm::InstructionKind::ExclusiveTransfer:

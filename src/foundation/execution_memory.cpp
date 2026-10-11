@@ -49,6 +49,13 @@ ExecutionMemory::arm_instruction_profile() const noexcept
                ? execution::ArmInstructionProfile::Armv6
                : execution::ArmInstructionProfile::Armv6T2;
 }
+execution::FloatingExceptionProfile
+ExecutionMemory::floating_exception_profile() const noexcept
+{
+    return impl_->model_.kind() == ArmCpuModelKind::Arm1176JzfS
+               ? execution::FloatingExceptionProfile::TrapEnables
+               : execution::FloatingExceptionProfile::Untrapped;
+}
 std::unique_ptr<execution::InstructionLease>
 ExecutionMemory::acquire_code_lease(std::uint32_t pc, bool thumb)
 {

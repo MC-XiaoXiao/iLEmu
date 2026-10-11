@@ -81,7 +81,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     const Key key { pc, step, big_endian, thumb, it_state,
         source.data_memory() != nullptr, timing_limit,
         source.thumb_arithmetic_profile(), source.vfp_register_profile(),
-        source.arm_instruction_profile() };
+        source.arm_instruction_profile(), source.floating_exception_profile() };
     auto expansion = binding.generation ? CycleExpansion::Compact
                                        : CycleExpansion::Untracked;
     if (auto* domain = find(binding)) {

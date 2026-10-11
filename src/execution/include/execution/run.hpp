@@ -117,6 +117,10 @@ public:
     {
         return ArmInstructionProfile::Armv6T2;
     }
+    virtual FloatingExceptionProfile floating_exception_profile() const noexcept
+    {
+        return FloatingExceptionProfile::Untrapped;
+    }
     virtual MemoryAccess* data_memory() noexcept { return nullptr; }
     // Executed fetches install/validate runtime translations and charge guest
     // VM events. Inspection below must not charge them. Thumb-wide fetches

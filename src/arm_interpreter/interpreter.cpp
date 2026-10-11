@@ -8,6 +8,7 @@
 #include "arm/integer_transform.hpp"
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
+#include "arm/floating_system.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
 #include "arm_memory/exclusive.hpp"
@@ -219,6 +220,18 @@ RunResult ArmInterpreter::run(
         }
         if (passed) {
             switch (inst.kind) {
+            case arm::InstructionKind::FloatingSystem: {
+                const auto& v = std::get<arm::FloatingSystemOperands>(inst.vector);
+                if (!v.to_core)
+                    state.fpscr = state.registers[v.core] &
+                        arm::fpscr_write_mask(source.floating_exception_profile());
+                else if (v.core == 15)
+                    state.cpsr = (state.cpsr & 0x0fffffffU) |
+                        (state.fpscr & 0xf0000000U);
+                else
+                    state.registers[v.core] = state.fpscr;
+                break;
+            }
             case arm::InstructionKind::ClearExclusive:
             case arm::InstructionKind::Swap:
             case arm::InstructionKind::ExclusiveTransfer: {
