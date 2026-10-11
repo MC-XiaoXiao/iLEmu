@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "host_execution/code_memory.hpp"
+#include "code_pool.hpp"
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -14,16 +15,12 @@ namespace ilemu::host {
 namespace {
     class PosixCode final : public execution::ExecutableCode {
     public:
-        explicit PosixCode(std::size_t bytes)
+        explicit PosixCode(std::size_t bytes, std::size_t page)
         {
-            const auto page = ::sysconf(_SC_PAGESIZE);
-            if (page <= 0 || bytes == 0 ||
-                bytes > std::numeric_limits<std::size_t>::max() -
-                            static_cast<std::size_t>(page))
+            if (bytes == 0 ||
+                bytes > std::numeric_limits<std::size_t>::max() - page)
                 throw std::length_error("invalid executable code size");
-            size_ = ((bytes + static_cast<std::size_t>(page) - 1) /
-                        static_cast<std::size_t>(page)) *
-                    static_cast<std::size_t>(page);
+            size_ = ((bytes + page - 1) / page) * page;
             data_ = ::mmap(nullptr, size_, PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             if (data_ == MAP_FAILED)
@@ -56,18 +53,27 @@ namespace {
     };
     class PosixAllocator final : public execution::CodeAllocator {
     public:
+        explicit PosixAllocator(std::size_t page) : page_(page) { }
         std::unique_ptr<execution::ExecutableCode> allocate(
             std::size_t bytes) override
         {
-            return std::make_unique<PosixCode>(bytes);
+            return std::make_unique<PosixCode>(bytes, page_);
         }
+
+    private:
+        const std::size_t page_;
     };
 }
 #endif
 std::unique_ptr<execution::CodeAllocator> make_code_allocator()
 {
 #if defined(__linux__)
-    return std::make_unique<PosixAllocator>();
+    const auto page = ::sysconf(_SC_PAGESIZE);
+    if (page <= 0)
+        throw std::runtime_error("host page size is unavailable");
+    return detail::make_pooled_code_allocator(
+        std::make_unique<PosixAllocator>(static_cast<std::size_t>(page)),
+        static_cast<std::size_t>(page));
 #else
     throw std::runtime_error("host executable code publication is unavailable");
 #endif
