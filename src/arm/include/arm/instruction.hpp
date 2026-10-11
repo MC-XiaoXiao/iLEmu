@@ -28,6 +28,7 @@ enum class InstructionKind {
     VectorBitwise,
     VectorCoreMove,
     FloatingConversion,
+    FloatingArithmetic,
     VectorTransfer,
     SystemControl
 };
@@ -79,9 +80,20 @@ struct FloatingConversionOperands {
     bool source_double = false, destination_double = false;
     bool signed_integer = false, round_zero = false;
 };
+enum class FloatingArithmeticOperation {
+    Add, Subtract, Multiply, Divide, SquareRoot, Move, Absolute, Negate,
+    NegatedMultiply, MultiplyAdd, MultiplySubtract,
+    NegatedMultiplyAdd, NegatedMultiplySubtract
+};
+struct FloatingArithmeticOperands {
+    // Word indices in the shared S/D extension bank.
+    unsigned destination = 0, first = 0, second = 0;
+    FloatingArithmeticOperation operation = FloatingArithmeticOperation::Add;
+    bool wide = false;
+};
 using VectorOperands = std::variant<VectorDuplicateOperands,
     VectorBitwiseOperands, VectorTransferOperands, VectorCoreMoveOperands,
-    FloatingConversionOperands>;
+    FloatingConversionOperands, FloatingArithmeticOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.

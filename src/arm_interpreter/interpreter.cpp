@@ -7,6 +7,7 @@
 #include "arm/multiply.hpp"
 #include "arm/integer_transform.hpp"
 #include "arm/floating_conversion.hpp"
+#include "arm/floating_arithmetic.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
 #include "arm_memory/exclusive.hpp"
@@ -180,6 +181,9 @@ RunResult ArmInterpreter::run(
         if (inst.condition == 15 ||
             (passed &&
                 (inst.kind == arm::InstructionKind::Unsupported ||
+                    (inst.kind == arm::InstructionKind::FloatingArithmetic &&
+                        (state.fpscr & arm::floating_arithmetic_controls(
+                            std::get<arm::FloatingArithmeticOperands>(inst.vector).operation)) != 0) ||
                     (inst.kind == arm::InstructionKind::FloatingConversion &&
                         (state.fpscr & arm::floating_exception_enables) != 0) ||
                     ((inst.kind == arm::InstructionKind::TableBranch ||
@@ -317,6 +321,22 @@ RunResult ArmInterpreter::run(
                 state.registers[inst.rd] = inst.shift == arm::ShiftKind::Lsl
                     ? (a & 0xffffU) | (shifted & 0xffff0000U)
                     : (a & 0xffff0000U) | (shifted & 0xffffU);
+                break;
+            }
+            case arm::InstructionKind::FloatingArithmetic: {
+                const auto& v = std::get<arm::FloatingArithmeticOperands>(inst.vector);
+                const auto value = [&](unsigned word) {
+                    std::uint64_t result = state.extension_registers[word];
+                    if (v.wide)
+                        result |= std::uint64_t { state.extension_registers[word + 1U] } << 32U;
+                    return result;
+                };
+                const auto result = arm::calculate_floating(v, value(v.first),
+                    value(v.second), value(v.destination), state.fpscr);
+                state.extension_registers[v.destination] = static_cast<std::uint32_t>(result.value);
+                if (v.wide)
+                    state.extension_registers[v.destination + 1U] = static_cast<std::uint32_t>(result.value >> 32U);
+                state.fpscr |= result.exceptions;
                 break;
             }
             case arm::InstructionKind::FloatingConversion: {

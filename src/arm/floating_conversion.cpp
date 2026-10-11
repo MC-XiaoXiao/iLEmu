@@ -1,53 +1,14 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm/floating_conversion.hpp"
 #include <bit>
-#define THREAD_LOCAL thread_local
-extern "C" {
-#include "softfloat.h"
-}
-#undef THREAD_LOCAL
+#include "floating_context.hpp"
 
 namespace ilemu::arm {
-namespace {
-    // SoftFloat context is per host thread and restored even for nested use.
-    class FloatingContext {
-    public:
-        explicit FloatingContext(unsigned rounding)
-            : rounding_(softfloat_roundingMode)
-            , flags_(softfloat_exceptionFlags)
-            , tininess_(softfloat_detectTininess)
-        {
-            constexpr unsigned modes[] = { softfloat_round_near_even,
-                softfloat_round_max, softfloat_round_min,
-                softfloat_round_minMag };
-            softfloat_roundingMode =
-                static_cast<std::uint_fast8_t>(modes[rounding]);
-            softfloat_exceptionFlags = 0;
-            softfloat_detectTininess = softfloat_tininess_beforeRounding;
-        }
-        ~FloatingContext()
-        {
-            softfloat_roundingMode = rounding_;
-            softfloat_exceptionFlags = flags_;
-            softfloat_detectTininess = tininess_;
-        }
-
-    private:
-        std::uint_fast8_t rounding_, flags_, tininess_;
-    };
-    std::uint32_t exceptions()
-    {
-        const auto flags = softfloat_exceptionFlags;
-        return static_cast<std::uint32_t>(
-            ((flags & 16U) >> 4U) | ((flags & 8U) >> 2U) | (flags & 4U) |
-            ((flags & 2U) << 2U) | ((flags & 1U) << 4U));
-    }
-}
 FloatingConversionResult convert_floating(const FloatingConversionOperands& v,
     std::uint64_t input, std::uint32_t fpscr) noexcept
 {
     const auto rounding = v.round_zero ? 3U : (fpscr >> 22U) & 3U;
-    FloatingContext context(rounding);
+    floating::Context context(rounding);
     std::uint32_t extra = 0;
     using Op = FloatingConversionOperation;
     if (v.operation != Op::IntegerToFloat) {
@@ -103,6 +64,6 @@ FloatingConversionResult convert_floating(const FloatingConversionOperands& v,
                     v.destination_double ? 0x7ff8000000000000ULL : 0x7fc00000U;
         }
     }
-    return { result, extra | exceptions() };
+    return { result, extra | floating::exceptions() };
 }
 }

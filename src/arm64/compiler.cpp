@@ -13,6 +13,7 @@
 #include "floating_emitter.hpp"
 #include "floating_environment.hpp"
 #include "arm/floating_conversion.hpp"
+#include "arm/floating_arithmetic.hpp"
 #include "system_emitter.hpp"
 #include "exclusive_emitter.hpp"
 #include "vector_memory_emitter.hpp"
@@ -355,16 +356,27 @@ namespace {
                         word, 0, false, before_it));
         }
         VectorRegisters& vectors() { return vectors_; }
-        bool needs_floating_guard() const { return !floating_checked_; }
-        void floating_guard(Label& failure, unsigned condition)
+        bool needs_floating_guard(std::uint32_t mask) const
+        {
+            return (mask & ~floating_checked_) != 0;
+        }
+        void floating_guard(Label& failure, unsigned condition,
+            std::uint32_t mask)
         {
             // No supported instruction changes FPSCR control in a trace.
             // An unconditional check therefore covers later conversions.
-            floating_checked_ = condition == 14;
+            mask &= ~floating_checked_;
+            if (condition == 14)
+                floating_checked_ |= mask;
             code_.LDR(W16, X19, offsetof(CpuThreadState, fpscr));
-            code_.MOV(W17, arm::floating_exception_enables);
+            code_.MOV(W17, mask);
             code_.AND(W16, W16, W17);
             code_.CBNZ(W16, failure);
+        }
+        void arithmetic(const arm::FloatingArithmeticOperands& v)
+        {
+            floating_.use();
+            FloatingEmitter { code_, vectors_ }.arithmetic(v);
         }
         void conversion(const arm::FloatingConversionOperands& v)
         {
@@ -443,7 +455,7 @@ namespace {
         VectorCodeGenerator code_;
         VectorRegisters vectors_;
         FloatingEnvironment floating_;
-        bool floating_checked_ = false;
+        std::uint32_t floating_checked_ = 0;
         IntegerEmitter integer_;
         ExchangePaths exchanges_;
         MemoryEmitter memory_;
@@ -517,12 +529,17 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                                              ? inst.immediate
                                              : arm::advance_it(it))
                                    : 0U;
-        if (inst.kind == arm::InstructionKind::FloatingConversion &&
-            emit.needs_floating_guard()) {
+        const auto floating_mask = inst.kind == arm::InstructionKind::FloatingConversion
+            ? arm::floating_exception_enables
+            : inst.kind == arm::InstructionKind::FloatingArithmetic
+                ? arm::floating_arithmetic_controls(
+                      std::get<arm::FloatingArithmeticOperands>(inst.vector).operation)
+                : 0U;
+        if (floating_mask != 0 && emit.needs_floating_guard(floating_mask)) {
             Label skipped;
             emit.conditional_skip(inst.condition, skipped);
             emit.floating_guard(emit.exit(StopReason::UnsupportedInstruction,
-                before, pc, word), inst.condition);
+                before, pc, word), inst.condition, floating_mask);
             if (inst.condition != 14)
                 emit.code().l(skipped);
         }
@@ -662,6 +679,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::IntegerTransform:
                     emit.integer().transform(inst);
+                    break;
+                case arm::InstructionKind::FloatingArithmetic:
+                    emit.arithmetic(
+                        std::get<arm::FloatingArithmeticOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::FloatingConversion:
                     emit.conversion(

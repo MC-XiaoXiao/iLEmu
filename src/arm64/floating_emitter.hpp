@@ -10,9 +10,13 @@ public:
         , vectors_(vectors)
     {
     }
+    void arithmetic(const arm::FloatingArithmeticOperands&);
     void conversion(const arm::FloatingConversionOperands&);
 
 private:
+    template <class Scalar>
+    void arithmetic_result(
+        arm::FloatingArithmeticOperation, Scalar, Scalar, Scalar);
     template <class Scalar>
     void integer_result(Scalar, bool signed_integer, bool round_zero);
     oaknut::VectorCodeGenerator& code_;

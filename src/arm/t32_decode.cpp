@@ -14,6 +14,7 @@
 #include "vfp_multiple.hpp"
 #include "multiply_decode.hpp"
 #include "floating_decode.hpp"
+#include "floating_arithmetic_decode.hpp"
 #include <bit>
 
 namespace ilemu::arm {
@@ -52,7 +53,8 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if (decode_floating_conversion(out, (word << 16U) | tail, true, vfp, architecture) ||
+        if (decode_floating_arithmetic(out, (word << 16U) | tail, true, vfp, architecture) ||
+            decode_floating_conversion(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_core_vector_move(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_multiply(out, (word << 16U) | tail, true, architecture) ||
             decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
