@@ -561,6 +561,22 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
     InstructionWindow window(source, region, thumb, &temporary);
     CompiledTrace out;
+    auto first = window.take(pc, it, true);
+    // Standalone unconditional stops share portable retirement and need no
+    // executable allocation. Conditional or combined traces still use code.
+    if (first && first->word && first->instruction.condition == 14) {
+        if (const auto stop = arm::ArchitecturalStop::from(first->instruction)) {
+            const auto cost = window.timing(*first);
+            if (cost != 0 && cost <= maximum_ticks) {
+                out.stop = stop;
+                out.maximum_ticks = cost;
+                out.instructions = 1;
+                out.ends_with_stop = true;
+                out.first_instruction = first->word;
+                return out;
+            }
+        }
+    }
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary);
     emit.prologue();
     const auto start = pc;
@@ -573,7 +589,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         if (pc < region.begin || pc >= region.end)
             break;
         emit.location(it, thumb ? 2U : 4U);
-        auto decoded = window.take(pc, it, n == 0);
+        auto decoded = n == 0 ? std::move(first) : window.take(pc, it, false);
         if (!decoded)
             break;
         const auto word = decoded->word;

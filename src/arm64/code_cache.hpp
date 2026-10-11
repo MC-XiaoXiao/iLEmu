@@ -2,6 +2,7 @@
 #pragma once
 #include "arm64/executor.hpp"
 #include "cycle_tier.hpp"
+#include "arm/architectural_stop.hpp"
 #include <map>
 #include <tuple>
 
@@ -17,6 +18,7 @@ public:
     struct Entry {
         std::unique_ptr<ExecutableCode> code;
         std::uint64_t maximum_ticks;
+        std::optional<arm::ArchitecturalStop> stop;
         bool closed;
         bool accesses_memory;
         bool ends_with_stop;

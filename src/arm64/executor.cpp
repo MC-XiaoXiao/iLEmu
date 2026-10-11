@@ -109,6 +109,12 @@ public:
             result.reason = control.poll();
             if (result.reason != StopReason::None)
                 return result;
+            if (selected->stop) {
+                result.instruction = selected->first_instruction;
+                selected->stop->retire(state, result, thumb, it_state,
+                    selected->maximum_ticks, request.mode);
+                return result;
+            }
 #if defined(__aarch64__) || defined(_M_ARM64)
             using Function = void (*)(CpuThreadState*, arm64::NativeOutcome*);
             const auto function = reinterpret_cast<Function>(

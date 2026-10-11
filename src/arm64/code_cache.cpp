@@ -101,18 +101,24 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     const auto bytes = std::as_bytes(std::span { compiled.words });
     if (bytes.size() > 256U * 1024U)
         throw std::length_error("ARM64 trace exceeds code limit");
-    auto allocation = allocator_.allocate(bytes.size());
-    if (!allocation)
-        throw std::bad_alloc { };
-    const auto capacity = allocation->capacity();
+    std::unique_ptr<ExecutableCode> allocation;
+    std::size_t capacity = 0;
+    if (!compiled.stop) {
+        allocation = allocator_.allocate(bytes.size());
+        if (!allocation)
+            throw std::bad_alloc { };
+        capacity = allocation->capacity();
+    }
     // Reserve domain overhead even if eviction will recreate this domain.
     const auto overhead = entry_bytes + (binding.identity ? domain_bytes : 0);
     if (capacity > budget_ - overhead)
         throw std::length_error("ARM64 trace exceeds cache budget");
     const auto accounted = capacity + entry_bytes;
-    allocation->publish(bytes);
-    if (!allocation->entry())
-        throw std::runtime_error("ARM64 code was not published");
+    if (allocation) {
+        allocation->publish(bytes);
+        if (!allocation->entry())
+            throw std::runtime_error("ARM64 code was not published");
+    }
     // Entry lookup happens between native invocations under a fresh code
     // lease. Publish successfully before replacing the cold allocation.
     if (auto* domain = find(binding)) {
@@ -130,8 +136,8 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         clear();
     auto& domain = obtain(binding);
     auto [it, inserted] = domain.entries.emplace(key,
-        Entry { std::move(allocation), compiled.maximum_ticks, compiled.closed,
-            compiled.accesses_memory, compiled.ends_with_stop,
+        Entry { std::move(allocation), compiled.maximum_ticks, compiled.stop,
+            compiled.closed, compiled.accesses_memory, compiled.ends_with_stop,
             compiled.first_instruction, accounted,
             CycleTier { compiled.closed, expansion == CycleExpansion::Hot } });
     if (!inserted)

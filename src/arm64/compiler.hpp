@@ -6,6 +6,7 @@
 #include "arm_memory/vector_transfer.hpp"
 #include "execution/run.hpp"
 #include "cycle_tier.hpp"
+#include "arm/architectural_stop.hpp"
 #include <cstdint>
 #include <vector>
 namespace ilemu::execution::arm64 {
@@ -36,6 +37,7 @@ inline constexpr std::uint32_t multiple_exit = 1U << 30U;
 inline constexpr std::uint32_t memory_exit = 1U << 31U;
 struct CompiledTrace {
     std::vector<std::uint32_t> words;
+    std::optional<arm::ArchitecturalStop> stop;
     std::uint64_t maximum_ticks = 0;
     unsigned instructions = 0;
     bool closed = false;

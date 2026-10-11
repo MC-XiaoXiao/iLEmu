@@ -12,6 +12,7 @@
 #include "arm/floating_immediate.hpp"
 #include "arm/floating_system.hpp"
 #include "arm/pc_write.hpp"
+#include "arm/architectural_stop.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
 #include "arm_memory/exclusive.hpp"
@@ -178,12 +179,11 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             result.reason = StopReason::InvalidTiming;
             return result;
         }
-        if (passed && inst.kind == arm::InstructionKind::Breakpoint) {
-            result.ticks_consumed += ticks;
-            result.reason = StopReason::Breakpoint;
-            if (request.mode == ExecutionMode::SingleStep)
-                result.reason = result.reason | StopReason::SingleStep;
-            return result;
+        if (passed) {
+            if (const auto stop = arm::ArchitecturalStop::from(inst)) {
+                stop->retire(state, result, thumb, it, ticks, request.mode);
+                return result;
+            }
         }
         if (passed) {
             switch (inst.kind) {
@@ -437,13 +437,6 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                                 ? inst.immediate
                                 : arm::advance_it(it));
         result.ticks_consumed += ticks;
-        if (passed && inst.kind == arm::InstructionKind::Svc) {
-            result.svc = inst.immediate;
-            result.reason = StopReason::Svc;
-            if (request.mode == ExecutionMode::SingleStep)
-                result.reason = result.reason | StopReason::SingleStep;
-            return result;
-        }
         if (request.mode == ExecutionMode::SingleStep) {
             result.pc = state.registers[15];
             result.reason = StopReason::SingleStep;
