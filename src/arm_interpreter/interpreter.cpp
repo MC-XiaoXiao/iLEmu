@@ -6,6 +6,7 @@
 #include "arm/t32_decode.hpp"
 #include "arm/multiply.hpp"
 #include "arm/integer_transform.hpp"
+#include "arm/floating_conversion.hpp"
 #include "arm_memory/multiple.hpp"
 #include "arm_memory/transfer.hpp"
 #include "arm_memory/exclusive.hpp"
@@ -179,6 +180,8 @@ RunResult ArmInterpreter::run(
         if (inst.condition == 15 ||
             (passed &&
                 (inst.kind == arm::InstructionKind::Unsupported ||
+                    (inst.kind == arm::InstructionKind::FloatingConversion &&
+                        (state.fpscr & arm::floating_exception_enables) != 0) ||
                     ((inst.kind == arm::InstructionKind::TableBranch ||
                          inst.kind == arm::InstructionKind::Transfer ||
                          inst.kind == arm::InstructionKind::ExclusiveTransfer ||
@@ -314,6 +317,18 @@ RunResult ArmInterpreter::run(
                 state.registers[inst.rd] = inst.shift == arm::ShiftKind::Lsl
                     ? (a & 0xffffU) | (shifted & 0xffff0000U)
                     : (a & 0xffff0000U) | (shifted & 0xffffU);
+                break;
+            }
+            case arm::InstructionKind::FloatingConversion: {
+                const auto& v = std::get<arm::FloatingConversionOperands>(inst.vector);
+                std::uint64_t input = state.extension_registers[v.source];
+                if (v.source_double)
+                    input |= std::uint64_t { state.extension_registers[v.source + 1U] } << 32U;
+                const auto converted = arm::convert_floating(v, input, state.fpscr);
+                state.extension_registers[v.destination] = static_cast<std::uint32_t>(converted.value);
+                if (v.destination_double)
+                    state.extension_registers[v.destination + 1U] = static_cast<std::uint32_t>(converted.value >> 32U);
+                state.fpscr |= converted.exceptions;
                 break;
             }
             case arm::InstructionKind::VectorCoreMove:

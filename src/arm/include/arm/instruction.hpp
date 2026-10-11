@@ -27,6 +27,7 @@ enum class InstructionKind {
     VectorDuplicate,
     VectorBitwise,
     VectorCoreMove,
+    FloatingConversion,
     VectorTransfer,
     SystemControl
 };
@@ -70,8 +71,17 @@ struct VectorCoreMoveOperands {
     unsigned core = 0, core2 = 0;
     bool pair = false, to_core = false, sign_extend = false;
 };
+enum class FloatingConversionOperation { IntegerToFloat, FloatToInteger, Precision };
+struct FloatingConversionOperands {
+    // Indices address words in the aliased S/D extension bank.
+    unsigned destination = 0, source = 0;
+    FloatingConversionOperation operation = FloatingConversionOperation::Precision;
+    bool source_double = false, destination_double = false;
+    bool signed_integer = false, round_zero = false;
+};
 using VectorOperands = std::variant<VectorDuplicateOperands,
-    VectorBitwiseOperands, VectorTransferOperands, VectorCoreMoveOperands>;
+    VectorBitwiseOperands, VectorTransferOperands, VectorCoreMoveOperands,
+    FloatingConversionOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.

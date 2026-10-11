@@ -10,6 +10,9 @@
 #include "memory_emitter.hpp"
 #include "multiple_emitter.hpp"
 #include "simd_emitter.hpp"
+#include "floating_emitter.hpp"
+#include "floating_environment.hpp"
+#include "arm/floating_conversion.hpp"
 #include "system_emitter.hpp"
 #include "exclusive_emitter.hpp"
 #include "vector_memory_emitter.hpp"
@@ -102,7 +105,7 @@ namespace {
         }
         void prologue()
         {
-            code_.STP(X19, X20, SP, PreIndexed { }, -160);
+            code_.STP(X19, X20, SP, PreIndexed { }, -192);
             code_.STP(X21, X22, SP, 16);
             code_.STP(X23, X24, SP, 32);
             code_.STP(X25, X26, SP, 48);
@@ -153,10 +156,12 @@ namespace {
                 for (int i = 0; i < 14; i += 2)
                     code_.STP(WReg { i }, WReg { i + 1 }, SP, 96 + i * 4);
                 code_.STR(W14, SP, 152);
+                floating_.leave(code_);
                 code_.LDR(X16, X20, offsetof(NativeOutcome, poll));
                 code_.LDR(X0, X20, offsetof(NativeOutcome, control));
                 vectors_.flush();
                 code_.BLR(X16);
+                floating_.resume(code_);
                 vectors_.restore();
                 code_.STR(W0, X20, offsetof(NativeOutcome, reason));
                 code_.MOV(W17, W0);
@@ -219,6 +224,7 @@ namespace {
                 publish_exit(*payload.example);
             }
             code_.l(epilogue_);
+            floating_.leave(code_);
             vectors_.flush();
             for (int i = 0; i < 14; i += 2)
                 code_.STP(WReg { i }, WReg { i + 1 }, X19, i * 4);
@@ -232,10 +238,11 @@ namespace {
             code_.LDP(X25, X26, SP, 48);
             code_.LDP(X27, X28, SP, 64);
             code_.LDP(X29, X30, SP, 80);
-            code_.LDP(X19, X20, SP, PostIndexed { }, 160);
+            code_.LDP(X19, X20, SP, PostIndexed { }, 192);
             code_.RET();
             std::vector<std::uint32_t> initial;
             VectorCodeGenerator entry(initial);
+            floating_.enter(entry);
             vectors_.restore(entry);
             memory_.addresses().finalize(trace_.closed, trace_.words, entry);
             if (!initial.empty()) {
@@ -348,6 +355,22 @@ namespace {
                         word, 0, false, before_it));
         }
         VectorRegisters& vectors() { return vectors_; }
+        bool needs_floating_guard() const { return !floating_checked_; }
+        void floating_guard(Label& failure, unsigned condition)
+        {
+            // No supported instruction changes FPSCR control in a trace.
+            // An unconditional check therefore covers later conversions.
+            floating_checked_ = condition == 14;
+            code_.LDR(W16, X19, offsetof(CpuThreadState, fpscr));
+            code_.MOV(W17, arm::floating_exception_enables);
+            code_.AND(W16, W16, W17);
+            code_.CBNZ(W16, failure);
+        }
+        void conversion(const arm::FloatingConversionOperands& v)
+        {
+            floating_.use();
+            FloatingEmitter { code_, vectors_ }.conversion(v);
+        }
         IntegerEmitter& integer() { return integer_; }
         void transfer(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
@@ -419,6 +442,8 @@ namespace {
         CompiledTrace& trace_;
         VectorCodeGenerator code_;
         VectorRegisters vectors_;
+        FloatingEnvironment floating_;
+        bool floating_checked_ = false;
         IntegerEmitter integer_;
         ExchangePaths exchanges_;
         MemoryEmitter memory_;
@@ -492,6 +517,15 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                                              ? inst.immediate
                                              : arm::advance_it(it))
                                    : 0U;
+        if (inst.kind == arm::InstructionKind::FloatingConversion &&
+            emit.needs_floating_guard()) {
+            Label skipped;
+            emit.conditional_skip(inst.condition, skipped);
+            emit.floating_guard(emit.exit(StopReason::UnsupportedInstruction,
+                before, pc, word), inst.condition);
+            if (inst.condition != 14)
+                emit.code().l(skipped);
+        }
         const auto cost = window.timing(*decoded);
         const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
         Label exchange_failed;
@@ -628,6 +662,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::IntegerTransform:
                     emit.integer().transform(inst);
+                    break;
+                case arm::InstructionKind::FloatingConversion:
+                    emit.conversion(
+                        std::get<arm::FloatingConversionOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::VectorCoreMove:
                     SimdEmitter { emit.code(), emit.vectors() }.core_move(
