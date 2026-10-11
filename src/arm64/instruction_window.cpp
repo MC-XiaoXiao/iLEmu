@@ -7,12 +7,13 @@
 
 namespace ilemu::execution::arm64 {
 InstructionWindow::InstructionWindow(InstructionSource& source,
-    InstructionRegion region, bool thumb)
+    InstructionRegion region, bool thumb, std::pmr::memory_resource* temporary)
     : source_(source), region_(region), thumb_(thumb)
     , arithmetic_(source.thumb_arithmetic_profile())
     , vfp_(source.vfp_register_profile())
     , floating_instructions_(source.vfp_instruction_profile())
     , architecture_(source.arm_instruction_profile())
+    , pending_(temporary)
 {
 }
 std::optional<DecodedInstruction> InstructionWindow::decode(

@@ -21,10 +21,12 @@
 #include "exclusive_emitter.hpp"
 #include "vector_memory_emitter.hpp"
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <deque>
 #include <limits>
 #include <map>
+#include <memory_resource>
 #include <stdexcept>
 #include <oaknut/oaknut.hpp>
 #include <type_traits>
@@ -57,7 +59,8 @@ namespace {
     class Emitter {
     public:
         Emitter(CompiledTrace& trace, bool big_endian, bool thumb,
-            std::uint32_t pc, unsigned it, bool single_step)
+            std::uint32_t pc, unsigned it, bool single_step,
+            std::pmr::memory_resource* temporary)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_)
@@ -66,6 +69,7 @@ namespace {
             , memory_(code_, integer_, big_endian)
             , thumb_(thumb)
             , backedge_(pc, it, thumb, !single_step)
+            , exits_(temporary)
         {
         }
         Label& exit(std::optional<StopReason> reason, std::uint64_t ticks,
@@ -204,9 +208,10 @@ namespace {
                 const Exit* example = nullptr;
                 unsigned count = 0;
             };
-            std::map<decltype(Exit { }.payload()), SharedExit> shared;
-            // Compact cold edges have no repeated cycle payloads. Avoid
-            // building the sharing table until code actually contains copies.
+            std::pmr::map<decltype(Exit { }.payload()), SharedExit> shared {
+                exits_.get_allocator().resource() };
+            // Natural and continued cycles can repeat payloads through
+            // control exits as well as copied guest instructions.
             const bool share = natural_backedge || continued_cycle_;
             if (share) {
                 for (const auto& out : exits_) {
@@ -537,7 +542,7 @@ namespace {
         std::size_t entry_end_ = 0;
         unsigned it_ = 0, size_ = 4;
         Label head_, loop_tail_, epilogue_;
-        std::deque<Exit> exits_;
+        std::pmr::deque<Exit> exits_;
     };
 }
 
@@ -549,9 +554,14 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     if (region.begin > pc || region.end <= pc ||
         region.end > (std::uint64_t { 1 } << 32U))
         throw std::invalid_argument("invalid instruction region");
-    InstructionWindow window(source, region, thumb);
+    // Scratch containers stay in this call. Returned machine code keeps its
+    // ordinary allocator and cannot retain a pointer into this buffer.
+    alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
+    std::pmr::monotonic_buffer_resource temporary {
+        scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
+    InstructionWindow window(source, region, thumb, &temporary);
     CompiledTrace out;
-    Emitter emit(out, big_endian, thumb, pc, it, single_step);
+    Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;

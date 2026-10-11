@@ -3,6 +3,7 @@
 #include "arm/instruction.hpp"
 #include "execution/run.hpp"
 #include <deque>
+#include <memory_resource>
 
 namespace ilemu::execution::arm64 {
 struct DecodedInstruction {
@@ -17,7 +18,7 @@ struct DecodedInstruction {
 class InstructionWindow {
 public:
     InstructionWindow(InstructionSource& source, InstructionRegion region,
-        bool thumb);
+        bool thumb, std::pmr::memory_resource* temporary);
     std::optional<DecodedInstruction> take(std::uint32_t pc, unsigned it,
         bool allow_straddle);
     std::uint64_t timing(DecodedInstruction&);
@@ -46,7 +47,7 @@ private:
     VfpRegisterProfile vfp_;
     VfpInstructionProfile floating_instructions_;
     ArmInstructionProfile architecture_;
-    std::deque<DecodedInstruction> pending_;
+    std::pmr::deque<DecodedInstruction> pending_;
     std::optional<FlagProof> comparison_flags_dead_;
 };
 }
