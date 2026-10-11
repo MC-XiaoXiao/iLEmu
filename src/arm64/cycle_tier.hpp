@@ -39,7 +39,9 @@ public:
     }
 
 private:
-    unsigned remaining_ = 64;
+    // Expansion repeats the body up to maximum_copies times. Accumulate
+    // enough compact groups to amortize that translation across short Runs.
+    unsigned remaining_ = maximum_copies * maximum_copies;
     bool eligible_;
 };
 }
