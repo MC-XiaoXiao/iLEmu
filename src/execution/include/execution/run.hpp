@@ -187,6 +187,10 @@ public:
     }
     StopReason consume() noexcept
     {
+        // An empty poll linearizes at the load; a later request remains
+        // pending for the next poll without an unnecessary atomic write.
+        if (pending_.load(std::memory_order_acquire) == 0)
+            return StopReason::None;
         return static_cast<StopReason>(
             pending_.exchange(0, std::memory_order_acq_rel));
     }
