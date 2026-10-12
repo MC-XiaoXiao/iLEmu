@@ -12,6 +12,18 @@ void IntegerEmitter::transform(const arm::Instruction& inst)
     const WReg d { static_cast<int>(inst.rd) }, m { static_cast<int>(inst.rm) },
         n { static_cast<int>(inst.rn) };
     switch (operation) {
+    case Operation::BitfieldInsert:
+        // Encode the inclusive end directly: the alias API cannot represent
+        // width 32 in its five-bit width argument.
+        code_.BFM(d, inst.accumulate ? m : WZR,
+            (32U - inst.shift_amount) & 31U, inst.immediate - 1U);
+        return;
+    case Operation::BitfieldExtract:
+        if (inst.sign_extend)
+            code_.SBFM(d, m, inst.shift_amount, inst.shift_amount + inst.immediate - 1U);
+        else
+            code_.UBFM(d, m, inst.shift_amount, inst.shift_amount + inst.immediate - 1U);
+        return;
     case Operation::CountLeadingZeros: code_.CLZ(d, m); return;
     case Operation::ReverseBytes: code_.REV(d, m); return;
     case Operation::ReverseHalfwords: code_.REV16(d, m); return;

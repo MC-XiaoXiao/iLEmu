@@ -6,7 +6,7 @@ namespace ilemu::arm {
 namespace {
     std::uint32_t extend(std::uint32_t value, unsigned bits, bool sign)
     {
-        const auto mask = (1U << bits) - 1U;
+        const auto mask = 0xffffffffU >> (32U - bits);
         const auto top = sign ? 1U << (bits - 1U) : 0U;
         return ((value & mask) ^ top) - top;
     }
@@ -19,6 +19,13 @@ std::uint32_t integer_transform(const Instruction& inst, std::uint32_t source,
     using Operation = IntegerTransformOperation;
     const auto value = std::rotr(source, static_cast<int>(inst.shift_amount));
     switch (static_cast<Operation>(inst.opcode)) {
+    case Operation::BitfieldInsert: {
+        const auto mask = (0xffffffffU >> (32U - inst.immediate)) << inst.shift_amount;
+        return (addend & ~mask) |
+            (((inst.accumulate ? source : 0U) << inst.shift_amount) & mask);
+    }
+    case Operation::BitfieldExtract:
+        return extend(source >> inst.shift_amount, inst.immediate, inst.sign_extend);
     case Operation::CountLeadingZeros:
         return static_cast<std::uint32_t>(std::countl_zero(value));
     case Operation::ExtendByte:

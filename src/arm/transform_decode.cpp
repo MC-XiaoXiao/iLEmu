@@ -1,11 +1,14 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "transform_decode.hpp"
+#include "bitfield_decode.hpp"
 #include "arm/integer_transform.hpp"
 
 namespace ilemu::arm {
 bool decode_integer_transform(Instruction& out, std::uint32_t word,
     bool thumb, execution::ArmInstructionProfile architecture) noexcept
 {
+    if (decode_bitfield(out, word, thumb, architecture))
+        return true;
     using Operation = IntegerTransformOperation;
     Operation operation;
     unsigned rd, rm, rn = 15, rotation = 0;
