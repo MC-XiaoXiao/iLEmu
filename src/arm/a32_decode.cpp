@@ -95,8 +95,19 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         return out;
     }
     // Unconditional encoding space has different decode rules.
-    if (out.condition == 15)
+    if (out.condition == 15) {
+        // ARM PLD is an optional data-cache hint from ARMv5TE onward.
+        // It performs no architectural access, including for unmapped targets.
+        const bool preload_immediate =
+            (word & 0xff70f000U) == 0xf550f000U;
+        const bool preload_register =
+            (word & 0xff70f010U) == 0xf750f000U && (word & 15U) != 15U;
+        if (preload_immediate || preload_register) {
+            out.condition = 14;
+            out.kind = InstructionKind::Nop;
+        }
         return out;
+    }
     // The dedicated ARM NOP encoding is available from ARMv6K/ARMv6T2.
     // Other hints have their own effects and do not alias this instruction.
     if ((word & 0x0fffffffU) == 0x0320f000U) {
