@@ -63,6 +63,15 @@ FlagEffects flag_effects(const arm::Instruction& inst) noexcept
             out.possible_write = out.guaranteed_write = n | z | c | v;
         break;
     }
+    case Kind::SystemControl:
+        if (inst.system != arm::SystemOperation::ProgramStatusRegister ||
+            (!inst.load && (inst.opcode & 2U) != 0))
+            return out;
+        if (inst.load)
+            out.read |= n | z | c | v;
+        else if ((inst.opcode & 8U) != 0)
+            out.possible_write = out.guaranteed_write = n | z | c | v;
+        break;
     case Kind::IfThen:
     case Kind::Nop:
     case Kind::WideImmediate:

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MPL-2.0 */
+#include "arm/program_status.hpp"
 #include "arm_interpreter/interpreter.hpp"
 #include "simd.hpp"
 #include "arm/a32_decode.hpp"
@@ -217,6 +218,16 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             }
             case arm::InstructionKind::SystemControl:
                 switch (inst.system) {
+                case arm::SystemOperation::ProgramStatusRegister:
+                    if (inst.load)
+                        state.registers[inst.rd] = arm::read_program_status(state.cpsr);
+                    else {
+                        const auto mask = arm::program_status_write_mask(inst.opcode);
+                        const auto value = inst.immediate_operand
+                            ? inst.immediate : state.registers[inst.rd];
+                        state.cpsr = (state.cpsr & ~mask) | (value & mask);
+                    }
+                    break;
                 case arm::SystemOperation::ThreadPointerReadWrite:
                     if (inst.load)
                         state.registers[inst.rd] = state.thread_pointer_user_rw;

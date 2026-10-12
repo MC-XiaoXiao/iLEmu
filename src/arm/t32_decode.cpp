@@ -11,6 +11,7 @@
 #include "simd_extract.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
+#include "program_status_decode.hpp"
 #include "exclusive.hpp"
 #include "transform_decode.hpp"
 #include "parallel_saturating_decode.hpp"
@@ -80,6 +81,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_parallel_saturating(out, (word << 16U) | tail, true, architecture) ||
             decode_exclusive(out, (word << 16U) | tail, true) ||
             decode_dual_transfer(out, (word << 16U) | tail, true, architecture) ||
+            decode_program_status(out, (word << 16U) | tail, true, architecture) ||
             decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_immediate(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||

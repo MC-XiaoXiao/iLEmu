@@ -6,6 +6,7 @@
 #include "simd_extract.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
+#include "program_status_decode.hpp"
 #include "exclusive.hpp"
 #include "swap_decode.hpp"
 #include "transform_decode.hpp"
@@ -44,6 +45,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         decode_swap(out, word) ||
         decode_dual_transfer(out, word, false, architecture) ||
         decode_exclusive(out, word, false) ||
+        decode_program_status(out, word, false, architecture) ||
         decode_system_control(out, word, false) ||
         decode_simd_immediate(out, word, false, vfp, architecture) ||
         decode_simd_duplicate(out, word, false) ||

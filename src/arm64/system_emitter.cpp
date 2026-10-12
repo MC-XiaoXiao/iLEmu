@@ -9,6 +9,31 @@ void SystemEmitter::emit(const arm::Instruction& inst)
     using namespace oaknut::util;
     const WReg value { static_cast<int>(inst.rd) };
     switch (inst.system) {
+    case arm::SystemOperation::ProgramStatusRegister:
+        if (inst.load) {
+            code_.MOV(W16, 0x08ff03dfU);
+            code_.AND(W17, W22, W16);
+            code_.MRS(X16, SystemReg::NZCV);
+            code_.ORR(value, W17, W16);
+        } else {
+            const auto input = inst.immediate_operand ? W17 : value;
+            if (inst.immediate_operand)
+                code_.MOV(input, inst.immediate);
+            if ((inst.opcode & 8U) != 0) {
+                code_.MSR(SystemReg::NZCV, XReg { input.index() });
+                code_.UBFX(W16, input, 27, 1);
+                code_.BFI(W22, W16, 27, 1);
+            }
+            if ((inst.opcode & 4U) != 0) {
+                code_.UBFX(W16, input, 16, 4);
+                code_.BFI(W22, W16, 16, 4);
+            }
+            if ((inst.opcode & 2U) != 0) {
+                code_.UBFX(W16, input, 9, 1);
+                code_.BFI(W22, W16, 9, 1);
+            }
+        }
+        break;
     case arm::SystemOperation::ThreadPointerReadWrite:
         if (inst.load)
             code_.LDR(value, X19, offsetof(CpuThreadState, thread_pointer_user_rw));

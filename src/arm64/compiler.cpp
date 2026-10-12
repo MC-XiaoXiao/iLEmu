@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "compiler.hpp"
+#include "arm/program_status.hpp"
 #include "cycle_tier.hpp"
 #include "instruction_window.hpp"
 #include "dynamic_backedge.hpp"
@@ -790,6 +791,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::SystemControl:
                     SystemEmitter { emit.code() }.emit(inst);
+                    if (arm::program_status_writes_endianness(inst))
+                        emit.code().B(emit.exit(StopReason::None,
+                            out.maximum_ticks, next_pc, { }, 0, false,
+                            next_it, false));
                     if (inst.system ==
                         arm::SystemOperation::InstructionSynchronizationBarrier)
                         emit.code().B(emit.exit(StopReason::None,
