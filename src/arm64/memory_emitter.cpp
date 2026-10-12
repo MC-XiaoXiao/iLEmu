@@ -63,7 +63,7 @@ std::optional<AddressCache::Key> MemoryEmitter::address(
     return key;
 }
 void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
-    XReg pointer, Label& unsupported_exit, Label& branch_exit)
+    XReg pointer, Exits& exits)
 {
     if (inst.kind == arm::InstructionKind::DualTransfer) {
         const WReg first { static_cast<int>(inst.rd) };
@@ -107,13 +107,13 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
         if (inst.kind == arm::InstructionKind::TableBranch) {
             code_.MOV(W15, pc + 4U);
             code_.ADD(W15, W15, W17, AddSubShift::LSL, 1);
-            code_.B(branch_exit);
+            code_.B(exits.get(ExitKind::Branch));
             return;
         }
         if (inst.rd == 15) {
             Label valid;
             code_.TBNZ(W17, 0, valid);
-            code_.TBNZ(W17, 1, unsupported_exit);
+            code_.TBNZ(W17, 1, exits.get(ExitKind::Unsupported));
             code_.l(valid);
         }
     } else {
@@ -136,18 +136,17 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
         if (inst.rd == 15) {
             code_.BFI(W22, W17, 5, 1);
             code_.AND(W15, W17, 0xfffffffeU);
-            code_.B(branch_exit);
+            code_.B(exits.get(ExitKind::Branch));
         }
     }
 }
 void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
-    std::uint64_t cost, Label& checked_exit, Label& unsupported_exit,
-    Label& branch_exit)
+    std::uint64_t cost, Exits& exits)
 {
     const auto key = address(inst, pc);
     if (key) {
         if (const auto pointer = addresses_.find(*key)) {
-            access(inst, pc, *pointer, unsupported_exit, branch_exit);
+            access(inst, pc, *pointer, exits);
             return;
         }
     }
@@ -168,7 +167,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     if (inst.rd == 15 && inst.load &&
         inst.kind != arm::InstructionKind::TableBranch) {
         code_.AND(W17, W15, 3);
-        code_.CBNZ(W17, unsupported_exit);
+        code_.CBNZ(W17, exits.get(ExitKind::Unsupported));
     }
     if (inst.rd == 15 && !inst.load) {
         code_.LDR(
@@ -177,7 +176,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         Label valid;
         code_.CBZ(W17, valid);
         code_.EOR(W17, W21, 12);
-        code_.CBNZ(W17, unsupported_exit);
+        code_.CBNZ(W17, exits.get(ExitKind::Unsupported));
         code_.l(valid);
     }
     const auto table = inst.load ? X25 : X26;
@@ -207,7 +206,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     XReg pointer = X21;
     if (key && inst.condition == 14)
         pointer = addresses_.remember(*key, pointer);
-    access(inst, pc, pointer, unsupported_exit, branch_exit);
+    access(inst, pc, pointer, exits);
     code_.B(done);
     code_.l(checked);
     code_.STR(
@@ -229,7 +228,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     code_.MOV(X21, cost);
     code_.STR(
         X21, X20, transfer_offset + offsetof(arm_memory::Transfer, ticks));
-    code_.B(checked_exit);
+    code_.B(exits.get(ExitKind::Checked));
     code_.l(done);
 }
 }

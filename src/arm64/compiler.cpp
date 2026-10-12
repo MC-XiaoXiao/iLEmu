@@ -489,12 +489,51 @@ namespace {
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
             unsigned before_it)
         {
-            memory_.emit(inst, pc, cost,
-                exit(static_cast<StopReason>(memory_exit), before, pc, word, 0,
-                    false, before_it),
-                exit(StopReason::UnsupportedInstruction, before, pc, word, 0,
-                    false, before_it),
-                exit(StopReason::None, before + cost, 0, { }, 0, true));
+            class TransferExits final : public MemoryEmitter::Exits {
+            public:
+                TransferExits(Emitter& owner, std::uint32_t pc,
+                    std::uint32_t word, std::uint64_t before,
+                    std::uint64_t cost, unsigned it)
+                    : owner_(owner)
+                    , pc_(pc)
+                    , word_(word)
+                    , it_(it)
+                    , before_(before)
+                    , cost_(cost)
+                {
+                }
+                Label& get(MemoryEmitter::ExitKind kind) override
+                {
+                    auto& label = labels_[static_cast<unsigned>(kind)];
+                    if (!label) {
+                        switch (kind) {
+                        case MemoryEmitter::ExitKind::Checked:
+                            label = &owner_.exit(
+                                static_cast<StopReason>(memory_exit), before_,
+                                pc_, word_, 0, false, it_);
+                            break;
+                        case MemoryEmitter::ExitKind::Unsupported:
+                            label = &owner_.exit(
+                                StopReason::UnsupportedInstruction, before_,
+                                pc_, word_, 0, false, it_);
+                            break;
+                        case MemoryEmitter::ExitKind::Branch:
+                            label = &owner_.exit(StopReason::None,
+                                before_ + cost_, 0, { }, 0, true);
+                            break;
+                        }
+                    }
+                    return *label;
+                }
+
+            private:
+                Emitter& owner_;
+                std::uint32_t pc_, word_;
+                unsigned it_;
+                std::uint64_t before_, cost_;
+                std::array<Label*, 3> labels_ { };
+            } exits { *this, pc, word, before, cost, before_it };
+            memory_.emit(inst, pc, cost, exits);
         }
 
         void multiple(const arm::Instruction& inst, std::uint32_t pc,
