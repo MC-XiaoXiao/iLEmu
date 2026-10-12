@@ -38,7 +38,8 @@ enum class InstructionKind {
     SystemControl,
     DualTransfer,
     VectorImmediate,
-    ParallelSaturating
+    ParallelSaturating,
+    IntegerDivide
 };
 enum class SystemOperation {
     ThreadPointerReadWrite,

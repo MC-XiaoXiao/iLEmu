@@ -8,6 +8,9 @@ constexpr bool has_armv6t2_extensions(ArmInstructionProfile profile) noexcept
 {
     return profile == ArmInstructionProfile::Armv6T2;
 }
+// Optional ARMv7-A integer division capability, independent of Thumb-2.
+// Application-profile division by zero returns zero without trapping.
+enum class IntegerDivideProfile { None, ThumbOnly, ArmAndThumb };
 // ARM-state ALU writes preserve the ISA through ARMv6; ARMv7 interworks.
 // Thumb ALU writes always preserve the ISA, independently of this policy.
 enum class AluPcWriteProfile { Branch, Interworking };

@@ -34,6 +34,7 @@ public:
     execution::VfpRegisterProfile vfp_register_profile() const noexcept override;
     execution::VfpInstructionProfile vfp_instruction_profile() const noexcept override;
     execution::ArmInstructionProfile arm_instruction_profile() const noexcept override;
+    execution::IntegerDivideProfile integer_divide_profile() const noexcept override;
     execution::AluPcWriteProfile alu_pc_write_profile() const noexcept override;
     execution::FloatingExceptionProfile floating_exception_profile() const noexcept override;
     std::optional<execution::MemoryFault> prepare_instruction_fetch(

@@ -19,6 +19,7 @@
 #include "vfp_multiple.hpp"
 #include "vfp_scalar.hpp"
 #include "multiply_decode.hpp"
+#include "integer_divide_decode.hpp"
 #include "floating_decode.hpp"
 #include "floating_arithmetic_decode.hpp"
 #include "floating_comparison_decode.hpp"
@@ -37,7 +38,8 @@ namespace {
 Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     unsigned it, execution::ThumbArithmeticProfile profile,
     execution::VfpRegisterProfile vfp, execution::ArmInstructionProfile architecture,
-    execution::VfpInstructionProfile floating_instructions) noexcept
+    execution::VfpInstructionProfile floating_instructions,
+    execution::IntegerDivideProfile division) noexcept
 {
     Instruction out;
     out.size = thumb_is_wide(first) ? 4U : 2U;
@@ -75,6 +77,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_floating_conversion(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_core_vector_move(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_multiply(out, (word << 16U) | tail, true, architecture) ||
+            decode_integer_divide(out, (word << 16U) | tail, true, architecture, division) ||
             decode_vfp_scalar(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
             decode_integer_transform(out, (word << 16U) | tail, true, architecture) ||

@@ -77,6 +77,7 @@ FlagEffects flag_effects(const arm::Instruction& inst) noexcept
     case Kind::WideImmediate:
     case Kind::PackHalfword:
     case Kind::IntegerTransform:
+    case Kind::IntegerDivide:
     case Kind::ParallelSaturating:
     case Kind::VectorDuplicate:
     case Kind::VectorBitwise:

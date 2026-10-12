@@ -22,6 +22,7 @@ public:
             inst, (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U), false);
     }
     void multiply(const arm::Instruction&);
+    void divide(const arm::Instruction&);
     void wide_immediate(const arm::Instruction&);
     void pack_halfword(const arm::Instruction&);
     void transform(const arm::Instruction&);

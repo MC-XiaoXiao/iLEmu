@@ -375,6 +375,7 @@ namespace {
             if ((inst.kind == arm::InstructionKind::DataProcessing &&
                     (inst.opcode < 8 || inst.opcode > 11)) ||
                 inst.kind == arm::InstructionKind::Multiply ||
+                inst.kind == arm::InstructionKind::IntegerDivide ||
                 inst.kind == arm::InstructionKind::PackHalfword ||
                 inst.kind == arm::InstructionKind::IntegerTransform ||
                 inst.kind == arm::InstructionKind::ParallelSaturating ||
@@ -829,6 +830,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::IntegerTransform:
                     emit.integer().transform(inst);
+                    break;
+                case arm::InstructionKind::IntegerDivide:
+                    emit.integer().divide(inst);
                     break;
                 case arm::InstructionKind::FloatingArithmetic:
                     emit.arithmetic(

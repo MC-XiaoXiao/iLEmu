@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <memory>
+#include "execution/instruction_profile.hpp"
 
 namespace ilemu {
 
@@ -78,6 +79,12 @@ enum class ArmUnpredictableInstructionPolicy : std::uint8_t {
 class ArmCpuModel {
 public:
     virtual ~ArmCpuModel() = default;
+
+    [[nodiscard]] virtual execution::IntegerDivideProfile
+    integer_divide_profile() const noexcept
+    {
+        return execution::IntegerDivideProfile::None;
+    }
 
     [[nodiscard]] virtual ArmCpuModelKind kind() const noexcept
     {

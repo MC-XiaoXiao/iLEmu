@@ -121,6 +121,10 @@ public:
     {
         return ArmInstructionProfile::Armv6T2;
     }
+    virtual IntegerDivideProfile integer_divide_profile() const noexcept
+    {
+        return IntegerDivideProfile::None;
+    }
     virtual AluPcWriteProfile alu_pc_write_profile() const noexcept
     {
         return AluPcWriteProfile::Interworking;

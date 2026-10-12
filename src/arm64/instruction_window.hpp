@@ -48,6 +48,7 @@ private:
     VfpRegisterProfile vfp_;
     VfpInstructionProfile floating_instructions_;
     ArmInstructionProfile architecture_;
+    IntegerDivideProfile division_;
     std::pmr::deque<DecodedInstruction> pending_;
     std::optional<FlagProof> comparison_flags_dead_;
 };

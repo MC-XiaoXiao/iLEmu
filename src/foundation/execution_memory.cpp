@@ -63,6 +63,11 @@ ExecutionMemory::alu_pc_write_profile() const noexcept
                ? execution::AluPcWriteProfile::Interworking
                : execution::AluPcWriteProfile::Branch;
 }
+execution::IntegerDivideProfile
+ExecutionMemory::integer_divide_profile() const noexcept
+{
+    return impl_->model_.integer_divide_profile();
+}
 execution::FloatingExceptionProfile
 ExecutionMemory::floating_exception_profile() const noexcept
 {

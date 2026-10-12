@@ -6,6 +6,7 @@
 #include "arm/integer_semantics.hpp"
 #include "arm/t32_decode.hpp"
 #include "arm/multiply.hpp"
+#include "arm/integer_divide.hpp"
 #include "arm/integer_transform.hpp"
 #include "arm/parallel_saturating.hpp"
 #include "arm/floating_conversion.hpp"
@@ -68,6 +69,7 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
     const auto vfp = source.vfp_register_profile();
     const auto floating_instructions = source.vfp_instruction_profile();
     const auto architecture = source.arm_instruction_profile();
+    const auto division = source.integer_divide_profile();
     for (;;) {
         result.pc = state.registers[15];
         result.instruction.reset();
@@ -120,11 +122,11 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             }
             result.instruction =
                 *first | (std::uint32_t { second.value_or(0) } << 16U);
-            inst = arm::decode_t32(*first, second, it, profile, vfp, architecture, floating_instructions);
+            inst = arm::decode_t32(*first, second, it, profile, vfp, architecture, floating_instructions, division);
         } else {
             result.instruction = source.fetch32(result.pc);
             if (result.instruction)
-                inst = arm::decode_a32(*result.instruction, vfp, architecture, floating_instructions);
+                inst = arm::decode_a32(*result.instruction, vfp, architecture, floating_instructions, division);
         }
         if (!result.instruction) {
             result.reason = StopReason::FetchFault;
@@ -319,6 +321,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             case arm::InstructionKind::IntegerTransform:
                 state.registers[inst.rd] = arm::integer_transform(inst,
                     state.registers[inst.rm], state.registers[inst.rn]);
+                break;
+            case arm::InstructionKind::IntegerDivide:
+                state.registers[inst.rd] = arm::integer_divide(inst,
+                    state.registers[inst.rn], state.registers[inst.rm]);
                 break;
             case arm::InstructionKind::PackHalfword: {
                 const auto shifted = arm::shift(state.registers[inst.rm],

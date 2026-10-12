@@ -3,6 +3,15 @@
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
+void IntegerEmitter::divide(const arm::Instruction& inst)
+{
+    const WReg d { static_cast<int>(inst.rd) }, n { static_cast<int>(inst.rn) },
+        m { static_cast<int>(inst.rm) };
+    if (inst.sign_extend)
+        code_.SDIV(d, n, m);
+    else
+        code_.UDIV(d, n, m);
+}
 void IntegerEmitter::merge_nz()
 {
     code_.MRS(X17, SystemReg::NZCV);

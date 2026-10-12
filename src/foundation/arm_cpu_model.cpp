@@ -129,6 +129,14 @@ namespace {
             return kind_;
         }
 
+        [[nodiscard]] execution::IntegerDivideProfile
+        integer_divide_profile() const noexcept override
+        {
+            return kind_ == ArmCpuModelKind::AppleSwift
+                ? execution::IntegerDivideProfile::ArmAndThumb
+                : execution::IntegerDivideProfile::None;
+        }
+
         [[nodiscard]] ArmArchitectureVersion
         architecture_version() const noexcept override
         {
