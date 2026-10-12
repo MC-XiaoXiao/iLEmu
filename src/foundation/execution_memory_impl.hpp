@@ -26,6 +26,7 @@ public:
         struct Page {
             std::uint32_t base = 0;
             std::shared_ptr<GuestPageBacking> backing;
+            std::span<const std::byte> bytes;
             std::shared_lock<std::shared_mutex> lock;
             std::uint64_t generation() const noexcept
             {
@@ -76,19 +77,27 @@ public:
             }
             return view_.epoch;
         }
-        bool allows(std::uint32_t address, unsigned size) const noexcept
+        template <typename T>
+        std::optional<T> fetch(std::uint32_t address) const noexcept
         {
-            if (std::uint64_t { address } + size > (std::uint64_t { 1 } << 32U))
-                return false;
-            for (unsigned byte = 0; byte < size; ++byte) {
-                const auto base = execution_page_base(address + byte);
-                bool found = false;
-                for (unsigned i = 0; i < count_; ++i)
-                    found |= pages_[i].base == base;
-                if (!found)
-                    return false;
+            if (std::uint64_t { address } + sizeof(T) >
+                (std::uint64_t { 1 } << 32U))
+                return { };
+            const auto* page = find_page(address);
+            if (!page)
+                return { };
+            const auto offset = address - page->base;
+            if (offset <= AddressSpace::page_size - sizeof(T))
+                return static_cast<T>(read(*page, offset, sizeof(T)));
+            std::uint32_t value = 0;
+            for (unsigned byte = 0; byte < sizeof(T); ++byte) {
+                const auto current = address + byte;
+                page = find_page(current);
+                if (!page)
+                    return { };
+                value |= read(*page, current - page->base, 1) << (byte * 8U);
             }
-            return true;
+            return static_cast<T>(value);
         }
         std::optional<execution::MemoryFault> prepare(
             std::uint32_t address, unsigned size)
@@ -106,12 +115,13 @@ public:
                     return { };
             if (count_ == pages_.size())
                 throw std::logic_error("instruction lease exceeds two pages");
-            auto backing = owner_.memory_.instruction_page_backing(address);
-            if (!backing)
+            auto view = owner_.memory_.instruction_page_view(address);
+            if (!view)
                 return owner_.fault(address, size, MemoryPermission::Execute);
             auto& page = pages_[count_];
             page.base = base;
-            page.backing = std::move(*backing);
+            page.backing = std::move(view->backing);
+            page.bytes = view->bytes;
             bool duplicate = false;
             for (unsigned i = 0; i < count_; ++i)
                 duplicate |= page.backing == pages_[i].backing;
@@ -123,6 +133,24 @@ public:
         bool thumb() const noexcept { return thumb_; }
 
     private:
+        const Page* find_page(std::uint32_t address) const noexcept
+        {
+            const auto base = execution_page_base(address);
+            for (unsigned i = 0; i < count_; ++i)
+                if (pages_[i].base == base)
+                    return &pages_[i];
+            return nullptr;
+        }
+        static std::uint32_t read(
+            const Page& page, unsigned offset, unsigned size) noexcept
+        {
+            std::uint32_t value = 0;
+            if (!page.bytes.empty())
+                for (unsigned byte = 0; byte < size; ++byte)
+                    value |= std::to_integer<std::uint32_t>(
+                                 page.bytes[offset + byte]) << (byte * 8U);
+            return value;
+        }
         Impl& owner_;
         AddressSpace::ExclusiveAccess memory_;
         View& view_;

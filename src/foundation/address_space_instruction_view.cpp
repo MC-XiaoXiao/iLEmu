@@ -3,8 +3,8 @@
 #include <stdexcept>
 
 namespace ilemu {
-std::optional<std::shared_ptr<GuestPageBacking>>
-AddressSpace::instruction_page_backing(std::uint32_t address)
+std::optional<AddressSpace::InstructionPageView>
+AddressSpace::instruction_page_view(std::uint32_t address)
 {
     if (!owns_exclusive_access())
         throw std::logic_error(
@@ -16,12 +16,14 @@ AddressSpace::instruction_page_backing(std::uint32_t address)
         return std::nullopt;
     auto* page = find_page_locked(base);
     if (!page || !page->backing)
-        return std::shared_ptr<GuestPageBacking> { };
+        return InstructionPageView { };
     if (page->shared_writable) {
         const auto epoch = GuestPageBacking::shared_write_tracking_epoch();
         const auto changed = page->backing->enable_shared_write_tracking();
         finish_shared_write_tracking_locked(epoch, changed ? 1U : 0U, true);
     }
-    return page->backing;
+    return InstructionPageView { page->backing,
+        page->instructions ? std::span<const std::byte> { *page->instructions }
+                           : std::span<const std::byte> { page->backing->bytes } };
 }
 }

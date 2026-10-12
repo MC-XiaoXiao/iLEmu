@@ -102,17 +102,13 @@ execution::InstructionRegion ExecutionMemory::instruction_region(
 }
 std::optional<std::uint16_t> ExecutionMemory::fetch16(std::uint32_t address)
 {
-    if (!impl_->active_ || !impl_->active_->allows(address, 2))
-        return { };
-    TaskVmEvents::Scope inspection { nullptr };
-    return impl_->memory_.read16(address, MemoryPermission::Execute);
+    return impl_->active_ ? impl_->active_->fetch<std::uint16_t>(address)
+                          : std::nullopt;
 }
 std::optional<std::uint32_t> ExecutionMemory::fetch32(std::uint32_t address)
 {
-    if (!impl_->active_ || !impl_->active_->allows(address, 4))
-        return { };
-    TaskVmEvents::Scope inspection { nullptr };
-    return impl_->memory_.read32(address, MemoryPermission::Execute);
+    return impl_->active_ ? impl_->active_->fetch<std::uint32_t>(address)
+                          : std::nullopt;
 }
 std::uint64_t ExecutionMemory::ticks_for_instruction(
     std::uint32_t address, std::uint32_t word) const

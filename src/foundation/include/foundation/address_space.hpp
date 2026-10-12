@@ -169,11 +169,15 @@ public:
     [[nodiscard]] std::uint8_t** jit_instruction_page_table();
     [[nodiscard]] bool prepare_instruction_fetch(std::uint32_t address, std::size_t size);
     // Requires this thread's ExclusiveAccess and an already prepared Execute
-    // translation. Empty optional is unavailable; an empty backing is a stable
-    // demand-zero page. The caller locks each distinct backing before inspection
-    // and retains it only for the current execution lease.
-    [[nodiscard]] std::optional<std::shared_ptr<GuestPageBacking>>
-    instruction_page_backing(std::uint32_t address);
+    // translation. Empty optional is unavailable; empty bytes denote a stable
+    // demand-zero page. Bytes include instruction overlays and are borrowed
+    // only for this ExclusiveAccess. Lock each distinct backing before reading.
+    struct InstructionPageView {
+        std::shared_ptr<GuestPageBacking> backing;
+        std::span<const std::byte> bytes;
+    };
+    [[nodiscard]] std::optional<InstructionPageView>
+    instruction_page_view(std::uint32_t address);
     [[nodiscard]] std::uint8_t** jit_read_page_table();
     [[nodiscard]] std::uint8_t** jit_write_page_table();
     // Debug watchpoints can require every access to pass through callbacks.
