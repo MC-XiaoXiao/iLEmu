@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "compiler.hpp"
+#include "native_frame.hpp"
 #include "arm/program_status.hpp"
 #include "cycle_tier.hpp"
 #include "instruction_window.hpp"
@@ -140,26 +141,7 @@ namespace {
         }
         void prologue()
         {
-            code_.STP(X19, X20, SP, PreIndexed { }, -192);
-            code_.STP(X21, X22, SP, 16);
-            code_.STP(X23, X24, SP, 32);
-            code_.STP(X25, X26, SP, 48);
-            code_.STP(X27, X28, SP, 64);
-            code_.STP(X29, X30, SP, 80);
-            code_.MOV(X19, X0);
-            code_.MOV(X20, X1);
-            code_.LDP(X25, X26, X20, offsetof(NativeOutcome, memory));
-            code_.LDR(X23, X20, offsetof(NativeOutcome, groups));
-            code_.MOV(X24, 0);
-            // LR is saved in the frame. Between control calls X30 counts
-            // groups until the next poll; BLR overwrites it only at a poll.
-            code_.MOV(X30, 1);
-            code_.LDR(W22, X19, cpsr_offset);
-            code_.MSR(SystemReg::NZCV, X22);
-            for (int i = 0; i < 14; i += 2)
-                code_.LDP(WReg { i }, WReg { i + 1 }, X19, i * 4);
-            code_.LDR(W14, X19, 56);
-            code_.align(16);
+            NativeFrame::entry(trace_.words);
             entry_end_ = cycle_end_ = trace_.words.size();
             code_.l(head_);
         }
@@ -271,21 +253,9 @@ namespace {
             code_.l(epilogue_);
             floating_.leave(code_);
             vectors_.flush();
-            for (int i = 0; i < 14; i += 2)
-                code_.STP(WReg { i }, WReg { i + 1 }, X19, i * 4);
-            code_.STR(W14, X19, 56);
-            code_.MRS(X21, SystemReg::NZCV);
-            code_.AND(W22, W22, 0x0fffffffU);
-            code_.ORR(W22, W22, W21);
-            code_.STR(W22, X19, cpsr_offset);
+            NativeFrame::publish(trace_.words);
             memory_.leave();
-            code_.LDP(X21, X22, SP, 16);
-            code_.LDP(X23, X24, SP, 32);
-            code_.LDP(X25, X26, SP, 48);
-            code_.LDP(X27, X28, SP, 64);
-            code_.LDP(X29, X30, SP, 80);
-            code_.LDP(X19, X20, SP, PostIndexed { }, 192);
-            code_.RET();
+            NativeFrame::leave(trace_.words);
             std::vector<std::uint32_t> initial;
             VectorCodeGenerator entry(initial);
             memory_.enter(entry);
