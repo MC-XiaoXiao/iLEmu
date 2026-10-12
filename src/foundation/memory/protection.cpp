@@ -40,8 +40,10 @@ AddressSpace::ProtectResult AddressSpace::protect_with_result(
         cursor = region_end;
     }
     refresh_jit_page_range_locked(first, end);
-    if (result.executable_permissions_changed)
+    if (result.executable_permissions_changed) {
+        stamp_instruction_pages_locked(first, end);
         bump_executable_content_generation_locked();
+    }
     return { .succeeded = true,
         .executable_permissions_changed = result.executable_permissions_changed };
 }

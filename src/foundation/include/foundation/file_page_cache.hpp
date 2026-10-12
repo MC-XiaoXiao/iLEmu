@@ -302,6 +302,14 @@ struct GuestPageBacking {
     GuestPageBacking(const GuestPageBacking& other);
     GuestPageBacking& operator=(const GuestPageBacking&) = delete;
 
+    // The initial reservation seed uniquely names this physical storage and
+    // stays fixed when individual exclusive granules are invalidated. Reading
+    // it neither allocates reservation metadata nor retains the page.
+    [[nodiscard]] std::uint64_t storage_identity() const noexcept
+    {
+        return reservation_identity_.load(std::memory_order_relaxed);
+    }
+
     // Instruction views share this physical lock across address-space aliases.
     // Checked shared writers hold the write lock through generation publication.
     // Private writes are excluded by their AddressSpace lease or detach via COW.

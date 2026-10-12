@@ -16,21 +16,32 @@ public:
     class Monitor;
     ~Impl();
     Monitor* monitors_ = nullptr;
+    struct PageStamp {
+        std::uint64_t storage = 0, write = 0, shared_write = 0;
+        bool operator==(const PageStamp&) const = default;
+    };
     struct View {
         std::shared_ptr<const execution::CodeIdentity> identity =
             std::make_shared<execution::CodeIdentity>();
-        std::uint64_t epoch = 1, mapping = 0, first = 0, second = 0;
+        std::uint64_t epoch = 1;
         bool initialized = false, has_second = false;
+        PageStamp first_stamp, second_stamp;
     };
     class Lease final : public execution::InstructionLease {
         struct Page {
             std::uint32_t base = 0;
             std::shared_ptr<GuestPageBacking> backing;
             std::span<const std::byte> bytes;
+            std::uint64_t write_generation = 0;
             std::shared_lock<std::shared_mutex> lock;
             std::uint64_t generation() const noexcept
             {
                 return backing ? backing->shared_write_generation() : 0;
+            }
+            PageStamp stamp() const noexcept
+            {
+                return { backing ? backing->storage_identity() : 0,
+                    write_generation, generation() };
             }
         };
 
@@ -55,13 +66,12 @@ public:
         {
             if (count_ == 0)
                 return std::nullopt;
-            const auto mapping = owner_.memory_.executable_content_generation();
-            const auto first = pages_[0].generation();
-            const bool changed =
-                view_.initialized &&
-                (mapping != view_.mapping || first != view_.first ||
+            const auto first = pages_[0].stamp();
+            const auto second = count_ == 2 ? pages_[1].stamp() : PageStamp { };
+            const bool changed = view_.initialized &&
+                (first != view_.first_stamp ||
                     (count_ == 2 && view_.has_second &&
-                        pages_[1].generation() != view_.second));
+                        second != view_.second_stamp));
             if (changed) {
                 if (view_.epoch == std::numeric_limits<std::uint64_t>::max())
                     return std::nullopt;
@@ -69,11 +79,10 @@ public:
                 view_.has_second = false;
             }
             view_.initialized = true;
-            view_.mapping = mapping;
-            view_.first = first;
+            view_.first_stamp = first;
             if (count_ == 2) {
                 view_.has_second = true;
-                view_.second = pages_[1].generation();
+                view_.second_stamp = second;
             }
             return view_.epoch;
         }
@@ -122,6 +131,7 @@ public:
             page.base = base;
             page.backing = std::move(view->backing);
             page.bytes = view->bytes;
+            page.write_generation = view->write_generation;
             bool duplicate = false;
             for (unsigned i = 0; i < count_; ++i)
                 duplicate |= page.backing == pages_[i].backing;

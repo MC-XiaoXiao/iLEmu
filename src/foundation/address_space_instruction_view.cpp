@@ -24,6 +24,7 @@ AddressSpace::instruction_page_view(std::uint32_t address)
     }
     return InstructionPageView { page->backing,
         page->instructions ? std::span<const std::byte> { *page->instructions }
-                           : std::span<const std::byte> { page->backing->bytes } };
+                           : std::span<const std::byte> { page->backing->bytes },
+        page->write_generation };
 }
 }

@@ -175,6 +175,7 @@ public:
     struct InstructionPageView {
         std::shared_ptr<GuestPageBacking> backing;
         std::span<const std::byte> bytes;
+        std::uint64_t write_generation = 0;
     };
     [[nodiscard]] std::optional<InstructionPageView>
     instruction_page_view(std::uint32_t address);
@@ -598,6 +599,7 @@ private:
     void mark_written_locked(std::uint32_t address, std::size_t size);
     void mark_written_batch_locked(std::span<const WrittenRange> ranges);
     void bump_executable_content_generation_locked() noexcept;
+    void stamp_instruction_pages_locked(std::uint32_t, std::uint64_t end);
     void add_page_permissions_locked(
         std::uint32_t address, std::uint64_t end, MemoryPermission permissions);
     void set_page_permissions_locked(

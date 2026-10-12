@@ -649,6 +649,8 @@ void AddressSpace::map_range_locked(std::uint32_t first, std::uint64_t end,
     invalidate_mapping_leases_locked(first, end);
     vm_map_.map_or(first, end, permissions, attributes);
     add_page_permissions_locked(first, end, permissions);
+    if (has_permission(permissions, MemoryPermission::Execute))
+        stamp_instruction_pages_locked(first, end);
     refresh_jit_page_range_locked(first, end);
     bump_executable_content_generation_locked();
 }
@@ -1891,18 +1893,20 @@ void AddressSpace::mark_written_batch_locked(
         if (range.size == 0U)
             continue;
         const auto end = static_cast<std::uint64_t>(range.address) + range.size;
+        bool range_executable = false;
         for (std::uint64_t base = page_base(range.address); base < end;
             base += page_size) {
+            range_executable |=
+                (page_permission_locked(static_cast<std::size_t>(base / page_size)) &
+                    permission_bits(MemoryPermission::Execute)) != 0U;
             auto* page = find_page_locked(static_cast<std::uint32_t>(base));
             if (page && page->instructions) {
                 page->instructions.reset();
                 refresh_jit_page_locked(static_cast<std::uint32_t>(base));
             }
         }
-        if (vm_map_.accessible(range.address, end, MemoryPermission::Execute)) {
-            executable_write = true;
-        }
-        if (!tracks_write_locked(range.address, range.size))
+        executable_write |= range_executable;
+        if (!range_executable && !tracks_write_locked(range.address, range.size))
             continue;
         ++write_generation_;
         const auto first = page_base(range.address);
@@ -1925,6 +1929,21 @@ void AddressSpace::bump_executable_content_generation_locked() noexcept
     if (previous == std::numeric_limits<std::uint64_t>::max()) {
         executable_content_generation_.store(1U, std::memory_order_release);
     }
+}
+void AddressSpace::stamp_instruction_pages_locked(
+    std::uint32_t address, std::uint64_t end)
+{
+    // Execute permission can return after untracked data writes, including
+    // direct JIT stores. Reuse the local write stamp at that boundary; ordinary
+    // data mapping changes need not revoke instruction views elsewhere.
+    const auto first = pages_->lower_bound(address);
+    if (first == pages_->end() || first->first >= end)
+        return;
+    ensure_unique_page_map_locked();
+    const auto generation = ++write_generation_;
+    for (auto page = pages_->lower_bound(address);
+        page != pages_->end() && page->first < end; ++page)
+        page->second.write_generation = generation;
 }
 
 bool AddressSpace::range_accessible_locked(
