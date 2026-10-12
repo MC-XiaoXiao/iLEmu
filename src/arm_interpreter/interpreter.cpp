@@ -6,6 +6,7 @@
 #include "arm/t32_decode.hpp"
 #include "arm/multiply.hpp"
 #include "arm/integer_transform.hpp"
+#include "arm/parallel_saturating.hpp"
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
 #include "arm/floating_comparison.hpp"
@@ -299,6 +300,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                         state.registers[inst.rd] = alu.value;
                     state.cpsr = alu.cpsr;
                 }
+                break;
+            case arm::InstructionKind::ParallelSaturating:
+                state.registers[inst.rd] = arm::parallel_saturating(inst,
+                    state.registers[inst.rn], state.registers[inst.rm]);
                 break;
             case arm::InstructionKind::IntegerTransform:
                 state.registers[inst.rd] = arm::integer_transform(inst,

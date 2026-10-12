@@ -2,6 +2,8 @@
 #pragma once
 #include "arm/instruction.hpp"
 #include <oaknut/oaknut.hpp>
+#include <array>
+#include <optional>
 namespace ilemu::execution::arm64 {
 // Integer instruction emission is independent of trace exits and scheduling.
 class IntegerEmitter {
@@ -23,13 +25,23 @@ public:
     void wide_immediate(const arm::Instruction&);
     void pack_halfword(const arm::Instruction&);
     void transform(const arm::Instruction&);
+    void parallel_saturating(const arm::Instruction&);
+    // Scratch SIMD values are reusable only along unconditional adjacent ops.
+    void clear_parallel_values() { parallel_values_.fill(std::nullopt); }
 
 private:
+    struct ParallelValue {
+        unsigned reg;
+        bool exchange;
+    };
+    unsigned parallel_source(unsigned reg, bool exchange, unsigned protected_mask);
     void merge_nz();
     oaknut::WReg lhs(const arm::Instruction&, std::uint32_t pc);
     void carry_from(oaknut::WReg value, unsigned bit);
     void shifter(const arm::Instruction&, std::uint32_t pc, bool carry_output);
     bool shifted_alu(const arm::Instruction&, std::uint32_t pc);
     oaknut::VectorCodeGenerator& code_;
+    // Compile-time knowledge only. Each operation still writes its GPR result.
+    std::array<std::optional<ParallelValue>, 3> parallel_values_ {};
 };
 }

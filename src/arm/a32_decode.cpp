@@ -9,6 +9,7 @@
 #include "exclusive.hpp"
 #include "swap_decode.hpp"
 #include "transform_decode.hpp"
+#include "parallel_saturating_decode.hpp"
 #include "core_vector_move.hpp"
 #include "vfp_multiple.hpp"
 #include "vfp_scalar.hpp"
@@ -39,6 +40,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         decode_vfp_scalar(out, word, false, vfp, architecture) ||
         decode_vfp_multiple(out, word, false, vfp) ||
         decode_integer_transform(out, word, false, architecture) ||
+        decode_parallel_saturating(out, word, false, architecture) ||
         decode_swap(out, word) ||
         decode_dual_transfer(out, word, false, architecture) ||
         decode_exclusive(out, word, false) ||

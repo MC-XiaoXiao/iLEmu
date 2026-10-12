@@ -350,6 +350,8 @@ namespace {
         bool invariant_indirect() const { return exchanges_.invariant(); }
         void invalidate_written_registers(const arm::Instruction& inst)
         {
+            if (inst.kind != arm::InstructionKind::ParallelSaturating)
+                integer_.clear_parallel_values();
             const auto invalidate = [&](unsigned reg) {
                 memory_.invalidate_register(reg);
                 exchanges_.invalidate(reg);
@@ -372,6 +374,7 @@ namespace {
                 inst.kind == arm::InstructionKind::Multiply ||
                 inst.kind == arm::InstructionKind::PackHalfword ||
                 inst.kind == arm::InstructionKind::IntegerTransform ||
+                inst.kind == arm::InstructionKind::ParallelSaturating ||
                 inst.kind == arm::InstructionKind::WideImmediate ||
                 inst.kind == arm::InstructionKind::Swap ||
                 ((inst.kind == arm::InstructionKind::Transfer ||
@@ -425,6 +428,13 @@ namespace {
             code_.MOV(W17, mask);
             code_.AND(W16, W16, W17);
             code_.CBNZ(W16, failure);
+        }
+        void parallel_saturating(const arm::Instruction& inst)
+        {
+            // Host SIMD saturation sets FPSR.QC. The existing environment
+            // restores host state and merges only IEEE flags, not guest QC/Q/GE.
+            floating_.use();
+            integer_.parallel_saturating(inst);
         }
         void arithmetic(const arm::FloatingArithmeticOperands& v)
         {
@@ -806,6 +816,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::PackHalfword:
                     emit.integer().pack_halfword(inst);
+                    break;
+                case arm::InstructionKind::ParallelSaturating:
+                    emit.parallel_saturating(inst);
                     break;
                 case arm::InstructionKind::IntegerTransform:
                     emit.integer().transform(inst);

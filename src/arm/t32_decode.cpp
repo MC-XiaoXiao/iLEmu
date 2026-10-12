@@ -13,6 +13,7 @@
 #include "system_control.hpp"
 #include "exclusive.hpp"
 #include "transform_decode.hpp"
+#include "parallel_saturating_decode.hpp"
 #include "core_vector_move.hpp"
 #include "vfp_multiple.hpp"
 #include "vfp_scalar.hpp"
@@ -71,6 +72,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_vfp_scalar(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_vfp_multiple(out, (word << 16U) | tail, true, vfp) ||
             decode_integer_transform(out, (word << 16U) | tail, true, architecture) ||
+            decode_parallel_saturating(out, (word << 16U) | tail, true, architecture) ||
             decode_exclusive(out, (word << 16U) | tail, true) ||
             decode_dual_transfer(out, (word << 16U) | tail, true, architecture) ||
             decode_system_control(out, (word << 16U) | tail, true) ||
