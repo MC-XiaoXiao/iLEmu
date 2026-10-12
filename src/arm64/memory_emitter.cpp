@@ -9,6 +9,37 @@ using namespace oaknut::util;
 namespace {
     constexpr auto memory_offset = offsetof(NativeOutcome, memory);
     constexpr auto transfer_offset = offsetof(NativeOutcome, transfer);
+    template<typename... Address>
+    void scalar_read(VectorCodeGenerator& code, const arm::Instruction& inst,
+        bool big_endian, Address... address)
+    {
+        const auto value =
+            inst.rd == 15 ? W17 : WReg { static_cast<int>(inst.rd) };
+        // Byte loads are endian-independent; little-endian halfwords can
+        // also fold extension into the host memory instruction.
+        const bool signed_load = inst.sign_extend &&
+                                 (!big_endian || inst.access_size == 1);
+        if (inst.access_size == 1) {
+            if (signed_load)
+                code.LDRSB(value, address...);
+            else
+                code.LDRB(value, address...);
+        } else if (inst.access_size == 2) {
+            if (signed_load)
+                code.LDRSH(value, address...);
+            else
+                code.LDRH(value, address...);
+        } else
+            code.LDR(value, address...);
+        if (big_endian && inst.access_size != 1) {
+            if (inst.access_size == 2)
+                code.REV16(value, value);
+            else
+                code.REV(value, value);
+        }
+        if (inst.sign_extend && !signed_load)
+            code.SXTH(value, value);
+    }
 }
 void MemoryEmitter::store_value(const arm::Instruction& inst, std::uint32_t pc)
 {
@@ -83,27 +114,7 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
         return;
     }
     if (inst.load) {
-        const auto value =
-            inst.rd == 15 ? W17 : WReg { static_cast<int>(inst.rd) };
-        // Byte loads are endian-independent; little-endian halfwords can
-        // also fold extension into the host memory instruction.
-        const bool signed_load = inst.sign_extend &&
-                                 (!big_endian_ || inst.access_size == 1);
-        if (inst.access_size == 1) {
-            if (signed_load)
-                code_.LDRSB(value, pointer);
-            else
-                code_.LDRB(value, pointer);
-        } else if (inst.access_size == 2) {
-            if (signed_load)
-                code_.LDRSH(value, pointer);
-            else
-                code_.LDRH(value, pointer);
-        } else
-            code_.LDR(value, pointer);
-        endian(inst.access_size, value);
-        if (inst.sign_extend && !signed_load)
-            code_.SXTH(value, value);
+        scalar_read(code_, inst, big_endian_, pointer);
         if (inst.kind == arm::InstructionKind::TableBranch) {
             code_.MOV(W15, pc + 4U);
             code_.ADD(W15, W15, W17, AddSubShift::LSL, 1);
@@ -149,6 +160,12 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
             access(inst, pc, *pointer, exits);
             return;
         }
+    }
+    if (fast_reads_ && key && inst.condition == 14 && inst.load &&
+        inst.rd != 15 && inst.kind == arm::InstructionKind::Transfer &&
+        (key->inputs() & (1U << inst.rd)) != 0) {
+        dependent_read(inst, pc, cost, exits);
+        return;
     }
     Label checked, done;
     const bool dual = inst.kind == arm::InstructionKind::DualTransfer;
@@ -231,4 +248,70 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     code_.B(exits.get(ExitKind::Checked));
     code_.l(done);
 }
+void MemoryEmitter::dependent_read(const arm::Instruction& inst,
+    std::uint32_t pc, std::uint64_t cost, Exits& exits)
+{
+    auto address = W15;
+    if (inst.immediate_operand && inst.immediate == 0 && inst.rn != 15) {
+        address = WReg { static_cast<int>(inst.rn) };
+    } else {
+        integer_.address_offset(inst, pc);
+        const auto base = integer_.reg(inst.rn,
+            (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U), W15);
+        if (inst.add)
+            code_.ADD(W16, base, W16);
+        else
+            code_.SUB(W16, base, W16);
+        code_.MOV(W15, W16);
+    }
+    pending_.push_back({ inst, cost, address, { },
+        &exits.get(ExitKind::Checked) });
+    auto& pending = pending_.back();
+    // Aligned scalars cannot cross a page. Keep ordinary unaligned reads
+    // inline too; only a checked transaction leaves the native body.
+    if (inst.access_size != 1) {
+        Label aligned;
+        code_.AND(W17, address, inst.access_size - 1U);
+        code_.CBZ(W17, aligned);
+        code_.LDR(W17, X20,
+            memory_offset + offsetof(DirectMemory, permits_unaligned));
+        code_.CBZ(W17, pending.entry);
+        code_.AND(W17, address, 4095);
+        code_.ADD(W17, W17, inst.access_size - 1U);
+        code_.TBNZ(W17, 12, pending.entry);
+        code_.l(aligned);
+    }
+    // The view stays invariant under the invocation's instruction lease.
+    // A missing view exits at the first dominating unconditional read.
+    if (!read_table_guarded_) {
+        code_.CBZ(X25, pending.entry);
+        read_table_guarded_ = true;
+    }
+    code_.LSR(W17, address, 12);
+    code_.LDR(X21, X25, W17, IndexExt::UXTW, 3);
+    code_.CBZ(X21, pending.entry);
+    // Fold address addition into the load without occupying invariant slots.
+    scalar_read(code_, inst, big_endian_, X21, address, IndexExt::UXTW);
+}
+void MemoryEmitter::finish()
+{
+    for (auto& pending : pending_) {
+        code_.l(pending.entry);
+        code_.STR(pending.address, X20,
+            transfer_offset + offsetof(arm_memory::Transfer, address));
+        code_.STR(pending.address, X20,
+            transfer_offset + offsetof(arm_memory::Transfer, updated_base));
+        code_.MOV(W17, 0);
+        code_.STR(W17, X20,
+            transfer_offset + offsetof(arm_memory::Transfer, value));
+        code_.MOV(W17, arm_memory::control(pending.instruction));
+        code_.STR(W17, X20,
+            transfer_offset + offsetof(arm_memory::Transfer, control));
+        code_.MOV(X21, pending.cost);
+        code_.STR(X21, X20,
+            transfer_offset + offsetof(arm_memory::Transfer, ticks));
+        code_.B(*pending.checked);
+    }
+}
+
 }

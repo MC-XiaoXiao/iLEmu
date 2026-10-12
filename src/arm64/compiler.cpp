@@ -61,13 +61,13 @@ namespace {
     public:
         Emitter(CompiledTrace& trace, bool big_endian, bool thumb,
             std::uint32_t pc, unsigned it, bool single_step,
-            std::pmr::memory_resource* temporary)
+            std::pmr::memory_resource* temporary, bool fast_reads)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_)
             , integer_(code_)
             , exchanges_(code_, integer_, thumb)
-            , memory_(code_, integer_, big_endian)
+            , memory_(code_, integer_, big_endian, fast_reads, temporary)
             , thumb_(thumb)
             , backedge_(pc, it, thumb, !single_step)
             , exits_(temporary)
@@ -186,6 +186,7 @@ namespace {
             }
             if (natural_backedge)
                 code_.B(exit(StopReason::None, 0, pc));
+            memory_.finish();
             for (auto& fallback : exchanges_.pending()) {
                 code_.l(fallback.label);
                 location(fallback.it, fallback.instruction.size);
@@ -640,7 +641,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
         }
     }
-    Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary);
+    // Larger read fallbacks are earned by the existing hot-cycle tier, so
+    // short cold traces retain their compact code and translation cost.
+    Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
+        expansion == CycleExpansion::Hot);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
