@@ -18,7 +18,9 @@ struct DecodedInstruction {
 class InstructionWindow {
 public:
     InstructionWindow(InstructionSource& source, InstructionRegion region,
-        bool thumb, std::pmr::memory_resource* temporary);
+        bool thumb, std::pmr::memory_resource* temporary, bool retain_cycle = false);
+    // Rewind only after the compiler accepts another copy of its entry cycle.
+    void repeat_cycle();
     std::optional<DecodedInstruction> take(std::uint32_t pc, unsigned it,
         bool allow_straddle);
     std::uint64_t timing(DecodedInstruction&);
@@ -54,6 +56,8 @@ private:
     ArmInstructionProfile architecture_;
     IntegerDivideProfile division_;
     std::pmr::deque<DecodedInstruction> pending_;
+    std::size_t consumed_ = 0;
+    bool retain_cycle_;
     std::optional<FlagProof> comparison_flags_dead_;
 };
 }

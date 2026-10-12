@@ -621,7 +621,8 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
     std::pmr::monotonic_buffer_resource temporary {
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
-    InstructionWindow window(source, region, thumb, &temporary);
+    InstructionWindow window(source, region, thumb, &temporary,
+        !single_step && expansion != CycleExpansion::Compact);
     const bool cache_reads = !single_step && expansion == CycleExpansion::Hot &&
         window.single_dependent_read_cycle(
             pc, it, maximum_trace_instructions, maximum_ticks);
@@ -977,6 +978,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     std::min(maximum_copies, limit / cycle_length);
                 if (++cycles < copies &&
                     (fast_indirect || emit.continue_cycle(pc))) {
+                    window.repeat_cycle();
                     pc = start;
                     it = start_it;
                     continue;
@@ -1001,6 +1003,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 out.closed = true;
                 break;
             }
+            window.repeat_cycle();
         }
     }
     emit.finish(pc);

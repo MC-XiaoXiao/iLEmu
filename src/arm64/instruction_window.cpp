@@ -10,7 +10,8 @@
 
 namespace ilemu::execution::arm64 {
 InstructionWindow::InstructionWindow(InstructionSource& source,
-    InstructionRegion region, bool thumb, std::pmr::memory_resource* temporary)
+    InstructionRegion region, bool thumb, std::pmr::memory_resource* temporary,
+    bool retain_cycle)
     : source_(source), region_(region), thumb_(thumb)
     , arithmetic_(source.thumb_arithmetic_profile())
     , vfp_(source.vfp_register_profile())
@@ -18,6 +19,7 @@ InstructionWindow::InstructionWindow(InstructionSource& source,
     , architecture_(source.arm_instruction_profile())
     , division_(source.integer_divide_profile())
     , pending_(temporary)
+    , retain_cycle_(retain_cycle)
 {
 }
 std::optional<DecodedInstruction> InstructionWindow::decode(
@@ -48,9 +50,11 @@ std::optional<DecodedInstruction> InstructionWindow::decode(
 }
 void InstructionWindow::match(std::uint32_t pc, unsigned it)
 {
-    if (!pending_.empty() &&
-        (pending_.front().pc != pc || pending_.front().it != it)) {
+    if (consumed_ < pending_.size() &&
+        (pending_[consumed_].pc != pc || pending_[consumed_].it != it)) {
         pending_.clear();
+        consumed_ = 0;
+        retain_cycle_ = false;
         comparison_flags_dead_.reset();
     }
 }
@@ -58,10 +62,19 @@ std::optional<DecodedInstruction> InstructionWindow::take(
     std::uint32_t pc, unsigned it, bool allow_straddle)
 {
     match(pc, it);
-    if (pending_.empty())
-        return decode(pc, it, allow_straddle);
-    auto out = pending_.front();
-    pending_.pop_front();
+    if (consumed_ == pending_.size()) {
+        auto out = decode(pc, it, allow_straddle);
+        if (retain_cycle_ && out) {
+            pending_.push_back(*out);
+            ++consumed_;
+        }
+        return out;
+    }
+    auto out = pending_[consumed_];
+    if (retain_cycle_)
+        ++consumed_;
+    else
+        pending_.pop_front();
     if (comparison_flags_dead_) {
         if (--comparison_flags_dead_->reusable_prefix == 0)
             comparison_flags_dead_.reset();
@@ -77,7 +90,23 @@ std::uint64_t InstructionWindow::timing(DecodedInstruction& entry)
 {
     if (!entry.ticks)
         entry.ticks = source_.ticks_for_instruction(entry.pc, *entry.word);
+    // take() returns a copy; retain its paid timing in the original decode.
+    if (retain_cycle_ && consumed_ != 0) {
+        auto& original = pending_[consumed_ - 1U];
+        if (original.pc == entry.pc && original.it == entry.it)
+            original.ticks = entry.ticks;
+    }
     return *entry.ticks;
+}
+void InstructionWindow::repeat_cycle()
+{
+    if (!retain_cycle_ || consumed_ == 0)
+        return;
+    // Lookahead beyond the closing edge belongs to its fallthrough, not to
+    // this repeated path. The original architecture decodes stay unchanged.
+    pending_.resize(consumed_);
+    consumed_ = 0;
+    comparison_flags_dead_.reset();
 }
 bool InstructionWindow::single_dependent_read_cycle(std::uint32_t start,
     unsigned start_it, unsigned remaining_instructions,
@@ -88,13 +117,13 @@ bool InstructionWindow::single_dependent_read_cycle(std::uint32_t start,
     std::uint64_t pc = start;
     auto it = start_it;
     for (unsigned i = 0; i < remaining_instructions; ++i) {
-        if (i == pending_.size()) {
+        if (consumed_ + i == pending_.size()) {
             auto entry = decode(pc, it, false);
             if (!entry)
                 return false;
             pending_.push_back(*entry);
         }
-        auto& entry = pending_[i];
+        auto& entry = pending_[consumed_ + i];
         const auto& inst = entry.instruction;
         if (!entry.word || pc + inst.size > region_.end || inst.condition == 15)
             return false;
@@ -175,13 +204,13 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
         return false;
     };
     for (unsigned i = 0; i < remaining_instructions; ++i) {
-        if (i == pending_.size()) {
+        if (consumed_ + i == pending_.size()) {
             auto entry = decode(pc, it, false);
             if (!entry)
                 return terminal_failure();
             pending_.push_back(*entry);
         }
-        auto& entry = pending_[i];
+        auto& entry = pending_[consumed_ + i];
         if (reusable && live == 0xfU &&
             guarded_controls == arm::floating_comparison_controls)
             reusable_prefix = i + 1U;
