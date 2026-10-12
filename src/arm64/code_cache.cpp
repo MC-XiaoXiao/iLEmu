@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "code_cache.hpp"
 #include "compiler.hpp"
+#include <algorithm>
 #include <span>
 #include <stdexcept>
 
@@ -31,6 +32,46 @@ void CodeCache::clear()
 void CodeCache::begin_run()
 {
     invalidate(anonymous_);
+}
+void CodeCache::invalidate_range(std::uint32_t address, std::size_t size)
+{
+    if (size == 0)
+        return;
+    constexpr auto address_limit = std::uint64_t { 1 } << 32U;
+    const auto begin = std::uint64_t { address };
+    const auto end = begin + std::min<std::uint64_t>(size, address_limit - begin);
+    const auto overlaps = [=](std::uint64_t first, std::uint64_t last) {
+        return begin < last && first < end;
+    };
+    const auto invalidate_entries = [&](Domain& domain) {
+        for (auto it = domain.entries.begin(); it != domain.entries.end();) {
+            const auto& dependency = it->second.dependency;
+            const auto pc = std::uint64_t { std::get<0>(it->first) };
+            // The entry fetch may straddle the source region, including the
+            // second halfword of a Thumb instruction at the address-space end.
+            const auto fetch_end = pc + 4U;
+            if (overlaps(dependency.begin, dependency.end) ||
+                overlaps(pc, std::min(fetch_end, address_limit)) ||
+                (fetch_end > address_limit &&
+                    overlaps(0, fetch_end - address_limit))) {
+                domain.retained_bytes -= it->second.accounted_bytes;
+                stats_.retained_bytes -= it->second.accounted_bytes;
+                it = domain.entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    };
+    invalidate_entries(anonymous_);
+    for (auto it = domains_.begin(); it != domains_.end();) {
+        invalidate_entries(it->second);
+        if (it->second.entries.empty()) {
+            stats_.retained_bytes -= domain_bytes;
+            it = domains_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 CodeCache::Domain* CodeCache::find(const Binding& binding)
 {
@@ -134,14 +175,16 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     const auto needed =
         accounted + (binding.identity && !find(binding) ? domain_bytes : 0);
     // Only called between native invocations; no active entry is reclaimed.
-    if (stats_.retained_bytes > budget_ - needed)
+    if (stats_.retained_bytes > budget_ - needed) {
         clear();
+    }
     auto& domain = obtain(binding);
     auto [it, inserted] = domain.entries.emplace(key,
         Entry { std::move(allocation), compiled.maximum_ticks, compiled.stop,
             compiled.closed, compiled.accesses_memory, compiled.ends_with_stop,
             compiled.first_instruction, accounted,
-            CycleTier { compiled.closed, expansion == CycleExpansion::Hot } });
+            CycleTier { compiled.closed, expansion == CycleExpansion::Hot },
+            source.instruction_region(pc) });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");
     domain.retained_bytes += accounted;

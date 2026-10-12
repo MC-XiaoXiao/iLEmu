@@ -17,6 +17,7 @@ public:
         std::uint32_t process_id);
     void prepare();
     void clear_cache();
+    void invalidate_cache_range(std::uint32_t, std::size_t);
     void clear_exclusive_state();
     void set_cache_size(std::size_t bytes);
     std::uint64_t code_cache_used();

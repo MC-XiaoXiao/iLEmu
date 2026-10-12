@@ -57,6 +57,13 @@ void IndependentCpuExecutor::clear_cache()
     if (executor_)
         executor_->clear_cache();
 }
+void IndependentCpuExecutor::invalidate_cache_range(
+    std::uint32_t address, std::size_t size)
+{
+    const std::lock_guard lock { mutex_ };
+    if (executor_ && size != 0)
+        executor_->invalidate_cache_range(address, size);
+}
 void IndependentCpuExecutor::clear_exclusive_state()
 {
     const std::lock_guard lock { mutex_ };

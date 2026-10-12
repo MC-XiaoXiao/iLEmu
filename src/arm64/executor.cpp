@@ -18,6 +18,10 @@ public:
     {
     }
     void clear() { cache_.clear(); }
+    void invalidate_range(std::uint32_t address, std::size_t size)
+    {
+        cache_.invalidate_range(address, size);
+    }
     RunResult run(CpuThreadState& state, InstructionSource& source,
         const RunRequest& request)
     {
@@ -218,6 +222,11 @@ void Arm64Executor::clear_stop() noexcept
     static_cast<void>(impl_->context_.stops.consume());
 }
 void Arm64Executor::clear_cache() { impl_->clear(); }
+void Arm64Executor::invalidate_cache_range(
+    std::uint32_t address, std::size_t size)
+{
+    impl_->invalidate_range(address, size);
+}
 void Arm64Executor::clear_exclusive_state()
 { impl_->context_.clear_exclusive_state(); }
 std::uint64_t Arm64Executor::retained_code_bytes() const noexcept

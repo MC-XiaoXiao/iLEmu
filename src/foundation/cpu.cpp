@@ -3890,7 +3890,8 @@ public:
         if (length == 0U)
             return;
         if (!independent_executors_.empty()) {
-            clear_cache();
+            for (auto& executor : independent_executors_)
+                executor->invalidate_cache_range(address, length);
             return;
         }
         static_cast<void>(

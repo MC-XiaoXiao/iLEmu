@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -185,6 +186,13 @@ public:
     virtual void clear_stop() noexcept = 0;
     // Owner-only, outside a backend invocation. Interpreters have no cache.
     virtual void clear_cache() { }
+    // Sources can inspect their entire instruction region during translation.
+    // Backends without dependency tracking retain conservative invalidation.
+    virtual void invalidate_cache_range(std::uint32_t, std::size_t size)
+    {
+        if (size != 0)
+            clear_cache();
+    }
     // Real architectural context switches, not cooperative slices/cache work.
     virtual void clear_exclusive_state() { }
     virtual std::uint64_t retained_code_bytes() const noexcept { return 0; }

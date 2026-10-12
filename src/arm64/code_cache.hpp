@@ -25,9 +25,11 @@ public:
         std::optional<std::uint32_t> first_instruction;
         std::size_t accounted_bytes;
         CycleTier tier;
+        InstructionRegion dependency;
     };
     CodeCache(CodeAllocator&, std::size_t, Arm64Statistics&);
     void clear();
+    void invalidate_range(std::uint32_t address, std::size_t size);
     void begin_run();
     void observe(Entry& entry, std::uint64_t ticks)
     {
