@@ -15,6 +15,7 @@ struct Arm64Statistics {
 };
 class Arm64Executor final : public Executor {
 public:
+    static constexpr std::size_t minimum_cache_bytes = 256U * 1024U;
     explicit Arm64Executor(
         CodeAllocator&, std::size_t cache_budget = 8U * 1024U * 1024U);
     ~Arm64Executor() override;

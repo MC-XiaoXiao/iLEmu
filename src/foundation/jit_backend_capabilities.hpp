@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
 
+#include <cstddef>
+
 namespace ilemu {
 
 // Capabilities of the pinned Dynarmic backend, independent of guest firmware.
@@ -34,6 +36,11 @@ struct JitBackendCapabilities {
     // Run/Step, cold lookup and exclusive callbacks coordinate the native
     // lease with the existing checked-memory and reservation boundaries.
     static constexpr bool parallel_memory_leases = runtime_memory_table_links;
+    // Shared slabs retain the measured demand working set. Local emitters
+    // need room for their prelude and the 1 MiB emission reserve, but multiply
+    // capacity (and block metadata) across every initialized executor.
+    static constexpr std::size_t minimum_native_cache_bytes =
+        (shared_native_cache ? 64U : 2U) * 1024U * 1024U;
 };
 
 } // namespace ilemu

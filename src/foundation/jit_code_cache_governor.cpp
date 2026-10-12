@@ -6,6 +6,7 @@
 // runtime value.
 
 #include "foundation/jit_code_cache_governor.hpp"
+#include "jit_backend_capabilities.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -19,6 +20,13 @@ namespace {
         return right > std::numeric_limits<std::size_t>::max() - left
                    ? std::numeric_limits<std::size_t>::max()
                    : left + right;
+    }
+
+    [[nodiscard]] std::size_t saturating_multiply(
+        std::size_t left, std::size_t right) noexcept
+    {
+        return right != 0 && left > std::numeric_limits<std::size_t>::max() / right
+            ? std::numeric_limits<std::size_t>::max() : left * right;
     }
 
 } // namespace
@@ -45,9 +53,12 @@ std::size_t JitCodeCacheGovernor::recommended_total_budget(
 }
 
 JitCodeCacheReservation::JitCodeCacheReservation(JitCodeCacheGovernor& governor,
-    std::size_t shared_slab_bytes, JitCodeCacheClass cache_class) noexcept
+    std::size_t shared_slab_bytes, std::size_t mapped_bytes,
+    std::size_t retention_floor, JitCodeCacheClass cache_class) noexcept
     : governor_ { &governor }
     , shared_slab_bytes_ { shared_slab_bytes }
+    , mapped_bytes_ { mapped_bytes }
+    , retention_floor_ { retention_floor }
     , cache_class_ { cache_class }
 {
 }
@@ -55,14 +66,38 @@ JitCodeCacheReservation::JitCodeCacheReservation(JitCodeCacheGovernor& governor,
 JitCodeCacheReservation::~JitCodeCacheReservation()
 {
     if (governor_ != nullptr)
-        governor_->release(shared_slab_bytes_, actual_bytes_);
+        governor_->release(mapped_bytes_, actual_bytes_);
 }
 
 JitCodeCacheGovernor::JitCodeCacheGovernor(
     std::size_t shared_slab_cap, std::size_t total_budget) noexcept
-    : shared_slab_cap_ { std::max(
-          shared_slab_cap, minimum_demand_working_set_bytes) }
-    , total_budget_ { std::max(total_budget, minimum_demand_working_set_bytes) }
+    : JitCodeCacheGovernor(shared_slab_cap, total_budget,
+          { JitBackendCapabilities::shared_native_cache
+                ? execution::NativeCacheLayout::Storage::Shared
+                : execution::NativeCacheLayout::Storage::Local,
+              JitBackendCapabilities::minimum_native_cache_bytes },
+          minimum_demand_working_set_bytes)
+{
+}
+
+JitCodeCacheGovernor::JitCodeCacheGovernor(std::size_t runtime_cap,
+    std::size_t total_budget, execution::NativeCacheLayout layout) noexcept
+    : JitCodeCacheGovernor(
+          runtime_cap, total_budget, layout, layout.minimum_bytes)
+{
+}
+
+JitCodeCacheGovernor::JitCodeCacheGovernor(std::size_t runtime_cap,
+    std::size_t total_budget, execution::NativeCacheLayout layout,
+    std::size_t working_set_floor) noexcept
+    : layout_ { layout }
+    , retention_floor_ {
+        layout.storage == execution::NativeCacheLayout::Storage::None
+            ? 0U : std::max(working_set_floor, layout.minimum_bytes) }
+    , shared_slab_cap_ {
+        layout.storage == execution::NativeCacheLayout::Storage::None
+            ? 0U : std::max(runtime_cap, layout.minimum_bytes) }
+    , total_budget_ { std::max(total_budget, retention_floor_) }
 {
 }
 
@@ -72,26 +107,34 @@ std::shared_ptr<JitCodeCacheReservation> JitCodeCacheGovernor::reserve(
     if (processor_count == 0U)
         return { };
     std::lock_guard lock { mutex_ };
+    // Shared backends map one slab; local backends divide the runtime capacity
+    // across its execution slots instead of multiplying it by the CPU count.
+    const auto mapping_count = layout_.mapping_count(processor_count);
+    const auto emitter_bytes = mapping_count == 0 ? 0U
+        : std::max(shared_slab_cap_ / mapping_count, layout_.minimum_bytes);
+    const auto mapped_bytes = saturating_multiply(emitter_bytes, mapping_count);
     auto reservation = std::shared_ptr<JitCodeCacheReservation> {
-        new JitCodeCacheReservation { *this, shared_slab_cap_, cache_class }
+        new JitCodeCacheReservation { *this, emitter_bytes, mapped_bytes,
+            std::max(retention_floor_, saturating_multiply(layout_.minimum_bytes,
+                mapping_count)), cache_class }
     };
-    mapped_bytes_total_ = saturating_add(mapped_bytes_total_, shared_slab_cap_);
+    mapped_bytes_total_ = saturating_add(mapped_bytes_total_, mapped_bytes);
     return reservation;
 }
 
 std::size_t JitCodeCacheGovernor::retention_target_for_locked(
-    JitCodeCacheClass cache_class) const noexcept
+    JitCodeCacheClass cache_class, std::size_t capacity,
+    std::size_t floor) const noexcept
 {
-    auto target = shared_slab_cap_;
+    auto target = capacity;
     if (cache_class == JitCodeCacheClass::Background) {
-        target = std::max(minimum_demand_working_set_bytes,
-            std::min(
-                shared_slab_cap_ / 4U, maximum_background_retention_bytes));
+        target = std::max(floor,
+            std::min(capacity / 4U, maximum_background_retention_bytes));
     }
     if (pressure_limited_ && cache_class != JitCodeCacheClass::BootCritical) {
-        target = std::max(minimum_demand_working_set_bytes, target / 2U);
+        target = std::max(floor, target / 2U);
     }
-    return std::min(target, shared_slab_cap_);
+    return std::min(target, capacity);
 }
 
 std::optional<std::size_t> JitCodeCacheGovernor::reclassify(
@@ -150,14 +193,16 @@ std::size_t JitCodeCacheGovernor::retention_target(
     JitCodeCacheClass cache_class) const noexcept
 {
     std::lock_guard lock { mutex_ };
-    return retention_target_for_locked(cache_class);
+    return retention_target_for_locked(
+        cache_class, shared_slab_cap_, retention_floor_);
 }
 
 std::size_t JitCodeCacheGovernor::retention_target(
     const JitCodeCacheReservation& reservation) const noexcept
 {
     std::lock_guard lock { mutex_ };
-    return retention_target_for_locked(reservation.cache_class_);
+    return retention_target_for_locked(reservation.cache_class_,
+        reservation.mapped_bytes_, reservation.retention_floor_);
 }
 
 std::size_t JitCodeCacheGovernor::reclaimable_bytes(
@@ -168,7 +213,8 @@ std::size_t JitCodeCacheGovernor::reclaimable_bytes(
         return 0U;
     if (reservation.cache_class_ == JitCodeCacheClass::BootCritical)
         return 0U;
-    const auto target = retention_target_for_locked(reservation.cache_class_);
+    const auto target = retention_target_for_locked(reservation.cache_class_,
+        reservation.mapped_bytes_, reservation.retention_floor_);
     return reservation.actual_bytes_ > target
                ? static_cast<std::size_t>(reservation.actual_bytes_ - target)
                : 0U;

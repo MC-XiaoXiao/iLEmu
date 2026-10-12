@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "execution/factory.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -33,7 +34,8 @@ public:
     JitCodeCacheReservation(const JitCodeCacheReservation&) = delete;
     JitCodeCacheReservation& operator=(const JitCodeCacheReservation&) = delete;
 
-    // This is lazily committed executable address space, not resident memory.
+    // Capacity per emitter: one shared slab or one local cache per CPU slot.
+    // The reservation accounts all lazily committed executable mappings.
     [[nodiscard]] std::size_t shared_slab_bytes() const noexcept
     {
         return shared_slab_bytes_;
@@ -43,24 +45,28 @@ private:
     friend class JitCodeCacheGovernor;
 
     JitCodeCacheReservation(JitCodeCacheGovernor& governor,
-        std::size_t shared_slab_bytes, JitCodeCacheClass cache_class) noexcept;
+        std::size_t shared_slab_bytes, std::size_t mapped_bytes,
+        std::size_t retention_floor,
+        JitCodeCacheClass cache_class) noexcept;
 
     JitCodeCacheGovernor* governor_ { };
     std::size_t shared_slab_bytes_ { };
+    std::size_t mapped_bytes_ { };
+    std::size_t retention_floor_ { };
     JitCodeCacheClass cache_class_ { JitCodeCacheClass::Background };
     std::uint64_t actual_bytes_ { };
 };
 
-// Simulator-core capacity governor for per-process native-code slabs. Native
+// Simulator-core capacity governor for per-runtime native-code caches. Native
 // mappings are virtual, immutable after emitter construction and committed on
 // first use. The aggregate budget therefore governs measured live code and
 // reclamation; it is deliberately not a first-come mapping admission pool.
 class JitCodeCacheGovernor {
 public:
     static constexpr std::size_t bytes_per_mebibyte = 1024U * 1024U;
-    // A 64 MiB uniform-cap control retained the measured SpringBoard working
-    // set without a single recycle. Keep that backend-independent demand floor
-    // available to every runtime, including one created late in boot.
+    // Shared-slab measurements retained the demand working set at 64 MiB.
+    // Use this as a soft retention and aggregate-budget floor; executor-local
+    // emitters use their backend's smaller minimum mapping capacity.
     static constexpr std::size_t minimum_demand_working_set_bytes =
         64U * bytes_per_mebibyte;
     static constexpr std::size_t maximum_background_retention_bytes =
@@ -70,6 +76,8 @@ public:
 
     JitCodeCacheGovernor(
         std::size_t shared_slab_cap, std::size_t total_budget) noexcept;
+    JitCodeCacheGovernor(std::size_t runtime_cap, std::size_t total_budget,
+        execution::NativeCacheLayout) noexcept;
 
     JitCodeCacheGovernor(const JitCodeCacheGovernor&) = delete;
     JitCodeCacheGovernor& operator=(const JitCodeCacheGovernor&) = delete;
@@ -111,10 +119,15 @@ public:
 private:
     friend class JitCodeCacheReservation;
 
+    JitCodeCacheGovernor(std::size_t runtime_cap, std::size_t total_budget,
+        execution::NativeCacheLayout, std::size_t working_set_floor) noexcept;
     [[nodiscard]] std::size_t retention_target_for_locked(
-        JitCodeCacheClass cache_class) const noexcept;
+        JitCodeCacheClass cache_class, std::size_t capacity,
+        std::size_t floor) const noexcept;
     void release(std::size_t mapped_bytes, std::uint64_t actual_bytes) noexcept;
 
+    const execution::NativeCacheLayout layout_;
+    const std::size_t retention_floor_;
     const std::size_t shared_slab_cap_;
     const std::size_t total_budget_;
     mutable std::mutex mutex_;

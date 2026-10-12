@@ -12,7 +12,7 @@ CodeCache::CodeCache(
     , budget_(budget)
     , stats_(stats)
 {
-    if (budget < 256U * 1024U)
+    if (budget < Arm64Executor::minimum_cache_bytes)
         throw std::invalid_argument(
             "ARM64 code cache requires at least 256 KiB");
 }

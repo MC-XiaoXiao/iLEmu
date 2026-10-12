@@ -530,9 +530,11 @@ void EmulatorSession::run()
         next_shared_monitor_slot += guest_processor_count;
         return base;
     };
-    JitCodeCacheGovernor jit_code_cache_governor {
-        configured_jit_code_cache_size, jit_cache_budget.total_bytes
-    };
+    auto jit_code_cache_governor = options.executor_factory
+        ? JitCodeCacheGovernor { configured_jit_code_cache_size,
+              jit_cache_budget.total_bytes, options.executor_factory.cache_layout() }
+        : JitCodeCacheGovernor { configured_jit_code_cache_size,
+              jit_cache_budget.total_bytes };
     jit_code_cache_governor.set_pressure_limited(
         host_memory_is_pressured(jit_cache_budget.memory));
     output.line(
