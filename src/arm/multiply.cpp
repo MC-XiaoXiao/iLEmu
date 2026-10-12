@@ -22,6 +22,14 @@ std::uint64_t multiply(const Instruction& inst, std::uint32_t first,
         return product + (inst.accumulate ? (std::uint64_t { high } << 32U) | low : 0U);
     case Operation::DualAccumulateLong:
         return product + low + high;
+    case Operation::High:
+    case Operation::HighSubtract: {
+        const auto addend = inst.accumulate ? std::uint64_t { high } << 32U : 0U;
+        const auto value = operation == Operation::HighSubtract
+            ? addend - product : addend + product;
+        return static_cast<std::uint32_t>((value +
+            (inst.shift_amount != 0 ? 0x80000000ULL : 0U)) >> 32U);
+    }
     }
     return 0;
 }

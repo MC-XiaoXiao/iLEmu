@@ -28,11 +28,16 @@ public:
     void parallel_saturating(const arm::Instruction&);
     // Scratch SIMD values are reusable only along unconditional adjacent ops.
     void clear_parallel_values() { parallel_values_.fill(std::nullopt); }
+    void clear_multiply_addend() { multiply_addend_.reset(); }
 
 private:
     struct ParallelValue {
         unsigned reg;
         bool exchange;
+    };
+    struct MultiplyAddend {
+        unsigned reg;
+        bool round;
     };
     unsigned parallel_source(unsigned reg, bool exchange, unsigned protected_mask);
     void merge_nz();
@@ -43,5 +48,6 @@ private:
     oaknut::VectorCodeGenerator& code_;
     // Compile-time knowledge only. Each operation still writes its GPR result.
     std::array<std::optional<ParallelValue>, 3> parallel_values_ {};
+    std::optional<MultiplyAddend> multiply_addend_;
 };
 }

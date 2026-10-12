@@ -11,6 +11,38 @@ void IntegerEmitter::multiply(const arm::Instruction& inst)
     const WReg rd { static_cast<int>(inst.rd) }, rn { static_cast<int>(inst.rn) },
         rm { static_cast<int>(inst.rm) }, rs { static_cast<int>(inst.rs) };
     const auto operation = static_cast<Operation>(inst.opcode);
+    if (operation == Operation::High || operation == Operation::HighSubtract) {
+        if (inst.condition != 14)
+            clear_multiply_addend();
+        const unsigned addend_reg = inst.accumulate ? inst.rn : 16U;
+        XReg addend = XZR;
+        if (inst.shift_amount != 0 || inst.accumulate) {
+            if (!multiply_addend_ || multiply_addend_->reg != addend_reg ||
+                multiply_addend_->round != (inst.shift_amount != 0)) {
+                if (inst.shift_amount != 0) {
+                    code_.MOV(W17, 0x80000000U);
+                    if (inst.accumulate)
+                        code_.ORR(X17, X17, rn.toX(), LogShift::LSL, 32);
+                } else
+                    code_.LSL(X17, rn.toX(), 32);
+                multiply_addend_ = MultiplyAddend {
+                    addend_reg, inst.shift_amount != 0 };
+            }
+            addend = X17;
+        }
+        if (operation == Operation::HighSubtract)
+            code_.SMSUBL(X16, rm, rs, addend);
+        else
+            code_.SMADDL(X16, rm, rs, addend);
+        code_.LSR(rd.toX(), X16, 32);
+        // X17 survives adjacent unconditional high-word operations, but a
+        // conditional path or a write to its source revokes that knowledge.
+        if (inst.condition != 14 ||
+            (multiply_addend_ && multiply_addend_->reg == inst.rd))
+            clear_multiply_addend();
+        return;
+    }
+    clear_multiply_addend();
     if (!arm::multiply_writes_pair(inst)) {
         if (operation == Operation::Subtract)
             code_.MSUB(rd, rm, rs, rn);

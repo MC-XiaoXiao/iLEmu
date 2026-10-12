@@ -353,6 +353,8 @@ namespace {
         {
             if (inst.kind != arm::InstructionKind::ParallelSaturating)
                 integer_.clear_parallel_values();
+            if (inst.kind != arm::InstructionKind::Multiply)
+                integer_.clear_multiply_addend();
             const auto invalidate = [&](unsigned reg) {
                 memory_.invalidate_register(reg);
                 exchanges_.invalidate(reg);

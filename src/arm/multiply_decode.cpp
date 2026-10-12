@@ -36,6 +36,20 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
         case 0xfbc00000U: sign = accumulate = true; operation = Operation::Long; break;
         case 0xfbe00000U: accumulate = true; operation = Operation::Long; break;
         case 0xfbe00060U: operation = Operation::DualAccumulateLong; break;
+        case 0xfb500000U:
+        case 0xfb500010U:
+        case 0xfb600000U:
+        case 0xfb600010U:
+            operation = (word & 0x00f00000U) == 0x00600000U
+                ? Operation::HighSubtract : Operation::High;
+            rd = (word >> 8U) & 15U;
+            rn = (word >> 12U) & 15U;
+            accumulate = operation == Operation::HighSubtract || rn != 15;
+            if (!accumulate)
+                rn = 0;
+            sign = true;
+            out.shift_amount = (word >> 4U) & 1U;
+            break;
         default: return false;
         }
         if (operation == Operation::Long || operation == Operation::DualAccumulateLong) {
@@ -47,6 +61,21 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
         if (!execution::has_armv6t2_extensions(profile) ||
             rd == 13 || rn == 13 || rm == 13 || rs == 13)
             return true;
+    } else if ((word & 0x0ff000d0U) == 0x07500010U ||
+               (word & 0x0ff000d0U) == 0x075000d0U) {
+        if (out.condition == 15)
+            return false;
+        operation = (word & 0xc0U) != 0
+            ? Operation::HighSubtract : Operation::High;
+        rd = (word >> 16U) & 15U;
+        rn = (word >> 12U) & 15U;
+        rm = word & 15U;
+        rs = (word >> 8U) & 15U;
+        accumulate = operation == Operation::HighSubtract || rn != 15;
+        if (!accumulate)
+            rn = 0;
+        sign = true;
+        out.shift_amount = (word >> 5U) & 1U;
     } else {
         if ((word & 0x0f0000f0U) != 0x00000090U || out.condition == 15)
             return false;
