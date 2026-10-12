@@ -3,6 +3,7 @@
 #include "arm64/executor.hpp"
 #include "cycle_tier.hpp"
 #include "arm/architectural_stop.hpp"
+#include <list>
 #include <map>
 #include <tuple>
 
@@ -10,6 +11,7 @@ namespace ilemu::execution::arm64 {
 // Owns executable storage and opaque view tokens, never guest memory or
 // sources.
 class CodeCache {
+    struct Recency;
 public:
     struct Binding {
         std::shared_ptr<const CodeIdentity> identity;
@@ -26,8 +28,12 @@ public:
         std::size_t accounted_bytes;
         CycleTier tier;
         InstructionRegion dependency;
+        std::list<Recency>::iterator recency;
     };
     CodeCache(CodeAllocator&, std::size_t, Arm64Statistics&);
+    // Recency nodes refer to stable domain storage in this owner.
+    CodeCache(CodeCache&&) = delete;
+    CodeCache& operator=(CodeCache&&) = delete;
     void clear();
     void invalidate_range(std::uint32_t address, std::size_t size);
     void begin_run();
@@ -46,13 +52,20 @@ private:
         std::uint64_t, ThumbArithmeticProfile, VfpRegisterProfile,
         ArmInstructionProfile, FloatingExceptionProfile, AluPcWriteProfile,
         VfpInstructionProfile, IntegerDivideProfile>;
+    using Entries = std::map<Key, Entry>;
     struct Domain {
         std::shared_ptr<const CodeIdentity> identity;
         std::optional<std::uint64_t> generation;
-        std::map<Key, Entry> entries;
+        Entries entries;
         std::size_t retained_bytes = 0;
     };
+    struct Recency {
+        Domain* domain;
+        Entries::iterator entry;
+    };
     void invalidate(Domain&);
+    Entries::iterator erase_entry(Domain&, Entries::iterator);
+    void trim(const Binding&, std::size_t accounted);
     Domain* find(const Binding&);
     Domain& obtain(const Binding&);
     CodeAllocator& allocator_;
@@ -60,8 +73,10 @@ private:
     Arm64Statistics& stats_;
     Domain anonymous_;
     std::map<const CodeIdentity*, Domain> domains_;
+    std::list<Recency> recent_;
     static constexpr std::size_t domain_bytes = sizeof(Domain) + 128U;
     static constexpr std::size_t entry_bytes =
-        sizeof(Entry) + sizeof(Key) + 64U;
+        sizeof(Entry) + sizeof(Key) + 64U + sizeof(Recency) +
+        4U * sizeof(void*);
 };
 }

@@ -18,6 +18,8 @@ CodeCache::CodeCache(
 }
 void CodeCache::invalidate(Domain& domain)
 {
+    for (const auto& [key, entry] : domain.entries)
+        recent_.erase(entry.recency);
     domain.entries.clear();
     stats_.retained_bytes -= domain.retained_bytes;
     domain.retained_bytes = 0;
@@ -25,6 +27,7 @@ void CodeCache::invalidate(Domain& domain)
 }
 void CodeCache::clear()
 {
+    recent_.clear();
     anonymous_ = { };
     domains_.clear();
     stats_.retained_bytes = 0;
@@ -54,9 +57,7 @@ void CodeCache::invalidate_range(std::uint32_t address, std::size_t size)
                 overlaps(pc, std::min(fetch_end, address_limit)) ||
                 (fetch_end > address_limit &&
                     overlaps(0, fetch_end - address_limit))) {
-                domain.retained_bytes -= it->second.accounted_bytes;
-                stats_.retained_bytes -= it->second.accounted_bytes;
-                it = domain.entries.erase(it);
+                it = erase_entry(domain, it);
             } else {
                 ++it;
             }
@@ -70,6 +71,45 @@ void CodeCache::invalidate_range(std::uint32_t address, std::size_t size)
             it = domains_.erase(it);
         } else {
             ++it;
+        }
+    }
+}
+CodeCache::Entries::iterator CodeCache::erase_entry(
+    Domain& domain, Entries::iterator entry)
+{
+    domain.retained_bytes -= entry->second.accounted_bytes;
+    stats_.retained_bytes -= entry->second.accounted_bytes;
+    recent_.erase(entry->second.recency);
+    return domain.entries.erase(entry);
+}
+void CodeCache::trim(const Binding& binding, std::size_t accounted)
+{
+    const auto fits = [&] {
+        const auto needed = accounted +
+            (binding.identity && !find(binding) ? domain_bytes : 0);
+        return stats_.retained_bytes <= budget_ - needed;
+    };
+    if (fits())
+        return;
+    // Epoch invalidation may leave empty domains. Reclaim their metadata
+    // before evicting code, including the domain currently being refilled.
+    for (auto it = domains_.begin(); it != domains_.end();) {
+        if (it->second.entries.empty()) {
+            stats_.retained_bytes -= domain_bytes;
+            it = domains_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    while (!fits()) {
+        if (recent_.empty())
+            throw std::logic_error("inconsistent ARM64 cache accounting");
+        const auto oldest = recent_.front();
+        auto& domain = *oldest.domain;
+        erase_entry(domain, oldest.entry);
+        if (domain.entries.empty() && domain.identity) {
+            domains_.erase(domain.identity.get());
+            stats_.retained_bytes -= domain_bytes;
         }
     }
 }
@@ -132,6 +172,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         if (const auto it = domain->entries.find(key);
             it != domain->entries.end()) {
             if (!it->second.tier.ready()) {
+                recent_.splice(recent_.end(), recent_, it->second.recency);
                 ++stats_.cache_hits;
                 return it->second;
             }
@@ -167,26 +208,26 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     if (auto* domain = find(binding)) {
         if (auto previous = domain->entries.find(key);
             previous != domain->entries.end()) {
-            domain->retained_bytes -= previous->second.accounted_bytes;
-            stats_.retained_bytes -= previous->second.accounted_bytes;
-            domain->entries.erase(previous);
+            erase_entry(*domain, previous);
         }
     }
-    const auto needed =
-        accounted + (binding.identity && !find(binding) ? domain_bytes : 0);
     // Only called between native invocations; no active entry is reclaimed.
-    if (stats_.retained_bytes > budget_ - needed) {
-        clear();
-    }
+    trim(binding, accounted);
     auto& domain = obtain(binding);
     auto [it, inserted] = domain.entries.emplace(key,
         Entry { std::move(allocation), compiled.maximum_ticks, compiled.stop,
             compiled.closed, compiled.accesses_memory, compiled.ends_with_stop,
             compiled.first_instruction, accounted,
             CycleTier { compiled.closed, expansion == CycleExpansion::Hot },
-            source.instruction_region(pc) });
+            source.instruction_region(pc), { } });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");
+    try {
+        it->second.recency = recent_.insert(recent_.end(), { &domain, it });
+    } catch (...) {
+        domain.entries.erase(it);
+        throw;
+    }
     domain.retained_bytes += accounted;
     stats_.retained_bytes += accounted;
     ++stats_.compiled_regions;
