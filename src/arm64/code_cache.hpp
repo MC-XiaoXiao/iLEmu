@@ -36,6 +36,7 @@ public:
     Binding bind(const InstructionLease&);
     Entry& entry(InstructionSource&, const Binding&, std::uint32_t pc,
         bool step, bool big_endian, bool thumb, unsigned it_state,
+        TranslationObserver*,
         std::uint64_t timing_limit = UINT64_MAX);
 
 private:

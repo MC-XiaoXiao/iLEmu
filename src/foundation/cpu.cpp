@@ -3745,7 +3745,8 @@ public:
         execution_started_.store(true, std::memory_order_release);
         if (!independent_executors_.empty())
             return independent_executors_.at(slot)->run(
-                cpu, ticks, single_step, cooperative, host_budget);
+                cpu, ticks, single_step, cooperative, host_budget,
+                execution_context_->process_id());
         return executor(slot).run(
             cpu, ticks, single_step, cooperative, host_budget);
     }

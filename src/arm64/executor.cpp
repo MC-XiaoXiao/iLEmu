@@ -76,7 +76,8 @@ public:
             const auto binding = cache_.bind(*lease);
             const bool big_endian = (state.cpsr & (1U << 9U)) != 0;
             auto* selected = &cache_.entry(
-                source, binding, result.pc, step, big_endian, thumb, it_state);
+                source, binding, result.pc, step, big_endian, thumb, it_state,
+                request.translation_observer);
             const auto remaining =
                 step ? UINT64_MAX : request.tick_budget - result.ticks_consumed;
             // Short budget tails execute a native one-instruction entry. This
@@ -87,11 +88,12 @@ public:
             if (!step && selected->maximum_ticks >= remaining &&
                 (!selected->ends_with_stop || selected->maximum_ticks != remaining))
                 selected = &cache_.entry(source, binding, result.pc, true,
-                    big_endian, thumb, it_state);
+                    big_endian, thumb, it_state, request.translation_observer);
             const auto allowance = UINT64_MAX - result.ticks_consumed;
             if (selected->maximum_ticks > allowance)
                 selected = &cache_.entry(source, binding, result.pc, true,
-                    big_endian, thumb, it_state, allowance);
+                    big_endian, thumb, it_state, request.translation_observer,
+                    allowance);
             arm64::NativeOutcome native;
             native.thread_pointer_read_only = state.cthread_self.value_or(0);
             native.poll = arm64::RunControl::poll;

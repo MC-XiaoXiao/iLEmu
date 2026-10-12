@@ -76,7 +76,8 @@ CodeCache::Binding CodeCache::bind(const InstructionLease& lease)
 }
 CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     const Binding& binding, std::uint32_t pc, bool step, bool big_endian,
-    bool thumb, unsigned it_state, std::uint64_t timing_limit)
+    bool thumb, unsigned it_state, TranslationObserver* observer,
+    std::uint64_t timing_limit)
 {
     const Key key { pc, step, big_endian, thumb, it_state,
         source.data_memory() != nullptr, timing_limit,
@@ -147,10 +148,13 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     stats_.retained_bytes += accounted;
     ++stats_.compiled_regions;
     stats_.emitted_bytes += bytes.size();
-    stats_.compilation_nanoseconds += static_cast<std::uint64_t>(
+    const auto elapsed = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - started)
             .count());
+    stats_.compilation_nanoseconds += elapsed;
+    if (observer)
+        observer->translation_completed(elapsed);
     return it->second;
 }
 }

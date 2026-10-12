@@ -13,7 +13,8 @@ public:
     IndependentCpuExecutor(AddressSpace&, const ArmCpuModel&,
         execution::ExecutorFactory, std::size_t cache_bytes);
     CpuRunResult run(Cpu&, std::uint64_t ticks, bool single_step,
-        bool cooperative, std::chrono::nanoseconds host_budget);
+        bool cooperative, std::chrono::nanoseconds host_budget,
+        std::uint32_t process_id);
     void prepare();
     void clear_cache();
     void clear_exclusive_state();

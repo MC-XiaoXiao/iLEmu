@@ -39,11 +39,21 @@ constexpr bool has_reason(StopReason value, StopReason flag) noexcept
 }
 
 enum class ExecutionMode { Run, SingleStep };
+// Optional, run-scoped diagnostics on the execution owner. Called once after
+// each successfully published translation, including code-free stop plans.
+// Observers must not reenter execution or access guest state/memory. Their
+// cost is excluded from the reported translation duration.
+class TranslationObserver {
+public:
+    virtual ~TranslationObserver() = default;
+    virtual void translation_completed(std::uint64_t nanoseconds) noexcept = 0;
+};
 struct RunRequest {
     std::uint64_t tick_budget;
     ExecutionMode mode = ExecutionMode::Run;
     std::chrono::steady_clock::time_point deadline =
         std::chrono::steady_clock::time_point::max();
+    TranslationObserver* translation_observer = nullptr;
 };
 struct RunResult {
     StopReason reason = StopReason::None;

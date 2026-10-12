@@ -7,6 +7,25 @@
 #include <utility>
 
 namespace ilemu {
+namespace {
+    class TranslationMetrics final : public execution::TranslationObserver {
+    public:
+        explicit TranslationMetrics(std::uint32_t process_id)
+            : process_id_(process_id) { }
+        void translation_completed(std::uint64_t nanoseconds) noexcept override
+        {
+            try {
+                performance_counters().record_translation_block();
+                performance_counters().record_jit_demand_translation(
+                    process_id_, nanoseconds);
+            } catch (...) {
+                // Optional diagnostic allocation must not abort the guest.
+            }
+        }
+    private:
+        std::uint32_t process_id_;
+    };
+}
 using execution::StopReason;
 IndependentCpuExecutor::IndependentCpuExecutor(AddressSpace& memory,
     const ArmCpuModel& model, execution::ExecutorFactory factory,
@@ -88,7 +107,8 @@ void IndependentCpuExecutor::raise_memory_fault(
     halt(Dynarmic::HaltReason::MemoryAbort);
 }
 CpuRunResult IndependentCpuExecutor::run(Cpu& cpu, std::uint64_t ticks,
-    bool single_step, bool cooperative, std::chrono::nanoseconds host_budget)
+    bool single_step, bool cooperative, std::chrono::nanoseconds host_budget,
+    std::uint32_t process_id)
 {
     const std::lock_guard lock { mutex_ };
     if (owner_)
@@ -133,6 +153,8 @@ CpuRunResult IndependentCpuExecutor::run(Cpu& cpu, std::uint64_t ticks,
                                                 : started + budget)
             : max_deadline;
     const auto translations = executor_->translation_count();
+    TranslationMetrics metrics { process_id };
+    auto* observer = performance_counters().enabled() ? &metrics : nullptr;
     std::uint64_t execution_ns = 0;
     for (;;) {
         if (callback_fault_) {
@@ -149,7 +171,7 @@ CpuRunResult IndependentCpuExecutor::run(Cpu& cpu, std::uint64_t ticks,
             { ticks - std::min(ticks, result.ticks_consumed),
                 single_step ? execution::ExecutionMode::SingleStep
                             : execution::ExecutionMode::Run,
-                deadline });
+                deadline, observer });
         execution_ns += static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - execution_started)
