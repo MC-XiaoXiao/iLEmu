@@ -33,16 +33,19 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
 {
     Instruction out;
     out.condition = word >> 28;
-    if (decode_floating_system(out, word, false, architecture) ||
+    // These VFP families occupy the coprocessor encoding space. Skip their
+    // individual matchers for integer instructions without changing priority.
+    const bool coprocessor = (word & 0x0c000000U) == 0x0c000000U;
+    if ((coprocessor && (decode_floating_system(out, word, false, architecture) ||
         decode_floating_immediate(out, word, false, vfp, architecture, floating_instructions) ||
         decode_floating_comparison(out, word, false, vfp, architecture) ||
         decode_floating_arithmetic(out, word, false, vfp, architecture) ||
         decode_floating_conversion(out, word, false, vfp, architecture) ||
-        decode_core_vector_move(out, word, false, vfp, architecture) ||
+        decode_core_vector_move(out, word, false, vfp, architecture))) ||
         decode_multiply(out, word, false, architecture) ||
         decode_integer_divide(out, word, false, architecture, division) ||
-        decode_vfp_scalar(out, word, false, vfp, architecture) ||
-        decode_vfp_multiple(out, word, false, vfp) ||
+        (coprocessor && (decode_vfp_scalar(out, word, false, vfp, architecture) ||
+            decode_vfp_multiple(out, word, false, vfp))) ||
         decode_integer_transform(out, word, false, architecture) ||
         decode_parallel_saturating(out, word, false, architecture) ||
         decode_swap(out, word) ||
