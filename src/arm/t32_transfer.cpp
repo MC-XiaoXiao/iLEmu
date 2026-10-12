@@ -5,7 +5,7 @@ namespace ilemu::arm {
 void decode_t32_transfer(Instruction& out, unsigned first, unsigned second,
     bool last_in_it, execution::ArmInstructionProfile architecture) noexcept
 {
-    if (architecture == execution::ArmInstructionProfile::Armv6)
+    if (!execution::has_armv6t2_extensions(architecture))
         return;
     bool unprivileged = false;
     const auto size = (first >> 5U) & 3U;

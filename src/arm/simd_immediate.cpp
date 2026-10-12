@@ -22,7 +22,7 @@ bool decode_simd_immediate(Instruction& out, std::uint32_t word, bool thumb,
     const bool zero_unpredictable =
         v.imm8 == 0 &&
         ((v.cmode >= 2 && v.cmode <= 7) || (v.cmode >= 10 && v.cmode <= 13));
-    if (architecture == execution::ArmInstructionProfile::Armv6 ||
+    if (!execution::has_armv6t2_extensions(architecture) ||
         (bank == execution::VfpRegisterProfile::D16 && v.destination >= 16) ||
         (v.quad && (v.destination & 1U) != 0) || (v.cmode == 15 && v.op) ||
         zero_unpredictable)

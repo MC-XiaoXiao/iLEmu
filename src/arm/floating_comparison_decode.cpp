@@ -18,7 +18,7 @@ bool decode_floating_comparison(Instruction& out, std::uint32_t word,
     v.first = reg((word >> 12U) & 15U, (word >> 22U) & 1U);
     v.second = reg(word & 15U, (word >> 5U) & 1U);
     if ((v.with_zero && (word & 0x2fU) != 0) ||
-        (thumb && architecture == execution::ArmInstructionProfile::Armv6) ||
+        (thumb && !execution::has_armv6t2_extensions(architecture)) ||
         (bank == execution::VfpRegisterProfile::D16 && v.wide &&
             (v.first >= 32 || (!v.with_zero && v.second >= 32))))
         return true;

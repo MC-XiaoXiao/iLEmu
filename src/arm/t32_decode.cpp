@@ -62,6 +62,11 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
+        if (word == 0xf3afU && tail == 0x8000U) {
+            if (execution::has_armv6t2_extensions(architecture))
+                out.kind = InstructionKind::Nop;
+            return out;
+        }
         if (decode_floating_system(out, (word << 16U) | tail, true, architecture) ||
             decode_floating_immediate(out, (word << 16U) | tail, true, vfp, architecture, floating_instructions) ||
             decode_floating_comparison(out, (word << 16U) | tail, true, vfp, architecture) ||
@@ -95,7 +100,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             return out;
         }
         if ((word & 0xff80U) == 0xfa00U && (tail & 0xf0f0U) == 0xf000U) {
-            if (architecture != execution::ArmInstructionProfile::Armv6)
+            if (execution::has_armv6t2_extensions(architecture))
                 decode_t32_register_shift(out, word, tail, profile);
         } else if ((word & 0xfe00U) == 0xf800U) {
             decode_t32_transfer(out, word, tail, last, architecture);
@@ -293,7 +298,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     } else if ((word & 0xff00U) == 0xbf00U) {
         const auto mask = word & 15U, cond = (word >> 4U) & 15U;
         if (mask == 0) {
-            if (cond == 0)
+            if (cond == 0 && execution::has_armv6t2_extensions(architecture))
                 out.kind = InstructionKind::Nop;
         } else if (it == 0 && cond != 15 &&
                    (cond != 14 || std::popcount(mask) == 1)) {

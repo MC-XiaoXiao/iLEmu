@@ -64,10 +64,17 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
     // Unconditional encoding space has different decode rules.
     if (out.condition == 15)
         return out;
+    // The dedicated ARM NOP encoding is available from ARMv6K/ARMv6T2.
+    // Other hints have their own effects and do not alias this instruction.
+    if ((word & 0x0fffffffU) == 0x0320f000U) {
+        if (architecture != execution::ArmInstructionProfile::Armv6)
+            out.kind = InstructionKind::Nop;
+        return out;
+    }
     // MOVW/MOVT share the existing Thumb wide-immediate execution path.
     if ((word & 0x0fb00000U) == 0x03000000U) {
         out.rd = (word >> 12U) & 15U;
-        if (architecture == execution::ArmInstructionProfile::Armv6 ||
+        if (!execution::has_armv6t2_extensions(architecture) ||
             out.rd == 15)
             return out;
         out.kind = InstructionKind::WideImmediate;

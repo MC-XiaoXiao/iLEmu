@@ -44,7 +44,7 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
         }
         rm = (word >> 16U) & 15U;
         rs = word & 15U;
-        if (profile == execution::ArmInstructionProfile::Armv6 ||
+        if (!execution::has_armv6t2_extensions(profile) ||
             rd == 13 || rn == 13 || rm == 13 || rs == 13)
             return true;
     } else {
@@ -61,7 +61,7 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
             if (!accumulate && rn != 0)
                 return true;
         } else if (op == 6) {
-            if (profile == execution::ArmInstructionProfile::Armv6)
+            if (!execution::has_armv6t2_extensions(profile))
                 return true;
             operation = Operation::Subtract;
             rd = (word >> 16U) & 15U;

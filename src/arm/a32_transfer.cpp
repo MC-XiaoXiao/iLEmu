@@ -49,7 +49,7 @@ bool decode_a32_transfer(Instruction& out, std::uint32_t word,
             (out.rd == 15 &&
                 (out.access_size != 4 || (unprivileged && out.load))) ||
             (unprivileged && extra_transfer &&
-                architecture == execution::ArmInstructionProfile::Armv6))
+                !execution::has_armv6t2_extensions(architecture)))
             return true;
         out.align_pc = out.load && out.rn == 15 && out.immediate_operand;
         out.kind = InstructionKind::Transfer;

@@ -15,7 +15,7 @@ bool decode_floating_immediate(Instruction& out, std::uint32_t word,
     v.destination = v.wide ? (low + high * 16U) * 2U : low * 2U + high;
     v.imm8 = static_cast<std::uint8_t>(((word >> 12U) & 0xf0U) | (word & 15U));
     if (floating_instructions == execution::VfpInstructionProfile::Vfpv2 ||
-        (thumb && architecture == execution::ArmInstructionProfile::Armv6) ||
+        (thumb && !execution::has_armv6t2_extensions(architecture)) ||
         (v.wide && bank == execution::VfpRegisterProfile::D16 && v.destination >= 32))
         return true;
     out.kind = InstructionKind::FloatingImmediate;

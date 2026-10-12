@@ -9,7 +9,7 @@ bool decode_dual_transfer(Instruction& out, std::uint32_t word, bool thumb,
         if ((word & 0xfe400000U) != 0xe8400000U ||
             (word & 0x01200000U) == 0)
             return false; // P=W=0 belongs to exclusive transfers.
-        if (architecture == execution::ArmInstructionProfile::Armv6)
+        if (!execution::has_armv6t2_extensions(architecture))
             return true;
         out.rn = (word >> 16U) & 15U;
         out.rd = (word >> 12U) & 15U;

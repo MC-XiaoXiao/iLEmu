@@ -48,7 +48,7 @@ bool decode_integer_transform(Instruction& out, std::uint32_t word,
                 return true;
         } else
             return false;
-        if (architecture == execution::ArmInstructionProfile::Armv6)
+        if (!execution::has_armv6t2_extensions(architecture))
             return true; // These wide Thumb encodings require ARMv6T2.
         rd = (tail >> 8U) & 15U;
         rm = tail & 15U;
@@ -76,7 +76,7 @@ bool decode_integer_transform(Instruction& out, std::uint32_t word,
             default: return false;
             }
             if (operation == Operation::ReverseBits &&
-                architecture == execution::ArmInstructionProfile::Armv6)
+                !execution::has_armv6t2_extensions(architecture))
                 return true;
         }
         rd = (word >> 12U) & 15U;

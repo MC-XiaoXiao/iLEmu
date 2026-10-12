@@ -53,7 +53,7 @@ execution::ArmInstructionProfile
 ExecutionMemory::arm_instruction_profile() const noexcept
 {
     return impl_->model_.architecture_version() == ArmArchitectureVersion::Armv6K
-               ? execution::ArmInstructionProfile::Armv6
+               ? execution::ArmInstructionProfile::Armv6K
                : execution::ArmInstructionProfile::Armv6T2;
 }
 execution::AluPcWriteProfile

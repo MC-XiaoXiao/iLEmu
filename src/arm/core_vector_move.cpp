@@ -49,7 +49,7 @@ bool decode_core_vector_move(Instruction& out, std::uint32_t word, bool thumb,
         v.sign_extend = v.to_core && !unsigned_value && v.element_bits < 32;
     } else
         return false;
-    if ((thumb && architecture == execution::ArmInstructionProfile::Armv6) ||
+    if ((thumb && !execution::has_armv6t2_extensions(architecture)) ||
         v.core == 15 || (thumb && v.core == 13) ||
         (v.pair && (v.core2 == 15 || (thumb && v.core2 == 13))))
         return true;

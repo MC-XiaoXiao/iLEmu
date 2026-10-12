@@ -16,7 +16,7 @@ bool decode_parallel_saturating(Instruction& out, std::uint32_t word,
         operation = operations[(word >> 20U) & 7U];
         n = (word >> 16U) & 15U;
         d = (word >> 8U) & 15U;
-        if (architecture == execution::ArmInstructionProfile::Armv6 ||
+        if (!execution::has_armv6t2_extensions(architecture) ||
             n == 13 || d == 13 || m == 13)
             return true;
     } else {

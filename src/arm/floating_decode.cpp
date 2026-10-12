@@ -28,7 +28,7 @@ bool decode_floating_conversion(Instruction& out, std::uint32_t word,
     v.destination =
         v.destination_double ? (d + high_d * 16U) * 2U : d * 2U + high_d;
     v.source = v.source_double ? (m + high_m * 16U) * 2U : m * 2U + high_m;
-    if ((thumb && architecture == execution::ArmInstructionProfile::Armv6) ||
+    if ((thumb && !execution::has_armv6t2_extensions(architecture)) ||
         (bank == execution::VfpRegisterProfile::D16 &&
             ((v.source_double && v.source >= 32) ||
                 (v.destination_double && v.destination >= 32))))

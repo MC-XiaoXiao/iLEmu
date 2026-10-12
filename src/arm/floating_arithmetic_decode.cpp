@@ -64,7 +64,7 @@ bool decode_floating_arithmetic(Instruction& out, std::uint32_t word,
     v.destination = reg((word >> 12U) & 15U, (word >> 22U) & 1U);
     v.second = reg(word & 15U, (word >> 5U) & 1U);
     v.first = unary ? v.second : reg((word >> 16U) & 15U, (word >> 7U) & 1U);
-    if ((thumb && architecture == execution::ArmInstructionProfile::Armv6) ||
+    if ((thumb && !execution::has_armv6t2_extensions(architecture)) ||
         (bank == execution::VfpRegisterProfile::D16 && v.wide &&
             (v.destination >= 32 || v.first >= 32 || v.second >= 32)))
         return true;

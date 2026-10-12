@@ -9,7 +9,7 @@ bool decode_floating_system(Instruction& out, std::uint32_t word,
         return false;
     const FloatingSystemOperands v {
         (word >> 12U) & 15U, (word & 0x100000U) != 0 };
-    if ((thumb && (architecture == execution::ArmInstructionProfile::Armv6 ||
+    if ((thumb && (!execution::has_armv6t2_extensions(architecture) ||
                       v.core == 13)) || (!v.to_core && v.core == 15))
         return true;
     out.kind = InstructionKind::FloatingSystem;

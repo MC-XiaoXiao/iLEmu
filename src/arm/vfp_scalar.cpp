@@ -16,7 +16,7 @@ bool decode_vfp_scalar(Instruction& out, std::uint32_t word, bool thumb,
     const auto first = single ? vd * 2U + high : high * 16U + vd;
     const auto rn = (word >> 16U) & 15U;
     const bool load = (word & (1U << 20U)) != 0;
-    if ((thumb && (architecture == execution::ArmInstructionProfile::Armv6 ||
+    if ((thumb && (!execution::has_armv6t2_extensions(architecture) ||
                       (rn == 15 && !load))) ||
         (!single && bank == execution::VfpRegisterProfile::D16 && first >= 16))
         return true;

@@ -1,9 +1,13 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 namespace ilemu::execution {
-// Select base ARMv6 or the ARMv6T2 integer instruction extensions.
-// Shared by multiply and single-transfer decoding; separate from core quirks.
-enum class ArmInstructionProfile { Armv6, Armv6T2 };
+// ARMv6K adds ARM-state hints without the ARMv6T2 instruction extensions.
+// Keep existing profile values stable in native code cache keys.
+enum class ArmInstructionProfile { Armv6, Armv6T2, Armv6K };
+constexpr bool has_armv6t2_extensions(ArmInstructionProfile profile) noexcept
+{
+    return profile == ArmInstructionProfile::Armv6T2;
+}
 // ARM-state ALU writes preserve the ISA through ARMv6; ARMv7 interworks.
 // Thumb ALU writes always preserve the ISA, independently of this policy.
 enum class AluPcWriteProfile { Branch, Interworking };
