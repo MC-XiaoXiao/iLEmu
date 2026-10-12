@@ -9,8 +9,7 @@ namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
 void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
-    std::uint64_t cost, Label& checked_exit, Label& unsupported_exit,
-    Label& branch_exit)
+    std::uint64_t cost, MemoryExits& exits)
 {
     constexpr auto offset = offsetof(NativeOutcome, multiple);
     constexpr auto memory = offsetof(NativeOutcome, memory);
@@ -32,7 +31,7 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         Label valid;
         code_.CBZ(W21, valid);
         code_.EOR(W21, W17, 12);
-        code_.CBNZ(W21, unsupported_exit);
+        code_.CBNZ(W21, exits.get(MemoryExits::Kind::Unsupported));
         code_.l(valid);
         code_.MOV(W21, pc);
         code_.ADD(W17, W21, W17);
@@ -101,7 +100,7 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     if (load_pc) {
         Label valid;
         code_.TBNZ(W17, 0, valid);
-        code_.TBNZ(W17, 1, unsupported_exit);
+        code_.TBNZ(W17, 1, exits.get(MemoryExits::Kind::Unsupported));
         code_.l(valid);
     }
     if (inst.writeback)
@@ -109,7 +108,7 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     if (load_pc) {
         code_.BFI(W22, W17, 5, 1);
         code_.AND(W15, W17, 0xfffffffeU);
-        code_.B(branch_exit);
+        code_.B(exits.get(MemoryExits::Kind::Branch));
     } else
         code_.B(done);
     code_.l(checked);
@@ -124,7 +123,7 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         W17, X20, offset + offsetof(arm_memory::MultipleTransfer, control));
     code_.MOV(X21, cost);
     code_.STR(X21, X20, offset + offsetof(arm_memory::MultipleTransfer, ticks));
-    code_.B(checked_exit);
+    code_.B(exits.get(MemoryExits::Kind::Checked));
     code_.l(done);
 }
 }

@@ -483,54 +483,58 @@ namespace {
             }
         }
         IntegerEmitter& integer() { return integer_; }
+        class InstructionMemoryExits final : public MemoryExits {
+        public:
+            InstructionMemoryExits(Emitter& owner, std::uint32_t pc,
+                std::uint32_t word, std::uint64_t before,
+                std::uint64_t cost, unsigned it, StopReason checked)
+                : owner_(owner)
+                , pc_(pc)
+                , word_(word)
+                , it_(it)
+                , before_(before)
+                , cost_(cost)
+                , checked_(checked)
+            {
+            }
+            Label& get(MemoryExits::Kind kind) override
+            {
+                auto& label = labels_[static_cast<unsigned>(kind)];
+                if (!label) {
+                    switch (kind) {
+                    case MemoryExits::Kind::Checked:
+                        label = &owner_.exit(
+                            checked_, before_, pc_, word_, 0, false, it_);
+                        break;
+                    case MemoryExits::Kind::Unsupported:
+                        label = &owner_.exit(
+                            StopReason::UnsupportedInstruction, before_,
+                            pc_, word_, 0, false, it_);
+                        break;
+                    case MemoryExits::Kind::Branch:
+                        label = &owner_.exit(StopReason::None,
+                            before_ + cost_, 0, { }, 0, true);
+                        break;
+                    }
+                }
+                return *label;
+            }
+
+        private:
+            Emitter& owner_;
+            std::uint32_t pc_, word_;
+            unsigned it_;
+            std::uint64_t before_, cost_;
+            StopReason checked_;
+            std::array<Label*, 3> labels_ { };
+        };
+
         void transfer(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
             unsigned before_it)
         {
-            class TransferExits final : public MemoryEmitter::Exits {
-            public:
-                TransferExits(Emitter& owner, std::uint32_t pc,
-                    std::uint32_t word, std::uint64_t before,
-                    std::uint64_t cost, unsigned it)
-                    : owner_(owner)
-                    , pc_(pc)
-                    , word_(word)
-                    , it_(it)
-                    , before_(before)
-                    , cost_(cost)
-                {
-                }
-                Label& get(MemoryEmitter::ExitKind kind) override
-                {
-                    auto& label = labels_[static_cast<unsigned>(kind)];
-                    if (!label) {
-                        switch (kind) {
-                        case MemoryEmitter::ExitKind::Checked:
-                            label = &owner_.exit(
-                                static_cast<StopReason>(memory_exit), before_,
-                                pc_, word_, 0, false, it_);
-                            break;
-                        case MemoryEmitter::ExitKind::Unsupported:
-                            label = &owner_.exit(
-                                StopReason::UnsupportedInstruction, before_,
-                                pc_, word_, 0, false, it_);
-                            break;
-                        case MemoryEmitter::ExitKind::Branch:
-                            label = &owner_.exit(StopReason::None,
-                                before_ + cost_, 0, { }, 0, true);
-                            break;
-                        }
-                    }
-                    return *label;
-                }
-
-            private:
-                Emitter& owner_;
-                std::uint32_t pc_, word_;
-                unsigned it_;
-                std::uint64_t before_, cost_;
-                std::array<Label*, 3> labels_ { };
-            } exits { *this, pc, word, before, cost, before_it };
+            InstructionMemoryExits exits { *this, pc, word, before,
+                cost, before_it, static_cast<StopReason>(memory_exit) };
             memory_.emit(inst, pc, cost, exits);
         }
 
@@ -539,12 +543,9 @@ namespace {
             unsigned before_it, bool big_endian)
         {
             memory_.invalidate_all();
-            MultipleEmitter { code_, big_endian }.emit(inst, pc, cost,
-                exit(static_cast<StopReason>(multiple_exit), before, pc, word,
-                    0, false, before_it),
-                exit(StopReason::UnsupportedInstruction, before, pc, word, 0,
-                    false, before_it),
-                exit(StopReason::None, before + cost, 0, { }, 0, true));
+            InstructionMemoryExits exits { *this, pc, word, before,
+                cost, before_it, static_cast<StopReason>(multiple_exit) };
+            MultipleEmitter { code_, big_endian }.emit(inst, pc, cost, exits);
         }
 
     private:

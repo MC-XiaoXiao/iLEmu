@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "integer_emitter.hpp"
+#include "memory_exits.hpp"
 namespace ilemu::execution::arm64 {
 class MultipleEmitter {
 public:
@@ -10,8 +11,7 @@ public:
     {
     }
     void emit(const arm::Instruction&, std::uint32_t pc, std::uint64_t cost,
-        oaknut::Label& checked, oaknut::Label& unsupported,
-        oaknut::Label& branch);
+        MemoryExits&);
 
 private:
     oaknut::VectorCodeGenerator& code_;

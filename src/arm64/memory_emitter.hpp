@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "address_cache.hpp"
+#include "memory_exits.hpp"
 #include "integer_emitter.hpp"
 #include "read_page_cache.hpp"
 #include <list>
@@ -10,14 +11,8 @@
 namespace ilemu::execution::arm64 {
 class MemoryEmitter {
 public:
-    enum class ExitKind { Checked, Unsupported, Branch };
-    // Resolve exits only when an emitted path references them. A cached data
-    // access can return without creating any new exit payloads.
-    class Exits {
-    public:
-        virtual ~Exits() = default;
-        virtual oaknut::Label& get(ExitKind) = 0;
-    };
+    using ExitKind = MemoryExits::Kind;
+    using Exits = MemoryExits;
     MemoryEmitter(oaknut::VectorCodeGenerator& code, IntegerEmitter& integer,
         bool big_endian, bool fast_reads, bool cache_reads,
         std::pmr::memory_resource* temporary)
