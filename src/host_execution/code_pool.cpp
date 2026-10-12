@@ -10,6 +10,9 @@
 #include <mutex>
 #include <stdexcept>
 #include <vector>
+#include <cerrno>
+#include <sys/mman.h>
+#include <unistd.h>
 
 namespace ilemu::host::detail {
 namespace {
@@ -23,6 +26,7 @@ namespace {
         }
         oaknut::DualCodeBlock memory;
         unsigned used = 0;
+        unsigned discard_threshold = 0;
     };
 
     class Pool;
@@ -45,13 +49,13 @@ namespace {
 
     // Slot capacities preserve cache accounting. Reuse any vacant slot before
     // growing; retire empty chunks, keeping at most one for the next refill.
-    // Backing is bounded by peak live slots rounded to a chunk. Code objects
+    // Vacant OS pages can be discarded without moving live code. Code objects
     // own the pool so an allocator can be destroyed before its allocations.
     class Pool final : public std::enable_shared_from_this<Pool> {
     public:
         Pool(std::shared_ptr<execution::CodeAllocator> fallback,
-            std::size_t capacity)
-            : fallback_(std::move(fallback)), capacity_(capacity)
+            std::size_t capacity, std::size_t page)
+            : fallback_(std::move(fallback)), capacity_(capacity), page_(page)
         {
         }
         std::size_t capacity() const noexcept { return capacity_; }
@@ -81,22 +85,75 @@ namespace {
             auto code = std::make_unique<PooledCode>(
                 shared_from_this(), chunk, slot, capacity_);
             chunk->used |= 1U << slot;
+            const auto live = static_cast<unsigned>(std::popcount(chunk->used));
+            // Rearm after meaningful growth, rather than repeatedly discarding
+            // the same page during single-neighbor publication/reuse.
+            if (live >= slots_per_chunk / 4)
+                chunk->discard_threshold = std::max(
+                    chunk->discard_threshold, std::bit_floor(live / 2));
             return code;
         }
         void release(const std::shared_ptr<Chunk>& chunk, unsigned slot)
         {
             std::lock_guard lock(mutex_);
             chunk->used &= ~(1U << slot);
-            if (chunk->used == 0 && chunks_.size() > 1)
-                std::erase(chunks_, chunk);
+            if (chunk->used == 0) {
+                if (chunks_.size() > 1)
+                    std::erase(chunks_, chunk);
+                return;
+            }
+            const auto live = static_cast<unsigned>(std::popcount(chunk->used));
+            if (live <= chunk->discard_threshold) {
+                discard_unused_pages(*chunk);
+                chunk->discard_threshold = live / 2;
+            }
         }
 
     private:
+        void discard_unused_pages(Chunk& chunk)
+        {
+            if (discard_unavailable_)
+                return;
+            const auto extent = capacity_ * slots_per_chunk;
+            std::size_t begin = 0, length = 0;
+            bool succeeded = true;
+            const auto discard = [&] {
+                if (length == 0)
+                    return;
+                auto* address =
+                    reinterpret_cast<std::byte*>(chunk.memory.wptr()) + begin;
+                // Removing shared backing also drops its executable alias.
+                // The mutex excludes new claims; every slot touching this
+                // complete OS-page range is vacant, including unpublished code.
+                if (::madvise(address, length, MADV_REMOVE) != 0) {
+                    succeeded = false;
+                    discard_unavailable_ = errno == EOPNOTSUPP ||
+                        errno == ENOSYS || errno == EINVAL ||
+                        errno == EACCES || errno == EPERM;
+                }
+                length = 0;
+            };
+            for (std::size_t offset = 0;
+                succeeded && offset + page_ <= extent; offset += page_) {
+                const auto first = offset / capacity_;
+                const auto last = (offset + page_ - 1) / capacity_;
+                const auto owners = ((1U << (last - first + 1)) - 1) << first;
+                if ((chunk.used & owners) == 0) {
+                    if (length == 0)
+                        begin = offset;
+                    length += page_;
+                } else {
+                    discard();
+                }
+            }
+            if (succeeded)
+                discard();
+        }
         std::shared_ptr<execution::CodeAllocator> fallback_;
-        const std::size_t capacity_;
+        const std::size_t capacity_, page_;
         std::mutex mutex_;
         std::vector<std::shared_ptr<Chunk>> chunks_;
-        bool unavailable_ = false;
+        bool unavailable_ = false, discard_unavailable_ = false;
     };
 
     PooledCode::PooledCode(std::shared_ptr<Pool> pool,
@@ -137,11 +194,15 @@ namespace {
         {
             if (!fallback_ || page < slots_per_chunk || !std::has_single_bit(page))
                 throw std::invalid_argument("invalid executable pool geometry");
+            const auto host_page = ::sysconf(_SC_PAGESIZE);
+            if (host_page <= 0)
+                throw std::runtime_error("host page size is unavailable");
             // Sixteen minimum slots occupy one system page. Larger size classes
             // reuse the same pool; only the slot stride and chunk length differ.
             for (std::size_t i = 0; i < pools_.size(); ++i)
                 pools_[i] = std::make_shared<Pool>(
-                    fallback_, (page / slots_per_chunk) << i);
+                    fallback_, (page / slots_per_chunk) << i,
+                    static_cast<std::size_t>(host_page));
         }
         std::unique_ptr<execution::ExecutableCode> allocate(
             std::size_t bytes) override
