@@ -30,6 +30,11 @@ public:
     // Scratch SIMD values are reusable only along unconditional adjacent ops.
     void clear_parallel_values() { parallel_values_.fill(std::nullopt); }
     void clear_multiply_addend() { multiply_addend_.reset(); }
+    void invalidate_multiply_addend(unsigned reg)
+    {
+        if (multiply_addend_ && multiply_addend_->reg == reg)
+            clear_multiply_addend();
+    }
 
 private:
     struct ParallelValue {

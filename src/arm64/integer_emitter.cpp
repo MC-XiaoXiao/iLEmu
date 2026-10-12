@@ -257,6 +257,9 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
         code_.MOV(d, inst.opcode == 13 ? inst.immediate : ~inst.immediate);
         return;
     }
+    // The fast paths above leave X17 intact. General shifter/flag emission
+    // may overwrite it, so later multiplies must reconstruct their addend.
+    clear_multiply_addend();
     const bool simple_operand =
         !inst.immediate_operand && !inst.register_shift &&
         inst.shift == arm::ShiftKind::Lsl && inst.shift_amount == 0 &&

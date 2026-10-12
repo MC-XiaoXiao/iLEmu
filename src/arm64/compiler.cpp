@@ -353,11 +353,17 @@ namespace {
         {
             if (inst.kind != arm::InstructionKind::ParallelSaturating)
                 integer_.clear_parallel_values();
-            if (inst.kind != arm::InstructionKind::Multiply)
+            // Static branches leave X17 intact; ALU emission revokes scratch
+            // knowledge on its general paths. Indirect PC writes still clear.
+            if (inst.kind != arm::InstructionKind::Multiply &&
+                inst.kind != arm::InstructionKind::Branch &&
+                (inst.kind != arm::InstructionKind::DataProcessing ||
+                    arm::alu_writes_pc(inst)))
                 integer_.clear_multiply_addend();
             const auto invalidate = [&](unsigned reg) {
                 memory_.invalidate_register(reg);
                 exchanges_.invalidate(reg);
+                integer_.invalidate_multiply_addend(reg);
             };
             if (inst.kind == arm::InstructionKind::FloatingSystem) {
                 const auto& v = std::get<arm::FloatingSystemOperands>(inst.vector);
