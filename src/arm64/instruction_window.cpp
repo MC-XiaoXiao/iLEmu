@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "instruction_window.hpp"
 #include "flag_effects.hpp"
+#include "dynamic_backedge.hpp"
+#include "memory_emitter.hpp"
 #include "arm/a32_decode.hpp"
+#include "arm/architectural_stop.hpp"
 #include "arm/t32_decode.hpp"
 #include "arm/floating_comparison.hpp"
 
@@ -75,6 +78,52 @@ std::uint64_t InstructionWindow::timing(DecodedInstruction& entry)
     if (!entry.ticks)
         entry.ticks = source_.ticks_for_instruction(entry.pc, *entry.word);
     return *entry.ticks;
+}
+bool InstructionWindow::single_dependent_read_cycle(std::uint32_t start,
+    unsigned start_it, unsigned remaining_instructions,
+    std::uint64_t remaining_ticks)
+{
+    match(start, start_it);
+    std::optional<unsigned> chain;
+    std::uint64_t pc = start;
+    auto it = start_it;
+    for (unsigned i = 0; i < remaining_instructions; ++i) {
+        if (i == pending_.size()) {
+            auto entry = decode(pc, it, false);
+            if (!entry)
+                return false;
+            pending_.push_back(*entry);
+        }
+        auto& entry = pending_[i];
+        const auto& inst = entry.instruction;
+        if (!entry.word || pc + inst.size > region_.end || inst.condition == 15)
+            return false;
+        const auto cost = timing(entry);
+        if (cost == 0 || cost > remaining_ticks)
+            return false;
+        remaining_ticks -= cost;
+        if (const auto destination =
+                MemoryEmitter::dependent_read_destination(inst, entry.pc)) {
+            if (chain && chain != destination)
+                return false;
+            chain = destination;
+        }
+        it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
+                          ? inst.immediate : arm::advance_it(it)) : 0U;
+        if (inst.kind == arm::InstructionKind::Branch) {
+            const auto target =
+                ((entry.pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) +
+                inst.immediate;
+            return !inst.exchange && target == start && it == start_it &&
+                chain.has_value();
+        }
+        if (inst.kind == arm::InstructionKind::CompareBranch ||
+            DynamicBackedge::ends_trace(inst) ||
+            arm::ArchitecturalStop::from(inst))
+            return false;
+        pc += inst.size;
+    }
+    return false;
 }
 bool InstructionWindow::flags_dead(const arm::Instruction& inst,
     std::uint32_t next_pc, unsigned next_it, unsigned remaining_instructions,

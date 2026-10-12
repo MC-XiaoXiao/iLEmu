@@ -66,7 +66,7 @@ void MemoryEmitter::endian(unsigned size, WReg value)
         code_.REV(value, value);
 }
 std::optional<AddressCache::Key> MemoryEmitter::address(
-    const arm::Instruction& inst, std::uint32_t pc) const
+    const arm::Instruction& inst, std::uint32_t pc)
 {
     if (!inst.index || inst.writeback ||
         (!inst.load && inst.rd == 15))
@@ -92,6 +92,21 @@ std::optional<AddressCache::Key> MemoryEmitter::address(
         key.shift_amount = inst.shift_amount;
     }
     return key;
+}
+bool MemoryEmitter::is_dependent_read(
+    const arm::Instruction& inst, const AddressCache::Key& key)
+{
+    return inst.condition == 14 && inst.load && inst.rd != 15 &&
+        inst.kind == arm::InstructionKind::Transfer &&
+        (key.inputs() & (1U << inst.rd)) != 0;
+}
+std::optional<unsigned> MemoryEmitter::dependent_read_destination(
+    const arm::Instruction& inst, std::uint32_t pc)
+{
+    const auto key = address(inst, pc);
+    if (key && is_dependent_read(inst, *key))
+        return inst.rd;
+    return { };
 }
 void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
     XReg pointer, Exits& exits)
@@ -161,9 +176,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
             return;
         }
     }
-    if (fast_reads_ && key && inst.condition == 14 && inst.load &&
-        inst.rd != 15 && inst.kind == arm::InstructionKind::Transfer &&
-        (key->inputs() & (1U << inst.rd)) != 0) {
+    if (fast_reads_ && key && is_dependent_read(inst, *key)) {
         dependent_read(inst, pc, cost, exits);
         return;
     }
@@ -288,8 +301,7 @@ void MemoryEmitter::dependent_read(const arm::Instruction& inst,
         read_table_guarded_ = true;
     }
     code_.LSR(W17, address, 12);
-    code_.LDR(X21, X25, W17, IndexExt::UXTW, 3);
-    code_.CBZ(X21, pending.entry);
+    read_pages_.resolve(W17, pending.entry);
     // Fold address addition into the load without occupying invariant slots.
     scalar_read(code_, inst, big_endian_, X21, address, IndexExt::UXTW);
 }

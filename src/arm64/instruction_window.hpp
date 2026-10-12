@@ -22,6 +22,10 @@ public:
     std::optional<DecodedInstruction> take(std::uint32_t pc, unsigned it,
         bool allow_straddle);
     std::uint64_t timing(DecodedInstruction&);
+    // A conservative linear-cycle proof avoids serializing parallel read
+    // chains through one page-cache slot. Prefetched decodes feed emission.
+    bool single_dependent_read_cycle(std::uint32_t pc, unsigned it,
+        unsigned remaining_instructions, std::uint64_t remaining_ticks);
     bool flags_dead(const arm::Instruction&, std::uint32_t next_pc,
         unsigned next_it, unsigned remaining_instructions,
         std::uint64_t remaining_ticks);

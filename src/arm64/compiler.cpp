@@ -61,13 +61,13 @@ namespace {
     public:
         Emitter(CompiledTrace& trace, bool big_endian, bool thumb,
             std::uint32_t pc, unsigned it, bool single_step,
-            std::pmr::memory_resource* temporary, bool fast_reads)
+            std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_)
             , integer_(code_)
             , exchanges_(code_, integer_, thumb)
-            , memory_(code_, integer_, big_endian, fast_reads, temporary)
+            , memory_(code_, integer_, big_endian, fast_reads, cache_reads, temporary)
             , thumb_(thumb)
             , backedge_(pc, it, thumb, !single_step)
             , exits_(temporary)
@@ -91,6 +91,31 @@ namespace {
         }
         void retired(unsigned it) { it_ = it; }
         void disable_backedges() { backedge_.disable(); }
+        unsigned expansion_copies(unsigned maximum)
+        {
+            const auto total_growth = memory_.read_expansion_growth();
+            if (total_growth == 0)
+                return maximum;
+            const auto words = trace_.words.size() - cycle_end_;
+            const auto growth = total_growth - cycle_growth_;
+            cycle_end_ = trace_.words.size();
+            cycle_growth_ = total_growth;
+            if (first_cycle_words_ == 0) {
+                first_cycle_words_ = words;
+                first_cycle_growth_ = growth;
+                return std::max(1U, static_cast<unsigned>(
+                    maximum * (words - growth) / words));
+            }
+            // First-use invariant guards can dwarf the repeated body. Charge
+            // the first copy separately, then measure the steady second copy
+            // before multiplying added read code across the old copy budget.
+            const auto budget = first_cycle_words_ - first_cycle_growth_ +
+                (maximum - 1U) * (words - growth);
+            const auto copies = budget > first_cycle_words_
+                ? 1U + static_cast<unsigned>((budget - first_cycle_words_) / words)
+                : 1U;
+            return std::min(maximum, std::max(2U, copies));
+        }
         bool continue_cycle(std::uint32_t fallthrough)
         {
             Exit* continuation = nullptr;
@@ -135,7 +160,7 @@ namespace {
                 code_.LDP(WReg { i }, WReg { i + 1 }, X19, i * 4);
             code_.LDR(W14, X19, 56);
             code_.align(16);
-            entry_end_ = trace_.words.size();
+            entry_end_ = cycle_end_ = trace_.words.size();
             code_.l(head_);
         }
         void finish(std::uint32_t pc)
@@ -253,6 +278,7 @@ namespace {
             code_.AND(W22, W22, 0x0fffffffU);
             code_.ORR(W22, W22, W21);
             code_.STR(W22, X19, cpsr_offset);
+            memory_.leave();
             code_.LDP(X21, X22, SP, 16);
             code_.LDP(X23, X24, SP, 32);
             code_.LDP(X25, X26, SP, 48);
@@ -262,6 +288,7 @@ namespace {
             code_.RET();
             std::vector<std::uint32_t> initial;
             VectorCodeGenerator entry(initial);
+            memory_.enter(entry);
             floating_.enter(entry);
             vectors_.restore(entry);
             memory_.addresses().finalize(trace_.closed, trace_.words, entry);
@@ -603,7 +630,8 @@ namespace {
         bool thumb_;
         bool continued_cycle_ = false;
         DynamicBackedge backedge_;
-        std::size_t entry_end_ = 0;
+        std::size_t entry_end_ = 0, cycle_end_ = 0, first_cycle_words_ = 0;
+        unsigned cycle_growth_ = 0, first_cycle_growth_ = 0;
         unsigned it_ = 0, size_ = 4;
         Label head_, loop_tail_, epilogue_;
         std::pmr::deque<Exit> exits_;
@@ -624,6 +652,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     std::pmr::monotonic_buffer_resource temporary {
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
     InstructionWindow window(source, region, thumb, &temporary);
+    const bool cache_reads = !single_step && expansion == CycleExpansion::Hot &&
+        window.single_dependent_read_cycle(
+            pc, it, maximum_trace_instructions, maximum_ticks);
     CompiledTrace out;
     auto first = window.take(pc, it, true);
     // Standalone unconditional stops share portable retirement and need no
@@ -644,11 +675,12 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     // Larger read fallbacks are earned by the existing hot-cycle tier, so
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
-        expansion == CycleExpansion::Hot);
+        expansion == CycleExpansion::Hot, cache_reads);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
-    unsigned cycles = 0, cycle_length = 0;
+    unsigned cycles = 0, cycle_length = 0, natural_copies = 0;
+    unsigned original_natural_copies = 0;
     bool comparison_flags_live = false;
     const auto limit = single_step ? 1U : maximum_trace_instructions;
     for (unsigned n = 0; n < limit; ++n) {
@@ -767,8 +799,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         const auto next_pc = pc + inst.size;
         const bool closes_natural_cycle = next_pc == start &&
             next_it == start_it && cycles + 1U >=
-                std::min(CycleTier::natural_copies(expansion),
-                    limit / (cycle_length == 0 ? n + 1U : cycle_length));
+                (natural_copies != 0 ? natural_copies :
+                    std::min(CycleTier::natural_copies(expansion),
+                        limit / (cycle_length == 0 ? n + 1U : cycle_length)));
         // Short budgets and SingleStep use precise one-instruction entries.
         // A normal entry has no poll inside a proven register-only segment.
         // A cycle's final linear instruction also publishes its flags. Its
@@ -985,10 +1018,15 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
         }
         if (!single_step && pc == start && it == start_it) {
             ++cycles;
-            if (cycle_length == 0)
+            if (cycle_length == 0) {
                 cycle_length = n + 1;
+                original_natural_copies = std::min(
+                    CycleTier::natural_copies(expansion), limit / cycle_length);
+                natural_copies = emit.expansion_copies(original_natural_copies);
+            } else if (cycles == 2)
+                natural_copies = emit.expansion_copies(original_natural_copies);
             const auto copies =
-                std::min(CycleTier::natural_copies(expansion), limit / cycle_length);
+                std::min(natural_copies, limit / cycle_length);
             if (cycles >= copies) {
                 out.closed = true;
                 break;
