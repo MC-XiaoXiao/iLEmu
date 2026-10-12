@@ -33,32 +33,57 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
 {
     Instruction out;
     out.condition = word >> 28;
-    // These VFP families occupy the coprocessor encoding space. Skip their
-    // individual matchers for integer instructions without changing priority.
-    const bool coprocessor = (word & 0x0c000000U) == 0x0c000000U;
-    if ((coprocessor && (decode_floating_system(out, word, false, architecture) ||
-        decode_floating_immediate(out, word, false, vfp, architecture, floating_instructions) ||
-        decode_floating_comparison(out, word, false, vfp, architecture) ||
-        decode_floating_arithmetic(out, word, false, vfp, architecture) ||
-        decode_floating_conversion(out, word, false, vfp, architecture) ||
-        decode_core_vector_move(out, word, false, vfp, architecture))) ||
-        decode_multiply(out, word, false, architecture) ||
-        decode_integer_divide(out, word, false, architecture, division) ||
-        (coprocessor && (decode_vfp_scalar(out, word, false, vfp, architecture) ||
-            decode_vfp_multiple(out, word, false, vfp))) ||
-        decode_integer_transform(out, word, false, architecture) ||
-        decode_parallel_saturating(out, word, false, architecture) ||
-        decode_swap(out, word) ||
-        decode_dual_transfer(out, word, false, architecture) ||
-        decode_exclusive(out, word, false) ||
-        decode_program_status(out, word, false, architecture) ||
-        decode_system_control(out, word, false) ||
-        decode_simd_immediate(out, word, false, vfp, architecture) ||
-        decode_simd_duplicate(out, word, false) ||
-        decode_simd_bitwise(out, word, false) ||
-        decode_simd_extract(out, word, false) ||
-        decode_simd_transfer(out, word, false))
-        return out;
+    // The major encoding selects disjoint extension families. Each matcher
+    // still owns its full mask, profile and operand validation; keep priority
+    // within a class, including reserved encodings that terminate decoding.
+    switch ((word >> 25U) & 7U) {
+    case 0:
+        if (decode_multiply(out, word, false, architecture) ||
+            decode_integer_transform(out, word, false, architecture) ||
+            decode_swap(out, word) ||
+            decode_dual_transfer(out, word, false, architecture) ||
+            decode_exclusive(out, word, false) ||
+            decode_program_status(out, word, false, architecture))
+            return out;
+        break;
+    case 1:
+        if (decode_program_status(out, word, false, architecture) ||
+            decode_simd_immediate(out, word, false, vfp, architecture) ||
+            decode_simd_duplicate(out, word, false) ||
+            decode_simd_bitwise(out, word, false) ||
+            decode_simd_extract(out, word, false))
+            return out;
+        break;
+    case 2:
+        if (decode_exclusive(out, word, false) ||
+            decode_system_control(out, word, false) ||
+            decode_simd_transfer(out, word, false))
+            return out;
+        break;
+    case 3:
+        if (decode_multiply(out, word, false, architecture) ||
+            decode_integer_divide(out, word, false, architecture, division) ||
+            decode_integer_transform(out, word, false, architecture) ||
+            decode_parallel_saturating(out, word, false, architecture))
+            return out;
+        break;
+    case 6:
+    case 7:
+        if (decode_floating_system(out, word, false, architecture) ||
+            decode_floating_immediate(out, word, false, vfp, architecture, floating_instructions) ||
+            decode_floating_comparison(out, word, false, vfp, architecture) ||
+            decode_floating_arithmetic(out, word, false, vfp, architecture) ||
+            decode_floating_conversion(out, word, false, vfp, architecture) ||
+            decode_core_vector_move(out, word, false, vfp, architecture) ||
+            decode_vfp_scalar(out, word, false, vfp, architecture) ||
+            decode_vfp_multiple(out, word, false, vfp) ||
+            decode_system_control(out, word, false) ||
+            decode_simd_duplicate(out, word, false))
+            return out;
+        break;
+    default:
+        break;
+    }
     // BLX immediate occupies the unconditional branch encoding space.
     if ((word & 0xfe000000U) == 0xfa000000U) {
         out.condition = 14;
