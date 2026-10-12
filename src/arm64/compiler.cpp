@@ -651,6 +651,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
             }
         }
     }
+    // Source capabilities and PC-write policy are fixed throughout a Run.
+    const bool has_data_memory = source.data_memory() != nullptr;
+    const bool alu_interworks =
+        arm::alu_interworks(thumb, source.alu_pc_write_profile());
     // Larger read fallbacks are earned by the existing hot-cycle tier, so
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
@@ -695,7 +699,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                  inst.kind == arm::InstructionKind::Swap ||
                  inst.kind == arm::InstructionKind::MultipleTransfer ||
                  inst.kind == arm::InstructionKind::VectorTransfer) &&
-                !source.data_memory());
+                !has_data_memory);
         if (inst.condition == 15 || (unsupported && inst.condition == 14)) {
             emit.code().B(emit.exit(
                 StopReason::UnsupportedInstruction, before, pc, word));
@@ -728,8 +732,6 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 emit.code().l(skipped);
         }
         const bool writes_pc = arm::alu_writes_pc(inst);
-        const bool alu_interworks =
-            arm::alu_interworks(thumb, source.alu_pc_write_profile());
         const auto cost = window.timing(*decoded);
         const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
         Label exchange_failed;
