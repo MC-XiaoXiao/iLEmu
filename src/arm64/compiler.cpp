@@ -548,6 +548,13 @@ namespace {
         }
 
     private:
+        WReg outcome_constant(std::uint32_t value, WReg temporary)
+        {
+            if (value == 0)
+                return WZR;
+            code_.MOV(temporary, value);
+            return temporary;
+        }
         void publish_exit(const Exit& out)
         {
             code_.ADD(X16, X24, X16);
@@ -555,22 +562,22 @@ namespace {
             if (!out.dynamic_pc)
                 code_.MOV(W15, out.state_pc);
             code_.STR(W15, X19, 60);
-            if (out.dynamic_pc)
+            if (out.dynamic_pc || out.report_pc == out.state_pc)
                 code_.STR(W15, X20, offsetof(NativeOutcome, pc));
-            else {
-                code_.MOV(W16, out.report_pc);
-                code_.STR(W16, X20, offsetof(NativeOutcome, pc));
-            }
-            if (out.reason) {
-                code_.MOV(W16, static_cast<std::uint32_t>(*out.reason));
-                code_.STR(W16, X20, offsetof(NativeOutcome, reason));
-            }
-            code_.MOV(W16, out.word);
-            code_.STR(W16, X20, offsetof(NativeOutcome, word));
-            code_.MOV(W16, out.svc);
-            code_.STR(W16, X20, offsetof(NativeOutcome, svc));
-            code_.MOV(W16, out.instruction ? 1U : 0U);
-            code_.STR(W16, X20, offsetof(NativeOutcome, has_instruction));
+            else
+                code_.STR(outcome_constant(out.report_pc, W16), X20,
+                    offsetof(NativeOutcome, pc));
+            if (out.reason)
+                code_.STR(outcome_constant(
+                    static_cast<std::uint32_t>(*out.reason), W16), X20,
+                    offsetof(NativeOutcome, reason));
+            static_assert(offsetof(NativeOutcome, svc) ==
+                offsetof(NativeOutcome, word) + sizeof(std::uint32_t));
+            const auto word = outcome_constant(out.word, W16);
+            const auto svc = outcome_constant(out.svc, W17);
+            code_.STP(word, svc, X20, offsetof(NativeOutcome, word));
+            code_.STR(outcome_constant(out.instruction ? 1U : 0U, W16),
+                X20, offsetof(NativeOutcome, has_instruction));
             // IT state is deterministic along the emitted path. Publish
             // it at exits instead of adding work to every guest operation.
             if (thumb_) {
