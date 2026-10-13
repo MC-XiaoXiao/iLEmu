@@ -4468,11 +4468,16 @@ void EmulatorSession::run()
                     jit_code_cache_governor.refresh_actual(
                         *runtime->jit_cache_reservation, actual);
                 }
+                const auto shared_cache = options.executor_factory.shared_cache();
+                const auto shared_bytes = shared_cache ? shared_cache->retained_bytes() : 0U;
                 const auto cache_budget_exceeded =
+                    shared_bytes > jit_code_cache_governor.total_budget() ||
                     jit_code_cache_governor.total_actual() >
-                    jit_code_cache_governor.total_budget();
+                        jit_code_cache_governor.total_budget() - shared_bytes;
                 const auto reclamation_needed =
                     memory_pressured || cache_budget_exceeded;
+                if (shared_cache)
+                    shared_cache->set_pressure_limited(reclamation_needed);
                 if (reclamation_needed && !pressure_reclamation_applied) {
                     // Pressure handling is ordered: cancel optional compile
                     // work first, then stop artifact writeback, then reclaim
@@ -5793,6 +5798,10 @@ void EmulatorSession::run()
                     ? std::numeric_limits<std::uint64_t>::max()
                     : host_resource_total + bytes;
         };
+        const auto shared_cache = options.executor_factory.shared_cache();
+        const auto shared_compilation_bytes =
+            shared_cache ? shared_cache->retained_bytes() : 0U;
+        add_host_resource(shared_compilation_bytes);
         add_host_resource(artifact_stats.resident_bytes);
         add_host_resource(artifact_stats.writeback_pending_bytes);
         add_host_resource(file_page_cache_bytes);
@@ -5800,6 +5809,7 @@ void EmulatorSession::run()
         output.line(
             "[perf-host-resources] jit-native-bytes=" +
             std::to_string(stopped_guest.jit_code_cache_bytes) +
+            " shared-compilation-bytes=" + std::to_string(shared_compilation_bytes) +
             " artifact-resident-bytes=" +
             std::to_string(artifact_stats.resident_bytes) +
             " artifact-writeback-bytes=" +

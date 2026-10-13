@@ -13,8 +13,9 @@
 namespace ilemu::execution {
 class Arm64Executor::Impl {
 public:
-    Impl(CodeAllocator& allocator, std::size_t budget)
-        : cache_(allocator, budget, stats_)
+    Impl(CodeAllocator& allocator, std::size_t budget,
+        std::shared_ptr<SharedCompilationCache> shared)
+        : cache_(allocator, budget, stats_, std::move(shared))
     {
     }
     void clear() { cache_.clear(); }
@@ -195,8 +196,9 @@ public:
     Arm64Statistics stats_;
     arm64::CodeCache cache_;
 };
-Arm64Executor::Arm64Executor(CodeAllocator& allocator, std::size_t budget)
-    : impl_(std::make_unique<Impl>(allocator, budget))
+Arm64Executor::Arm64Executor(CodeAllocator& allocator, std::size_t budget,
+    std::shared_ptr<SharedCompilationCache> shared)
+    : impl_(std::make_unique<Impl>(allocator, budget, std::move(shared)))
 {
 }
 Arm64Executor::~Arm64Executor() = default;

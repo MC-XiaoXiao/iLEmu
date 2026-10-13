@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "arm64/executor.hpp"
-#include "cycle_tier.hpp"
+#include "compilation_key.hpp"
+#include "arm64/shared_compilation_cache.hpp"
 #include "arm/architectural_stop.hpp"
 #include <list>
 #include <map>
@@ -16,6 +17,9 @@ public:
     struct Binding {
         std::shared_ptr<const CodeIdentity> identity;
         std::optional<std::uint64_t> generation;
+        // Borrowed only until the caller releases its live instruction lease.
+        // Query physical provenance lazily on a local miss, keeping hits cheap.
+        const InstructionLease* compilation_lease = nullptr;
     };
     struct Entry {
         std::unique_ptr<ExecutableCode> code;
@@ -30,7 +34,8 @@ public:
         InstructionRegion dependency;
         std::list<Recency>::iterator recency;
     };
-    CodeCache(CodeAllocator&, std::size_t, Arm64Statistics&);
+    CodeCache(CodeAllocator&, std::size_t, Arm64Statistics&,
+        std::shared_ptr<SharedCompilationCache> = {});
     // Recency nodes refer to stable domain storage in this owner.
     CodeCache(CodeCache&&) = delete;
     CodeCache& operator=(CodeCache&&) = delete;
@@ -48,10 +53,7 @@ public:
         std::uint64_t timing_limit = UINT64_MAX);
 
 private:
-    using Key = std::tuple<std::uint32_t, bool, bool, bool, unsigned, bool,
-        std::uint64_t, ThumbArithmeticProfile, VfpRegisterProfile,
-        ArmInstructionProfile, FloatingExceptionProfile, AluPcWriteProfile,
-        VfpInstructionProfile, IntegerDivideProfile>;
+    using Key = TranslationKey;
     using Entries = std::map<Key, Entry>;
     struct Domain {
         std::shared_ptr<const CodeIdentity> identity;
@@ -69,6 +71,7 @@ private:
     Domain* find(const Binding&);
     Domain& obtain(const Binding&);
     CodeAllocator& allocator_;
+    std::shared_ptr<SharedCompilationCache> shared_;
     std::size_t budget_;
     Arm64Statistics& stats_;
     Domain anonymous_;

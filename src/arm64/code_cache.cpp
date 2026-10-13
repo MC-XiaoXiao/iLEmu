@@ -7,8 +7,10 @@
 
 namespace ilemu::execution::arm64 {
 CodeCache::CodeCache(
-    CodeAllocator& allocator, std::size_t budget, Arm64Statistics& stats)
+    CodeAllocator& allocator, std::size_t budget, Arm64Statistics& stats,
+    std::shared_ptr<SharedCompilationCache> shared)
     : allocator_(allocator)
+    , shared_(std::move(shared))
     , budget_(budget)
     , stats_(stats)
 {
@@ -136,7 +138,8 @@ CodeCache::Domain& CodeCache::obtain(const Binding& binding)
 }
 CodeCache::Binding CodeCache::bind(const InstructionLease& lease)
 {
-    Binding binding { lease.identity(), lease.generation() };
+    Binding binding { lease.identity(), lease.generation(),
+        shared_ ? &lease : nullptr };
     if (!binding.generation) {
         // Losing the epoch revokes any previously persistent translations.
         if (binding.identity) {
@@ -148,6 +151,7 @@ CodeCache::Binding CodeCache::bind(const InstructionLease& lease)
             }
         }
         binding.identity.reset();
+        binding.compilation_lease = nullptr;
         invalidate(anonymous_);
     } else if (auto* domain = find(binding);
         domain && domain->generation != binding.generation) {
@@ -180,8 +184,23 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         }
     }
     const auto started = std::chrono::steady_clock::now();
-    const auto compiled = compile(
-        source, pc, step, timing_limit, big_endian, thumb, it_state, expansion);
+    const auto region = source.instruction_region(pc);
+    std::optional<CompilationKey> shared_key;
+    if (binding.compilation_lease) {
+        const auto provenance = binding.compilation_lease->compilation_identity();
+        if (provenance && provenance->semantics && provenance->page_count != 0 &&
+            provenance->page_count <= provenance->pages.size() &&
+            provenance->pages[0].storage != 0 &&
+            (provenance->page_count != 2 || provenance->pages[1].storage != 0))
+            shared_key = CompilationKey { *provenance, key, expansion,
+                region.begin, region.end };
+    }
+    auto plan = shared_key ? shared_->find(*shared_key) : nullptr;
+    const bool reused = bool(plan);
+    if (!plan)
+        plan = std::make_shared<const CompiledTrace>(compile(
+            source, pc, step, timing_limit, big_endian, thumb, it_state, expansion));
+    const auto& compiled = *plan;
     const auto bytes = std::as_bytes(std::span { compiled.words });
     if (bytes.size() > 256U * 1024U)
         throw std::length_error("ARM64 trace exceeds code limit");
@@ -230,6 +249,15 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     }
     domain.retained_bytes += accounted;
     stats_.retained_bytes += accounted;
+    // Publish and install successfully before making the plan reusable. Cache
+    // metadata allocation failure is optional and cannot fail guest execution.
+    if (shared_key && !reused) {
+        try { shared_->insert(*shared_key, std::move(plan)); }
+        catch (const std::bad_alloc&) { }
+    }
+    if (reused)
+        ++stats_.shared_compilation_hits;
+    // The observer still reports local publication cost on shared hits.
     ++stats_.compiled_regions;
     stats_.emitted_bytes += bytes.size();
     const auto elapsed = static_cast<std::uint64_t>(
