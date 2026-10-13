@@ -22,7 +22,7 @@ public:
         const InstructionLease* compilation_lease = nullptr;
     };
     struct Entry {
-        std::unique_ptr<ExecutableCode> code;
+        std::shared_ptr<const ExecutableCode> code;
         std::uint64_t maximum_ticks;
         std::optional<arm::ArchitecturalStop> stop;
         bool closed;

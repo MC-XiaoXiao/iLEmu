@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "code_cache.hpp"
 #include "compiler.hpp"
+#include "published_trace.hpp"
 #include <algorithm>
 #include <span>
 #include <stdexcept>
@@ -14,6 +15,8 @@ CodeCache::CodeCache(
     , budget_(budget)
     , stats_(stats)
 {
+    if (shared_ && !shared_->owns(allocator))
+        throw std::invalid_argument("shared code cache allocator mismatch");
     if (budget < Arm64Executor::minimum_cache_bytes)
         throw std::invalid_argument(
             "ARM64 code cache requires at least 256 KiB");
@@ -197,31 +200,36 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     }
     auto plan = shared_key ? shared_->find(*shared_key) : nullptr;
     const bool reused = bool(plan);
-    if (!plan)
-        plan = std::make_shared<const CompiledTrace>(compile(
-            source, pc, step, timing_limit, big_endian, thumb, it_state, expansion));
-    const auto& compiled = *plan;
-    const auto bytes = std::as_bytes(std::span { compiled.words });
-    if (bytes.size() > 256U * 1024U)
-        throw std::length_error("ARM64 trace exceeds code limit");
-    std::unique_ptr<ExecutableCode> allocation;
-    std::size_t capacity = 0;
-    if (!compiled.stop) {
-        allocation = allocator_.allocate(bytes.size());
-        if (!allocation)
-            throw std::bad_alloc { };
-        capacity = allocation->capacity();
+    if (!plan) {
+        const auto compiled = compile(source, pc, step, timing_limit,
+            big_endian, thumb, it_state, expansion);
+        const auto bytes = std::as_bytes(std::span { compiled.words });
+        if (bytes.size() > 256U * 1024U)
+            throw std::length_error("ARM64 trace exceeds code limit");
+        std::unique_ptr<ExecutableCode> allocation;
+        if (!compiled.stop) {
+            allocation = allocator_.allocate(bytes.size());
+            if (!allocation)
+                throw std::bad_alloc { };
+        }
+        const auto capacity = allocation ? allocation->capacity() : 0;
+        // Reserve domain overhead even if eviction will recreate this domain.
+        const auto overhead = entry_bytes + (binding.identity ? domain_bytes : 0);
+        if (capacity > budget_ - overhead)
+            throw std::length_error("ARM64 trace exceeds cache budget");
+        if (allocation) {
+            allocation->publish(bytes);
+            if (!allocation->entry())
+                throw std::runtime_error("ARM64 code was not published");
+        }
+        plan = std::make_shared<const PublishedTrace>(PublishedTrace {
+            static_cast<const TraceMetadata&>(compiled),
+            std::move(allocation), bytes.size() });
     }
-    // Reserve domain overhead even if eviction will recreate this domain.
     const auto overhead = entry_bytes + (binding.identity ? domain_bytes : 0);
-    if (capacity > budget_ - overhead)
+    if (plan->capacity() > budget_ - overhead)
         throw std::length_error("ARM64 trace exceeds cache budget");
-    const auto accounted = capacity + entry_bytes;
-    if (allocation) {
-        allocation->publish(bytes);
-        if (!allocation->entry())
-            throw std::runtime_error("ARM64 code was not published");
-    }
+    const auto accounted = plan->capacity() + entry_bytes;
     // Entry lookup happens between native invocations under a fresh code
     // lease. Publish successfully before replacing the cold allocation.
     if (auto* domain = find(binding)) {
@@ -234,10 +242,10 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     trim(binding, accounted);
     auto& domain = obtain(binding);
     auto [it, inserted] = domain.entries.emplace(key,
-        Entry { std::move(allocation), compiled.maximum_ticks, compiled.stop,
-            compiled.closed, compiled.accesses_memory, compiled.ends_with_stop,
-            compiled.first_instruction, accounted,
-            CycleTier { compiled.closed, expansion == CycleExpansion::Hot },
+        Entry { plan->code, plan->maximum_ticks, plan->stop,
+            plan->closed, plan->accesses_memory, plan->ends_with_stop,
+            plan->first_instruction, accounted,
+            CycleTier { plan->closed, expansion == CycleExpansion::Hot },
             source.instruction_region(pc), { } });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");
@@ -252,14 +260,14 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     // Publish and install successfully before making the plan reusable. Cache
     // metadata allocation failure is optional and cannot fail guest execution.
     if (shared_key && !reused) {
-        try { shared_->insert(*shared_key, std::move(plan)); }
+        try { shared_->insert(*shared_key, plan); }
         catch (const std::bad_alloc&) { }
     }
     if (reused)
         ++stats_.shared_compilation_hits;
-    // The observer still reports local publication cost on shared hits.
+    // Shared hits report their actual lookup and local installation cost.
     ++stats_.compiled_regions;
-    stats_.emitted_bytes += bytes.size();
+    stats_.emitted_bytes += plan->emitted_bytes;
     const auto elapsed = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - started)

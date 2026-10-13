@@ -20,7 +20,7 @@ execution::ExecutorFactory make_executor_factory(std::string_view backend)
             throw std::runtime_error("ARM64 executor requires an AArch64 host");
         std::shared_ptr<execution::CodeAllocator> allocator =
             host::make_code_allocator();
-        auto shared = std::make_shared<execution::SharedCompilationCache>();
+        auto shared = std::make_shared<execution::SharedCompilationCache>(allocator);
         return { [allocator = std::move(allocator), shared](std::size_t bytes) {
             return std::make_unique<execution::Arm64Executor>(
                 *allocator, bytes, shared);
