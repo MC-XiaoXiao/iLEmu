@@ -7,6 +7,7 @@
 
 #include "foundation/arm_cpu_model.hpp"
 
+#include "execution/run.hpp"
 #include <array>
 #include <stdexcept>
 
@@ -107,7 +108,12 @@ namespace {
             return lookup_ticks(instruction, arm1176_thumb16_rules);
         }
 
+        std::shared_ptr<const execution::CodeIdentity>
+        compilation_identity() const noexcept override { return identity_; }
+
     private:
+        const std::shared_ptr<const execution::CodeIdentity> identity_ =
+            std::make_shared<execution::CodeIdentity>();
         std::uint32_t clock_hz_;
     };
 
@@ -172,7 +178,12 @@ namespace {
             return lookup_ticks(instruction, arm1176_thumb16_rules);
         }
 
+        std::shared_ptr<const execution::CodeIdentity>
+        compilation_identity() const noexcept override { return identity_; }
+
     private:
+        const std::shared_ptr<const execution::CodeIdentity> identity_ =
+            std::make_shared<execution::CodeIdentity>();
         ArmCpuModelKind kind_;
         std::uint32_t clock_hz_;
     };

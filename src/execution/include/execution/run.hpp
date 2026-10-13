@@ -5,6 +5,8 @@
 #include "execution/instruction_profile.hpp"
 #include "execution/memory.hpp"
 
+#include <array>
+#include <compare>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -71,6 +73,22 @@ struct RunResult {
 // objects. Rotate the token if generation values can restart or be reused.
 struct CodeIdentity final { };
 
+// Opt-in cross-source translation provenance. Equal identities must describe
+// identical instruction bytes, fetch support and timing for the entire leased
+// region (including a straddling entry). Tokens own no guest storage or source.
+// Each physical storage id is globally unique and never reused; writes and COW
+// must change its stamp. The semantic token names immutable timing policy.
+struct CompilationIdentity {
+    struct PageStamp {
+        std::uint64_t storage = 0, write = 0, shared_write = 0;
+        auto operator<=>(const PageStamp&) const = default;
+    };
+    std::shared_ptr<const CodeIdentity> semantics;
+    std::array<PageStamp, 2> pages;
+    unsigned page_count = 0;
+    auto operator<=>(const CompilationIdentity&) const = default;
+};
+
 // A lease excludes external code writes and mapping/protection changes.
 // Owner checked accesses may change code/mappings, but must end native
 // execution before doing so and reacquire the lease before any subsequent
@@ -87,6 +105,10 @@ public:
     {
         return { };
     }
+    // Unknown/custom sources remain local unless they explicitly supply this
+    // stronger contract. Query only after all entry fetches have been prepared.
+    virtual std::optional<CompilationIdentity>
+    compilation_identity() const noexcept { return { }; }
     virtual std::optional<std::uint64_t> generation() const noexcept
     {
         return { };

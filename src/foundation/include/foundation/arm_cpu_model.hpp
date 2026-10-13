@@ -11,6 +11,8 @@
 #include <memory>
 #include "execution/instruction_profile.hpp"
 
+namespace ilemu::execution { struct CodeIdentity; }
+
 namespace ilemu {
 
 inline constexpr std::uint32_t arm_mach_cpu_type = 12U;
@@ -79,6 +81,9 @@ enum class ArmUnpredictableInstructionPolicy : std::uint8_t {
 class ArmCpuModel {
 public:
     virtual ~ArmCpuModel() = default;
+    // Custom models may have dynamic timing; sharing is disabled by default.
+    [[nodiscard]] virtual std::shared_ptr<const execution::CodeIdentity>
+    compilation_identity() const noexcept { return {}; }
 
     [[nodiscard]] virtual execution::IntegerDivideProfile
     integer_divide_profile() const noexcept

@@ -62,6 +62,21 @@ public:
         {
             return view_.identity;
         }
+        std::optional<execution::CompilationIdentity>
+        compilation_identity() const noexcept override
+        {
+            auto semantics = owner_.model_.compilation_identity();
+            if (count_ == 0 || !semantics)
+                return {};
+            execution::CompilationIdentity result { std::move(semantics), {}, count_ };
+            for (unsigned i = 0; i < count_; ++i) {
+                const auto stamp = pages_[i].stamp();
+                if (stamp.storage == 0)
+                    return {};
+                result.pages[i] = { stamp.storage, stamp.write, stamp.shared_write };
+            }
+            return result;
+        }
         std::optional<std::uint64_t> generation() const noexcept override
         {
             if (count_ == 0)
