@@ -700,31 +700,13 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         pending_message.voucher_right.reset();
     }
 
-    // Bootstrap lookup bookkeeping belongs to the launchd reply, not the
-    // outgoing request. The destination of this queued response is the global
-    // reply-port object recorded with the lookup request; the optional
-    // reply_object field describes the reply right carried by the message and
-    // is not the lookup destination.
-    if (pending_message.sender_pid == 1U) {
-        const auto service_resolution =
-            graphics_services_input::record_bootstrap_reply_locked(
-                *shared_state_, pending_message.destination,
-                pending_message.port_transfers, process_.pid);
-        if (service_resolution.object != 0 &&
-            (service_resolution.application_event_port ||
-                service_resolution.service_name ==
-                    graphics_services_input::system_event_service)) {
-            output_.write(
-                "[input] resolved service=" + service_resolution.service_name +
-                " object=" + std::to_string(service_resolution.object) +
-                " flushed=" +
-                std::to_string(service_resolution.flushed_events) +
-                (service_resolution.application_event_port
-                        ? " application-event-port"
-                        : "") +
-                "\n");
-        }
-    }
+    // Descriptor copyout consumes the semantic rights of a committed receive.
+    // Retain bootstrap metadata until the receiver owns those rights and the
+    // reply has reached its guest buffer.
+    const auto bootstrap_reply_object = pending_message.destination;
+    const auto bootstrap_transfers = pending_message.sender_pid == 1U
+        ? pending_message.port_transfers
+        : std::vector<KernelSharedState::MachMessage::PortTransfer> { };
 
     if ((send_bits & 0x80000000U) != 0 && pending_message.bytes.size() >= 28U) {
         const auto descriptor_count =
@@ -986,6 +968,29 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             MemoryPermission::Write) &&
         memory_.copy_in(receive.message_address, received->bytes);
     if (copied) {
+        // Publish bootstrap services after successful copyout. In particular,
+        // pending input must use the process that now owns the receive right.
+        if (delivered_sender_pid == 1U) {
+            const auto service_resolution =
+                graphics_services_input::record_bootstrap_reply_locked(
+                    *shared_state_, bootstrap_reply_object,
+                    bootstrap_transfers, process_.pid);
+            if (service_resolution.object != 0 &&
+                (service_resolution.application_event_port ||
+                    service_resolution.service_name ==
+                        graphics_services_input::system_event_service)) {
+                output_.write(
+                    "[input] resolved service=" + service_resolution.service_name +
+                    " object=" + std::to_string(service_resolution.object) +
+                    " flushed=" +
+                    std::to_string(service_resolution.flushed_events) +
+                    (service_resolution.application_event_port
+                            ? " application-event-port"
+                            : "") +
+                    "\n");
+            }
+        }
+
         if (delivered_vsync_connection) {
             shared_state_->observe_display_vsync_receive_locked(process_.pid,
                 *delivered_vsync_connection, delivered_vsync_generation,
