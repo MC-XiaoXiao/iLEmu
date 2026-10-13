@@ -126,12 +126,26 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             switch (registers[1]) {
             case 0x40086440U: // DKIOCGETMAXBLOCKCOUNTREAD
             case 0x40086441U: // DKIOCGETMAXBLOCKCOUNTWRITE
+                // The virtual device shares the BSD I/O request limit.
+                if (!memory_.write64(registers[2],
+                        bsd_support::maximum_io / 512U)) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                } else {
+                    bsd_success(cpu, 0);
+                }
+                return;
+            case 0x40086446U: // DKIOCGETMAXBYTECOUNTREAD
+            case 0x40086447U: // DKIOCGETMAXBYTECOUNTWRITE
+                if (!memory_.write64(registers[2], bsd_support::maximum_io)) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                } else {
+                    bsd_success(cpu, 0);
+                }
+                return;
             case 0x40086442U: // DKIOCGETMAXSEGMENTCOUNTREAD
             case 0x40086443U: // DKIOCGETMAXSEGMENTCOUNTWRITE
             case 0x40086444U: // DKIOCGETMAXSEGMENTBYTECOUNTREAD
             case 0x40086445U: // DKIOCGETMAXSEGMENTBYTECOUNTWRITE
-            case 0x40086446U: // DKIOCGETMAXBYTECOUNTREAD
-            case 0x40086447U: // DKIOCGETMAXBYTECOUNTWRITE
             case 0x4008644aU: // DKIOCGETMINSEGMENTALIGNMENTBYTECOUNT
             case 0x4008644bU: // DKIOCGETMAXSEGMENTADDRESSABLEBITCOUNT
                 // Like IOMediaBSDClient, return zero when the backing device
