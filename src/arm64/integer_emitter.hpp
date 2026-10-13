@@ -47,6 +47,7 @@ private:
         bool round;
     };
     unsigned parallel_source(unsigned reg, bool exchange, unsigned protected_mask);
+    bool dsp_multiply(const arm::Instruction&);
     void merge_nz();
     oaknut::WReg lhs(const arm::Instruction&, std::uint32_t pc);
     void carry_from(oaknut::WReg value, unsigned bit);

@@ -35,13 +35,35 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
         case 0xfb100010U:
         case 0xfb100020U:
         case 0xfb100030U:
-            if (((word >> 12U) & 15U) != 15U)
-                return false; // SMLAxy has a separate accumulator/Q contract.
             operation = Operation::Halfword;
             rd = (word >> 8U) & 15U;
+            rn = (word >> 12U) & 15U;
+            accumulate = rn != 15;
+            if (!accumulate)
+                rn = 0;
             out.shift_amount = ((word >> 5U) & 1U) |
                 (((word >> 4U) & 1U) << 1U);
             sign = true;
+            break;
+        case 0xfb300000U:
+        case 0xfb300010U:
+            operation = Operation::WordHalfword;
+            rd = (word >> 8U) & 15U;
+            rn = (word >> 12U) & 15U;
+            accumulate = rn != 15;
+            if (!accumulate)
+                rn = 0;
+            sign = true;
+            out.shift_amount = ((word >> 4U) & 1U) << 1U;
+            break;
+        case 0xfbc00080U:
+        case 0xfbc00090U:
+        case 0xfbc000a0U:
+        case 0xfbc000b0U:
+            operation = Operation::HalfwordLong;
+            sign = accumulate = true;
+            out.shift_amount = ((word >> 5U) & 1U) |
+                (((word >> 4U) & 1U) << 1U);
             break;
         case 0xfb800000U: sign = true; operation = Operation::Long; break;
         case 0xfba00000U: operation = Operation::Long; break;
@@ -64,7 +86,8 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
             break;
         default: return false;
         }
-        if (operation == Operation::Long || operation == Operation::DualAccumulateLong) {
+        if (operation == Operation::Long || operation == Operation::DualAccumulateLong ||
+            operation == Operation::HalfwordLong) {
             rd = (word >> 12U) & 15U;
             rn = (word >> 8U) & 15U;
         }
@@ -83,6 +106,37 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
         out.shift_amount = ((word >> 5U) & 1U) |
             (((word >> 6U) & 1U) << 1U);
         sign = true;
+    } else if ((word & 0x0ff00090U) == 0x01000080U ||
+               (word & 0x0ff00090U) == 0x01400080U) {
+        if (out.condition == 15)
+            return false;
+        operation = (word & 0x00400000U) != 0
+            ? Operation::HalfwordLong : Operation::Halfword;
+        rd = (word >> 16U) & 15U;
+        rn = (word >> 12U) & 15U;
+        if (operation == Operation::HalfwordLong) {
+            const auto low = rn;
+            rn = rd;
+            rd = low;
+        }
+        rm = word & 15U;
+        rs = (word >> 8U) & 15U;
+        out.shift_amount = ((word >> 5U) & 1U) |
+            (((word >> 6U) & 1U) << 1U);
+        sign = accumulate = true;
+    } else if ((word & 0x0ff00090U) == 0x01200080U) {
+        if (out.condition == 15)
+            return false;
+        operation = Operation::WordHalfword;
+        rd = (word >> 16U) & 15U;
+        rn = (word >> 12U) & 15U;
+        rm = word & 15U;
+        rs = (word >> 8U) & 15U;
+        accumulate = (word & 0x20U) == 0;
+        if (!accumulate && rn != 0)
+            return true;
+        sign = true;
+        out.shift_amount = ((word >> 6U) & 1U) << 1U;
     } else if ((word & 0x0ff000d0U) == 0x07500010U ||
                (word & 0x0ff000d0U) == 0x075000d0U) {
         if (out.condition == 15)
@@ -130,7 +184,8 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
             }
         }
     }
-    const bool pair = operation == Operation::Long || operation == Operation::DualAccumulateLong;
+    const bool pair = operation == Operation::Long || operation == Operation::DualAccumulateLong ||
+        operation == Operation::HalfwordLong;
     if (rd == 15 || rn == 15 || rm == 15 || rs == 15 || (pair && rd == rn))
         return true;
     out.kind = InstructionKind::Multiply;

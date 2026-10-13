@@ -434,6 +434,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                     state.registers[inst.rn] = static_cast<std::uint32_t>(value >> 32U);
                 if (inst.set_flags)
                     state.cpsr = arm::multiply_nz(inst, state.cpsr, value);
+                else if (inst.accumulate && (inst.opcode ==
+                    static_cast<unsigned>(arm::MultiplyOperation::WordHalfword) ||
+                    inst.opcode == static_cast<unsigned>(arm::MultiplyOperation::Halfword)))
+                    state.cpsr = arm::multiply_q(state.cpsr, value);
                 break;
             }
             case arm::InstructionKind::Branch:
