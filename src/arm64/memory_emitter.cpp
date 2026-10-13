@@ -46,7 +46,7 @@ void MemoryEmitter::store_value(const arm::Instruction& inst, std::uint32_t pc)
     if (inst.rd == 15) {
         code_.LDR(
             W17, X20, memory_offset + offsetof(DirectMemory, pc_store_offset));
-        Label eight, done;
+        Label eight { label_memory() }, done { label_memory() };
         code_.TBZ(W17, 2, eight);
         code_.MOV(W17, pc + 12U);
         code_.B(done);
@@ -64,6 +64,14 @@ void MemoryEmitter::endian(unsigned size, WReg value)
         code_.REV16(value, value);
     else
         code_.REV(value, value);
+}
+std::pmr::memory_resource& MemoryEmitter::label_memory()
+{
+    if (!labels_)
+        labels_.emplace(std::pmr::pool_options {
+            .max_blocks_per_chunk = 8, .largest_required_pool_block = 256 },
+            pending_.get_allocator().resource());
+    return *labels_;
 }
 std::optional<AddressCache::Key> MemoryEmitter::address(
     const arm::Instruction& inst, std::uint32_t pc)
@@ -137,7 +145,7 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
             return;
         }
         if (inst.rd == 15) {
-            Label valid;
+            Label valid { label_memory() };
             code_.TBNZ(W17, 0, valid);
             code_.TBNZ(W17, 1, exits.get(ExitKind::Unsupported));
             code_.l(valid);
@@ -180,7 +188,8 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         dependent_read(inst, pc, cost, exits);
         return;
     }
-    Label checked, done;
+    auto& labels = label_memory();
+    Label checked { labels }, done { labels };
     const bool dual = inst.kind == arm::InstructionKind::DualTransfer;
     const auto length = dual ? 8U : inst.access_size;
     if (key && inst.condition == 14)
@@ -203,7 +212,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         code_.LDR(
             W21, X20, memory_offset + offsetof(DirectMemory, pc_store_offset));
         code_.EOR(W17, W21, 8);
-        Label valid;
+        Label valid { labels };
         code_.CBZ(W17, valid);
         code_.EOR(W17, W21, 12);
         code_.CBNZ(W17, exits.get(ExitKind::Unsupported));
@@ -216,7 +225,7 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     }
     code_.CBZ(table, checked);
     if (inst.access_size != 1) {
-        Label unaligned_allowed;
+        Label unaligned_allowed { labels };
         code_.LDR(W21, X20,
             memory_offset + offsetof(DirectMemory, permits_unaligned));
         code_.CBNZ(W21, unaligned_allowed);
@@ -283,7 +292,7 @@ void MemoryEmitter::dependent_read(const arm::Instruction& inst,
     // Aligned scalars cannot cross a page. Keep ordinary unaligned reads
     // inline too; only a checked transaction leaves the native body.
     if (inst.access_size != 1) {
-        Label aligned;
+        Label aligned { label_memory() };
         code_.AND(W17, address, inst.access_size - 1U);
         code_.CBZ(W17, aligned);
         code_.LDR(W17, X20,

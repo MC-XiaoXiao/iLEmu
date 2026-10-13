@@ -55,12 +55,16 @@ private:
     };
     void store_value(const arm::Instruction&, std::uint32_t pc);
     void endian(unsigned size, oaknut::WReg value);
+    std::pmr::memory_resource& label_memory();
     oaknut::VectorCodeGenerator& code_;
     IntegerEmitter& integer_;
     bool big_endian_;
     AddressCache addresses_;
     ReadPageCache read_pages_;
     bool fast_reads_, read_table_guarded_ = false;
+    // Reuse short-lived guard fixups within this compile. Laziness keeps
+    // traces without scalar guards free of pool setup and allocation.
+    std::optional<std::pmr::unsynchronized_pool_resource> labels_;
     std::pmr::list<ReadExit> pending_;
 };
 }
