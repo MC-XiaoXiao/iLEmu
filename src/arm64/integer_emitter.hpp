@@ -27,6 +27,7 @@ public:
     void pack_halfword(const arm::Instruction&);
     void transform(const arm::Instruction&);
     void parallel_saturating(const arm::Instruction&);
+    void parallel_arithmetic(const arm::Instruction&);
     // Scratch SIMD values are reusable only along unconditional adjacent ops.
     void clear_parallel_values() { parallel_values_.fill(std::nullopt); }
     void clear_multiply_addend() { multiply_addend_.reset(); }

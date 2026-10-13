@@ -12,6 +12,7 @@
 #include "swap_decode.hpp"
 #include "transform_decode.hpp"
 #include "parallel_saturating_decode.hpp"
+#include "parallel_arithmetic_decode.hpp"
 #include "core_vector_move.hpp"
 #include "vfp_multiple.hpp"
 #include "vfp_scalar.hpp"
@@ -67,7 +68,8 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         if (decode_multiply(out, word, false, architecture) ||
             decode_integer_divide(out, word, false, architecture, division) ||
             decode_integer_transform(out, word, false, architecture) ||
-            decode_parallel_saturating(out, word, false, architecture))
+            decode_parallel_saturating(out, word, false, architecture) ||
+            decode_parallel_arithmetic(out, word, false, architecture))
             return out;
         break;
     case 6:

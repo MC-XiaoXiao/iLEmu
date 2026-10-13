@@ -40,7 +40,8 @@ enum class InstructionKind {
     VectorImmediate,
     ParallelSaturating,
     IntegerDivide,
-    VectorFloatingArithmetic
+    VectorFloatingArithmetic,
+    ParallelArithmetic
 };
 enum class SystemOperation {
     ThreadPointerReadWrite,

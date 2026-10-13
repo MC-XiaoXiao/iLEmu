@@ -383,6 +383,7 @@ namespace {
                 inst.kind == arm::InstructionKind::PackHalfword ||
                 inst.kind == arm::InstructionKind::IntegerTransform ||
                 inst.kind == arm::InstructionKind::ParallelSaturating ||
+                inst.kind == arm::InstructionKind::ParallelArithmetic ||
                 inst.kind == arm::InstructionKind::WideImmediate ||
                 inst.kind == arm::InstructionKind::Swap ||
                 ((inst.kind == arm::InstructionKind::Transfer ||
@@ -896,6 +897,9 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                     break;
                 case arm::InstructionKind::PackHalfword:
                     emit.integer().pack_halfword(inst);
+                    break;
+                case arm::InstructionKind::ParallelArithmetic:
+                    emit.integer().parallel_arithmetic(inst);
                     break;
                 case arm::InstructionKind::ParallelSaturating:
                     emit.parallel_saturating(inst);
