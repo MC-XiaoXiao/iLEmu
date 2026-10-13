@@ -6,6 +6,9 @@
 #include <array>
 #include <optional>
 namespace ilemu::execution::arm64 {
+// Carry-only lowering may clobber N/Z/V. The trace must prove that all three
+// are overwritten before any read, exit or other observable boundary.
+enum class LogicalFlagOutput { All, CarryOnly };
 // Integer instruction emission is independent of trace exits and scheduling.
 class IntegerEmitter {
 public:
@@ -17,7 +20,8 @@ public:
     // pc_value is the encoding's architectural PC operand, including alignment.
     oaknut::WReg reg(
         unsigned index, std::uint32_t pc_value, oaknut::WReg scratch);
-    void alu(const arm::Instruction&, std::uint32_t pc);
+    void alu(const arm::Instruction&, std::uint32_t pc,
+        LogicalFlagOutput = LogicalFlagOutput::All);
     void address_offset(const arm::Instruction& inst, std::uint32_t pc)
     {
         shifter(
@@ -54,8 +58,10 @@ private:
     bool dual_halfword_multiply(const arm::Instruction&);
     void merge_nz();
     oaknut::WReg lhs(const arm::Instruction&, std::uint32_t pc);
-    void carry_from(oaknut::WReg value, unsigned bit);
-    void shifter(const arm::Instruction&, std::uint32_t pc, bool carry_output);
+    void carry_from(oaknut::WReg value, unsigned bit,
+        LogicalFlagOutput = LogicalFlagOutput::All);
+    void shifter(const arm::Instruction&, std::uint32_t pc, bool carry_output,
+        LogicalFlagOutput = LogicalFlagOutput::All);
     bool shifted_alu(const arm::Instruction&, std::uint32_t pc);
     void bounded_shift(const arm::Instruction&, oaknut::WReg destination,
         oaknut::WReg source);

@@ -33,8 +33,18 @@ WReg IntegerEmitter::lhs(const arm::Instruction& inst, std::uint32_t pc)
     // materializing that value would only add a dead host instruction.
     return inst.opcode == 13 || inst.opcode == 15 ? WZR : reg(inst.rn, pc, W15);
 }
-void IntegerEmitter::carry_from(WReg value, unsigned bit)
+void IntegerEmitter::carry_from(
+    WReg value, unsigned bit, LogicalFlagOutput flags)
 {
+    if (flags == LogicalFlagOutput::CarryOnly) {
+        if (bit == 31)
+            code_.ADDS(WZR, value, value);
+        else {
+            code_.UBFX(W15, value, bit, 1);
+            code_.CMP(W15, 1);
+        }
+        return;
+    }
     if (bit != 0)
         code_.LSR(W15, value, bit);
     else
@@ -60,14 +70,15 @@ void IntegerEmitter::bounded_shift(
     }
 }
 void IntegerEmitter::shifter(
-    const arm::Instruction& inst, std::uint32_t pc, bool carry_output)
+    const arm::Instruction& inst, std::uint32_t pc, bool carry_output,
+    LogicalFlagOutput flags)
 {
-    if (carry_output)
+    if (carry_output && flags == LogicalFlagOutput::All)
         code_.MRS(X21, SystemReg::NZCV);
     if (inst.immediate_operand) {
         code_.MOV(W16, inst.immediate);
         if (carry_output && inst.shift_amount != 0)
-            carry_from(W16, 31);
+            carry_from(W16, 31, flags);
         return;
     }
     // Register-shift forms already reject architectural PC operands.
@@ -80,13 +91,13 @@ void IntegerEmitter::shifter(
                 code_.MOV(W16, rm);
             else {
                 if (carry_output)
-                    carry_from(rm, 32 - amount);
+                    carry_from(rm, 32 - amount, flags);
                 code_.LSL(W16, rm, amount);
             }
             break;
         case arm::ShiftKind::Lsr:
             if (carry_output)
-                carry_from(rm, amount == 0 ? 31 : amount - 1);
+                carry_from(rm, amount == 0 ? 31 : amount - 1, flags);
             if (amount == 0)
                 code_.MOV(W16, 0);
             else
@@ -94,22 +105,25 @@ void IntegerEmitter::shifter(
             break;
         case arm::ShiftKind::Asr:
             if (carry_output)
-                carry_from(rm, amount == 0 ? 31 : amount - 1);
+                carry_from(rm, amount == 0 ? 31 : amount - 1, flags);
             code_.ASR(W16, rm, amount == 0 ? 31 : amount);
             break;
         case arm::ShiftKind::Ror:
             if (amount == 0) {
-                if (!carry_output)
-                    code_.MRS(X21, SystemReg::NZCV);
-                code_.LSR(W17, W21,
-                    29); // Preserve incoming C before replacing it.
+                if (flags == LogicalFlagOutput::CarryOnly)
+                    code_.CSET(W17, Cond::CS);
+                else {
+                    if (!carry_output)
+                        code_.MRS(X21, SystemReg::NZCV);
+                    code_.LSR(W17, W21, 29);
+                } // Preserve incoming C before replacing it.
                 if (carry_output)
-                    carry_from(rm, 0);
+                    carry_from(rm, 0, flags);
                 code_.LSR(W16, rm, 1);
                 code_.BFI(W16, W17, 31, 1);
             } else {
                 if (carry_output)
-                    carry_from(rm, amount - 1);
+                    carry_from(rm, amount - 1, flags);
                 code_.ROR(W16, rm, amount);
             }
             break;
@@ -132,17 +146,28 @@ void IntegerEmitter::shifter(
     if (inst.shift == arm::ShiftKind::Ror) {
         code_.RORV(W16, rm, W17);
         if (carry_output)
-            carry_from(W16, 31);
+            carry_from(W16, 31, flags);
     } else {
         code_.LSR(W15, W17, 5);
         code_.CBNZ(W15, large);
         if (carry_output) {
-            if (inst.shift == arm::ShiftKind::Lsl)
-                code_.NEG(W15, W17);
-            else
-                code_.SUB(W15, W17, 1);
-            code_.LSRV(W15, rm, W15);
-            code_.BFI(X21, X15, 29, 1);
+            if (flags == LogicalFlagOutput::CarryOnly) {
+                // For counts 1..31, move the guest carry bit to bit 63.
+                // Doubling publishes that bit as native C; N/Z/V are dead.
+                if (inst.shift == arm::ShiftKind::Lsl)
+                    code_.ADD(W15, W17, 31);
+                else
+                    code_.NEG(W15, W17);
+                code_.LSLV(X15, rm.toX(), X15);
+                code_.ADDS(XZR, X15, X15);
+            } else {
+                if (inst.shift == arm::ShiftKind::Lsl)
+                    code_.NEG(W15, W17);
+                else
+                    code_.SUB(W15, W17, 1);
+                code_.LSRV(W15, rm, W15);
+                code_.BFI(X21, X15, 29, 1);
+            }
         }
         switch (inst.shift) {
         case arm::ShiftKind::Lsl:
@@ -162,16 +187,19 @@ void IntegerEmitter::shifter(
         if (inst.shift == arm::ShiftKind::Asr) {
             code_.ASR(W16, rm, 31);
             if (carry_output)
-                carry_from(rm, 31);
+                carry_from(rm, 31, flags);
         } else {
             code_.MOV(W16, 0);
             if (carry_output) {
                 code_.EOR(W15, W17, 32);
                 code_.CBNZ(W15, carry_zero);
-                carry_from(rm, inst.shift == arm::ShiftKind::Lsl ? 0 : 31);
+                carry_from(rm, inst.shift == arm::ShiftKind::Lsl ? 0 : 31, flags);
                 code_.B(done);
                 code_.l(carry_zero);
-                code_.BFI(X21, XZR, 29, 1);
+                if (flags == LogicalFlagOutput::CarryOnly)
+                    code_.CMN(WZR, WZR, AddSubShift::LSL, 0);
+                else
+                    code_.BFI(X21, XZR, 29, 1);
             }
         }
     }
@@ -257,7 +285,8 @@ bool IntegerEmitter::shifted_alu(const arm::Instruction& inst, std::uint32_t pc)
     return true;
 }
 
-void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
+void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc,
+    LogicalFlagOutput flags)
 {
     // The compiler may prove a test/compare's only result (NZCV) dead.
     if (!inst.set_flags && inst.opcode >= 8 && inst.opcode <= 11)
@@ -305,7 +334,7 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
     if (simple_operand)
         b = reg(inst.rm, pc, W16);
     else
-        shifter(inst, pc, logical && inst.set_flags);
+        shifter(inst, pc, logical && inst.set_flags, flags);
     const auto a = lhs(inst, pc);
     switch (inst.opcode) {
     case 0:
@@ -370,7 +399,7 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc)
         code_.ORN(d, a, b);
         break;
     }
-    if (logical && inst.set_flags) {
+    if (logical && inst.set_flags && flags == LogicalFlagOutput::All) {
         const auto value = d.index() == 31 ? W15 : d;
         code_.ANDS(WZR, value, value);
         merge_nz();

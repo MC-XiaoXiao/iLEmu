@@ -800,11 +800,19 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
         // A normal entry has no poll inside a proven register-only segment.
         // A cycle's final linear instruction also publishes its flags. Its
         // next producer belongs to a later group and may never execute.
+        auto logical_flags = LogicalFlagOutput::All;
         if (!single_step && !straddles && !closes_natural_cycle &&
-            inst.set_flags &&
-            window.flags_dead(inst, next_pc, next_it, limit - n - 1U,
-                maximum_ticks - out.maximum_ticks))
-            inst.set_flags = false;
+            inst.set_flags) {
+            if (window.flags_dead(inst, next_pc, next_it, limit - n - 1U,
+                    maximum_ticks - out.maximum_ticks))
+                inst.set_flags = false;
+            else if (inst.kind == arm::InstructionKind::DataProcessing &&
+                (inst.opcode == 0 || inst.opcode == 1 || inst.opcode == 8 ||
+                    inst.opcode == 9 || inst.opcode >= 12) &&
+                window.flags_dead(0xdU, next_pc, next_it, limit - n - 1U,
+                    maximum_ticks - out.maximum_ticks, 0))
+                logical_flags = LogicalFlagOutput::CarryOnly;
+        }
         bool dynamic_end = false;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
             if (!fast_indirect) {
@@ -972,7 +980,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                             emit.alu_branch(
                                 inst, pc, out.maximum_ticks, alu_interworks);
                     } else
-                        emit.integer().alu(inst, pc);
+                        emit.integer().alu(inst, pc, logical_flags);
                     break;
                 default:
                     break;
