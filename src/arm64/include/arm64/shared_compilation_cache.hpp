@@ -12,7 +12,7 @@ namespace arm64 { class CodeCache; struct CompilationKey; struct PublishedTrace;
 class SharedCompilationCache final : public SharedCacheResource {
 public:
     explicit SharedCompilationCache(std::shared_ptr<CodeAllocator>,
-        std::size_t budget = 16U * 1024U * 1024U);
+        std::size_t budget = 64U * 1024U * 1024U);
     ~SharedCompilationCache() override;
     std::uint64_t retained_bytes() const noexcept override;
     void set_pressure_limited(bool) override;
