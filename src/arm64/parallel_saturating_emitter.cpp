@@ -30,26 +30,44 @@ void IntegerEmitter::parallel_saturating(const arm::Instruction& inst)
     if (inst.condition != 14)
         clear_parallel_values();
     const auto operation = static_cast<Op>(inst.opcode);
-    const bool exchange = operation == Op::UnsignedAddSubtract ||
-                          operation == Op::UnsignedSubtractAdd;
+    const auto layout = arm::parallel_saturating_layout(operation);
+    const bool signed_values = operation >= Op::SignedAdd16;
     // V0..V2 are existing trace scratch registers, independent of guest banks.
     // GPR results stay current at every paid instruction; no deferred writes.
     const auto first = parallel_source(inst.rn, false, 0);
-    const auto second = parallel_source(inst.rm, exchange, 1U << first);
+    const auto second = parallel_source(inst.rm, layout.exchange, 1U << first);
     const DReg a { static_cast<int>(first) }, b { static_cast<int>(second) };
     switch (operation) {
+    case Op::SignedAdd8:
     case Op::UnsignedAdd8:
-        code_.UQADD(a.B8(), a.B8(), b.B8());
+        if (signed_values)
+            code_.SQADD(a.B8(), a.B8(), b.B8());
+        else
+            code_.UQADD(a.B8(), a.B8(), b.B8());
         break;
+    case Op::SignedSubtract8:
     case Op::UnsignedSubtract8:
-        code_.UQSUB(a.B8(), a.B8(), b.B8());
+        if (signed_values)
+            code_.SQSUB(a.B8(), a.B8(), b.B8());
+        else
+            code_.UQSUB(a.B8(), a.B8(), b.B8());
         break;
+    case Op::SignedAdd16:
     case Op::UnsignedAdd16:
-        code_.UQADD(a.H4(), a.H4(), b.H4());
+        if (signed_values)
+            code_.SQADD(a.H4(), a.H4(), b.H4());
+        else
+            code_.UQADD(a.H4(), a.H4(), b.H4());
         break;
+    case Op::SignedSubtract16:
     case Op::UnsignedSubtract16:
-        code_.UQSUB(a.H4(), a.H4(), b.H4());
+        if (signed_values)
+            code_.SQSUB(a.H4(), a.H4(), b.H4());
+        else
+            code_.UQSUB(a.H4(), a.H4(), b.H4());
         break;
+    case Op::SignedAddSubtract:
+    case Op::SignedSubtractAdd:
     case Op::UnsignedAddSubtract:
     case Op::UnsignedSubtractAdd: {
         unsigned scratch = 0;
@@ -57,9 +75,14 @@ void IntegerEmitter::parallel_saturating(const arm::Instruction& inst)
             ++scratch;
         parallel_values_[scratch].reset();
         const DReg sum { static_cast<int>(scratch) };
-        code_.UQADD(sum.H4(), a.H4(), b.H4());
-        code_.UQSUB(a.H4(), a.H4(), b.H4());
-        const auto lane = operation == Op::UnsignedAddSubtract ? 1U : 0U;
+        if (signed_values) {
+            code_.SQADD(sum.H4(), a.H4(), b.H4());
+            code_.SQSUB(a.H4(), a.H4(), b.H4());
+        } else {
+            code_.UQADD(sum.H4(), a.H4(), b.H4());
+            code_.UQSUB(a.H4(), a.H4(), b.H4());
+        }
+        const auto lane = layout.subtract_low ? 1U : 0U;
         code_.INS(QReg { a.index() }.Helem()[lane],
             QReg { sum.index() }.Helem()[lane]);
         break;
