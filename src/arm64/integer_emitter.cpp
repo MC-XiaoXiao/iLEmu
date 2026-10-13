@@ -160,6 +160,15 @@ void IntegerEmitter::shifter(
 }
 bool IntegerEmitter::shifted_alu(const arm::Instruction& inst, std::uint32_t pc)
 {
+    if (inst.register_shift && inst.opcode == 13 && !inst.set_flags &&
+        inst.shift == arm::ShiftKind::Ror) {
+        // ROR uses the low byte modulo 32; RORV has the same low-five-bit
+        // count. All inputs are read before a possibly aliased destination.
+        code_.RORV(WReg { static_cast<int>(inst.rd) },
+            WReg { static_cast<int>(inst.rm) },
+            WReg { static_cast<int>(inst.rs) });
+        return true;
+    }
     if (inst.immediate_operand || inst.register_shift ||
         (inst.shift != arm::ShiftKind::Lsl && inst.shift_amount == 0))
         // A32 LSR/ASR #32 and RRX require their distinct semantics.
