@@ -45,6 +45,29 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
                 (((word >> 4U) & 1U) << 1U);
             sign = true;
             break;
+        case 0xfb200000U:
+        case 0xfb200010U:
+        case 0xfb400000U:
+        case 0xfb400010U:
+            operation = (word & 0x00f00000U) == 0x00400000U
+                ? Operation::DualHalfwordSubtract : Operation::DualHalfword;
+            rd = (word >> 8U) & 15U;
+            rn = (word >> 12U) & 15U;
+            accumulate = rn != 15;
+            if (!accumulate)
+                rn = 0;
+            sign = true;
+            out.exchange = (word & 0x10U) != 0;
+            break;
+        case 0xfbc000c0U:
+        case 0xfbc000d0U:
+        case 0xfbd000c0U:
+        case 0xfbd000d0U:
+            operation = (word & 0x00f00000U) == 0x00d00000U
+                ? Operation::DualHalfwordLongSubtract : Operation::DualHalfwordLong;
+            sign = accumulate = true;
+            out.exchange = (word & 0x10U) != 0;
+            break;
         case 0xfb300000U:
         case 0xfb300010U:
             operation = Operation::WordHalfword;
@@ -86,8 +109,7 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
             break;
         default: return false;
         }
-        if (operation == Operation::Long || operation == Operation::DualAccumulateLong ||
-            operation == Operation::HalfwordLong) {
+        if (multiply_writes_pair(operation)) {
             rd = (word >> 12U) & 15U;
             rn = (word >> 8U) & 15U;
         }
@@ -96,6 +118,24 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
         if (!execution::has_armv6t2_extensions(profile) ||
             rd == 13 || rn == 13 || rm == 13 || rs == 13)
             return true;
+    } else if ((word & 0x0ff00090U) == 0x07000010U ||
+               (word & 0x0ff00090U) == 0x07400010U) {
+        if (out.condition == 15)
+            return false;
+        const bool pair = (word & 0x00400000U) != 0;
+        const bool subtract = (word & 0x40U) != 0;
+        operation = pair
+            ? (subtract ? Operation::DualHalfwordLongSubtract : Operation::DualHalfwordLong)
+            : (subtract ? Operation::DualHalfwordSubtract : Operation::DualHalfword);
+        rd = (word >> (pair ? 12U : 16U)) & 15U;
+        rn = (word >> (pair ? 16U : 12U)) & 15U;
+        accumulate = pair || rn != 15;
+        if (!accumulate)
+            rn = 0;
+        rm = word & 15U;
+        rs = (word >> 8U) & 15U;
+        sign = true;
+        out.exchange = (word & 0x20U) != 0;
     } else if ((word & 0x0ff0f090U) == 0x01600080U) {
         if (out.condition == 15)
             return false;
@@ -184,8 +224,7 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
             }
         }
     }
-    const bool pair = operation == Operation::Long || operation == Operation::DualAccumulateLong ||
-        operation == Operation::HalfwordLong;
+    const bool pair = multiply_writes_pair(operation);
     if (rd == 15 || rn == 15 || rm == 15 || rs == 15 || (pair && rd == rn))
         return true;
     out.kind = InstructionKind::Multiply;

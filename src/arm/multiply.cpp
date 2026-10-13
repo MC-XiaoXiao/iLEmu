@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm/multiply.hpp"
+#include "dual_halfword_multiply.hpp"
 #include <bit>
 #include <limits>
 
@@ -9,6 +10,8 @@ std::uint64_t multiply(const Instruction& inst, std::uint32_t first,
 {
     using Operation = MultiplyOperation;
     const auto operation = static_cast<Operation>(inst.opcode);
+    if (dual_halfword_multiply(operation))
+        return dual_halfword_multiply(inst, first, second, low, high, 0).value;
     if (operation == Operation::WordHalfword) {
         const auto half = std::bit_cast<std::int16_t>(static_cast<std::uint16_t>(
             second >> ((inst.shift_amount & 2U) != 0 ? 16U : 0U)));
@@ -40,6 +43,10 @@ std::uint64_t multiply(const Instruction& inst, std::uint32_t first,
     case Operation::Halfword:
     case Operation::HalfwordLong:
     case Operation::WordHalfword: return 0; // Handled before full-word multiplication.
+    case Operation::DualHalfword:
+    case Operation::DualHalfwordSubtract:
+    case Operation::DualHalfwordLong:
+    case Operation::DualHalfwordLongSubtract: return 0;
     case Operation::Word:
         return static_cast<std::uint32_t>(product + (inst.accumulate ? high : 0U));
     case Operation::Subtract:
@@ -59,6 +66,21 @@ std::uint64_t multiply(const Instruction& inst, std::uint32_t first,
     }
     }
     return 0;
+}
+MultiplyResult calculate_multiply(const Instruction& inst, std::uint32_t first,
+    std::uint32_t second, std::uint32_t low, std::uint32_t high,
+    std::uint32_t cpsr) noexcept
+{
+    const auto operation = static_cast<MultiplyOperation>(inst.opcode);
+    if (dual_halfword_multiply(operation))
+        return dual_halfword_multiply(inst, first, second, low, high, cpsr);
+    const auto value = multiply(inst, first, second, low, high);
+    if (inst.set_flags)
+        cpsr = multiply_nz(inst, cpsr, value);
+    else if (inst.accumulate && (operation == MultiplyOperation::Halfword ||
+                                operation == MultiplyOperation::WordHalfword))
+        cpsr = multiply_q(cpsr, value);
+    return {value, cpsr};
 }
 std::uint32_t multiply_nz(const Instruction& inst, std::uint32_t cpsr,
     std::uint64_t value) noexcept

@@ -426,18 +426,13 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                                      : inst.immediate;
                 break;
             case arm::InstructionKind::Multiply: {
-                const auto value = arm::multiply(inst, state.registers[inst.rm],
+                const auto product = arm::calculate_multiply(inst, state.registers[inst.rm],
                     state.registers[inst.rs], state.registers[inst.rd],
-                    state.registers[inst.rn]);
-                state.registers[inst.rd] = static_cast<std::uint32_t>(value);
+                    state.registers[inst.rn], state.cpsr);
+                state.registers[inst.rd] = static_cast<std::uint32_t>(product.value);
                 if (arm::multiply_writes_pair(inst))
-                    state.registers[inst.rn] = static_cast<std::uint32_t>(value >> 32U);
-                if (inst.set_flags)
-                    state.cpsr = arm::multiply_nz(inst, state.cpsr, value);
-                else if (inst.accumulate && (inst.opcode ==
-                    static_cast<unsigned>(arm::MultiplyOperation::WordHalfword) ||
-                    inst.opcode == static_cast<unsigned>(arm::MultiplyOperation::Halfword)))
-                    state.cpsr = arm::multiply_q(state.cpsr, value);
+                    state.registers[inst.rn] = static_cast<std::uint32_t>(product.value >> 32U);
+                state.cpsr = product.cpsr;
                 break;
             }
             case arm::InstructionKind::Branch:

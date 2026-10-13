@@ -43,7 +43,7 @@ void IntegerEmitter::multiply(const arm::Instruction& inst)
         return;
     }
     clear_multiply_addend();
-    if (dsp_multiply(inst))
+    if (dual_halfword_multiply(inst) || dsp_multiply(inst))
         return;
     if (!arm::multiply_writes_pair(inst)) {
         if (operation == Operation::Subtract)
