@@ -16,6 +16,7 @@
 #include "exclusive.hpp"
 #include "transform_decode.hpp"
 #include "parallel_saturating_decode.hpp"
+#include "saturating_arithmetic_decode.hpp"
 #include "parallel_arithmetic_decode.hpp"
 #include "core_vector_move.hpp"
 #include "vfp_multiple.hpp"
@@ -74,7 +75,8 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
                 out.kind = InstructionKind::Nop;
             return out;
         }
-        if (decode_floating_system(out, (word << 16U) | tail, true, architecture) ||
+        if (decode_saturating_arithmetic(out, (word << 16U) | tail, true, architecture) ||
+            decode_floating_system(out, (word << 16U) | tail, true, architecture) ||
             decode_floating_immediate(out, (word << 16U) | tail, true, vfp, architecture, floating_instructions) ||
             decode_floating_comparison(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_floating_arithmetic(out, (word << 16U) | tail, true, vfp, architecture) ||

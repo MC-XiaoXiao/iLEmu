@@ -13,6 +13,7 @@
 #include "transform_decode.hpp"
 #include "parallel_saturating_decode.hpp"
 #include "parallel_arithmetic_decode.hpp"
+#include "saturating_arithmetic_decode.hpp"
 #include "core_vector_move.hpp"
 #include "vfp_multiple.hpp"
 #include "vfp_scalar.hpp"
@@ -41,7 +42,8 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
     // within a class, including reserved encodings that terminate decoding.
     switch ((word >> 25U) & 7U) {
     case 0:
-        if (decode_multiply(out, word, false, architecture) ||
+        if (decode_saturating_arithmetic(out, word, false, architecture) ||
+            decode_multiply(out, word, false, architecture) ||
             decode_integer_transform(out, word, false, architecture) ||
             decode_swap(out, word) ||
             decode_dual_transfer(out, word, false, architecture) ||
@@ -65,7 +67,8 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
             return out;
         break;
     case 3:
-        if (decode_multiply(out, word, false, architecture) ||
+        if (decode_saturating_arithmetic(out, word, false, architecture) ||
+            decode_multiply(out, word, false, architecture) ||
             decode_integer_divide(out, word, false, architecture, division) ||
             decode_integer_transform(out, word, false, architecture) ||
             decode_parallel_saturating(out, word, false, architecture) ||

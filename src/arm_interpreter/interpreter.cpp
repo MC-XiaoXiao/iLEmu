@@ -9,6 +9,7 @@
 #include "arm/integer_divide.hpp"
 #include "arm/integer_transform.hpp"
 #include "arm/parallel_saturating.hpp"
+#include "arm/saturating_arithmetic.hpp"
 #include "arm/parallel_arithmetic.hpp"
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
@@ -321,6 +322,13 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 break;
             case arm::InstructionKind::ParallelArithmetic: {
                 const auto result = arm::parallel_arithmetic(inst,
+                    state.registers[inst.rn], state.registers[inst.rm], state.cpsr);
+                state.registers[inst.rd] = result.value;
+                state.cpsr = result.cpsr;
+                break;
+            }
+            case arm::InstructionKind::SaturatingArithmetic: {
+                const auto result = arm::saturating_arithmetic(inst,
                     state.registers[inst.rn], state.registers[inst.rm], state.cpsr);
                 state.registers[inst.rd] = result.value;
                 state.cpsr = result.cpsr;
