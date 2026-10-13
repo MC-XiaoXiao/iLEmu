@@ -41,6 +41,24 @@ void IntegerEmitter::carry_from(WReg value, unsigned bit)
         code_.MOV(W15, value);
     code_.BFI(X21, X15, 29, 1);
 }
+void IntegerEmitter::bounded_shift(
+    const arm::Instruction& inst, WReg destination, WReg source)
+{
+    if (shift_range_->at_least_word) {
+        if (inst.shift == arm::ShiftKind::Asr)
+            code_.ASR(destination, source, 31);
+        else
+            code_.MOV(destination, 0);
+        return;
+    }
+    const WReg count { static_cast<int>(inst.rs) };
+    switch (inst.shift) {
+    case arm::ShiftKind::Lsl: code_.LSLV(destination, source, count); break;
+    case arm::ShiftKind::Lsr: code_.LSRV(destination, source, count); break;
+    case arm::ShiftKind::Asr: code_.ASRV(destination, source, count); break;
+    default: break;
+    }
+}
 void IntegerEmitter::shifter(
     const arm::Instruction& inst, std::uint32_t pc, bool carry_output)
 {
@@ -102,6 +120,10 @@ void IntegerEmitter::shifter(
         // Register ROR uses the low byte, then modulo 32. A64 RORV's low
         // five-bit count is equivalent, including zero, without flag changes.
         code_.RORV(W16, rm, WReg { static_cast<int>(inst.rs) });
+        return;
+    }
+    if (!carry_output && shift_range_ && shift_range_->accepts(inst)) {
+        bounded_shift(inst, W16, rm);
         return;
     }
     Label zero, large, done, carry_zero;
@@ -167,6 +189,12 @@ bool IntegerEmitter::shifted_alu(const arm::Instruction& inst, std::uint32_t pc)
         code_.RORV(WReg { static_cast<int>(inst.rd) },
             WReg { static_cast<int>(inst.rm) },
             WReg { static_cast<int>(inst.rs) });
+        return true;
+    }
+    if (inst.register_shift && inst.opcode == 13 && !inst.set_flags &&
+        shift_range_ && shift_range_->accepts(inst)) {
+        bounded_shift(inst, WReg { static_cast<int>(inst.rd) },
+            WReg { static_cast<int>(inst.rm) });
         return true;
     }
     if (inst.immediate_operand || inst.register_shift ||

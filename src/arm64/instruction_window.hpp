@@ -28,6 +28,10 @@ public:
     // chains through one page-cache slot. Prefetched decodes feed emission.
     bool single_dependent_read_cycle(std::uint32_t pc, unsigned it,
         unsigned remaining_instructions, std::uint64_t remaining_ticks);
+    // Consume a conservative ordinary ALU cycle. Only choose a count whose
+    // value survives every possible write and whose range can improve lowering.
+    std::optional<unsigned> invariant_shift_count(std::uint32_t pc, unsigned it,
+        unsigned remaining_instructions, std::uint64_t remaining_ticks);
     bool flags_dead(const arm::Instruction&, std::uint32_t next_pc,
         unsigned next_it, unsigned remaining_instructions,
         std::uint64_t remaining_ticks);

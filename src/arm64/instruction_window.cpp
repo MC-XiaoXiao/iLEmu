@@ -7,6 +7,7 @@
 #include "arm/architectural_stop.hpp"
 #include "arm/t32_decode.hpp"
 #include "arm/floating_comparison.hpp"
+#include <bit>
 
 namespace ilemu::execution::arm64 {
 InstructionWindow::InstructionWindow(InstructionSource& source,
@@ -157,6 +158,54 @@ bool InstructionWindow::single_dependent_read_cycle(std::uint32_t start,
         pc += inst.size;
     }
     return false;
+}
+std::optional<unsigned> InstructionWindow::invariant_shift_count(
+    std::uint32_t start, unsigned start_it, unsigned limit, std::uint64_t budget)
+{
+    if (!retain_cycle_)
+        return {};
+    auto pc = start;
+    auto it = start_it;
+    unsigned candidates = 0, written = 0;
+    for (unsigned n = 0; n < limit; ++n) {
+        auto entry = take(pc, it, false);
+        if (!entry || !entry->word || entry->instruction.condition == 15 ||
+            std::uint64_t { pc } + entry->instruction.size > region_.end)
+            return {};
+        const auto& inst = entry->instruction;
+        const auto cost = timing(*entry);
+        if (cost == 0 || cost > budget)
+            return {};
+        budget -= cost;
+        const auto next_it = thumb_ ? arm::advance_it(it) : 0U;
+        if (inst.kind == arm::InstructionKind::Branch) {
+            if (inst.link)
+                written |= 1U << 14U;
+            const auto target =
+                ((pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
+            if (inst.exchange || target != start || next_it != start_it)
+                return {};
+            candidates &= ~written;
+            if (candidates == 0)
+                return {};
+            return static_cast<unsigned>(std::countr_zero(candidates));
+        }
+        // Memory, indirect control and other effects remain on their existing
+        // paths. Conditional ALU writes also revoke invariance conservatively.
+        if (inst.kind != arm::InstructionKind::DataProcessing || arm::alu_writes_pc(inst))
+            return {};
+        if (inst.opcode < 8 || inst.opcode > 11)
+            written |= 1U << inst.rd;
+        const bool logical = inst.opcode == 0 || inst.opcode == 1 ||
+            inst.opcode == 8 || inst.opcode == 9 || inst.opcode >= 12;
+        if (inst.register_shift && inst.rs < 15 && inst.shift != arm::ShiftKind::Ror &&
+            (!logical || !inst.set_flags || flags_dead(inst, pc + inst.size,
+                next_it, limit - n - 1U, budget)))
+            candidates |= 1U << inst.rs;
+        pc += inst.size;
+        it = next_it;
+    }
+    return {};
 }
 bool InstructionWindow::flags_dead(const arm::Instruction& inst,
     std::uint32_t next_pc, unsigned next_it, unsigned remaining_instructions,

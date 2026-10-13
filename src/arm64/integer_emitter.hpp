@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "arm/instruction.hpp"
+#include "shift_count_range.hpp"
 #include <oaknut/oaknut.hpp>
 #include <array>
 #include <optional>
@@ -8,8 +9,9 @@ namespace ilemu::execution::arm64 {
 // Integer instruction emission is independent of trace exits and scheduling.
 class IntegerEmitter {
 public:
-    explicit IntegerEmitter(oaknut::VectorCodeGenerator& code)
-        : code_(code)
+    explicit IntegerEmitter(oaknut::VectorCodeGenerator& code,
+        std::optional<RegisterShiftRange> shift_range = {})
+        : code_(code), shift_range_(shift_range)
     {
     }
     // pc_value is the encoding's architectural PC operand, including alignment.
@@ -55,7 +57,10 @@ private:
     void carry_from(oaknut::WReg value, unsigned bit);
     void shifter(const arm::Instruction&, std::uint32_t pc, bool carry_output);
     bool shifted_alu(const arm::Instruction&, std::uint32_t pc);
+    void bounded_shift(const arm::Instruction&, oaknut::WReg destination,
+        oaknut::WReg source);
     oaknut::VectorCodeGenerator& code_;
+    std::optional<RegisterShiftRange> shift_range_;
     // Compile-time knowledge only. Each operation still writes its GPR result.
     std::array<std::optional<ParallelValue>, 3> parallel_values_ {};
     std::optional<MultiplyAddend> multiply_addend_;

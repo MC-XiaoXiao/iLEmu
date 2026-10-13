@@ -62,11 +62,12 @@ namespace {
     public:
         Emitter(CompiledTrace& trace, bool big_endian, bool thumb,
             std::uint32_t pc, unsigned it, bool single_step,
-            std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads)
+            std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads,
+            std::optional<RegisterShiftRange> shift_range)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_)
-            , integer_(code_)
+            , integer_(code_, shift_range)
             , exchanges_(code_, integer_, thumb)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads, temporary)
             , thumb_(thumb)
@@ -627,9 +628,10 @@ namespace {
     };
 }
 
-CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
+static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
-    unsigned it, CycleExpansion expansion)
+    unsigned it, CycleExpansion expansion,
+    std::optional<RegisterShiftRange> shift_range = {})
 {
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
@@ -669,7 +671,7 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     // Larger read fallbacks are earned by the existing hot-cycle tier, so
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
-        expansion == CycleExpansion::Hot, cache_reads);
+        expansion == CycleExpansion::Hot, cache_reads, shift_range);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
@@ -1039,5 +1041,38 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     }
     emit.finish(pc);
     return out;
+}
+static CompiledTrace compile_hot(InstructionSource& source, std::uint32_t pc,
+    std::uint64_t maximum_ticks, bool big_endian, bool thumb, unsigned it)
+{
+    const auto region = source.instruction_region(pc);
+    if (region.begin > pc || region.end <= pc ||
+        region.end > (std::uint64_t { 1 } << 32U))
+        return compile_trace(source, pc, false, maximum_ticks, big_endian,
+            thumb, it, CycleExpansion::Hot);
+    alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
+    std::pmr::monotonic_buffer_resource temporary {
+        scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
+    InstructionWindow window(source, region, thumb, &temporary, true);
+    if (const auto count = window.invariant_shift_count(
+            pc, it, maximum_trace_instructions, maximum_ticks)) {
+        auto below = compile_trace(source, pc, false, maximum_ticks, big_endian,
+            thumb, it, CycleExpansion::Hot, RegisterShiftRange { *count, false });
+        auto above = compile_trace(source, pc, false, maximum_ticks, big_endian,
+            thumb, it, CycleExpansion::Hot, RegisterShiftRange { *count, true });
+        if (auto selected = GuardedShiftTrace::select(*count, std::move(below), std::move(above)))
+            return std::move(*selected);
+    }
+    return compile_trace(source, pc, false, maximum_ticks, big_endian,
+        thumb, it, CycleExpansion::Hot);
+}
+CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
+    bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
+    unsigned it, CycleExpansion expansion)
+{
+    if (!single_step && expansion == CycleExpansion::Hot)
+        return compile_hot(source, pc, maximum_ticks, big_endian, thumb, it);
+    return compile_trace(source, pc, single_step, maximum_ticks, big_endian,
+        thumb, it, expansion);
 }
 }
