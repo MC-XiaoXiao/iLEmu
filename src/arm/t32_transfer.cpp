@@ -3,7 +3,8 @@
 
 namespace ilemu::arm {
 void decode_t32_transfer(Instruction& out, unsigned first, unsigned second,
-    bool last_in_it, execution::ArmInstructionProfile architecture) noexcept
+    bool last_in_it, execution::ArmInstructionProfile architecture,
+    execution::ThumbMemoryProfile profile) noexcept
 {
     if (!execution::has_armv6t2_extensions(architecture))
         return;
@@ -21,6 +22,10 @@ void decode_t32_transfer(Instruction& out, unsigned first, unsigned second,
     const bool imm12 = (first & 0x80U) != 0;
     const bool register_offset = !literal && !imm12 &&
                                  (second & 0x0fc0U) == 0;
+    const auto invalid_index = [&] {
+        return out.rm == 15 || (out.rm == 13 &&
+            profile != execution::ThumbMemoryProfile::StackPointerIndex);
+    };
     if (out.rn == 15 && !literal)
         return;
     if (literal || imm12) {
@@ -52,13 +57,13 @@ void decode_t32_transfer(Instruction& out, unsigned first, unsigned second,
             return;
         // PLD/PLDW/PLI and unallocated memory hints have no required effect.
         if (register_offset && !(signed_load && size == 1) &&
-            (out.rm == 13 || out.rm == 15))
+            invalid_index())
             return;
         out.kind = InstructionKind::Nop;
         return;
     }
     if ((!out.load && out.rd == 15) || (size != 2 && out.rd == 13) ||
-        (register_offset && (out.rm == 13 || out.rm == 15)) ||
+        (register_offset && invalid_index()) ||
         (out.writeback && out.rn == out.rd) ||
         (out.load && out.rd == 15 && !last_in_it))
         return;

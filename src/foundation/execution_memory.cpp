@@ -35,6 +35,21 @@ ExecutionMemory::thumb_arithmetic_profile() const noexcept
                ? execution::ThumbArithmeticProfile::GeneralPurposeStackPointer
                : execution::ThumbArithmeticProfile::Architectural;
 }
+execution::ThumbMemoryProfile
+ExecutionMemory::thumb_memory_profile() const noexcept
+{
+    return impl_->model_.unpredictable_instruction_policy() ==
+                   ArmUnpredictableInstructionPolicy::CortexA8
+               ? execution::ThumbMemoryProfile::StackPointerIndex
+               : execution::ThumbMemoryProfile::Architectural;
+}
+execution::AdvancedSimdProfile
+ExecutionMemory::advanced_simd_profile() const noexcept
+{
+    return impl_->model_.kind() == ArmCpuModelKind::Arm1176JzfS
+               ? execution::AdvancedSimdProfile::None
+               : execution::AdvancedSimdProfile::Neon;
+}
 execution::VfpRegisterProfile
 ExecutionMemory::vfp_register_profile() const noexcept
 {

@@ -39,7 +39,8 @@ enum class InstructionKind {
     DualTransfer,
     VectorImmediate,
     ParallelSaturating,
-    IntegerDivide
+    IntegerDivide,
+    VectorFloatingArithmetic
 };
 enum class SystemOperation {
     ThreadPointerReadWrite,
@@ -112,6 +113,12 @@ struct FloatingArithmeticOperands {
     FloatingArithmeticOperation operation = FloatingArithmeticOperation::Add;
     bool wide = false;
 };
+struct VectorFloatingArithmeticOperands {
+    // D indices, even for Q operands; each element is single precision.
+    unsigned destination = 0, first = 0, second = 0;
+    FloatingArithmeticOperation operation = FloatingArithmeticOperation::Add;
+    bool quad = false;
+};
 struct FloatingComparisonOperands {
     // Word indices in the shared S/D extension bank.
     unsigned first = 0, second = 0;
@@ -130,7 +137,8 @@ struct FloatingSystemOperands {
 };
 using VectorOperands = std::variant<VectorDuplicateOperands,
     VectorBitwiseOperands, VectorExtractOperands, VectorTransferOperands, VectorCoreMoveOperands,
-    FloatingConversionOperands, FloatingArithmeticOperands, FloatingComparisonOperands, FloatingImmediateOperands, FloatingSystemOperands, VectorImmediateOperands>;
+    FloatingConversionOperands, FloatingArithmeticOperands, FloatingComparisonOperands, FloatingImmediateOperands, FloatingSystemOperands, VectorImmediateOperands,
+    VectorFloatingArithmeticOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.

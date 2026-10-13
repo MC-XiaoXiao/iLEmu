@@ -172,7 +172,8 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         source.thumb_arithmetic_profile(), source.vfp_register_profile(),
         source.arm_instruction_profile(), source.floating_exception_profile(),
         source.alu_pc_write_profile(), source.vfp_instruction_profile(),
-        source.integer_divide_profile() };
+        source.integer_divide_profile(), source.thumb_memory_profile(),
+        source.advanced_simd_profile() };
     auto expansion = binding.generation ? CycleExpansion::Compact
                                        : CycleExpansion::Untracked;
     if (auto* domain = find(binding)) {

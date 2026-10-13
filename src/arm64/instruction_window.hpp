@@ -55,6 +55,8 @@ private:
     VfpInstructionProfile floating_instructions_;
     ArmInstructionProfile architecture_;
     IntegerDivideProfile division_;
+    ThumbMemoryProfile memory_;
+    AdvancedSimdProfile simd_;
     std::pmr::deque<DecodedInstruction> pending_;
     std::size_t consumed_ = 0;
     bool retain_cycle_;

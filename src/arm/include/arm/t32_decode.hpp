@@ -28,5 +28,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     execution::VfpRegisterProfile = execution::VfpRegisterProfile::D32,
     execution::ArmInstructionProfile = execution::ArmInstructionProfile::Armv6T2,
     execution::VfpInstructionProfile = execution::VfpInstructionProfile::Vfpv3,
-    execution::IntegerDivideProfile = execution::IntegerDivideProfile::None) noexcept;
+    execution::IntegerDivideProfile = execution::IntegerDivideProfile::None,
+    execution::ThumbMemoryProfile = execution::ThumbMemoryProfile::Architectural,
+    execution::AdvancedSimdProfile = execution::AdvancedSimdProfile::Neon) noexcept;
 }

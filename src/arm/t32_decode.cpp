@@ -8,6 +8,7 @@
 #include "simd_duplicate.hpp"
 #include "simd_immediate_decode.hpp"
 #include "simd_bitwise.hpp"
+#include "simd_floating_decode.hpp"
 #include "simd_extract.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
@@ -39,7 +40,9 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     unsigned it, execution::ThumbArithmeticProfile profile,
     execution::VfpRegisterProfile vfp, execution::ArmInstructionProfile architecture,
     execution::VfpInstructionProfile floating_instructions,
-    execution::IntegerDivideProfile division) noexcept
+    execution::IntegerDivideProfile division,
+    execution::ThumbMemoryProfile memory_profile,
+    execution::AdvancedSimdProfile simd) noexcept
 {
     Instruction out;
     out.size = thumb_is_wide(first) ? 4U : 2U;
@@ -87,6 +90,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_program_status(out, (word << 16U) | tail, true, architecture) ||
             decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_immediate(out, (word << 16U) | tail, true, vfp, architecture) ||
+            decode_simd_floating(out, (word << 16U) | tail, true, vfp, architecture, simd) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||
             decode_simd_extract(out, (word << 16U) | tail, true) ||
@@ -108,7 +112,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             if (execution::has_armv6t2_extensions(architecture))
                 decode_t32_register_shift(out, word, tail, profile);
         } else if ((word & 0xfe00U) == 0xf800U) {
-            decode_t32_transfer(out, word, tail, last, architecture);
+            decode_t32_transfer(out, word, tail, last, architecture, memory_profile);
         } else if ((word & 0xfe00U) == 0xea00U && (tail & 0x8000U) == 0) {
             decode_t32_shifted_register(out, word, tail, profile);
         } else if ((word & 0xf800U) == 0xf000U && (tail & 0x8000U) != 0) {

@@ -7,5 +7,6 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile =
     execution::VfpRegisterProfile::D32, execution::ArmInstructionProfile =
     execution::ArmInstructionProfile::Armv6T2, execution::VfpInstructionProfile =
     execution::VfpInstructionProfile::Vfpv3,
-    execution::IntegerDivideProfile = execution::IntegerDivideProfile::None) noexcept;
+    execution::IntegerDivideProfile = execution::IntegerDivideProfile::None,
+    execution::AdvancedSimdProfile = execution::AdvancedSimdProfile::Neon) noexcept;
 }

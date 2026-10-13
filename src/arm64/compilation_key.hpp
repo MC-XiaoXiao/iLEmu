@@ -7,7 +7,8 @@ namespace ilemu::execution::arm64 {
 using TranslationKey = std::tuple<std::uint32_t, bool, bool, bool, unsigned, bool,
     std::uint64_t, ThumbArithmeticProfile, VfpRegisterProfile,
     ArmInstructionProfile, FloatingExceptionProfile, AluPcWriteProfile,
-    VfpInstructionProfile, IntegerDivideProfile>;
+    VfpInstructionProfile, IntegerDivideProfile, ThumbMemoryProfile,
+    AdvancedSimdProfile>;
 struct CompilationKey {
     CompilationIdentity identity;
     TranslationKey entry;

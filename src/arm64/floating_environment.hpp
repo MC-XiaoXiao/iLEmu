@@ -11,6 +11,18 @@ public:
     // X29 holds FPSCR.NZCV; the remaining bits stay in the thread state.
     // Entry and callback restoration cover conditionally executed first uses.
     void use_status() { status_used_ = true; }
+    void standard_controls(oaknut::VectorCodeGenerator& code) const
+    {
+        code.MOV(oaknut::util::W16, 0x03000000U);
+        code.MSR(oaknut::SystemReg::FPCR, oaknut::util::X16);
+    }
+    void guest_controls(oaknut::VectorCodeGenerator& code) const
+    {
+        code.LDR(oaknut::util::W16, oaknut::util::X19,
+            offsetof(CpuThreadState, fpscr));
+        code.AND(oaknut::util::W16, oaknut::util::W16, 0x03c00000U);
+        code.MSR(oaknut::SystemReg::FPCR, oaknut::util::X16);
+    }
     void enter(oaknut::VectorCodeGenerator& code) const
     {
         using namespace oaknut;

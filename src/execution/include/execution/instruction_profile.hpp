@@ -27,4 +27,10 @@ enum class FloatingExceptionProfile { Untrapped, TrapEnables };
 // executes SP as an ordinary arithmetic or move/shift register. CPU adapters select it
 // independently of firmware, guest addresses and backend implementation.
 enum class ThumbArithmeticProfile { Architectural, GeneralPurposeStackPointer };
+// Some cores execute architecturally unpredictable SP index operands as a
+// general-purpose register. This does not relax PC, destination or writeback
+// restrictions, and is independent of arithmetic register policy.
+enum class ThumbMemoryProfile { Architectural, StackPointerIndex };
+// Advanced SIMD is optional independently of VFP revision and register bank.
+enum class AdvancedSimdProfile { None, Neon };
 }

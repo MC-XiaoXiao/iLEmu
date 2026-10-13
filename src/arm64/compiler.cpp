@@ -449,6 +449,15 @@ namespace {
             floating_.use();
             FloatingEmitter { code_, vectors_ }.arithmetic(v);
         }
+        void vector_arithmetic(const arm::VectorFloatingArithmeticOperands& v)
+        {
+            floating_.use();
+            floating_.standard_controls(code_);
+            SimdEmitter { code_, vectors_ }.floating(v);
+            // A conditional instruction must leave either path ready for
+            // scalar VFP and host callbacks. Keep cumulative FPSR untouched.
+            floating_.guest_controls(code_);
+        }
         void comparison(const arm::FloatingComparisonOperands& v, bool preserve_apsr)
         {
             floating_.use();
@@ -934,6 +943,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
                 case arm::InstructionKind::VectorImmediate:
                     SimdEmitter { emit.code(), emit.vectors() }.immediate(
                         std::get<arm::VectorImmediateOperands>(inst.vector));
+                    break;
+                case arm::InstructionKind::VectorFloatingArithmetic:
+                    emit.vector_arithmetic(
+                        std::get<arm::VectorFloatingArithmeticOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::VectorBitwise:
                     SimdEmitter { emit.code(), emit.vectors() }.bitwise(

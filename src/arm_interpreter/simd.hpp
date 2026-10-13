@@ -4,6 +4,7 @@
 #include "execution/arm_state.hpp"
 
 namespace ilemu::execution {
+void floating_vector(CpuThreadState&, const arm::VectorFloatingArithmeticOperands&);
 void duplicate_vector(CpuThreadState&, const arm::VectorDuplicateOperands&);
 void immediate_vector(CpuThreadState&, const arm::VectorImmediateOperands&);
 void bitwise_vector(CpuThreadState&, const arm::VectorBitwiseOperands&);

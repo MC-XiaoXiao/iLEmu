@@ -70,6 +70,8 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
     const auto floating_instructions = source.vfp_instruction_profile();
     const auto architecture = source.arm_instruction_profile();
     const auto division = source.integer_divide_profile();
+    const auto memory_profile = source.thumb_memory_profile();
+    const auto simd = source.advanced_simd_profile();
     for (;;) {
         result.pc = state.registers[15];
         result.instruction.reset();
@@ -122,11 +124,13 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             }
             result.instruction =
                 *first | (std::uint32_t { second.value_or(0) } << 16U);
-            inst = arm::decode_t32(*first, second, it, profile, vfp, architecture, floating_instructions, division);
+            inst = arm::decode_t32(*first, second, it, profile, vfp,
+                architecture, floating_instructions, division, memory_profile, simd);
         } else {
             result.instruction = source.fetch32(result.pc);
             if (result.instruction)
-                inst = arm::decode_a32(*result.instruction, vfp, architecture, floating_instructions, division);
+                inst = arm::decode_a32(*result.instruction, vfp, architecture,
+                    floating_instructions, division, simd);
         }
         if (!result.instruction) {
             result.reason = StopReason::FetchFault;
@@ -390,6 +394,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             case arm::InstructionKind::VectorDuplicate:
                 duplicate_vector(state,
                     std::get<arm::VectorDuplicateOperands>(inst.vector));
+                break;
+            case arm::InstructionKind::VectorFloatingArithmetic:
+                floating_vector(state,
+                    std::get<arm::VectorFloatingArithmeticOperands>(inst.vector));
                 break;
             case arm::InstructionKind::VectorBitwise:
                 bitwise_vector(state,

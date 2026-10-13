@@ -142,6 +142,14 @@ public:
     {
         return ThumbArithmeticProfile::Architectural;
     }
+    virtual ThumbMemoryProfile thumb_memory_profile() const noexcept
+    {
+        return ThumbMemoryProfile::Architectural;
+    }
+    virtual AdvancedSimdProfile advanced_simd_profile() const noexcept
+    {
+        return AdvancedSimdProfile::None;
+    }
     virtual VfpRegisterProfile vfp_register_profile() const noexcept
     {
         return VfpRegisterProfile::D32;

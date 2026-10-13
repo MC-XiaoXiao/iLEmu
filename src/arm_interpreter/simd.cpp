@@ -1,9 +1,29 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "simd.hpp"
 #include "arm/simd_immediate.hpp"
+#include "arm/floating_arithmetic.hpp"
 #include <array>
 
 namespace ilemu::execution {
+void floating_vector(
+    CpuThreadState& state, const arm::VectorFloatingArithmeticOperands& v)
+{
+    const arm::FloatingArithmeticOperands scalar {
+        0, 0, 0, v.operation, false
+    };
+    // Advanced SIMD uses standard controls, independently of FPSCR rounding,
+    // vector length/stride and trap enables. Exceptions still accumulate in
+    // the actual FPSCR; neighbouring D lanes and all control bits survive.
+    constexpr std::uint32_t standard_controls = 0x03000000U;
+    for (unsigned i = 0; i < (v.quad ? 4U : 2U); ++i) {
+        const auto result = arm::calculate_floating(scalar,
+            state.extension_registers[v.first * 2U + i],
+            state.extension_registers[v.second * 2U + i], 0, standard_controls);
+        state.extension_registers[v.destination * 2U + i] =
+            static_cast<std::uint32_t>(result.value);
+        state.fpscr |= result.exceptions;
+    }
+}
 void move_core_vector(CpuThreadState& state, const arm::VectorCoreMoveOperands& v)
 {
     if (v.pair) {

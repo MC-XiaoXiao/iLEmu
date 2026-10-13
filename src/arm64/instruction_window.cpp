@@ -18,6 +18,8 @@ InstructionWindow::InstructionWindow(InstructionSource& source,
     , floating_instructions_(source.vfp_instruction_profile())
     , architecture_(source.arm_instruction_profile())
     , division_(source.integer_divide_profile())
+    , memory_(source.thumb_memory_profile())
+    , simd_(source.advanced_simd_profile())
     , pending_(temporary)
     , retain_cycle_(retain_cycle)
 {
@@ -39,12 +41,14 @@ std::optional<DecodedInstruction> InstructionWindow::decode(
         if (first && (!arm::thumb_is_wide(*first) || second)) {
             out.word = *first | (std::uint32_t { second.value_or(0) } << 16U);
             out.instruction = arm::decode_t32(*first, second, it,
-                arithmetic_, vfp_, architecture_, floating_instructions_, division_);
+                arithmetic_, vfp_, architecture_, floating_instructions_,
+                division_, memory_, simd_);
         }
     } else {
         out.word = source_.fetch32(out.pc);
         if (out.word)
-            out.instruction = arm::decode_a32(*out.word, vfp_, architecture_, floating_instructions_, division_);
+            out.instruction = arm::decode_a32(*out.word, vfp_, architecture_,
+                floating_instructions_, division_, simd_);
     }
     return out;
 }

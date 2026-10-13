@@ -31,6 +31,8 @@ public:
     execution::MemoryAccess* data_memory() noexcept override { return this; }
     execution::ThumbArithmeticProfile
     thumb_arithmetic_profile() const noexcept override;
+    execution::ThumbMemoryProfile thumb_memory_profile() const noexcept override;
+    execution::AdvancedSimdProfile advanced_simd_profile() const noexcept override;
     execution::VfpRegisterProfile vfp_register_profile() const noexcept override;
     execution::VfpInstructionProfile vfp_instruction_profile() const noexcept override;
     execution::ArmInstructionProfile arm_instruction_profile() const noexcept override;

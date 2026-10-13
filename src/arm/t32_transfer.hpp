@@ -5,5 +5,6 @@
 
 namespace ilemu::arm {
 void decode_t32_transfer(Instruction&, unsigned first, unsigned second,
-    bool last_in_it, execution::ArmInstructionProfile) noexcept;
+    bool last_in_it, execution::ArmInstructionProfile,
+    execution::ThumbMemoryProfile) noexcept;
 }
