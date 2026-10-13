@@ -31,6 +31,18 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
                 rn = 0;
             }
             break;
+        case 0xfb100000U:
+        case 0xfb100010U:
+        case 0xfb100020U:
+        case 0xfb100030U:
+            if (((word >> 12U) & 15U) != 15U)
+                return false; // SMLAxy has a separate accumulator/Q contract.
+            operation = Operation::Halfword;
+            rd = (word >> 8U) & 15U;
+            out.shift_amount = ((word >> 5U) & 1U) |
+                (((word >> 4U) & 1U) << 1U);
+            sign = true;
+            break;
         case 0xfb800000U: sign = true; operation = Operation::Long; break;
         case 0xfba00000U: operation = Operation::Long; break;
         case 0xfbc00000U: sign = accumulate = true; operation = Operation::Long; break;
@@ -61,6 +73,16 @@ bool decode_multiply(Instruction& out, std::uint32_t word, bool thumb,
         if (!execution::has_armv6t2_extensions(profile) ||
             rd == 13 || rn == 13 || rm == 13 || rs == 13)
             return true;
+    } else if ((word & 0x0ff0f090U) == 0x01600080U) {
+        if (out.condition == 15)
+            return false;
+        operation = Operation::Halfword;
+        rd = (word >> 16U) & 15U;
+        rm = word & 15U;
+        rs = (word >> 8U) & 15U;
+        out.shift_amount = ((word >> 5U) & 1U) |
+            (((word >> 6U) & 1U) << 1U);
+        sign = true;
     } else if ((word & 0x0ff000d0U) == 0x07500010U ||
                (word & 0x0ff000d0U) == 0x075000d0U) {
         if (out.condition == 15)

@@ -8,11 +8,21 @@ std::uint64_t multiply(const Instruction& inst, std::uint32_t first,
 {
     using Operation = MultiplyOperation;
     const auto operation = static_cast<Operation>(inst.opcode);
+    if (operation == Operation::Halfword) {
+        const auto half = [](std::uint32_t value, bool upper) {
+            return std::bit_cast<std::int16_t>(
+                static_cast<std::uint16_t>(value >> (upper ? 16U : 0U)));
+        };
+        return static_cast<std::uint32_t>(
+            std::int32_t { half(first, (inst.shift_amount & 1U) != 0) } *
+            half(second, (inst.shift_amount & 2U) != 0));
+    }
     const auto product = inst.sign_extend
         ? static_cast<std::uint64_t>(std::int64_t { std::bit_cast<std::int32_t>(first) } *
                                     std::bit_cast<std::int32_t>(second))
         : std::uint64_t { first } * second;
     switch (operation) {
+    case Operation::Halfword: return 0; // Handled before full-word multiplication.
     case Operation::Word:
         return static_cast<std::uint32_t>(product + (inst.accumulate ? high : 0U));
     case Operation::Subtract:

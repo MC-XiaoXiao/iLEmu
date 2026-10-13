@@ -43,6 +43,12 @@ void IntegerEmitter::multiply(const arm::Instruction& inst)
         return;
     }
     clear_multiply_addend();
+    if (operation == Operation::Halfword) {
+        code_.SBFX(W16, rm, (inst.shift_amount & 1U) != 0 ? 16 : 0, 16);
+        code_.SBFX(W17, rs, (inst.shift_amount & 2U) != 0 ? 16 : 0, 16);
+        code_.MUL(rd, W16, W17);
+        return;
+    }
     if (!arm::multiply_writes_pair(inst)) {
         if (operation == Operation::Subtract)
             code_.MSUB(rd, rm, rs, rn);
