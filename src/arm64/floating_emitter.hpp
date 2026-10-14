@@ -18,7 +18,7 @@ public:
 private:
     template <class Scalar>
     void arithmetic_result(
-        arm::FloatingArithmeticOperation, Scalar, Scalar, Scalar);
+        arm::FloatingArithmeticOperation, Scalar destination, Scalar first, Scalar second);
     template <class Scalar>
     void integer_result(Scalar, bool signed_integer, bool round_zero);
     oaknut::VectorCodeGenerator& code_;
