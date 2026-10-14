@@ -56,6 +56,7 @@ private:
         unsigned reg;
         bool round;
     };
+    void parallel_byte_arithmetic(const arm::Instruction&, bool subtract);
     unsigned parallel_source(unsigned reg, bool exchange, unsigned protected_mask);
     bool dsp_multiply(const arm::Instruction&);
     bool dual_halfword_multiply(const arm::Instruction&);

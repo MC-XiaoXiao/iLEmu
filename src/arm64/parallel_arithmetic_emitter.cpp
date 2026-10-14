@@ -9,19 +9,26 @@ void IntegerEmitter::parallel_arithmetic(const arm::Instruction& inst)
     using Op = arm::ParallelArithmeticOperation;
     const auto operation = static_cast<Op>(inst.opcode);
     const WReg n {static_cast<int>(inst.rn)}, m {static_cast<int>(inst.rm)};
-    // GE lives in the cached CPSR. Temporary host comparisons must not change
-    // guest NZCV; write the destination only after every source lane is read.
-    code_.MRS(X21, SystemReg::NZCV);
-    code_.MOV(W15, 0);
+    // GE lives in the cached CPSR. Keep host NZCV unchanged and write the
+    // destination only after every source lane is read.
     if (operation == Op::Select) {
-        for (unsigned byte = 0; byte < 4; ++byte) {
-            code_.TST(W22, 1U << (16U + byte));
-            code_.CSEL(W16, n, m, Cond::NE);
-            code_.UBFX(W16, W16, byte * 8U, 8);
-            code_.BFI(W15, W16, byte * 8U, 8);
-        }
+        // Spread the four GE bits to byte low bits, then expand to byte masks.
+        code_.UBFX(W16, W22, 16, 4);
+        code_.MOV(W17, 0x00204081U);
+        code_.MUL(W16, W16, W17);
+        code_.AND(W16, W16, 0x01010101U);
+        code_.LSL(W17, W16, 8);
+        code_.SUB(W16, W17, W16);
+        code_.EOR(W17, n, m);
+        code_.AND(W17, W17, W16);
+        code_.EOR(WReg {static_cast<int>(inst.rd)}, m, W17);
     } else {
         const auto layout = arm::parallel_arithmetic_layout(operation);
+        if (layout.bits == 8) {
+            parallel_byte_arithmetic(inst, layout.subtract(0));
+            return;
+        }
+        code_.MOV(W15, 0);
         for (unsigned offset = 0; offset < 32; offset += layout.bits) {
             const auto second_offset = layout.exchange ? offset ^ 16U : offset;
             if (inst.sign_extend) {
@@ -35,18 +42,24 @@ void IntegerEmitter::parallel_arithmetic(const arm::Instruction& inst)
             if (subtract) code_.SUB(W17, W16, W17);
             else code_.ADD(W17, W16, W17);
             code_.BFI(W15, W17, offset, layout.bits);
-            if (!inst.sign_extend && !subtract)
+            if (!inst.sign_extend && !subtract) {
                 code_.UBFX(W16, W17, layout.bits, 1);
-            else {
-                code_.CMP(W17, 0);
-                code_.CSET(W16, Cond::GE);
+                if (layout.bits == 16)
+                    code_.NEG(W16, W16);
+            } else {
+                // A widened lane result fits signed 32 bits. Its inverted
+                // sign gives GE, repeated for both bits of a halfword lane.
+                if (layout.bits == 16) {
+                    code_.ASR(W16, W17, 31);
+                    code_.MVN(W16, W16);
+                } else {
+                    code_.LSR(W16, W17, 31);
+                    code_.EOR(W16, W16, 1U);
+                }
             }
-            if (layout.bits == 16)
-                code_.NEG(W16, W16);
             code_.BFI(W22, W16, 16U + offset / 8U, layout.bits / 8U);
         }
+        code_.MOV(WReg {static_cast<int>(inst.rd)}, W15);
     }
-    code_.MSR(SystemReg::NZCV, X21);
-    code_.MOV(WReg {static_cast<int>(inst.rd)}, W15);
 }
 }
