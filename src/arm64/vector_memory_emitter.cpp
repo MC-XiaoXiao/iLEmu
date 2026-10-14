@@ -138,7 +138,8 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, AddressCache::Ref
 }
 std::optional<AddressCache::Key> VectorMemoryEmitter::address(const arm::Instruction& inst)
 {
-    if (inst.writeback || inst.rn == 15)
+    if (inst.rn == 15 ||
+        (inst.writeback && !AddressDisplacements::writeback(inst)))
         return {};
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
     const bool scalar = v.mode == arm::VectorTransferMode::ScalarMultiple;
@@ -158,6 +159,7 @@ void VectorMemoryEmitter::emit(
     if (key) {
         if (const auto pointer = addresses_.find(*key)) {
             access(inst, *pointer);
+            addresses_.writeback(inst);
             return;
         }
     }
@@ -210,8 +212,7 @@ void VectorMemoryEmitter::emit(
     if (key && inst.condition == 14)
         pointer = addresses_.remember(*key, X21);
     access(inst, pointer);
-    if (inst.writeback)
-        code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
+    addresses_.writeback(inst);
     code_.B(done);
     code_.l(checked);
     code_.STR(

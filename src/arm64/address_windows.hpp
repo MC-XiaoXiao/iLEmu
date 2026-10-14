@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "address_cache.hpp"
+#include "address_displacements.hpp"
 #include "compiler.hpp"
 #include <array>
 #include <memory_resource>
@@ -17,7 +18,7 @@ public:
         bool load;
         std::int64_t first, end;
         unsigned keys = 0;
-        bool unconditional = false, indexed = false, enabled = false;
+        bool unconditional = false, indexed = false, adjusted = false, enabled = false;
     };
     explicit AddressWindows(std::pmr::memory_resource* resource)
         : accesses_(resource)
@@ -37,11 +38,11 @@ private:
         Key key;
         std::int64_t first = 0, end = 0;
         unsigned residue = 0;
-        bool valid = true, unconditional = false;
+        bool valid = true, unconditional = false, adjusted = false;
         std::optional<unsigned> window = { };
     };
     std::array<std::optional<std::uint32_t>, 16> bits_ { };
-    std::uint32_t written_ = 0;
+    AddressDisplacements displacements_;
     std::pmr::vector<Access> accesses_;
     std::pmr::vector<Window> windows_;
 };

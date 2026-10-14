@@ -370,11 +370,11 @@ namespace {
                     arm::alu_writes_pc(inst)))
                 integer_.clear_multiply_addend();
             const auto invalidate = [&](unsigned reg) {
-                memory_.invalidate_register(reg);
                 exchanges_.invalidate(reg);
                 integer_.invalidate_multiply_addend(reg);
             };
             for_written_register(inst, invalidate);
+            memory_.addresses().observe(inst);
             if (inst.kind == arm::InstructionKind::MultipleTransfer) {
                 exchanges_.invalidate_all();
             }

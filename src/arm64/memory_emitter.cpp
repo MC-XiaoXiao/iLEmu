@@ -116,7 +116,8 @@ std::pmr::memory_resource& MemoryEmitter::label_memory()
 std::optional<AddressCache::Key> MemoryEmitter::address(
     const arm::Instruction& inst, std::uint32_t pc)
 {
-    if (!inst.index || inst.writeback ||
+    if ((!inst.index && !inst.writeback) ||
+        (inst.writeback && !AddressDisplacements::writeback(inst)) ||
         (!inst.load && inst.rd == 15))
         return { };
     // Load-PC requires word alignment even when ordinary reads permit
@@ -125,7 +126,7 @@ std::optional<AddressCache::Key> MemoryEmitter::address(
                          inst.kind != arm::InstructionKind::TableBranch;
     const bool dual = inst.kind == arm::InstructionKind::DualTransfer;
     AddressCache::Key key { inst.rn, dual ? 8U : inst.access_size,
-        inst.immediate_operand ? inst.immediate : 0U, inst.add, inst.load,
+        inst.immediate_operand && inst.index ? inst.immediate : 0U, inst.add, inst.load,
         load_pc || dual ? 4U : 1U, inst.access_size };
     if (inst.rn == 15)
         key.pc_base = (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U);
@@ -189,8 +190,7 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
             pair(address.base, address.offset);
         else
             pair(resolve(), 0);
-        if (inst.writeback)
-            code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
+        addresses_.writeback(inst);
         return;
     }
     const auto transfer = [&]<bool Unscaled>(auto... location) {
@@ -238,8 +238,7 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
             code_.l(valid);
         }
     }
-    if (inst.writeback)
-        code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
+    addresses_.writeback(inst);
     if (inst.load) {
         if (inst.rd == 15) {
             code_.BFI(W22, W17, 5, 1);

@@ -228,7 +228,7 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
         else if (inst.kind == arm::InstructionKind::MultipleTransfer)
             key = MultipleEmitter::address(inst);
         else if (inst.kind == arm::InstructionKind::VectorTransfer &&
-            !inst.writeback && inst.rn != 15)
+            inst.rn != 15)
             key = VectorMemoryEmitter::address(inst);
         result.observe(inst, key);
         pc += inst.size;

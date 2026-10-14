@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "arm/instruction.hpp"
+#include "address_displacements.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -47,7 +48,8 @@ public:
     std::optional<Reference> find(const Key&) const;
     void begin_guard(const Key&);
     Reference remember(const Key&, oaknut::XReg pointer);
-    void invalidate(unsigned reg);
+    void observe(const arm::Instruction&);
+    void writeback(const arm::Instruction&);
     void enter(oaknut::VectorCodeGenerator&) const;
     void leave() const;
     void finalize(bool closed, std::vector<std::uint32_t>&,
@@ -66,6 +68,7 @@ private:
     std::array<std::optional<Identity>, 4> entries_;
     std::array<std::optional<Guard>, 4> first_;
     const AddressWindows* windows_;
+    std::optional<AddressDisplacements> displacements_;
     unsigned slot_count_, next_ = 0, written_ = 0;
     bool used_extra_ = false;
 };

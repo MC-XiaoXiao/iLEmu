@@ -11,7 +11,7 @@ using namespace oaknut::util;
 std::optional<AddressCache::Key> MultipleEmitter::address(const arm::Instruction& inst)
 {
     // PC values and base-load abort rules retain their original guards.
-    if (inst.writeback || inst.rn == 15 || inst.registers == 0 ||
+    if (inst.rn == 15 || inst.registers == 0 ||
         (inst.registers & 0x8000U) != 0 ||
         (inst.load && (inst.registers & (1U << inst.rn)) != 0))
         return {};
@@ -169,8 +169,7 @@ void MultipleEmitter::access(const arm::Instruction& inst,
         code_.TBNZ(W17, 1, exits.get(MemoryExits::Kind::Unsupported));
         code_.l(valid);
     }
-    if (inst.writeback)
-        code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
+    addresses_.writeback(inst);
     if (load_pc) {
         code_.BFI(W22, W17, 5, 1);
         code_.AND(W15, W17, 0xfffffffeU);

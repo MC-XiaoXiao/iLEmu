@@ -28,11 +28,12 @@ void AddressWindows::observe(
         std::int64_t low =
             key->add ? key->offset : -std::int64_t { key->offset };
         auto high = low;
+        const auto displacement = displacements_.get(key->base);
         const auto alignment = std::max(key->alignment, key->natural_alignment);
-        bool valid = true;
+        bool valid = displacement.has_value();
         if (key->index) {
             const auto mask = bits_[*key->index];
-            valid = mask.has_value() && key->offset == 0;
+            valid &= mask.has_value() && key->offset == 0;
             if (valid && key->shift == arm::ShiftKind::Lsl)
                 valid = key->shift_amount < 32 &&
                         (std::uint64_t { *mask } << key->shift_amount) <=
@@ -46,8 +47,13 @@ void AddressWindows::observe(
                 high = key->add ? shifted : 0;
             }
         }
-        high += key->size;
+        low += displacement.value_or(0);
+        high += std::int64_t { displacement.value_or(0) } + key->size;
         valid &= fits(low, high);
+        const auto residue = static_cast<unsigned>(low) & (alignment - 1U);
+        if ((access.end != 0 || access.first != 0) && access.residue != residue)
+            valid = false;
+        access.adjusted |= displacement.value_or(0) != 0 || inst.writeback;
         if (access.valid && valid) {
             if (access.end == 0 && access.first == 0) {
                 access.first = low;
@@ -56,7 +62,7 @@ void AddressWindows::observe(
                 access.first = std::min(access.first, low);
                 access.end = std::max(access.end, high);
             }
-            access.residue = static_cast<unsigned>(low) & (alignment - 1U);
+            access.residue = residue;
         }
         access.valid &= valid;
     }
@@ -70,16 +76,16 @@ void AddressWindows::observe(
     }
     for_written_register(inst, [&](unsigned reg) {
         bits_[reg].reset();
-        written_ |= 1U << reg;
     });
     if (result)
         bits_[inst.rd] = result;
+    displacements_.observe(inst);
 }
 void AddressWindows::finish(unsigned slots)
 {
     for (auto& access : accesses_) {
         const auto& key = access.key;
-        if (!access.valid || (written_ & (1U << key.base)) != 0)
+        if (!access.valid || displacements_.get(key.base) != 0)
             continue;
         auto found = std::find_if(
             windows_.begin(), windows_.end(), [&](const Window& w) {
@@ -100,11 +106,12 @@ void AddressWindows::finish(unsigned slots)
         ++found->keys;
         found->unconditional |= access.unconditional;
         found->indexed |= key.index.has_value();
+        found->adjusted |= access.adjusted || displacements_.modified(key.base);
     }
     for (unsigned slot = 0; slot < slots; ++slot) {
         Window* best = nullptr;
         for (auto& w : windows_)
-            if (!w.enabled && w.unconditional && (w.keys > 1 || w.indexed) &&
+            if (!w.enabled && w.unconditional && (w.keys > 1 || w.indexed || w.adjusted) &&
                 fits(w.first, w.end) && (!best || w.keys > best->keys))
                 best = &w;
         if (!best)
