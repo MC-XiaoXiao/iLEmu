@@ -48,7 +48,6 @@ public:
     void begin_guard(const Key&);
     Reference remember(const Key&, oaknut::XReg pointer);
     void invalidate(unsigned reg);
-    void clear();
     void enter(oaknut::VectorCodeGenerator&) const;
     void leave() const;
     void finalize(bool closed, std::vector<std::uint32_t>&,

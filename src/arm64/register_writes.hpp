@@ -36,6 +36,14 @@ void for_written_register(const arm::Instruction& inst, Invalidate&& invalidate)
             inst.load) ||
         (inst.kind == arm::InstructionKind::SystemControl && inst.load))
         invalidate(inst.rd);
+    if (inst.kind == arm::InstructionKind::MultipleTransfer) {
+        if (inst.load)
+            for (unsigned reg = 0; reg < 16; ++reg)
+                if ((inst.registers & (1U << reg)) != 0)
+                    invalidate(reg);
+        if (inst.writeback)
+            invalidate(inst.rn);
+    }
     if (inst.kind == arm::InstructionKind::DualTransfer && inst.load)
         invalidate(inst.rs);
     if (inst.kind == arm::InstructionKind::Multiply &&

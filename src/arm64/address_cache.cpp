@@ -106,11 +106,6 @@ void AddressCache::invalidate(unsigned reg)
         if (entry && (inputs(*entry) & (1U << reg)) != 0)
             entry.reset();
 }
-void AddressCache::clear()
-{
-    entries_ = {};
-    written_ = 0xffffU;
-}
 void AddressCache::enter(VectorCodeGenerator& code) const
 {
     if (used_extra_)

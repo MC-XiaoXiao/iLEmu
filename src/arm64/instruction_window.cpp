@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "instruction_window.hpp"
 #include "address_windows.hpp"
+#include "multiple_emitter.hpp"
 #include "scalar_register_plan.hpp"
 #include "vector_memory_emitter.hpp"
 #include "flag_effects.hpp"
@@ -214,7 +215,6 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
         }
         if (DynamicBackedge::ends_trace(inst) || arm::ArchitecturalStop::from(inst) ||
             inst.kind == arm::InstructionKind::Unsupported ||
-            inst.kind == arm::InstructionKind::MultipleTransfer ||
             inst.kind == arm::InstructionKind::ExclusiveTransfer ||
             inst.kind == arm::InstructionKind::Swap ||
             inst.kind == arm::InstructionKind::ClearExclusive ||
@@ -225,6 +225,8 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
         if (inst.kind == arm::InstructionKind::Transfer ||
             inst.kind == arm::InstructionKind::DualTransfer)
             key = MemoryEmitter::address(inst, pc);
+        else if (inst.kind == arm::InstructionKind::MultipleTransfer)
+            key = MultipleEmitter::address(inst);
         else if (inst.kind == arm::InstructionKind::VectorTransfer &&
             !inst.writeback && inst.rn != 15)
             key = VectorMemoryEmitter::address(inst);

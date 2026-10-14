@@ -376,7 +376,6 @@ namespace {
             };
             for_written_register(inst, invalidate);
             if (inst.kind == arm::InstructionKind::MultipleTransfer) {
-                memory_.invalidate_all();
                 exchanges_.invalidate_all();
             }
         }
@@ -523,10 +522,10 @@ namespace {
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
             unsigned before_it, bool big_endian)
         {
-            memory_.invalidate_all();
             InstructionMemoryExits exits { *this, pc, word, before,
                 cost, before_it, static_cast<StopReason>(multiple_exit) };
-            MultipleEmitter { code_, big_endian }.emit(inst, pc, cost, exits);
+            MultipleEmitter { code_, big_endian, memory_.addresses() }
+                .emit(inst, pc, cost, exits);
         }
 
     private:

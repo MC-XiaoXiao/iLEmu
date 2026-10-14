@@ -46,7 +46,6 @@ public:
     static std::optional<unsigned> dependent_read_destination(
         const arm::Instruction&, std::uint32_t pc);
     void invalidate_register(unsigned reg) { addresses_.invalidate(reg); }
-    void invalidate_all() { addresses_.clear(); }
     AddressCache& addresses() { return addresses_; }
 
 private:

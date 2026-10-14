@@ -8,9 +8,32 @@
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
+std::optional<AddressCache::Key> MultipleEmitter::address(const arm::Instruction& inst)
+{
+    // PC values and base-load abort rules retain their original guards.
+    if (inst.writeback || inst.rn == 15 || inst.registers == 0 ||
+        (inst.registers & 0x8000U) != 0 ||
+        (inst.load && (inst.registers & (1U << inst.rn)) != 0))
+        return {};
+    const auto length = 4U * static_cast<unsigned>(std::popcount(inst.registers));
+    const auto offset = (inst.add ? 0 : -static_cast<int>(length)) +
+                        (inst.index == inst.add ? 4 : 0);
+    return AddressCache::Key { inst.rn, length,
+        static_cast<unsigned>(offset < 0 ? -offset : offset), offset >= 0,
+        inst.load, 4, 4 };
+}
 void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     std::uint64_t cost, MemoryExits& exits)
 {
+    const auto key = address(inst);
+    if (key) {
+        if (const auto pointer = addresses_.find(*key)) {
+            access(inst, *pointer, exits);
+            return;
+        }
+    }
+    if (key && inst.condition == 14)
+        addresses_.begin_guard(*key);
     constexpr auto offset = offsetof(NativeOutcome, multiple);
     constexpr auto memory = offsetof(NativeOutcome, memory);
     const auto base = WReg { static_cast<int>(inst.rn) };
@@ -56,61 +79,11 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     if (inst.load && (inst.registers & (1U << inst.rn)) != 0)
         code_.B(checked);
     code_.ADD(X21, X21, X15);
-    std::array<unsigned, 16> registers { };
-    unsigned count = 0;
-    for (unsigned reg = 0; reg < 16; ++reg)
-        if ((inst.registers & (1U << reg)) != 0)
-            registers[count++] = reg;
-    for (unsigned i = 0; i < count;) {
-        const auto value = [](unsigned reg) {
-            return WReg { reg == 15 ? 17 : static_cast<int>(reg) };
-        };
-        const bool pair = i + 1U < count;
-        const auto first = value(registers[i]);
-        const auto second = pair ? value(registers[i + 1U]) : WZR;
-        if (inst.load) {
-            if (pair)
-                code_.LDP(first, second, X21, i * 4U);
-            else
-                code_.LDR(first, X21, i * 4U);
-            if (big_endian_) {
-                code_.REV(first, first);
-                if (pair)
-                    code_.REV(second, second);
-            }
-        } else {
-            if (registers[i] == 15 || (pair && registers[i + 1U] == 15))
-                code_.LDR(W17, X20,
-                    offset + offsetof(arm_memory::MultipleTransfer, pc_value));
-            if (big_endian_) {
-                code_.REV(W27, first);
-                if (pair) {
-                    code_.REV(W28, second);
-                    code_.STP(W27, W28, X21, i * 4U);
-                } else
-                    code_.STR(W27, X21, i * 4U);
-            } else if (pair)
-                code_.STP(first, second, X21, i * 4U);
-            else
-                code_.STR(first, X21, i * 4U);
-        }
-        i += pair ? 2U : 1U;
-    }
-    const bool load_pc = inst.load && (inst.registers & 0x8000U) != 0;
-    if (load_pc) {
-        Label valid;
-        code_.TBNZ(W17, 0, valid);
-        code_.TBNZ(W17, 1, exits.get(MemoryExits::Kind::Unsupported));
-        code_.l(valid);
-    }
-    if (inst.writeback)
-        code_.MOV(base, W16);
-    if (load_pc) {
-        code_.BFI(W22, W17, 5, 1);
-        code_.AND(W15, W17, 0xfffffffeU);
-        code_.B(exits.get(MemoryExits::Kind::Branch));
-    } else
-        code_.B(done);
+    AddressCache::Reference pointer { X21 };
+    if (key && inst.condition == 14)
+        pointer = addresses_.remember(*key, X21);
+    access(inst, pointer, exits);
+    code_.B(done);
     code_.l(checked);
     // No destination load has occurred at any guard that reaches this label.
     code_.STR(base, X20, offset + offsetof(arm_memory::MultipleTransfer, base));
@@ -125,5 +98,83 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     code_.STR(X21, X20, offset + offsetof(arm_memory::MultipleTransfer, ticks));
     code_.B(exits.get(MemoryExits::Kind::Checked));
     code_.l(done);
+}
+void MultipleEmitter::access(const arm::Instruction& inst,
+    AddressCache::Reference address, MemoryExits& exits)
+{
+    constexpr auto offset = offsetof(NativeOutcome, multiple);
+    const auto length = 4U * static_cast<unsigned>(std::popcount(inst.registers));
+    const bool folded = address.offset % 4 == 0 && address.offset >= -256 &&
+                        address.offset + static_cast<int>(length) - 4 <= 252;
+    const auto pointer = folded ? address.base : address.immediate(code_);
+    const auto displacement = folded ? address.offset : 0;
+    const auto scalar = [&](WReg value, int location) {
+        if (inst.load) {
+            if (location >= 0)
+                code_.LDR(value, pointer, location);
+            else
+                code_.LDUR(value, pointer, location);
+        } else if (location >= 0)
+            code_.STR(value, pointer, location);
+        else
+            code_.STUR(value, pointer, location);
+    };
+    std::array<unsigned, 16> registers { };
+    unsigned count = 0;
+    for (unsigned reg = 0; reg < 16; ++reg)
+        if ((inst.registers & (1U << reg)) != 0)
+            registers[count++] = reg;
+    for (unsigned i = 0; i < count;) {
+        const auto value = [](unsigned reg) {
+            return WReg { reg == 15 ? 17 : static_cast<int>(reg) };
+        };
+        const bool pair = i + 1U < count;
+        const auto first = value(registers[i]);
+        const auto second = pair ? value(registers[i + 1U]) : WZR;
+        const auto location = displacement + static_cast<int>(i * 4U);
+        if (inst.load) {
+            if (pair)
+                code_.LDP(first, second, pointer, location);
+            else
+                scalar(first, location);
+            if (big_endian_) {
+                code_.REV(first, first);
+                if (pair)
+                    code_.REV(second, second);
+            }
+        } else {
+            if (registers[i] == 15 || (pair && registers[i + 1U] == 15))
+                code_.LDR(W17, X20,
+                    offset + offsetof(arm_memory::MultipleTransfer, pc_value));
+            if (big_endian_) {
+                // The guest address is dead after every guard. Keep W16 for
+                // writeback and leave all address-cache registers intact.
+                code_.REV(W15, first);
+                if (pair) {
+                    code_.REV(W17, second);
+                    code_.STP(W15, W17, pointer, location);
+                } else
+                    scalar(W15, location);
+            } else if (pair)
+                code_.STP(first, second, pointer, location);
+            else
+                scalar(first, location);
+        }
+        i += pair ? 2U : 1U;
+    }
+    const bool load_pc = inst.load && (inst.registers & 0x8000U) != 0;
+    if (load_pc) {
+        Label valid;
+        code_.TBNZ(W17, 0, valid);
+        code_.TBNZ(W17, 1, exits.get(MemoryExits::Kind::Unsupported));
+        code_.l(valid);
+    }
+    if (inst.writeback)
+        code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
+    if (load_pc) {
+        code_.BFI(W22, W17, 5, 1);
+        code_.AND(W15, W17, 0xfffffffeU);
+        code_.B(exits.get(MemoryExits::Kind::Branch));
+    }
 }
 }
