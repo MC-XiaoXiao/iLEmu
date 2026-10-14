@@ -41,6 +41,11 @@ public:
         }();
         words.insert(words.end(), sequence.begin(), sequence.end());
     }
+    static void tail(std::vector<std::uint32_t>& words)
+    {
+        oaknut::VectorCodeGenerator code(words);
+        emit_leave(code, true);
+    }
 private:
     template<typename Code> static void emit_entry(Code& code)
     {
@@ -79,7 +84,7 @@ private:
         code.ORR(W22, W22, W21);
         code.STR(W22, X19, offsetof(CpuThreadState, cpsr));
     }
-    template<typename Code> static void emit_leave(Code& code)
+    template<typename Code> static void emit_leave(Code& code, bool tail = false)
     {
         using namespace oaknut;
         using namespace oaknut::util;
@@ -89,7 +94,10 @@ private:
         code.LDP(X27, X28, SP, 64);
         code.LDP(X29, X30, SP, 80);
         code.LDP(X19, X20, SP, PostIndexed { }, 192);
-        code.RET();
+        if (tail)
+            code.BR(oaknut::XReg { 16 });
+        else
+            code.RET();
     }
 };
 }

@@ -280,6 +280,11 @@ namespace {
             vectors_.flush();
             NativeFrame::publish(trace_.words);
             memory_.leave();
+            Label leave;
+            code_.LDR(X16, X20, offsetof(NativeOutcome, continuation_dispatch));
+            code_.CBZ(X16, leave);
+            code_.BR(X16);
+            code_.l(leave);
             NativeFrame::leave(trace_.words);
             std::vector<std::uint32_t> initial;
             VectorCodeGenerator entry(initial);

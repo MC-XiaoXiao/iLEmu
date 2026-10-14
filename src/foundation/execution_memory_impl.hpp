@@ -62,6 +62,16 @@ public:
         {
             return view_.identity;
         }
+        std::optional<execution::InstructionRegion>
+        continuation_region() const noexcept override
+        {
+            if (count_ == 0 || !pages_[0].backing ||
+                pages_[0].bytes.size() != AddressSpace::page_size)
+                return {};
+            const auto begin = std::uint64_t { pages_[0].base };
+            return execution::InstructionRegion {
+                begin, begin + AddressSpace::page_size };
+        }
         std::optional<execution::CompilationIdentity>
         compilation_identity() const noexcept override
         {

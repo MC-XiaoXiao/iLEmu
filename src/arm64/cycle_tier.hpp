@@ -30,8 +30,13 @@ public:
         // The final paid prefix can be a target mismatch, not a closed group.
         // Under-count one group rather than promote frequently called returns.
         const auto groups = ticks / group_ticks;
-        remaining_ -= static_cast<unsigned>(
-            std::min<std::uint64_t>(remaining_, groups == 0 ? 0 : groups - 1));
+        observe_groups(groups == 0 ? 0 : groups - 1);
+    }
+    void observe_groups(std::uint64_t groups)
+    {
+        if (eligible_)
+            remaining_ -= static_cast<unsigned>(
+                std::min<std::uint64_t>(remaining_, groups));
     }
     bool ready() const
     {

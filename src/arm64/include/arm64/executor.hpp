@@ -14,6 +14,7 @@ struct Arm64Statistics {
     std::uint64_t compilation_nanoseconds = 0;
     std::size_t retained_bytes = 0;
     std::uint64_t shared_compilation_hits = 0;
+    std::uint64_t continuation_calls = 0;
 };
 class Arm64Executor final : public Executor {
 public:

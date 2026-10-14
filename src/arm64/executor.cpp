@@ -104,7 +104,9 @@ public:
             native.poll = arm64::RunControl::poll;
             native.control = &control;
             auto* memory = source.data_memory();
-            if (memory && selected->accesses_memory)
+            const bool continuations = !step && cache_.prepare_continuations(
+                *selected, *lease, native, remaining);
+            if (memory && (selected->accesses_memory || continuations))
                 native.memory = memory->direct_memory();
             if (selected->closed && selected->maximum_ticks != 0) {
                 native.groups = std::min<std::uint64_t>(
@@ -132,7 +134,17 @@ public:
                 "ARM64 executor is unavailable on this host");
 #endif
             ++stats_.execution_calls;
-            cache_.observe(*selected, native.ticks);
+            stats_.continuation_calls += native.continuation_calls;
+            if (continuations)
+                cache_.finish_continuations(native);
+            else
+                cache_.observe(*selected, native.ticks);
+            if (native.continuation_stopped) {
+                result.ticks_consumed += native.ticks;
+                result.reason = static_cast<StopReason>(native.reason);
+                result.pc = state.registers[15];
+                return result;
+            }
             if (native.reason == arm64::exclusive_exit ||
                 native.reason == arm64::memory_exit ||
                 native.reason == arm64::multiple_exit ||

@@ -6,6 +6,7 @@
 #include "arm_memory/vector_transfer.hpp"
 #include "execution/run.hpp"
 #include "cycle_tier.hpp"
+#include "native_continuations.hpp"
 #include "trace_metadata.hpp"
 #include "arm/architectural_stop.hpp"
 #include <cstdint>
@@ -31,6 +32,15 @@ struct NativeOutcome {
     arm_memory::VectorTransfer vector;
     arm_memory::ExclusiveTransfer exclusive;
     std::uint32_t thread_pointer_read_only = 0;
+    const void* continuation_dispatch = nullptr;
+    NativeContinuation* continuations = nullptr;
+    NativeContinuation* active_continuation = nullptr;
+    NativeContinuation root_continuation;
+    std::uint64_t continuation_ticks = 0;
+    std::uint64_t continuation_remaining = 0;
+    std::uint32_t continuation_hops = 0;
+    std::uint32_t continuation_calls = 0;
+    std::uint32_t continuation_stopped = 0;
 };
 inline constexpr std::uint32_t exclusive_exit = 1U << 28U;
 inline constexpr std::uint32_t vector_exit = 1U << 29U;

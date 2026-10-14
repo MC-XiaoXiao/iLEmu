@@ -2,6 +2,7 @@
 #pragma once
 #include "arm64/executor.hpp"
 #include "compilation_key.hpp"
+#include "native_continuations.hpp"
 #include "arm64/shared_compilation_cache.hpp"
 #include "arm/architectural_stop.hpp"
 #include <list>
@@ -9,6 +10,7 @@
 #include <tuple>
 
 namespace ilemu::execution::arm64 {
+struct NativeOutcome;
 // Owns executable storage and opaque view tokens, never guest memory or
 // sources.
 class CodeCache {
@@ -33,6 +35,8 @@ public:
         CycleTier tier;
         InstructionRegion dependency;
         std::list<Recency>::iterator recency;
+        std::uint64_t continuation_revision = 0;
+        unsigned continuation_cooldown = 0;
     };
     CodeCache(CodeAllocator&, std::size_t, Arm64Statistics&,
         std::shared_ptr<SharedCompilationCache> = {});
@@ -44,8 +48,14 @@ public:
     void begin_run();
     void observe(Entry& entry, std::uint64_t ticks)
     {
+        const bool ready = entry.tier.ready();
         entry.tier.observe(ticks, entry.maximum_ticks);
+        if (!ready && entry.tier.ready())
+            ++revision_;
     }
+    bool prepare_continuations(Entry&, const InstructionLease&,
+        NativeOutcome&, std::uint64_t remaining);
+    void finish_continuations(NativeOutcome&);
     Binding bind(const InstructionLease&);
     Entry& entry(InstructionSource&, const Binding&, std::uint32_t pc,
         bool step, bool big_endian, bool thumb, unsigned it_state,
@@ -70,6 +80,10 @@ private:
     void trim(const Binding&, std::size_t accounted);
     Domain* find(const Binding&);
     Domain& obtain(const Binding&);
+    NativeContinuation continuation(Entry&);
+    static Key continuation_profile(Key);
+    std::unique_ptr<NativeContinuations> continuations_;
+    std::uint64_t revision_ = 1;
     CodeAllocator& allocator_;
     std::shared_ptr<SharedCompilationCache> shared_;
     std::size_t budget_;

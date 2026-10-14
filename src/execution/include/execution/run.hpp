@@ -89,6 +89,11 @@ struct CompilationIdentity {
     auto operator<=>(const CompilationIdentity&) const = default;
 };
 
+struct InstructionRegion {
+    std::uint64_t begin = 0;
+    std::uint64_t end = std::uint64_t { 1 } << 32U;
+};
+
 // A lease excludes external code writes and mapping/protection changes.
 // Owner checked accesses may change code/mappings, but must end native
 // execution before doing so and reacquire the lease before any subsequent
@@ -101,6 +106,12 @@ struct CompilationIdentity {
 class InstructionLease {
 public:
     virtual ~InstructionLease() = default;
+    // Prepared executable bytes, permissions, timing and mappings throughout
+    // this region stay valid until release, including successor entry fetches.
+    // Cached native entries may continue here without preparing another fetch.
+    // Sources with entry-specific side effects must retain the default.
+    virtual std::optional<InstructionRegion>
+    continuation_region() const noexcept { return {}; }
     virtual std::shared_ptr<const CodeIdentity> identity() const noexcept
     {
         return { };
@@ -113,11 +124,6 @@ public:
     {
         return { };
     }
-};
-
-struct InstructionRegion {
-    std::uint64_t begin = 0;
-    std::uint64_t end = std::uint64_t { 1 } << 32U;
 };
 
 // Bound at Run entry; a source owns permissions, backing lifetime and timing.
