@@ -263,8 +263,13 @@ HostResourceController::HostResourceController(HostResourceBudget budget)
         throw std::invalid_argument { "invalid host resource budget" };
     }
     workers_.reserve(budget_.worker_count);
-    for (std::size_t index = 0; index < budget_.worker_count; ++index) {
-        workers_.emplace_back([this] { worker_loop(); });
+    try {
+        for (std::size_t index = 0; index < budget_.worker_count; ++index) {
+            workers_.emplace_back([this] { worker_loop(); });
+        }
+    } catch (...) {
+        stop();
+        throw;
     }
 }
 

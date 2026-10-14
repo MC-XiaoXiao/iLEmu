@@ -186,7 +186,10 @@ private:
     friend class HostResourceController;
     void mark_finished() noexcept
     {
-        finished_.store(true, std::memory_order_release);
+        {
+            const std::lock_guard lock { finished_mutex_ };
+            finished_.store(true, std::memory_order_release);
+        }
         finished_condition_.notify_all();
     }
 
