@@ -15,10 +15,10 @@ void IntegerEmitter::divide(const arm::Instruction& inst)
 void IntegerEmitter::merge_nz()
 {
     code_.MRS(X17, SystemReg::NZCV);
-    code_.AND(W21, W21, 0x3fffffffU);
-    code_.AND(W17, W17, 0xc0000000U);
-    code_.ORR(W21, W21, W17);
-    code_.MSR(SystemReg::NZCV, X21);
+    // Keep the new N/Z and restore the shifter snapshot C/V. MRS NZCV
+    // supplies zero below bit28, so one bitfield insert replaces three ALU ops.
+    code_.BFI(W17, W21, 0, 30);
+    code_.MSR(SystemReg::NZCV, X17);
 }
 WReg IntegerEmitter::reg(unsigned index, std::uint32_t pc, WReg scratch)
 {
@@ -321,20 +321,30 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc,
     // The fast paths above leave X17 intact. General shifter/flag emission
     // may overwrite it, so later multiplies must reconstruct their addend.
     clear_multiply_addend();
+    if (logical && logical_immediate(inst, pc, flags))
+        return;
+    const bool combined_nz = logical && inst.set_flags &&
+        flags == LogicalFlagOutput::All &&
+        (inst.opcode == 0 || inst.opcode == 8 || inst.opcode == 13 || inst.opcode == 14);
     const bool simple_operand =
         !inst.immediate_operand && !inst.register_shift &&
-        inst.shift == arm::ShiftKind::Lsl && inst.shift_amount == 0 &&
-        !(logical && inst.set_flags);
+        inst.shift == arm::ShiftKind::Lsl && inst.shift_amount == 0;
     WReg b = W16;
-    if (simple_operand)
+    if (simple_operand) {
+        if (logical && inst.set_flags && flags == LogicalFlagOutput::All)
+            code_.MRS(X21, SystemReg::NZCV);
         b = reg(inst.rm, pc, W16);
+    }
     else
         shifter(inst, pc, logical && inst.set_flags, flags);
     const auto a = lhs(inst, pc);
     switch (inst.opcode) {
     case 0:
     case 8:
-        code_.AND(d.index() == 31 ? W15 : d, a, b);
+        if (combined_nz)
+            code_.ANDS(d, a, b);
+        else
+            code_.AND(d.index() == 31 ? W15 : d, a, b);
         break;
     case 1:
     case 9:
@@ -382,10 +392,16 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc,
         code_.ORR(d, a, b);
         break;
     case 13:
-        code_.MOV(d, b);
+        if (combined_nz)
+            code_.ANDS(d, b, b);
+        else
+            code_.MOV(d, b);
         break;
     case 14:
-        code_.BIC(d, a, b);
+        if (combined_nz)
+            code_.BICS(d, a, b);
+        else
+            code_.BIC(d, a, b);
         break;
     case 15:
         code_.MVN(d, b);
@@ -396,7 +412,8 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc,
     }
     if (logical && inst.set_flags && flags == LogicalFlagOutput::All) {
         const auto value = d.index() == 31 ? W15 : d;
-        code_.ANDS(WZR, value, value);
+        if (!combined_nz)
+            code_.ANDS(WZR, value, value);
         merge_nz();
     }
 }

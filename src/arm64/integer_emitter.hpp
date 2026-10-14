@@ -58,6 +58,7 @@ private:
     bool dsp_multiply(const arm::Instruction&);
     bool dual_halfword_multiply(const arm::Instruction&);
     void merge_nz();
+    bool logical_immediate(const arm::Instruction&, std::uint32_t pc, LogicalFlagOutput);
     oaknut::WReg lhs(const arm::Instruction&, std::uint32_t pc);
     void carry_from(oaknut::WReg value, unsigned bit,
         LogicalFlagOutput = LogicalFlagOutput::All);
