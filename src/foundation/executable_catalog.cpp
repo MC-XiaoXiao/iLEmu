@@ -14,11 +14,13 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 
 #include <sys/stat.h>
@@ -511,6 +513,11 @@ void collect_reliable_entry_points(
 {
     constexpr std::uint64_t thumb_descriptor_bit = std::uint64_t { 1 } << 32U;
     constexpr std::size_t maximum_entry_points = 65'536U;
+    std::unordered_set<std::uint64_t> seen;
+    seen.reserve(std::min(maximum_entry_points,
+        entry_points.size() + image.symbols().size() +
+            image.function_starts().size() + image.stubs().size() + 1U));
+    seen.insert(entry_points.begin(), entry_points.end());
     const auto add = [&](std::uint32_t address, bool thumb,
                          bool instruction_range = false) {
         if (address == 0 ||
@@ -521,8 +528,7 @@ void collect_reliable_entry_points(
         }
         const auto descriptor = static_cast<std::uint64_t>(address) |
                                 (thumb ? thumb_descriptor_bit : 0U);
-        if (std::find(entry_points.begin(), entry_points.end(), descriptor) ==
-            entry_points.end()) {
+        if (seen.insert(descriptor).second) {
             entry_points.push_back(descriptor);
         }
     };
@@ -548,6 +554,12 @@ void collect_reliable_entry_points(
     }
     for (const auto& stub : image.stubs())
         add(stub.address, false);
+}
+
+bool preferred_file_entry(const ilemu::ExecutableCatalogEntry& entry)
+{
+    return entry.file_size != 0U &&
+           !entry.kinds.contains(ilemu::ExecutableCatalogKind::DynamicMapping);
 }
 
 } // namespace
@@ -997,6 +1009,24 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
         [](const ScanCandidate& left, const ScanCandidate& right) {
             return left.alias < right.alias;
         });
+    const auto path_less = [](const std::filesystem::path* left,
+                               const std::filesystem::path* right) {
+        return *left < *right;
+    };
+    // The prior snapshot owns the borrowed keys and entries for this scan.
+    // Keep find_path's first preferred file, otherwise its last fallback.
+    std::map<const std::filesystem::path*, const ExecutableCatalogEntry*,
+        decltype(path_less)> previous_paths { path_less };
+    if (previous != nullptr) {
+        for (const auto& entry : previous->entries()) {
+            for (const auto& alias : entry.aliases) {
+                const auto [found, inserted] =
+                    previous_paths.try_emplace(&alias, &entry);
+                if (!inserted && !preferred_file_entry(*found->second))
+                    found->second = &entry;
+            }
+        }
+    }
     for (const auto& candidate : regular_files) {
         const auto& alias = candidate.alias;
         const auto& path = candidate.target;
@@ -1004,7 +1034,9 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
             continue;
         const auto normalized = alias;
         if (previous != nullptr && !candidate.symlink) {
-            const auto* old_entry = previous->find_path(normalized);
+            const auto old = previous_paths.find(&normalized);
+            const auto* old_entry = old == previous_paths.end()
+                ? nullptr : old->second;
             const auto current_generation = read_file_generation(normalized);
             const ExecutableCatalogPathGeneration* old_generation = nullptr;
             if (old_entry != nullptr) {
@@ -1318,8 +1350,7 @@ const ExecutableCatalogEntry* ExecutableCatalog::find_path(
             entry.aliases.end()) {
             continue;
         }
-        if (entry.file_size != 0U &&
-            !entry.kinds.contains(ExecutableCatalogKind::DynamicMapping)) {
+        if (preferred_file_entry(entry)) {
             return &entry;
         }
         fallback = &entry;
