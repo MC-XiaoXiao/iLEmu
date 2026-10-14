@@ -39,6 +39,7 @@ add_library(ilemu_foundation STATIC
     dyld_cache_local_symbols.cpp
     dyld_shared_cache.cpp
     executable_catalog.cpp
+    catalog_file_probe_batch.cpp
     firmware_prepare.cpp
     guest_execution_coordinator.cpp
     guest_cpu_topology.cpp

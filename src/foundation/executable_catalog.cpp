@@ -5,14 +5,19 @@
 // Track executable files, mappings and generations for loading and
 // translation reuse.
 
+#include "catalog_file_probe_batch.hpp"
 #include "foundation/executable_catalog.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <limits>
 #include <map>
 #include <span>
@@ -24,6 +29,7 @@
 #include <utility>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -132,13 +138,10 @@ void write_string(std::ostream& stream, std::string_view value)
 }
 
 [[nodiscard]] std::optional<ilemu::ExecutableCatalogFileGeneration>
-read_file_generation(const std::filesystem::path& path)
+catalog_generation(const struct stat& file_stat)
 {
-    struct stat file_stat { };
-    if (::stat(path.c_str(), &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
-        file_stat.st_size < 0) {
+    if (!S_ISREG(file_stat.st_mode) || file_stat.st_size < 0)
         return std::nullopt;
-    }
     return ilemu::ExecutableCatalogFileGeneration { static_cast<std::uint64_t>(
                                                         file_stat.st_dev),
         static_cast<std::uint64_t>(file_stat.st_ino),
@@ -147,6 +150,14 @@ read_file_generation(const std::filesystem::path& path)
         static_cast<std::int64_t>(file_stat.st_mtim.tv_nsec),
         static_cast<std::int64_t>(file_stat.st_ctim.tv_sec),
         static_cast<std::int64_t>(file_stat.st_ctim.tv_nsec) };
+}
+
+[[nodiscard]] std::optional<ilemu::ExecutableCatalogFileGeneration>
+read_file_generation(const std::filesystem::path& path)
+{
+    struct stat file_stat { };
+    return ::stat(path.c_str(), &file_stat) == 0
+        ? catalog_generation(file_stat) : std::nullopt;
 }
 
 void write_identity(std::ostream& stream, const ContentIdentity& identity)
@@ -321,23 +332,49 @@ void write_identity(std::ostream& stream, const ContentIdentity& identity)
     return entry;
 }
 
-struct FilePrefix {
-    std::array<std::byte, 16> bytes { };
-    std::size_t size { };
-};
+using ilemu::catalog_detail::FilePrefix;
+
+std::optional<ilemu::catalog_detail::FileProbe> read_file_probe(
+    const std::filesystem::path& path)
+{
+    const auto descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (descriptor < 0)
+        return std::nullopt;
+    std::unique_ptr<std::FILE, decltype(&std::fclose)> input {
+        ::fdopen(descriptor, "rb"), &std::fclose };
+    if (!input) {
+        ::close(descriptor);
+        return std::nullopt;
+    }
+    struct stat status { };
+    if (::fstat(descriptor, &status) != 0)
+        return std::nullopt;
+    const auto generation = catalog_generation(status);
+    if (!generation)
+        return std::nullopt;
+    FilePrefix prefix;
+    while (prefix.size < prefix.bytes.size()) {
+        const auto count = ::pread(descriptor, prefix.bytes.data() + prefix.size,
+            prefix.bytes.size() - prefix.size, static_cast<off_t>(prefix.size));
+        if (count < 0) {
+            if (errno == EINTR)
+                continue;
+            return std::nullopt;
+        }
+        if (count == 0)
+            break;
+        prefix.size += static_cast<std::size_t>(count);
+    }
+    if (::fstat(descriptor, &status) != 0 ||
+        catalog_generation(status) != generation)
+        return std::nullopt;
+    return ilemu::catalog_detail::FileProbe { prefix, *generation };
+}
 
 std::optional<FilePrefix> read_file_prefix(const std::filesystem::path& path)
 {
-    std::ifstream input { path, std::ios::binary };
-    if (!input)
-        return std::nullopt;
-    FilePrefix prefix;
-    input.read(reinterpret_cast<char*>(prefix.bytes.data()),
-        static_cast<std::streamsize>(prefix.bytes.size()));
-    if (input.bad())
-        return std::nullopt;
-    prefix.size = static_cast<std::size_t>(input.gcount());
-    return prefix;
+    const auto probe = read_file_probe(path);
+    return probe ? std::optional<FilePrefix> { probe->prefix } : std::nullopt;
 }
 
 bool has_dyld_cache_magic(const FilePrefix& prefix)
@@ -1027,7 +1064,18 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
             }
         }
     }
-    for (const auto& candidate : regular_files) {
+    catalog_detail::FileProbeBatch probes { read_file_probe,
+        read_file_generation };
+    for (std::size_t index = 0; index < regular_files.size(); ++index) {
+        if (index % catalog_detail::FileProbeBatch::capacity == 0) {
+            std::array<const std::filesystem::path*,
+                catalog_detail::FileProbeBatch::capacity> paths;
+            const auto count = std::min(paths.size(), regular_files.size() - index);
+            for (std::size_t offset = 0; offset < count; ++offset)
+                paths[offset] = &regular_files[index + offset].target;
+            probes.prepare({ paths.data(), count });
+        }
+        const auto& candidate = regular_files[index];
         const auto& alias = candidate.alias;
         const auto& path = candidate.target;
         if (cache_files.contains(path))
@@ -1084,7 +1132,8 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
                 continue;
             }
         }
-        const auto prefix = read_file_prefix(path);
+        const auto prefix = probes.read(index %
+            catalog_detail::FileProbeBatch::capacity, path);
         if (!prefix) {
             ++summary.failed_files;
         } else if (has_dyld_cache_magic(*prefix)) {
