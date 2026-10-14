@@ -29,7 +29,8 @@ private:
         else
             code_.ST1(oaknut::List { element }, pointer);
     }
-    void access(const arm::Instruction&, oaknut::XReg pointer);
+    void access(const arm::Instruction&, AddressCache::Reference);
+    bool resident_scalar(const arm::Instruction&, AddressCache::Reference);
     void scalar_multiple(const arm::Instruction&, oaknut::XReg pointer);
     void endian(oaknut::QReg, unsigned size, bool quad);
     oaknut::VectorCodeGenerator& code_;

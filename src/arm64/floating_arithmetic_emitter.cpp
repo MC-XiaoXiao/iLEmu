@@ -39,6 +39,12 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
                 vectors_.write_d(v.destination / 2U, QReg { source->index() });
                 return;
             }
+            if (vectors_.resident_pair(v.destination / 2U) ||
+                vectors_.resident_pair(v.first / 2U)) {
+                vectors_.read_d(Q0, v.first / 2U);
+                vectors_.write_d(v.destination / 2U, Q0);
+                return;
+            }
         } else {
             if (auto destination = vectors_.resident_s(v.destination)) {
                 code_.FMOV(*destination, vectors_.scalar_s(v.first, Q1));
@@ -46,6 +52,12 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
             }
             if (auto source = vectors_.resident_s(v.first)) {
                 vectors_.write_s(v.destination, QReg { source->index() });
+                return;
+            }
+            if (vectors_.resident_d(v.destination / 2U) ||
+                vectors_.resident_d(v.first / 2U)) {
+                code_.FMOV(S0, vectors_.scalar_s(v.first, Q1));
+                vectors_.write_s(v.destination, Q0);
                 return;
             }
         }

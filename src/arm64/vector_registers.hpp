@@ -39,13 +39,25 @@ public:
     }
     void read_d(oaknut::QReg scratch, unsigned d)
     {
-        code_.DUP(scratch.D2(), read(d).Delem()[d % 2U]);
+        if (auto resident = resident_d(d))
+            code_.FMOV(scratch.toD(), *resident);
+        else if (auto pair = resident_pair(d)) {
+            code_.FMOV(scratch.toS(), pair->first);
+            code_.INS(scratch.Selem()[1], oaknut::QReg { pair->second.index() }.Selem()[0]);
+        } else
+            code_.DUP(scratch.D2(), read(d).Delem()[d % 2U]);
     }
     // Read-only scalar views need a copy only for an upper lane.
     oaknut::SReg scalar_s(unsigned s, oaknut::QReg scratch)
     {
         if (auto resident = resident_s(s))
             return *resident;
+        if (auto wide = resident_d(s / 2U)) {
+            if (s % 2U == 0)
+                return oaknut::SReg { wide->index() };
+            code_.DUP(scratch.S4(), oaknut::QReg { wide->index() }.Selem()[1]);
+            return oaknut::SReg { scratch.index() };
+        }
         const auto bank = read(s / 2U);
         if (s % 4U == 0)
             return oaknut::SReg { bank.index() };
@@ -56,6 +68,10 @@ public:
     {
         if (auto resident = resident_d(d))
             return *resident;
+        if (resident_pair(d)) {
+            read_d(scratch, d);
+            return oaknut::DReg { scratch.index() };
+        }
         const auto bank = read(d);
         if (d % 2U == 0)
             return oaknut::DReg { bank.index() };
@@ -76,17 +92,29 @@ public:
                 return oaknut::DReg { static_cast<int>(scalars_->entries[*slot].host) };
         return {};
     }
+    std::optional<std::pair<oaknut::SReg, oaknut::SReg>> resident_pair(unsigned d) const
+    {
+        const auto low = resident_s(d * 2U), high = resident_s(d * 2U + 1U);
+        if (low && high)
+            return std::pair { *low, *high };
+        return {};
+    }
     void write_d(unsigned d, oaknut::QReg value)
     {
         if (auto resident = resident_d(d))
             code_.FMOV(*resident, oaknut::DReg { value.index() });
-        else
+        else if (auto pair = resident_pair(d)) {
+            code_.FMOV(pair->first, oaknut::SReg { value.index() });
+            code_.DUP(oaknut::QReg { pair->second.index() }.S4(), value.Selem()[1]);
+        } else
             code_.INS(write(d).Delem()[d % 2U], value.Delem()[0]);
     }
     void write_s(unsigned s, oaknut::QReg value)
     {
         if (auto resident = resident_s(s))
             code_.FMOV(*resident, oaknut::SReg { value.index() });
+        else if (auto wide = resident_d(s / 2U))
+            code_.INS(oaknut::QReg { wide->index() }.Selem()[s % 2U], value.Selem()[0]);
         else
             code_.INS(write(s / 2U).Selem()[s % 4U], value.Selem()[0]);
     }

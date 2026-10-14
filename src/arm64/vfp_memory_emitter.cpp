@@ -4,6 +4,93 @@
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
+bool VectorMemoryEmitter::resident_scalar(
+    const arm::Instruction& inst, AddressCache::Reference address)
+{
+    const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
+    if (v.mode != arm::VectorTransferMode::ScalarMultiple || v.count != 1)
+        return false;
+    const auto access = [&](auto value) {
+        const auto offset = address.offset;
+        if (offset >= 0 && static_cast<unsigned>(offset) % v.element_size == 0 &&
+            static_cast<unsigned>(offset) / v.element_size < 4096) {
+            if (inst.load)
+                code_.LDR(value, address.base, offset);
+            else
+                code_.STR(value, address.base, offset);
+        } else if (offset >= -256 && offset <= 255) {
+            if (inst.load)
+                code_.LDUR(value, address.base, offset);
+            else
+                code_.STUR(value, address.base, offset);
+        } else {
+            const auto pointer = address.immediate(code_);
+            if (inst.load)
+                code_.LDR(value, pointer);
+            else
+                code_.STR(value, pointer);
+        }
+    };
+    const auto direct = [&](auto reg) {
+        const decltype(reg) value { inst.load || !big_endian_ ? reg.index() : 0 };
+        if (!inst.load && big_endian_) {
+            code_.FMOV(value, reg);
+            endian(Q0, v.element_size, false);
+        }
+        access(value);
+        if (inst.load && big_endian_)
+            endian(QReg { reg.index() }, v.element_size, false);
+    };
+    if (v.element_size == 8) {
+        if (auto resident = vectors_.resident_d(v.first)) {
+            direct(*resident);
+            return true;
+        }
+        if (auto pair = vectors_.resident_pair(v.first)) {
+            if (!inst.load && big_endian_) {
+                vectors_.read_d(Q0, v.first);
+                endian(Q0, 8, false);
+                access(D0);
+                return true;
+            }
+            const auto offset = address.offset;
+            const bool folded = offset % 4 == 0 && offset >= -256 && offset <= 252;
+            const auto pointer = folded ? address.base : address.immediate(code_);
+            const auto displacement = folded ? offset : 0;
+            auto low = pair->first, high = pair->second;
+            if (big_endian_)
+                std::swap(low, high);
+            if (inst.load)
+                code_.LDP(low, high, pointer, displacement);
+            else
+                code_.STP(low, high, pointer, displacement);
+            if (inst.load && big_endian_) {
+                endian(QReg { low.index() }, 4, false);
+                endian(QReg { high.index() }, 4, false);
+            }
+            return true;
+        }
+    } else {
+        if (auto resident = vectors_.resident_s(v.first)) {
+            direct(*resident);
+            return true;
+        }
+        if (auto wide = vectors_.resident_d(v.first / 2U)) {
+            const auto lane = QReg { wide->index() }.Selem()[v.first % 2U];
+            if (!inst.load)
+                code_.UMOV(W17, lane);
+            if (!inst.load && big_endian_)
+                code_.REV(W17, W17);
+            access(W17);
+            if (inst.load && big_endian_)
+                code_.REV(W17, W17);
+            if (inst.load)
+                code_.INS(lane, W17);
+            return true;
+        }
+    }
+    return false;
+}
 void VectorMemoryEmitter::scalar_multiple(const arm::Instruction& inst, XReg pointer)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);

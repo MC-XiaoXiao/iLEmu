@@ -25,14 +25,17 @@ struct ScalarRegisterPlan {
 class ScalarRegisterPlan::Builder {
 public:
     void observe(const arm::FloatingArithmeticOperands&);
+    void observe(const arm::VectorTransferOperands&, bool load);
     ScalarRegisterPlan finish() const;
 
 private:
     struct Use {
         unsigned weight = 0;
-        bool present = false, written = false;
+        bool present = false, written = false, whole = false;
     };
-    void use(unsigned word, bool wide, bool write);
+    void use(unsigned word, bool wide, bool write, unsigned bonus = 0,
+        bool whole = false);
+    std::array<bool, 64> blocked_ { };
     std::array<Use, 64> singles_ { };
     std::array<Use, 32> doubles_ { };
 };

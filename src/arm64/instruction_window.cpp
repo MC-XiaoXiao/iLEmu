@@ -144,14 +144,24 @@ ScalarRegisterPlan InstructionWindow::scalar_registers(std::uint32_t start,
         }
         if (inst.kind == Kind::FloatingArithmetic)
             builder.observe(std::get<arm::FloatingArithmeticOperands>(inst.vector));
+        else if (inst.kind == Kind::VectorTransfer)
+            builder.observe(std::get<arm::VectorTransferOperands>(inst.vector), inst.load);
         else {
-            // Other extension consumers/producers keep the packed-bank path.
-            // This also excludes constants sharing the five resident slots.
+            // Other extension consumers/producers retain their existing path.
             switch (inst.kind) {
             case Kind::DataProcessing:
                 if (arm::alu_writes_pc(inst))
                     return {};
                 break;
+            case Kind::Transfer:
+            case Kind::MultipleTransfer:
+                if (DynamicBackedge::ends_trace(inst))
+                    return {};
+                break;
+            case Kind::DualTransfer:
+            case Kind::ExclusiveTransfer:
+            case Kind::ClearExclusive:
+            case Kind::Swap:
             case Kind::Multiply:
             case Kind::IntegerDivide:
             case Kind::PackHalfword:

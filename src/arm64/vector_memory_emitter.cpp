@@ -24,8 +24,11 @@ void VectorMemoryEmitter::endian(QReg value, unsigned size, bool quad)
             code_.REV64(value.toD().B8(), value.toD().B8());
     }
 }
-void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
+void VectorMemoryEmitter::access(const arm::Instruction& inst, AddressCache::Reference address)
 {
+    if (resident_scalar(inst, address))
+        return;
+    const auto pointer = address.immediate(code_);
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
     if (v.mode == arm::VectorTransferMode::ScalarMultiple) {
         scalar_multiple(inst, pointer);
@@ -154,7 +157,7 @@ void VectorMemoryEmitter::emit(
     const auto key = address(inst);
     if (key) {
         if (const auto pointer = addresses_.find(*key)) {
-            access(inst, pointer->immediate(code_));
+            access(inst, *pointer);
             return;
         }
     }
@@ -206,7 +209,7 @@ void VectorMemoryEmitter::emit(
     AddressCache::Reference pointer { X21 };
     if (key && inst.condition == 14)
         pointer = addresses_.remember(*key, X21);
-    access(inst, pointer.immediate(code_));
+    access(inst, pointer);
     if (inst.writeback)
         code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
     code_.B(done);
