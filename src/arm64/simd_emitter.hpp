@@ -18,6 +18,7 @@ public:
     void extract(const arm::VectorExtractOperands&);
     void core_move(const arm::VectorCoreMoveOperands&);
     void floating(const arm::VectorFloatingArithmeticOperands&);
+    void integer(const arm::VectorIntegerOperands&);
 
 private:
     oaknut::QReg source(oaknut::QReg scratch, unsigned d, bool quad);

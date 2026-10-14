@@ -415,6 +415,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 floating_vector(state,
                     std::get<arm::VectorFloatingArithmeticOperands>(inst.vector));
                 break;
+            case arm::InstructionKind::VectorIntegerArithmetic:
+                integer_vector(state,
+                    std::get<arm::VectorIntegerOperands>(inst.vector));
+                break;
             case arm::InstructionKind::VectorBitwise:
                 bitwise_vector(state,
                     std::get<arm::VectorBitwiseOperands>(inst.vector));

@@ -4,6 +4,7 @@
 #include "simd_immediate_decode.hpp"
 #include "simd_bitwise.hpp"
 #include "simd_floating_decode.hpp"
+#include "simd_integer_decode.hpp"
 #include "simd_extract.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
@@ -55,6 +56,7 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
         if (decode_program_status(out, word, false, architecture) ||
             decode_simd_immediate(out, word, false, vfp, architecture) ||
             decode_simd_floating(out, word, false, vfp, architecture, simd) ||
+            decode_simd_integer(out, word, false, vfp, architecture, simd) ||
             decode_simd_duplicate(out, word, false) ||
             decode_simd_bitwise(out, word, false) ||
             decode_simd_extract(out, word, false))

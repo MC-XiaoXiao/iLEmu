@@ -967,6 +967,10 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                     emit.vector_arithmetic(
                         std::get<arm::VectorFloatingArithmeticOperands>(inst.vector));
                     break;
+                case arm::InstructionKind::VectorIntegerArithmetic:
+                    SimdEmitter { emit.code(), emit.vectors() }.integer(
+                        std::get<arm::VectorIntegerOperands>(inst.vector));
+                    break;
                 case arm::InstructionKind::VectorBitwise:
                     SimdEmitter { emit.code(), emit.vectors() }.bitwise(
                         std::get<arm::VectorBitwiseOperands>(inst.vector));

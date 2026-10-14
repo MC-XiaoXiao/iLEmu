@@ -9,6 +9,7 @@
 #include "simd_immediate_decode.hpp"
 #include "simd_bitwise.hpp"
 #include "simd_floating_decode.hpp"
+#include "simd_integer_decode.hpp"
 #include "simd_extract.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
@@ -95,6 +96,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_system_control(out, (word << 16U) | tail, true) ||
             decode_simd_immediate(out, (word << 16U) | tail, true, vfp, architecture) ||
             decode_simd_floating(out, (word << 16U) | tail, true, vfp, architecture, simd) ||
+            decode_simd_integer(out, (word << 16U) | tail, true, vfp, architecture, simd) ||
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||
             decode_simd_extract(out, (word << 16U) | tail, true) ||

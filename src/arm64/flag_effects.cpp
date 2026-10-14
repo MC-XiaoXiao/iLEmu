@@ -82,6 +82,7 @@ FlagEffects flag_effects(const arm::Instruction& inst) noexcept
     case Kind::ParallelArithmetic:
     case Kind::SaturatingArithmetic:
     case Kind::VectorDuplicate:
+    case Kind::VectorIntegerArithmetic:
     case Kind::VectorBitwise:
     case Kind::VectorExtract:
     case Kind::VectorImmediate:
