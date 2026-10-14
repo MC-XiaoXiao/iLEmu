@@ -6,6 +6,7 @@
 #include <memory_resource>
 
 namespace ilemu::execution::arm64 {
+class AddressWindows;
 struct DecodedInstruction {
     std::uint32_t pc;
     unsigned it;
@@ -29,6 +30,9 @@ public:
     std::optional<DecodedInstruction> take(std::uint32_t pc, unsigned it,
         bool allow_straddle);
     std::uint64_t timing(DecodedInstruction&);
+    // Prove page-local windows for stable bases and bounded offsets.
+    AddressWindows address_windows(std::uint32_t pc, unsigned it,
+        unsigned remaining_instructions, std::uint64_t remaining_ticks);
     // A conservative linear-cycle proof avoids serializing parallel read
     // chains through one page-cache slot. Prefetched decodes feed emission.
     bool single_dependent_read_cycle(std::uint32_t pc, unsigned it,

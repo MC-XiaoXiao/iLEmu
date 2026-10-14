@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "instruction_window.hpp"
+#include "address_windows.hpp"
+#include "vector_memory_emitter.hpp"
 #include "flag_effects.hpp"
 #include "dynamic_backedge.hpp"
 #include "memory_emitter.hpp"
@@ -113,6 +115,58 @@ void InstructionWindow::repeat_cycle()
     pending_.resize(consumed_);
     consumed_ = 0;
     comparison_flags_dead_.reset();
+}
+AddressWindows InstructionWindow::address_windows(std::uint32_t start,
+    unsigned start_it, unsigned limit, std::uint64_t budget)
+{
+    auto* resource = pending_.get_allocator().resource();
+    AddressWindows result(resource);
+    const auto slots = single_dependent_read_cycle(start, start_it, limit, budget)
+        ? 2U : 4U;
+    auto pc = start;
+    auto it = start_it;
+    for (unsigned n = 0; n < limit; ++n) {
+        auto entry = take(pc, it, false);
+        if (!entry || !entry->word || entry->instruction.condition == 15 ||
+            std::uint64_t { pc } + entry->instruction.size > region_.end)
+            return AddressWindows(resource);
+        const auto& inst = entry->instruction;
+        const auto cost = timing(*entry);
+        if (cost == 0 || cost > budget)
+            return AddressWindows(resource);
+        budget -= cost;
+        const auto next_it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
+            ? inst.immediate : arm::advance_it(it)) : 0U;
+        if (inst.kind == arm::InstructionKind::Branch) {
+            const auto target = ((pc + inst.pc_offset) &
+                (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
+            if (inst.exchange || target != start || next_it != start_it)
+                return AddressWindows(resource);
+            result.observe(inst, {});
+            result.finish(slots);
+            return result;
+        }
+        if (DynamicBackedge::ends_trace(inst) || arm::ArchitecturalStop::from(inst) ||
+            inst.kind == arm::InstructionKind::Unsupported ||
+            inst.kind == arm::InstructionKind::MultipleTransfer ||
+            inst.kind == arm::InstructionKind::ExclusiveTransfer ||
+            inst.kind == arm::InstructionKind::Swap ||
+            inst.kind == arm::InstructionKind::ClearExclusive ||
+            inst.kind == arm::InstructionKind::SystemControl ||
+            inst.kind == arm::InstructionKind::CompareBranch)
+            return AddressWindows(resource);
+        std::optional<AddressCache::Key> key;
+        if (inst.kind == arm::InstructionKind::Transfer ||
+            inst.kind == arm::InstructionKind::DualTransfer)
+            key = MemoryEmitter::address(inst, pc);
+        else if (inst.kind == arm::InstructionKind::VectorTransfer &&
+            !inst.writeback && inst.rn != 15)
+            key = VectorMemoryEmitter::address(inst);
+        result.observe(inst, key);
+        pc += inst.size;
+        it = next_it;
+    }
+    return AddressWindows(resource);
 }
 bool InstructionWindow::single_dependent_read_cycle(std::uint32_t start,
     unsigned start_it, unsigned remaining_instructions,

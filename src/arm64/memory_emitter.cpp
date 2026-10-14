@@ -2,6 +2,7 @@
 #include "memory_emitter.hpp"
 #include "compiler.hpp"
 #include <cstddef>
+#include <bit>
 
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
@@ -9,7 +10,7 @@ using namespace oaknut::util;
 namespace {
     constexpr auto memory_offset = offsetof(NativeOutcome, memory);
     constexpr auto transfer_offset = offsetof(NativeOutcome, transfer);
-    template<typename... Address>
+    template<bool Unscaled = false, typename... Address>
     void scalar_read(VectorCodeGenerator& code, const arm::Instruction& inst,
         bool big_endian, Address... address)
     {
@@ -20,17 +21,35 @@ namespace {
         const bool signed_load = inst.sign_extend &&
                                  (!big_endian || inst.access_size == 1);
         if (inst.access_size == 1) {
-            if (signed_load)
-                code.LDRSB(value, address...);
-            else
-                code.LDRB(value, address...);
+            if (signed_load) {
+                if constexpr (Unscaled)
+                    code.LDURSB(value, address...);
+                else
+                    code.LDRSB(value, address...);
+            } else {
+                if constexpr (Unscaled)
+                    code.LDURB(value, address...);
+                else
+                    code.LDRB(value, address...);
+            }
         } else if (inst.access_size == 2) {
-            if (signed_load)
-                code.LDRSH(value, address...);
+            if (signed_load) {
+                if constexpr (Unscaled)
+                    code.LDURSH(value, address...);
+                else
+                    code.LDRSH(value, address...);
+            } else {
+                if constexpr (Unscaled)
+                    code.LDURH(value, address...);
+                else
+                    code.LDRH(value, address...);
+            }
+        } else {
+            if constexpr (Unscaled)
+                code.LDUR(value, address...);
             else
-                code.LDRH(value, address...);
-        } else
-            code.LDR(value, address...);
+                code.LDR(value, address...);
+        }
         if (big_endian && inst.access_size != 1) {
             if (inst.access_size == 2)
                 code.REV16(value, value);
@@ -39,6 +58,27 @@ namespace {
         }
         if (inst.sign_extend && !signed_load)
             code.SXTH(value, value);
+    }
+    template<bool Unscaled, typename... Address>
+    void scalar_write(VectorCodeGenerator& code, unsigned size, WReg value,
+        Address... address)
+    {
+        if (size == 1) {
+            if constexpr (Unscaled)
+                code.STURB(value, address...);
+            else
+                code.STRB(value, address...);
+        } else if (size == 2) {
+            if constexpr (Unscaled)
+                code.STURH(value, address...);
+            else
+                code.STRH(value, address...);
+        } else {
+            if constexpr (Unscaled)
+                code.STUR(value, address...);
+            else
+                code.STR(value, address...);
+        }
     }
 }
 void MemoryEmitter::store_value(const arm::Instruction& inst, std::uint32_t pc)
@@ -117,27 +157,74 @@ std::optional<unsigned> MemoryEmitter::dependent_read_destination(
     return { };
 }
 void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
-    XReg pointer, Exits& exits)
+    AddressCache::Reference address, Exits& exits)
 {
+    const auto resolve = [&] {
+        if (!address.indexed)
+            return address.immediate(code_);
+        integer_.address_offset(inst, pc);
+        if (inst.add)
+            code_.ADD(X21, address.base, W16, AddSubExt::UXTW);
+        else
+            code_.SUB(X21, address.base, W16, AddSubExt::UXTW);
+        return X21;
+    };
     if (inst.kind == arm::InstructionKind::DualTransfer) {
         const WReg first { static_cast<int>(inst.rd) };
         const WReg second { static_cast<int>(inst.rs) };
-        if (inst.load) {
-            code_.LDP(first, second, pointer);
-            endian(4, first);
-            endian(4, second);
-        } else if (big_endian_) {
-            code_.REV(W15, first);
-            code_.REV(W17, second);
-            code_.STP(W15, W17, pointer);
-        } else
-            code_.STP(first, second, pointer);
+        const auto pair = [&](XReg base, int offset) {
+            if (inst.load) {
+                code_.LDP(first, second, base, offset);
+                endian(4, first);
+                endian(4, second);
+            } else if (big_endian_) {
+                code_.REV(W15, first);
+                code_.REV(W17, second);
+                code_.STP(W15, W17, base, offset);
+            } else
+                code_.STP(first, second, base, offset);
+        };
+        if (!address.indexed && address.offset % 4 == 0 &&
+            address.offset >= -256 && address.offset <= 252)
+            pair(address.base, address.offset);
+        else
+            pair(resolve(), 0);
         if (inst.writeback)
             code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
         return;
     }
+    const auto transfer = [&]<bool Unscaled>(auto... location) {
+        if (inst.load)
+            scalar_read<Unscaled>(code_, inst, big_endian_, location...);
+        else {
+            WReg value = W17;
+            if (inst.rd == 15 || (big_endian_ && inst.access_size != 1)) {
+                store_value(inst, pc);
+                endian(inst.access_size, W17);
+            } else
+                value = WReg { static_cast<int>(inst.rd) };
+            scalar_write<Unscaled>(code_, inst.access_size, value, location...);
+        }
+    };
+    const auto scale = static_cast<unsigned>(std::countr_zero(inst.access_size));
+    if (address.indexed && inst.shift == arm::ShiftKind::Lsl && inst.add &&
+        (inst.shift_amount == 0 || inst.shift_amount == scale))
+        transfer.template operator()<false>(address.base,
+            WReg { static_cast<int>(inst.rm) }, IndexExt::UXTW, inst.shift_amount);
+    else if (address.indexed && inst.shift == arm::ShiftKind::Lsl && !inst.add) {
+        code_.NEG(W16, WReg { static_cast<int>(inst.rm) },
+            AddSubShift::LSL, inst.shift_amount);
+        transfer.template operator()<false>(address.base, W16, IndexExt::SXTW);
+    } else if (address.indexed)
+        transfer.template operator()<false>(resolve());
+    else if (address.offset >= 0 &&
+        static_cast<unsigned>(address.offset) % inst.access_size == 0)
+        transfer.template operator()<false>(address.base, address.offset);
+    else if (address.offset >= -256 && address.offset <= 255)
+        transfer.template operator()<true>(address.base, address.offset);
+    else
+        transfer.template operator()<false>(resolve());
     if (inst.load) {
-        scalar_read(code_, inst, big_endian_, pointer);
         if (inst.kind == arm::InstructionKind::TableBranch) {
             code_.MOV(W15, pc + 4U);
             code_.ADD(W15, W15, W17, AddSubShift::LSL, 1);
@@ -150,19 +237,6 @@ void MemoryEmitter::access(const arm::Instruction& inst, std::uint32_t pc,
             code_.TBNZ(W17, 1, exits.get(ExitKind::Unsupported));
             code_.l(valid);
         }
-    } else {
-        WReg value = W17;
-        if (inst.rd == 15 || (big_endian_ && inst.access_size != 1)) {
-            store_value(inst, pc);
-            endian(inst.access_size, W17);
-        } else
-            value = WReg { static_cast<int>(inst.rd) };
-        if (inst.access_size == 1)
-            code_.STRB(value, pointer);
-        else if (inst.access_size == 2)
-            code_.STRH(value, pointer);
-        else
-            code_.STR(value, pointer);
     }
     if (inst.writeback)
         code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
@@ -242,9 +316,9 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     code_.LDR(X21, table, W17, IndexExt::UXTW, 3);
     code_.CBZ(X21, checked);
     code_.ADD(X21, X21, X15);
-    XReg pointer = X21;
+    AddressCache::Reference pointer { X21 };
     if (key && inst.condition == 14)
-        pointer = addresses_.remember(*key, pointer);
+        pointer = addresses_.remember(*key, X21);
     access(inst, pc, pointer, exits);
     code_.B(done);
     code_.l(checked);

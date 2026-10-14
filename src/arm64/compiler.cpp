@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "compiler.hpp"
+#include "register_writes.hpp"
+#include "address_windows.hpp"
 #include "native_frame.hpp"
 #include "arm/program_status.hpp"
 #include "cycle_tier.hpp"
@@ -63,13 +65,14 @@ namespace {
         Emitter(CompiledTrace& trace, bool big_endian, bool thumb,
             std::uint32_t pc, unsigned it, bool single_step,
             std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads,
-            std::optional<RegisterShiftRange> shift_range)
+            std::optional<RegisterShiftRange> shift_range,
+            const AddressWindows* windows)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_)
             , integer_(code_, shift_range)
             , exchanges_(code_, integer_, thumb)
-            , memory_(code_, integer_, big_endian, fast_reads, cache_reads, temporary)
+            , memory_(code_, integer_, big_endian, fast_reads, cache_reads, temporary, windows)
             , thumb_(thumb)
             , backedge_(pc, it, thumb, !single_step)
             , head_(*temporary), loop_tail_(*temporary), epilogue_(*temporary)
@@ -371,52 +374,11 @@ namespace {
                 exchanges_.invalidate(reg);
                 integer_.invalidate_multiply_addend(reg);
             };
-            if (inst.kind == arm::InstructionKind::FloatingSystem) {
-                const auto& v = std::get<arm::FloatingSystemOperands>(inst.vector);
-                if (v.to_core && v.core != 15)
-                    invalidate(v.core);
-            }
-            if (inst.kind == arm::InstructionKind::VectorCoreMove) {
-                const auto& v = std::get<arm::VectorCoreMoveOperands>(inst.vector);
-                if (v.to_core) {
-                    invalidate(v.core);
-                    if (v.pair)
-                        invalidate(v.core2);
-                }
-            }
-            if ((inst.kind == arm::InstructionKind::DataProcessing &&
-                    (inst.opcode < 8 || inst.opcode > 11)) ||
-                inst.kind == arm::InstructionKind::Multiply ||
-                inst.kind == arm::InstructionKind::IntegerDivide ||
-                inst.kind == arm::InstructionKind::PackHalfword ||
-                inst.kind == arm::InstructionKind::IntegerTransform ||
-                inst.kind == arm::InstructionKind::ParallelSaturating ||
-                inst.kind == arm::InstructionKind::ParallelArithmetic ||
-                inst.kind == arm::InstructionKind::SaturatingArithmetic ||
-                inst.kind == arm::InstructionKind::WideImmediate ||
-                inst.kind == arm::InstructionKind::Swap ||
-                ((inst.kind == arm::InstructionKind::Transfer ||
-                     inst.kind == arm::InstructionKind::DualTransfer) && inst.load) ||
-                (inst.kind == arm::InstructionKind::SystemControl && inst.load))
-                invalidate(inst.rd);
-            if (inst.kind == arm::InstructionKind::DualTransfer && inst.load)
-                invalidate(inst.rs);
-            if (inst.kind == arm::InstructionKind::Multiply &&
-                arm::multiply_writes_pair(inst))
-                invalidate(inst.rn);
-            if ((inst.kind == arm::InstructionKind::Transfer ||
-                    inst.kind == arm::InstructionKind::DualTransfer ||
-                    inst.kind == arm::InstructionKind::VectorTransfer) &&
-                inst.writeback)
-                invalidate(inst.rn);
+            for_written_register(inst, invalidate);
             if (inst.kind == arm::InstructionKind::MultipleTransfer) {
                 memory_.invalidate_all();
                 exchanges_.invalidate_all();
             }
-            if ((inst.kind == arm::InstructionKind::Branch ||
-                    inst.kind == arm::InstructionKind::BranchExchange) &&
-                inst.link)
-                invalidate(14);
         }
         VectorCodeGenerator& code() { return code_; }
         void vector_transfer(const arm::Instruction& inst, std::uint32_t pc,
@@ -638,7 +600,9 @@ namespace {
 static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
     unsigned it, CycleExpansion expansion,
-    std::optional<RegisterShiftRange> shift_range = {})
+    std::optional<RegisterShiftRange> shift_range = {},
+    const AddressWindows* windows = nullptr,
+    unsigned instruction_limit = maximum_trace_instructions)
 {
     const auto region = source.instruction_region(pc);
     if (region.begin > pc || region.end <= pc ||
@@ -681,14 +645,15 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     // Larger read fallbacks are earned by the existing hot-cycle tier, so
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
-        expansion == CycleExpansion::Hot, cache_reads, shift_range);
+        expansion == CycleExpansion::Hot, cache_reads, shift_range, windows);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
     unsigned cycles = 0, cycle_length = 0, natural_copies = 0;
     unsigned original_natural_copies = 0;
     bool comparison_flags_live = false;
-    const auto limit = single_step ? 1U : maximum_trace_instructions;
+    const auto limit = single_step ? 1U
+        : std::min(maximum_trace_instructions, instruction_limit);
     for (unsigned n = 0; n < limit; ++n) {
         const bool comparison_flags = std::exchange(comparison_flags_live, false);
         if (pc < region.begin || pc >= region.end)
@@ -1049,8 +1014,9 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                 cycle_length = n + 1;
                 original_natural_copies = std::min(
                     CycleTier::natural_copies(expansion), limit / cycle_length);
-                natural_copies = emit.expansion_copies(original_natural_copies);
-            } else if (cycles == 2)
+                natural_copies = windows ? original_natural_copies
+                    : emit.expansion_copies(original_natural_copies);
+            } else if (cycles == 2 && !windows)
                 natural_copies = emit.expansion_copies(original_natural_copies);
             const auto copies =
                 std::min(natural_copies, limit / cycle_length);
@@ -1078,6 +1044,21 @@ static CompiledTrace compile_hot(InstructionSource& source, std::uint32_t pc,
     InstructionWindow window(source, region, thumb, &temporary, true);
     auto count = window.invariant_shift_count(
         pc, it, maximum_trace_instructions, maximum_ticks);
+    if (!count) {
+        window.repeat_cycle();
+        auto windows = window.address_windows(pc, it,
+            maximum_trace_instructions, maximum_ticks);
+        if (!windows.empty()) {
+            auto slow = compile_trace(source, pc, false, maximum_ticks,
+                big_endian, thumb, it, CycleExpansion::Hot);
+            // A single cache entry needs the same paid group in either body.
+            // Keep the existing read-cache copy budget when the fast body is smaller.
+            auto fast = compile_trace(source, pc, false, maximum_ticks,
+                big_endian, thumb, it, CycleExpansion::Hot, {}, &windows,
+                slow.instructions);
+            return windows.select(std::move(fast), std::move(slow));
+        }
+    }
     if (count && count->carry_kinds != 0) {
         std::array<CompiledTrace, 4> variants;
         const auto variant = [&](ShiftCountRange range) {

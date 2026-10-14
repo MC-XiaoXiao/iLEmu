@@ -133,6 +133,16 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
             code_.INS(value.Selem()[lane], W17);
     }
 }
+std::optional<AddressCache::Key> VectorMemoryEmitter::address(const arm::Instruction& inst)
+{
+    if (inst.writeback || inst.rn == 15)
+        return {};
+    const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
+    const bool scalar = v.mode == arm::VectorTransferMode::ScalarMultiple;
+    return AddressCache::Key { inst.rn, arm_memory::vector_transfer_length(v),
+        scalar && inst.index ? inst.immediate : 0U, inst.add, inst.load,
+        v.alignment, scalar ? 4U : v.element_size };
+}
 void VectorMemoryEmitter::emit(
     const arm::Instruction& inst, std::uint32_t pc, std::uint64_t cost,
     Label& checked_exit)
@@ -141,21 +151,18 @@ void VectorMemoryEmitter::emit(
     const auto length = arm_memory::vector_transfer_length(v);
     const bool scalar = v.mode == arm::VectorTransferMode::ScalarMultiple;
     const auto natural_alignment = scalar ? 4U : v.element_size;
-    const bool cacheable = !inst.writeback && inst.rn != 15;
-    const AddressCache::Key key { inst.rn, length,
-        scalar && inst.index ? inst.immediate : 0U, inst.add, inst.load,
-        v.alignment, natural_alignment };
-    if (cacheable) {
-        if (const auto pointer = addresses_.find(key)) {
-            access(inst, *pointer);
+    const auto key = address(inst);
+    if (key) {
+        if (const auto pointer = addresses_.find(*key)) {
+            access(inst, pointer->immediate(code_));
             return;
         }
     }
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
     Label checked, aligned, done;
-    if (cacheable && inst.condition == 14)
-        addresses_.begin_guard(key);
+    if (key && inst.condition == 14)
+        addresses_.begin_guard(*key);
     if (inst.rn == 15)
         code_.MOV(W15, inst.align_pc ? (pc + inst.pc_offset) & ~3U
                                    : pc + inst.pc_offset);
@@ -196,10 +203,10 @@ void VectorMemoryEmitter::emit(
     code_.LDR(X17, table, W17, IndexExt::UXTW, 3);
     code_.CBZ(X17, checked);
     code_.ADD(X21, X17, X15);
-    auto pointer = X21;
-    if (cacheable && inst.condition == 14)
-        pointer = addresses_.remember(key, pointer);
-    access(inst, pointer);
+    AddressCache::Reference pointer { X21 };
+    if (key && inst.condition == 14)
+        pointer = addresses_.remember(*key, X21);
+    access(inst, pointer.immediate(code_));
     if (inst.writeback)
         code_.MOV(WReg { static_cast<int>(inst.rn) }, W16);
     code_.B(done);

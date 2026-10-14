@@ -2,21 +2,10 @@
 #include "shift_count_range.hpp"
 #include <oaknut/oaknut.hpp>
 namespace ilemu::execution::arm64 {
-namespace {
-bool matching_metadata(const CompiledTrace& first, const CompiledTrace& second)
-{
-    return !first.stop && !second.stop &&
-        first.maximum_ticks == second.maximum_ticks &&
-        first.instructions == second.instructions && first.closed == second.closed &&
-        first.accesses_memory == second.accesses_memory &&
-        first.ends_with_stop == second.ends_with_stop &&
-        first.first_instruction == second.first_instruction;
-}
-}
 std::optional<CompiledTrace> GuardedShiftTrace::select(unsigned reg,
     CompiledTrace below, CompiledTrace above)
 {
-    if (!matching_metadata(below, above))
+    if (!below.selectable_with(above))
         return {};
     if (below.words == above.words)
         return below;
@@ -46,7 +35,7 @@ std::optional<CompiledTrace> GuardedShiftTrace::select(
     std::size_t words = 32; // Entry selection and per-body alignment.
     unsigned unique = 0;
     for (unsigned i = 0; i < traces.size(); ++i) {
-        if (!matching_metadata(traces[0], traces[i]))
+        if (!traces[0].selectable_with(traces[i]))
             return {};
         canonical[i] = i;
         for (unsigned j = 0; j < i; ++j) {

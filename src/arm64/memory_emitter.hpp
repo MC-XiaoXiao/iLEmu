@@ -15,12 +15,13 @@ public:
     using Exits = MemoryExits;
     MemoryEmitter(oaknut::VectorCodeGenerator& code, IntegerEmitter& integer,
         bool big_endian, bool expanded, bool cache_reads,
-        std::pmr::memory_resource* temporary)
+        std::pmr::memory_resource* temporary,
+        const AddressWindows* windows = nullptr)
         : code_(code)
         , integer_(integer)
         , big_endian_(big_endian)
         // Only the existing hot tier earns extra ABI save/restore state.
-        , addresses_(code, expanded && !cache_reads)
+        , addresses_(code, expanded && !cache_reads, windows)
         , read_pages_(code, cache_reads)
         , fast_reads_(expanded)
         , pending_(temporary)
@@ -40,6 +41,8 @@ public:
         read_pages_.leave();
     }
     unsigned read_expansion_growth() const { return read_pages_.extra_words(); }
+    static std::optional<AddressCache::Key> address(
+        const arm::Instruction&, std::uint32_t pc);
     static std::optional<unsigned> dependent_read_destination(
         const arm::Instruction&, std::uint32_t pc);
     void invalidate_register(unsigned reg) { addresses_.invalidate(reg); }
@@ -47,11 +50,9 @@ public:
     AddressCache& addresses() { return addresses_; }
 
 private:
-    static std::optional<AddressCache::Key> address(
-        const arm::Instruction&, std::uint32_t pc);
     static bool is_dependent_read(
         const arm::Instruction&, const AddressCache::Key&);
-    void access(const arm::Instruction&, std::uint32_t pc, oaknut::XReg,
+    void access(const arm::Instruction&, std::uint32_t pc, AddressCache::Reference,
         Exits&);
     void dependent_read(const arm::Instruction&, std::uint32_t pc,
         std::uint64_t cost, Exits&);

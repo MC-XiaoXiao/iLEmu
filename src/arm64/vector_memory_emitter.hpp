@@ -16,6 +16,7 @@ public:
         , vectors_(vectors)
     {
     }
+    static std::optional<AddressCache::Key> address(const arm::Instruction&);
     void emit(const arm::Instruction&, std::uint32_t pc, std::uint64_t cost,
         oaknut::Label& checked_exit);
 

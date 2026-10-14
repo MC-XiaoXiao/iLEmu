@@ -7,8 +7,10 @@
 #include <oaknut/oaknut.hpp>
 #include <optional>
 #include <vector>
+#include <variant>
 
 namespace ilemu::execution::arm64 {
+class AddressWindows;
 // Dominating guards publish into X27/X28 and optional D8/D9 slots. Only invariant
 // slots survive a closed trace backedge; no pointer survives a native
 // invocation or checked exit. Callers revoke entries on every architectural
@@ -32,12 +34,19 @@ public:
         }
         bool operator==(const Key&) const = default;
     };
+    struct Reference {
+        oaknut::XReg base;
+        std::int32_t offset = 0;
+        bool indexed = false;
+        oaknut::XReg immediate(oaknut::VectorCodeGenerator&) const;
+    };
     // Extra slots share D8/D9 with ReadPageCache, so the caller grants them
     // only when that dynamic page resolver is disabled for this trace.
-    AddressCache(oaknut::VectorCodeGenerator&, bool extra_slots_available);
-    std::optional<oaknut::XReg> find(const Key&) const;
+    AddressCache(oaknut::VectorCodeGenerator&, bool extra_slots_available,
+        const AddressWindows* = nullptr);
+    std::optional<Reference> find(const Key&) const;
     void begin_guard(const Key&);
-    oaknut::XReg remember(const Key&, oaknut::XReg pointer);
+    Reference remember(const Key&, oaknut::XReg pointer);
     void invalidate(unsigned reg);
     void clear();
     void enter(oaknut::VectorCodeGenerator&) const;
@@ -46,13 +55,18 @@ public:
         oaknut::VectorCodeGenerator& entry) const;
 
 private:
+    using Identity = std::variant<Key, unsigned>;
+    Identity identity(const Key&) const;
+    std::uint32_t inputs(const Identity&) const;
+    Reference reference(const Key&, const Identity&, oaknut::XReg) const;
     struct Guard {
-        Key key;
+        Identity identity;
         std::ptrdiff_t branch, target;
     };
     oaknut::VectorCodeGenerator& code_;
-    std::array<std::optional<Key>, 4> entries_;
+    std::array<std::optional<Identity>, 4> entries_;
     std::array<std::optional<Guard>, 4> first_;
+    const AddressWindows* windows_;
     unsigned slot_count_, next_ = 0, written_ = 0;
     bool used_extra_ = false;
 };
