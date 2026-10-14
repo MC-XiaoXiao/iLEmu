@@ -72,15 +72,20 @@ namespace {
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads, temporary)
             , thumb_(thumb)
             , backedge_(pc, it, thumb, !single_step)
+            , head_(*temporary), loop_tail_(*temporary), epilogue_(*temporary)
             , exits_(temporary)
         {
+        }
+        Label label() const
+        {
+            return Label { *exits_.get_allocator().resource() };
         }
         Label& exit(std::optional<StopReason> reason, std::uint64_t ticks,
             std::uint32_t pc, std::optional<std::uint32_t> word = { },
             std::uint32_t svc = 0, bool dynamic_pc = false,
             std::optional<unsigned> it = { }, bool backedge = true)
         {
-            exits_.push_back({ { }, reason, ticks,
+            exits_.push_back({ label(), reason, ticks,
                 reason == StopReason::Svc ? pc + size_ : pc, pc,
                 word.value_or(0), svc, dynamic_pc, word.has_value(), backedge,
                 it.value_or(it_) });
@@ -135,7 +140,7 @@ namespace {
             code_.l(continuation->label);
             // Binding resolved every incoming branch. A new label keeps the
             // precise prefix exit; a matching target falls into the next copy.
-            continuation->label = Label { };
+            continuation->label = label();
             backedge_.branch_on_mismatch(code_, continuation->label);
             continued_cycle_ = true;
             return true;
@@ -226,7 +231,8 @@ namespace {
             const bool share = natural_backedge || continued_cycle_;
             if (share) {
                 for (const auto& out : exits_) {
-                    auto& payload = shared[out.payload()];
+                    auto& payload = shared.try_emplace(
+                        out.payload(), SharedExit { label() }).first->second;
                     payload.example = &out;
                     ++payload.count;
                 }
@@ -291,7 +297,7 @@ namespace {
         void guard_exchange_target(std::uint32_t pc,
             std::uint32_t word, std::uint64_t ticks)
         {
-            Label valid;
+            Label valid = label();
             code_.TBNZ(W17, 0, valid);
             code_.TBZ(W17, 1, valid);
             code_.B(exit(StopReason::UnsupportedInstruction, ticks, pc, word));
@@ -304,7 +310,7 @@ namespace {
             if (inst.link)
                 code_.MOV(W14, (pc + inst.size) | (thumb_ ? 1U : 0U));
             code_.BFI(W22, W17, 5, 1);
-            Label arm_target, done;
+            Label arm_target = label(), done = label();
             code_.TBZ(W17, 0, arm_target);
             code_.AND(W15, W17, 0xfffffffeU);
             code_.B(done);
@@ -669,6 +675,9 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     const bool has_data_memory = source.data_memory() != nullptr;
     const bool alu_interworks =
         arm::alu_interworks(thumb, source.alu_pc_write_profile());
+    // Native frame and exits dominate short traces. Reserve a small code
+    // buffer once; standalone stops above still allocate no machine code.
+    out.words.reserve(256);
     // Larger read fallbacks are earned by the existing hot-cycle tier, so
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
@@ -738,7 +747,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                       std::get<arm::FloatingArithmeticOperands>(inst.vector).operation)
                 : 0U;
         if (floating_mask != 0 && emit.needs_floating_guard(floating_mask)) {
-            Label skipped;
+            Label skipped = emit.label();
             emit.conditional_skip(inst.condition, skipped);
             emit.floating_guard(emit.exit(StopReason::UnsupportedInstruction,
                 before, pc, word), inst.condition, floating_mask);
@@ -748,7 +757,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
         const bool writes_pc = arm::alu_writes_pc(inst);
         const auto cost = window.timing(*decoded);
         const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
-        Label exchange_failed;
+        Label exchange_failed = emit.label();
         const bool fast_indirect =
             (inst.kind == arm::InstructionKind::BranchExchange || writes_pc) &&
             expansion == CycleExpansion::Hot &&
@@ -761,7 +770,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
             emit.exchange_target(inst, pc, *word, before);
         }
         if (writes_pc && !fast_indirect) {
-            Label skipped;
+            Label skipped = emit.label();
             emit.conditional_skip(inst.condition, skipped);
             emit.alu_target(inst, pc, *word, before, alu_interworks);
             if (inst.condition != 14)
@@ -859,7 +868,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                     inst.immediate));
             pc = next_pc;
         } else {
-            Label skip;
+            Label skip = emit.label();
             if (!unsupported) {
                 if (!fast_indirect)
                     emit.conditional_skip(inst.condition, skip);
