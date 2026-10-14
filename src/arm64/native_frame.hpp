@@ -9,6 +9,8 @@ namespace ilemu::execution::arm64 {
 // Assemble each immutable sequence once with Oaknut, then append it in bulk.
 class NativeFrame {
 public:
+    // D8/D9 belong to one invocation-local memory-cache owner at a time.
+    static constexpr std::ptrdiff_t memory_cache_offset = 176;
     static void entry(std::vector<std::uint32_t>& words)
     {
         static const auto sequence = [] {

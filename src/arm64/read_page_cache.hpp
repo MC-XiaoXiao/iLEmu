@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include <oaknut/oaknut.hpp>
+#include "native_frame.hpp"
 
 namespace ilemu::execution::arm64 {
 // Invocation-local page resolution, separate from invariant guest addresses.
@@ -17,7 +18,7 @@ public:
             return;
         using namespace oaknut::util;
         // Existing sixteen-byte gap in the native frame.
-        code.STP(D8, D9, SP, 176);
+        code.STP(D8, D9, SP, NativeFrame::memory_cache_offset);
         code.MOV(W17, 0xffffffffU);
         code.FMOV(S8, W17);
     }
@@ -25,7 +26,7 @@ public:
     {
         if (used_)
             code_.LDP(oaknut::util::D8, oaknut::util::D9,
-                oaknut::util::SP, 176);
+                oaknut::util::SP, NativeFrame::memory_cache_offset);
     }
     void resolve(oaknut::WReg page, oaknut::Label& checked)
     {

@@ -14,22 +14,31 @@ public:
     using ExitKind = MemoryExits::Kind;
     using Exits = MemoryExits;
     MemoryEmitter(oaknut::VectorCodeGenerator& code, IntegerEmitter& integer,
-        bool big_endian, bool fast_reads, bool cache_reads,
+        bool big_endian, bool expanded, bool cache_reads,
         std::pmr::memory_resource* temporary)
         : code_(code)
         , integer_(integer)
         , big_endian_(big_endian)
-        , addresses_(code)
+        // Only the existing hot tier earns extra ABI save/restore state.
+        , addresses_(code, expanded && !cache_reads)
         , read_pages_(code, cache_reads)
-        , fast_reads_(fast_reads)
+        , fast_reads_(expanded)
         , pending_(temporary)
     {
     }
     void emit(const arm::Instruction&, std::uint32_t pc, std::uint64_t cost,
         Exits&);
     void finish();
-    void enter(oaknut::VectorCodeGenerator& code) const { read_pages_.enter(code); }
-    void leave() const { read_pages_.leave(); }
+    void enter(oaknut::VectorCodeGenerator& code) const
+    {
+        read_pages_.enter(code);
+        addresses_.enter(code);
+    }
+    void leave() const
+    {
+        addresses_.leave();
+        read_pages_.leave();
+    }
     unsigned read_expansion_growth() const { return read_pages_.extra_words(); }
     static std::optional<unsigned> dependent_read_destination(
         const arm::Instruction&, std::uint32_t pc);

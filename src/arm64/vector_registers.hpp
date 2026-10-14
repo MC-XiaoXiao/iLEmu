@@ -11,7 +11,8 @@
 namespace ilemu::execution::arm64 {
 // Sixteen guest Q registers alias all thirty-two D registers. V16..V31 are
 // caller-saved; V0..V2 remain scratch, V3..V7 hold immutable constants,
-// and host callee-saved V8..V15 are untouched. Masks describe the whole trace, including conditional
+// and host V8/V9 are reserved for invocation-local memory caches. Other
+// callee-saved vectors are untouched. Masks describe the whole trace, including conditional
 // paths. Entry loads preserve neighbours even for a write-only D or lane
 // destination.
 class VectorRegisters {
