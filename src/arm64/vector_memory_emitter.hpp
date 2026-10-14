@@ -20,6 +20,14 @@ public:
         oaknut::Label& checked_exit);
 
 private:
+    template<typename Element>
+    void access_lane(bool load, Element element, oaknut::XReg pointer)
+    {
+        if (load)
+            code_.LD1(oaknut::List { element }, pointer);
+        else
+            code_.ST1(oaknut::List { element }, pointer);
+    }
     void access(const arm::Instruction&, oaknut::XReg pointer);
     void scalar_multiple(const arm::Instruction&, oaknut::XReg pointer);
     void endian(oaknut::QReg, unsigned size, bool quad);

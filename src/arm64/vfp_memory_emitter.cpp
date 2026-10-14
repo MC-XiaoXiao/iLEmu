@@ -16,6 +16,17 @@ void VectorMemoryEmitter::scalar_multiple(const arm::Instruction& inst, XReg poi
         const auto count = quad ? 4U : pair ? 2U : 1U;
         auto value = quad ? (inst.load ? vectors_.write(word / 2U)
                                      : vectors_.read(word / 2U)) : Q0;
+        // Zero-offset lane transfers preserve neighbours without a scratch copy.
+        if (!quad && !big_endian_ && offset == 0) {
+            const auto bank = inst.load ? vectors_.write(word / 2U)
+                                       : vectors_.read(word / 2U);
+            if (pair)
+                access_lane(inst.load, bank.Delem()[word / 2U % 2U], pointer);
+            else
+                access_lane(inst.load, bank.Selem()[word % 4U], pointer);
+            offset += count;
+            continue;
+        }
         if (inst.load) {
             if (quad)
                 code_.LDUR(value, pointer, offset * 4U);
@@ -32,6 +43,16 @@ void VectorMemoryEmitter::scalar_multiple(const arm::Instruction& inst, XReg poi
                     vectors_.write_s(word, value);
             }
         } else {
+            if (!quad && !big_endian_) {
+                if (pair)
+                    code_.STUR(vectors_.scalar_d(word / 2U, Q0), pointer,
+                        offset * 4U);
+                else
+                    code_.STUR(vectors_.scalar_s(word, Q0), pointer,
+                        offset * 4U);
+                offset += count;
+                continue;
+            }
             if (pair && !quad)
                 vectors_.read_d(value, word / 2U);
             else if (!pair)

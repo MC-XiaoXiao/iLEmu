@@ -35,6 +35,12 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
         for (unsigned r = 0; r < v.count;) {
             const auto d = v.first + r;
             const bool quad = d % 2U == 0 && r + 1U < v.count;
+            if (!quad && !big_endian_ && r == 0) {
+                const auto bank = inst.load ? vectors_.write(d) : vectors_.read(d);
+                access_lane(inst.load, bank.Delem()[d % 2U], pointer);
+                ++r;
+                continue;
+            }
             if (inst.load) {
                 const auto value = quad ? vectors_.write(d) : Q0;
                 // An odd first D can place a Q pair at an eight-byte offset.
@@ -48,6 +54,11 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
                 if (!quad)
                     vectors_.write_d(d, value);
             } else {
+                if (!quad && !big_endian_) {
+                    code_.STR(vectors_.scalar_d(d, Q0), pointer, r * 8U);
+                    ++r;
+                    continue;
+                }
                 auto value = quad ? vectors_.read(d) : Q0;
                 if (!quad)
                     vectors_.read_d(value, d);
@@ -67,6 +78,13 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, XReg pointer)
         return;
     }
     const auto lane = v.lane + (v.first % 2U) * (8U / v.element_size);
+    if (!big_endian_ && v.mode == arm::VectorTransferMode::Lane &&
+        v.element_size == 4) {
+        const auto bank = inst.load ? vectors_.write(v.first)
+                                    : vectors_.read(v.first);
+        access_lane(inst.load, bank.Selem()[lane], pointer);
+        return;
+    }
     if (!inst.load) {
         const auto value = vectors_.read(v.first);
         if (v.element_size == 1)
