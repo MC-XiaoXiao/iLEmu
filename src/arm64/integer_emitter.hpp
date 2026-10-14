@@ -20,6 +20,8 @@ public:
     void enter_shift_range();
     // Keep floating scratch proofs only across lowerings that use GPRs alone.
     static bool preserves_vector_scratch(const arm::Instruction&) noexcept;
+    // Lowerings that use NZCV internally without changing guest NZCV.
+    static bool clobbers_internal_flags(const arm::Instruction&) noexcept;
     // pc_value is the encoding's architectural PC operand, including alignment.
     oaknut::WReg reg(
         unsigned index, std::uint32_t pc_value, oaknut::WReg scratch);
@@ -30,14 +32,14 @@ public:
         shifter(
             inst, (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U), false);
     }
-    void multiply(const arm::Instruction&);
+    void multiply(const arm::Instruction&, bool preserve_nzcv = true);
     void divide(const arm::Instruction&);
     void wide_immediate(const arm::Instruction&);
     void pack_halfword(const arm::Instruction&);
     void transform(const arm::Instruction&);
     void parallel_saturating(const arm::Instruction&);
     void parallel_arithmetic(const arm::Instruction&);
-    void saturating_arithmetic(const arm::Instruction&);
+    void saturating_arithmetic(const arm::Instruction&, bool preserve_nzcv = true);
     // Scratch SIMD values are reusable only along unconditional adjacent ops.
     void clear_parallel_values() { parallel_values_.fill(std::nullopt); }
     void clear_multiply_addend() { multiply_addend_.reset(); }
@@ -59,8 +61,8 @@ private:
     void saturate_scalar(unsigned bits, bool signed_result, unsigned source_bits);
     void parallel_byte_arithmetic(const arm::Instruction&, bool subtract);
     unsigned parallel_source(unsigned reg, bool exchange, unsigned protected_mask);
-    bool dsp_multiply(const arm::Instruction&);
-    bool dual_halfword_multiply(const arm::Instruction&);
+    bool dsp_multiply(const arm::Instruction&, bool preserve_nzcv);
+    bool dual_halfword_multiply(const arm::Instruction&, bool preserve_nzcv);
     void merge_nz();
     bool logical_immediate(const arm::Instruction&, std::uint32_t pc, LogicalFlagOutput);
     oaknut::WReg lhs(const arm::Instruction&, std::uint32_t pc);

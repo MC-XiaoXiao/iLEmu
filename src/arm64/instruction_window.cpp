@@ -65,7 +65,7 @@ void InstructionWindow::match(std::uint32_t pc, unsigned it)
         pending_.clear();
         consumed_ = 0;
         retain_cycle_ = false;
-        comparison_flags_dead_.reset();
+        full_flags_dead_ = { };
     }
 }
 std::optional<DecodedInstruction> InstructionWindow::take(
@@ -85,13 +85,16 @@ std::optional<DecodedInstruction> InstructionWindow::take(
         ++consumed_;
     else
         pending_.pop_front();
-    if (comparison_flags_dead_) {
-        if (--comparison_flags_dead_->reusable_prefix == 0)
-            comparison_flags_dead_.reset();
-        else if (comparison_flags_dead_->kind != FlagProofKind::TerminalFailure) {
-            if (comparison_flags_dead_->instructions != 0)
-                --comparison_flags_dead_->instructions;
-            comparison_flags_dead_->ticks -= *out.ticks;
+    for (auto& cached : full_flags_dead_) {
+        if (!cached)
+            continue;
+        auto& proof = *cached;
+        if (--proof.reusable_prefix == 0)
+            cached.reset();
+        else if (proof.kind != FlagProofKind::TerminalFailure) {
+            if (proof.instructions != 0)
+                --proof.instructions;
+            proof.ticks -= *out.ticks;
         }
     }
     return out;
@@ -116,7 +119,7 @@ void InstructionWindow::repeat_cycle()
     // this repeated path. The original architecture decodes stay unchanged.
     pending_.resize(consumed_);
     consumed_ = 0;
-    comparison_flags_dead_.reset();
+    full_flags_dead_ = { };
 }
 ScalarRegisterPlan InstructionWindow::scalar_registers(std::uint32_t start,
     unsigned start_it, unsigned limit, std::uint64_t budget)
@@ -358,10 +361,12 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
     if (live == 0)
         return false;
     match(next_pc, next_it);
-    const bool reusable = live == 0xfU &&
-        guarded_controls == arm::floating_comparison_controls;
-    if (reusable && comparison_flags_dead_) {
-        const auto& proof = *comparison_flags_dead_;
+    const auto initial_controls = guarded_controls;
+    auto* cached = live == 0xfU && (guarded_controls == 0 ||
+            guarded_controls == arm::floating_comparison_controls)
+        ? &full_flags_dead_[guarded_controls == 0 ? 0 : 1] : nullptr;
+    if (cached && *cached) {
+        const auto& proof = **cached;
         if (proof.kind == FlagProofKind::TerminalFailure)
             return false;
         if (proof.kind == FlagProofKind::Overwrite)
@@ -372,7 +377,7 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
         if (remaining_instructions <= proof.instructions ||
             remaining_ticks <= proof.ticks)
             return false;
-        comparison_flags_dead_.reset();
+        cached->reset();
     }
     const auto initial_ticks = remaining_ticks;
     unsigned reusable_prefix = 0;
@@ -380,13 +385,13 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
     auto it = next_it;
     const auto terminal_failure = [&] {
         if (reusable_prefix != 0)
-            comparison_flags_dead_ = FlagProof { reusable_prefix, 0, 0,
+            *cached = FlagProof { reusable_prefix, 0, 0,
                 FlagProofKind::TerminalFailure };
         return false;
     };
     const auto bounded_failure = [&](unsigned instructions, std::uint64_t ticks) {
         if (reusable_prefix != 0)
-            comparison_flags_dead_ = FlagProof { reusable_prefix, instructions,
+            *cached = FlagProof { reusable_prefix, instructions,
                 ticks, FlagProofKind::BoundedFailure };
         return false;
     };
@@ -398,8 +403,7 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
             pending_.push_back(*entry);
         }
         auto& entry = pending_[consumed_ + i];
-        if (reusable && live == 0xfU &&
-            guarded_controls == arm::floating_comparison_controls)
+        if (cached && live == 0xfU && guarded_controls == initial_controls)
             reusable_prefix = i + 1U;
         if (!entry.word || pc + entry.instruction.size > region_.end)
             return terminal_failure();
@@ -423,7 +427,7 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
             // its paid length avoids rescanning every suffix of a long run
             // of comparisons, without relaxing either compilation limit.
             if (reusable_prefix != 0)
-                comparison_flags_dead_ = FlagProof { reusable_prefix,
+                *cached = FlagProof { reusable_prefix,
                     i + 1U, initial_ticks - remaining_ticks,
                     FlagProofKind::Overwrite };
             return true;

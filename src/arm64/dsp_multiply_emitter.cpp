@@ -2,7 +2,7 @@
 #include "integer_emitter.hpp"
 #include "arm/multiply.hpp"
 namespace ilemu::execution::arm64 {
-bool IntegerEmitter::dsp_multiply(const arm::Instruction& inst)
+bool IntegerEmitter::dsp_multiply(const arm::Instruction& inst, bool preserve_nzcv)
 {
     using namespace oaknut;
     using namespace oaknut::util;
@@ -15,13 +15,14 @@ bool IntegerEmitter::dsp_multiply(const arm::Instruction& inst)
         rm {static_cast<int>(inst.rm)}, rs {static_cast<int>(inst.rs)};
     const auto finish_word = [&] {
         if (inst.accumulate) {
-            // DSP accumulation sets sticky Q on signed overflow; preserve
-            // guest NZCV even though the host add needs its overflow flag.
-            code_.MRS(X21, SystemReg::NZCV);
+            // Sticky Q stays observable even when guest NZCV is dead.
+            if (preserve_nzcv)
+                code_.MRS(X21, SystemReg::NZCV);
             code_.ADDS(rd, W17, rn);
             code_.CSET(W16, Cond::VS);
             code_.ORR(W22, W22, W16, LogShift::LSL, 27);
-            code_.MSR(SystemReg::NZCV, X21);
+            if (preserve_nzcv)
+                code_.MSR(SystemReg::NZCV, X21);
         } else
             code_.MOV(rd, W17);
     };

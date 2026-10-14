@@ -3,7 +3,8 @@
 #include "integer_emitter.hpp"
 
 namespace ilemu::execution::arm64 {
-void IntegerEmitter::saturating_arithmetic(const arm::Instruction& inst)
+void IntegerEmitter::saturating_arithmetic(const arm::Instruction& inst,
+    bool preserve_nzcv)
 {
     using namespace oaknut;
     using namespace oaknut::util;
@@ -33,9 +34,9 @@ void IntegerEmitter::saturating_arithmetic(const arm::Instruction& inst)
     const bool unsigned_result = operation == Op::Unsigned ||
                                  operation == Op::UnsignedHalfwords;
     // At the largest unsigned width, only negative signed inputs can clamp.
-    const bool comparisons = !unsigned_result ||
-        inst.immediate < (halfwords ? 15U : 31U);
-    if (comparisons)
+    const bool save_flags = preserve_nzcv && (!unsigned_result ||
+        inst.immediate < (halfwords ? 15U : 31U));
+    if (save_flags)
         code_.MRS(X21, SystemReg::NZCV);
     if (operation == Op::Signed || operation == Op::Unsigned) {
         shifted_source(W16);
@@ -67,7 +68,7 @@ void IntegerEmitter::saturating_arithmetic(const arm::Instruction& inst)
         saturate_scalar(32, true, 33);
         code_.MOV(rd, W16);
     }
-    if (comparisons)
+    if (save_flags)
         code_.MSR(SystemReg::NZCV, X21);
 }
 }

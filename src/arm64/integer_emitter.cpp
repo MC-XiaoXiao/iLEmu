@@ -6,6 +6,30 @@
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
+bool IntegerEmitter::clobbers_internal_flags(const arm::Instruction& inst) noexcept
+{
+    if (inst.kind == arm::InstructionKind::SaturatingArithmetic) {
+        using Op = arm::SaturatingOperation;
+        switch (static_cast<Op>(inst.opcode)) {
+        case Op::Signed: return inst.immediate != 32;
+        case Op::SignedHalfwords: return inst.immediate != 16;
+        case Op::Unsigned: return inst.immediate < 31;
+        case Op::UnsignedHalfwords: return inst.immediate < 15;
+        default: return true;
+        }
+    }
+    if (inst.kind == arm::InstructionKind::Multiply) {
+        using Op = arm::MultiplyOperation;
+        switch (static_cast<Op>(inst.opcode)) {
+        case Op::Halfword:
+        case Op::WordHalfword:
+        case Op::DualHalfwordSubtract: return inst.accumulate;
+        case Op::DualHalfword: return true;
+        default: break;
+        }
+    }
+    return false;
+}
 bool IntegerEmitter::preserves_vector_scratch(const arm::Instruction& inst) noexcept
 {
     using Kind = arm::InstructionKind;

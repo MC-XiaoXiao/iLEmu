@@ -2,6 +2,7 @@
 #pragma once
 #include "arm/instruction.hpp"
 #include "execution/run.hpp"
+#include <array>
 #include <deque>
 #include <memory_resource>
 
@@ -77,6 +78,8 @@ private:
     std::pmr::deque<DecodedInstruction> pending_;
     std::size_t consumed_ = 0;
     bool retain_cycle_;
-    std::optional<FlagProof> comparison_flags_dead_;
+    // Full-NZCV proofs differ when FP trap controls have been checked clear.
+    // Both caches are compile-scoped and advance with the paid decode window.
+    std::array<std::optional<FlagProof>, 2> full_flags_dead_;
 };
 }

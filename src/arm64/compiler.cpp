@@ -807,6 +807,11 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                     maximum_ticks - out.maximum_ticks, 0))
                 logical_flags = LogicalFlagOutput::CarryOnly;
         }
+        const bool preserve_integer_nzcv = single_step || straddles ||
+            closes_natural_cycle ||
+            !IntegerEmitter::clobbers_internal_flags(inst) ||
+            !window.flags_dead(0xfU, next_pc, next_it, limit - n - 1U,
+                maximum_ticks - out.maximum_ticks, 0);
         bool dynamic_end = false;
         if (inst.kind == arm::InstructionKind::BranchExchange) {
             if (!fast_indirect) {
@@ -886,7 +891,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                         inst, pc, *word, before, cost, it, big_endian);
                     break;
                 case arm::InstructionKind::Multiply:
-                    emit.integer().multiply(inst);
+                    emit.integer().multiply(inst, preserve_integer_nzcv);
                     break;
                 case arm::InstructionKind::MultipleTransfer:
                     emit.multiple(
@@ -907,7 +912,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                     emit.integer().parallel_arithmetic(inst);
                     break;
                 case arm::InstructionKind::SaturatingArithmetic:
-                    emit.integer().saturating_arithmetic(inst);
+                    emit.integer().saturating_arithmetic(inst, preserve_integer_nzcv);
                     break;
                 case arm::InstructionKind::ParallelSaturating:
                     emit.parallel_saturating(inst);

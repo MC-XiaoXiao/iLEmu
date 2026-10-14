@@ -5,7 +5,7 @@
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
-void IntegerEmitter::multiply(const arm::Instruction& inst)
+void IntegerEmitter::multiply(const arm::Instruction& inst, bool preserve_nzcv)
 {
     using Operation = arm::MultiplyOperation;
     const WReg rd { static_cast<int>(inst.rd) }, rn { static_cast<int>(inst.rn) },
@@ -43,7 +43,8 @@ void IntegerEmitter::multiply(const arm::Instruction& inst)
         return;
     }
     clear_multiply_addend();
-    if (dual_halfword_multiply(inst) || dsp_multiply(inst))
+    if (dual_halfword_multiply(inst, preserve_nzcv) ||
+        dsp_multiply(inst, preserve_nzcv))
         return;
     if (!arm::multiply_writes_pair(inst)) {
         if (operation == Operation::Subtract)

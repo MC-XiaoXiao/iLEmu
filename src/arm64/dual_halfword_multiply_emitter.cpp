@@ -2,7 +2,8 @@
 #include "integer_emitter.hpp"
 #include "arm/multiply.hpp"
 namespace ilemu::execution::arm64 {
-bool IntegerEmitter::dual_halfword_multiply(const arm::Instruction& inst)
+bool IntegerEmitter::dual_halfword_multiply(const arm::Instruction& inst,
+    bool preserve_nzcv)
 {
     using namespace oaknut;
     using namespace oaknut::util;
@@ -39,13 +40,15 @@ bool IntegerEmitter::dual_halfword_multiply(const arm::Instruction& inst)
         }
         if (!subtract || inst.accumulate) {
             // Test the complete wide result so accumulator cancellation is
-            // honored. Keep NZCV intact and merge only sticky Q into CPSR.
-            code_.MRS(X21, SystemReg::NZCV);
+            // honored. Merge sticky Q even when guest NZCV is dead.
+            if (preserve_nzcv)
+                code_.MRS(X21, SystemReg::NZCV);
             code_.SXTW(X16, W17);
             code_.CMP(X17, X16);
             code_.CSET(W16, Cond::NE);
             code_.ORR(W22, W22, W16, LogShift::LSL, 27);
-            code_.MSR(SystemReg::NZCV, X21);
+            if (preserve_nzcv)
+                code_.MSR(SystemReg::NZCV, X21);
         }
         code_.MOV(rd, W17);
     }
