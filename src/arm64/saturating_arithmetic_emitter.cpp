@@ -11,58 +11,63 @@ void IntegerEmitter::saturating_arithmetic(const arm::Instruction& inst)
     const auto operation = static_cast<Op>(inst.opcode);
     const WReg first { static_cast<int>(inst.rn) },
         second { static_cast<int>(inst.rm) }, rd { static_cast<int>(inst.rd) };
-    const auto saturate = [&](unsigned bits, bool is_signed) {
-        const auto maximum =
-            (std::uint64_t { 1 } << (bits - unsigned(is_signed))) - 1;
-        const auto minimum =
-            is_signed ? -(std::uint64_t { 1 } << (bits - 1U)) : 0;
-        code_.MOV(X17, maximum);
-        code_.CMP(X16, X17);
-        code_.CSET(W15, Cond::GT);
-        code_.CSEL(X16, X17, X16, Cond::GT);
-        code_.ORR(W22, W22, W15, LogShift::LSL, 27);
-        code_.MOV(X17, minimum);
-        code_.CMP(X16, X17);
-        code_.CSET(W15, Cond::LT);
-        code_.CSEL(X16, X17, X16, Cond::LT);
-        code_.ORR(W22, W22, W15, LogShift::LSL, 27);
-    };
-    // Saturation changes only sticky Q; all host flag comparisons are private.
-    code_.MRS(X21, SystemReg::NZCV);
-    if (operation == Op::Signed || operation == Op::Unsigned) {
+    const auto shifted_source = [&](WReg destination) {
         if (inst.shift == arm::ShiftKind::Asr)
-            code_.ASR(
-                W16, first, inst.shift_amount == 0 ? 31 : inst.shift_amount);
+            code_.ASR(destination, first,
+                inst.shift_amount == 0 ? 31 : inst.shift_amount);
         else
-            code_.LSL(W16, first, inst.shift_amount);
+            code_.LSL(destination, first, inst.shift_amount);
+    };
+    // Shifts wrap to a signed word before SSAT; a full-width signed result
+    // cannot saturate. SSAT16 at its full width is likewise an identity.
+    if (operation == Op::Signed && inst.immediate == 32) {
+        shifted_source(rd);
+        return;
+    }
+    if (operation == Op::SignedHalfwords && inst.immediate == 16) {
+        code_.MOV(rd, first);
+        return;
+    }
+    const bool halfwords = operation == Op::SignedHalfwords ||
+                           operation == Op::UnsignedHalfwords;
+    const bool unsigned_result = operation == Op::Unsigned ||
+                                 operation == Op::UnsignedHalfwords;
+    // At the largest unsigned width, only negative signed inputs can clamp.
+    const bool comparisons = !unsigned_result ||
+        inst.immediate < (halfwords ? 15U : 31U);
+    if (comparisons)
+        code_.MRS(X21, SystemReg::NZCV);
+    if (operation == Op::Signed || operation == Op::Unsigned) {
+        shifted_source(W16);
         code_.SXTW(X16, W16);
-        saturate(inst.immediate, operation == Op::Signed);
+        saturate_scalar(inst.immediate, operation == Op::Signed, 32);
         code_.MOV(rd, W16);
     } else if (operation == Op::SignedHalfwords ||
                operation == Op::UnsignedHalfwords) {
         code_.SBFX(X16, first.toX(), 0, 16);
-        saturate(inst.immediate, operation == Op::SignedHalfwords);
+        saturate_scalar(inst.immediate, operation == Op::SignedHalfwords, 16);
         code_.AND(W16, W16, 0xffffU);
         // V0 is existing scratch, preserving an aliased source's high half.
         code_.FMOV(S0, W16);
         code_.SBFX(X16, first.toX(), 16, 16);
-        saturate(inst.immediate, operation == Op::SignedHalfwords);
+        saturate_scalar(inst.immediate, operation == Op::SignedHalfwords, 16);
         code_.FMOV(W17, S0);
         code_.ORR(rd, W17, W16, LogShift::LSL, 16);
     } else {
         code_.SXTW(X16, second);
         if (operation == Op::DoubleAdd || operation == Op::DoubleSubtract) {
             code_.ADD(X16, X16, X16);
-            saturate(32, true);
+            saturate_scalar(32, true, 33);
         }
         code_.SXTW(X17, first);
         if (operation == Op::Subtract || operation == Op::DoubleSubtract)
             code_.SUB(X16, X17, X16);
         else
             code_.ADD(X16, X17, X16);
-        saturate(32, true);
+        saturate_scalar(32, true, 33);
         code_.MOV(rd, W16);
     }
-    code_.MSR(SystemReg::NZCV, X21);
+    if (comparisons)
+        code_.MSR(SystemReg::NZCV, X21);
 }
 }
