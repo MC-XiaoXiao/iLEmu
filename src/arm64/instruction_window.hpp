@@ -13,6 +13,11 @@ struct DecodedInstruction {
     arm::Instruction instruction;
     std::optional<std::uint64_t> ticks;
 };
+struct InvariantShiftCount {
+    unsigned reg;
+    unsigned carry_kinds;
+    unsigned kinds;
+};
 // Compile-scoped inspection cache. Lookahead and emission share each decode;
 // no guest state, backing pointer or metadata survives in an executor/cache.
 class InstructionWindow {
@@ -30,8 +35,9 @@ public:
         unsigned remaining_instructions, std::uint64_t remaining_ticks);
     // Consume a conservative ordinary ALU cycle. Only choose a count whose
     // value survives every possible write and whose range can improve lowering.
-    std::optional<unsigned> invariant_shift_count(std::uint32_t pc, unsigned it,
-        unsigned remaining_instructions, std::uint64_t remaining_ticks);
+    std::optional<InvariantShiftCount> invariant_shift_count(std::uint32_t pc,
+        unsigned it, unsigned remaining_instructions,
+        std::uint64_t remaining_ticks, bool include_carry = true);
     bool flags_dead(const arm::Instruction&, std::uint32_t next_pc,
         unsigned next_it, unsigned remaining_instructions,
         std::uint64_t remaining_ticks);

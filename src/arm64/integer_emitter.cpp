@@ -51,24 +51,6 @@ void IntegerEmitter::carry_from(
         code_.MOV(W15, value);
     code_.BFI(X21, X15, 29, 1);
 }
-void IntegerEmitter::bounded_shift(
-    const arm::Instruction& inst, WReg destination, WReg source)
-{
-    if (shift_range_->at_least_word) {
-        if (inst.shift == arm::ShiftKind::Asr)
-            code_.ASR(destination, source, 31);
-        else
-            code_.MOV(destination, 0);
-        return;
-    }
-    const WReg count { static_cast<int>(inst.rs) };
-    switch (inst.shift) {
-    case arm::ShiftKind::Lsl: code_.LSLV(destination, source, count); break;
-    case arm::ShiftKind::Lsr: code_.LSRV(destination, source, count); break;
-    case arm::ShiftKind::Asr: code_.ASRV(destination, source, count); break;
-    default: break;
-    }
-}
 void IntegerEmitter::shifter(
     const arm::Instruction& inst, std::uint32_t pc, bool carry_output,
     LogicalFlagOutput flags)
@@ -128,6 +110,10 @@ void IntegerEmitter::shifter(
             }
             break;
         }
+        return;
+    }
+    if (shift_range_ && shift_range_->precise() && shift_range_->accepts(inst)) {
+        bounded_shifter(inst, W16, rm, carry_output, flags);
         return;
     }
     if (inst.shift == arm::ShiftKind::Ror && !carry_output) {
@@ -292,6 +278,15 @@ void IntegerEmitter::alu(const arm::Instruction& inst, std::uint32_t pc,
     if (!inst.set_flags && inst.opcode >= 8 && inst.opcode <= 11)
         return;
     pc = (pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U);
+    if (inst.register_shift && inst.opcode == 13 && inst.set_flags &&
+        flags == LogicalFlagOutput::CarryOnly && shift_range_ &&
+        shift_range_->precise() && shift_range_->accepts(inst)) {
+        // Read original operands before overwriting an aliased destination;
+        // ROR derives carry from its result. The count cannot be written.
+        bounded_shifter(inst, WReg { static_cast<int>(inst.rd) },
+            WReg { static_cast<int>(inst.rm) }, true, flags);
+        return;
+    }
     if (shifted_alu(inst, pc))
         return;
     const bool logical = inst.opcode == 0 || inst.opcode == 1 ||

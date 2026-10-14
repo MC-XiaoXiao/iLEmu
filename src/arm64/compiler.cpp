@@ -143,6 +143,7 @@ namespace {
         void prologue()
         {
             NativeFrame::entry(trace_.words);
+            integer_.enter_shift_range();
             entry_end_ = cycle_end_ = trace_.words.size();
             code_.l(head_);
         }
@@ -1062,13 +1063,40 @@ static CompiledTrace compile_hot(InstructionSource& source, std::uint32_t pc,
     std::pmr::monotonic_buffer_resource temporary {
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
     InstructionWindow window(source, region, thumb, &temporary, true);
-    if (const auto count = window.invariant_shift_count(
-            pc, it, maximum_trace_instructions, maximum_ticks)) {
+    auto count = window.invariant_shift_count(
+        pc, it, maximum_trace_instructions, maximum_ticks);
+    if (count && count->carry_kinds != 0) {
+        std::array<CompiledTrace, 4> variants;
+        const auto variant = [&](ShiftCountRange range) {
+            return compile_trace(source, pc, false, maximum_ticks,
+                big_endian, thumb, it, CycleExpansion::Hot,
+                RegisterShiftRange { count->reg, range, count->carry_kinds });
+        };
+        variants[0] = variant(ShiftCountRange::Zero);
+        variants[1] = variant(ShiftCountRange::Small);
+        // ROR has one nonzero-count rule. ASR and ROR also treat all counts
+        // at least one word alike. Inspect every use of the selected count,
+        // including shifts whose flags are dead, before reusing a body.
+        variants[2] = count->kinds == (1U << static_cast<unsigned>(arm::ShiftKind::Ror))
+            ? variants[1] : variant(ShiftCountRange::Word);
+        variants[3] = (count->kinds & 3U) == 0
+            ? variants[2] : variant(ShiftCountRange::Large);
+        if (auto selected = GuardedShiftTrace::select(count->reg, std::move(variants)))
+            return std::move(*selected);
+        // Keep the existing compact value-only specialization if a refined
+        // publication cannot fit its bounded code allowance.
+        window.repeat_cycle();
+        count = window.invariant_shift_count(
+            pc, it, maximum_trace_instructions, maximum_ticks, false);
+    }
+    if (count) {
         auto below = compile_trace(source, pc, false, maximum_ticks, big_endian,
-            thumb, it, CycleExpansion::Hot, RegisterShiftRange { *count, false });
+            thumb, it, CycleExpansion::Hot,
+            RegisterShiftRange { count->reg, ShiftCountRange::BelowWord });
         auto above = compile_trace(source, pc, false, maximum_ticks, big_endian,
-            thumb, it, CycleExpansion::Hot, RegisterShiftRange { *count, true });
-        if (auto selected = GuardedShiftTrace::select(*count, std::move(below), std::move(above)))
+            thumb, it, CycleExpansion::Hot,
+            RegisterShiftRange { count->reg, ShiftCountRange::AtLeastWord });
+        if (auto selected = GuardedShiftTrace::select(count->reg, std::move(below), std::move(above)))
             return std::move(*selected);
     }
     return compile_trace(source, pc, false, maximum_ticks, big_endian,

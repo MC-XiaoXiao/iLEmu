@@ -17,6 +17,7 @@ public:
         : code_(code), shift_range_(shift_range)
     {
     }
+    void enter_shift_range();
     // pc_value is the encoding's architectural PC operand, including alignment.
     oaknut::WReg reg(
         unsigned index, std::uint32_t pc_value, oaknut::WReg scratch);
@@ -65,6 +66,8 @@ private:
     bool shifted_alu(const arm::Instruction&, std::uint32_t pc);
     void bounded_shift(const arm::Instruction&, oaknut::WReg destination,
         oaknut::WReg source);
+    void bounded_shifter(const arm::Instruction&, oaknut::WReg destination,
+        oaknut::WReg source, bool carry_output, LogicalFlagOutput);
     oaknut::VectorCodeGenerator& code_;
     std::optional<RegisterShiftRange> shift_range_;
     // Compile-time knowledge only. Each operation still writes its GPR result.
