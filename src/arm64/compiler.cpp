@@ -70,6 +70,7 @@ namespace {
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_, scalars)
+            , arithmetic_(code_, vectors_)
             , integer_(code_, shift_range)
             , exchanges_(code_, integer_, thumb)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
@@ -94,6 +95,10 @@ namespace {
                 word.value_or(0), svc, dynamic_pc, word.has_value(), backedge,
                 it.value_or(it_) });
             return exits_.back().label;
+        }
+        void observe_instruction(const arm::Instruction& inst)
+        {
+            arithmetic_.observe(inst);
         }
         void location(unsigned it, unsigned size)
         {
@@ -419,7 +424,7 @@ namespace {
         void arithmetic(const arm::FloatingArithmeticOperands& v)
         {
             floating_.use();
-            FloatingEmitter { code_, vectors_ }.arithmetic(v);
+            arithmetic_.arithmetic(v);
         }
         void vector_arithmetic(const arm::VectorFloatingArithmeticOperands& v)
         {
@@ -581,6 +586,7 @@ namespace {
         CompiledTrace& trace_;
         VectorCodeGenerator code_;
         VectorRegisters vectors_;
+        FloatingEmitter arithmetic_;
         FloatingEnvironment floating_;
         std::uint32_t floating_checked_ = 0;
         IntegerEmitter integer_;
@@ -671,6 +677,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
             break;
         const auto word = decoded->word;
         auto inst = decoded->instruction;
+        emit.observe_instruction(inst);
         if (n == 0)
             out.first_instruction = word;
         if (!word) {

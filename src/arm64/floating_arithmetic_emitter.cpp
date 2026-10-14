@@ -29,6 +29,11 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
     using namespace oaknut;
     using namespace oaknut::util;
     using Op = arm::FloatingArithmeticOperation;
+    const bool accumulate = v.operation == Op::MultiplyAdd ||
+        v.operation == Op::MultiplySubtract || v.operation == Op::NegatedMultiplyAdd ||
+        v.operation == Op::NegatedMultiplySubtract;
+    if (!accumulate)
+        product_.reset();
     if (v.operation == Op::Move) {
         if (v.wide) {
             if (auto destination = vectors_.resident_d(v.destination / 2U)) {
@@ -73,17 +78,24 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
     }
     const bool unary = v.operation == Op::SquareRoot ||
         v.operation == Op::Absolute || v.operation == Op::Negate;
-    const bool accumulate = v.operation == Op::MultiplyAdd ||
-        v.operation == Op::MultiplySubtract || v.operation == Op::NegatedMultiplyAdd ||
-        v.operation == Op::NegatedMultiplySubtract;
     const auto emit = [&](auto destination, const auto& scalar) {
-        const auto first = scalar(v.first, Q1);
-        const auto second = unary || v.first == v.second
-            ? first : scalar(v.second, Q2);
-        // A resident destination can alias the old accumulator. Round the
-        // product in scratch before reading that accumulator, as before.
         const decltype(destination) product { accumulate ? 0 : destination.index() };
-        arithmetic_result(v.operation, product, first, second);
+        const bool negated = v.operation == Op::MultiplySubtract ||
+                             v.operation == Op::NegatedMultiplyAdd;
+        const bool feedback = v.destination == v.first || v.destination == v.second;
+        // A sign toggle would lengthen a source-feedback chain. Recompute the
+        // product in parallel instead of chaining two dependent negations.
+        const bool reuse = accumulate && unconditional_ && product_ &&
+            product_->first == v.first && product_->second == v.second &&
+            product_->wide == v.wide && (!feedback || product_->negated == negated);
+        if (!reuse) {
+            const auto first = scalar(v.first, Q1);
+            const auto second = unary || v.first == v.second
+                ? first : scalar(v.second, Q2);
+            // Round the product before reading an aliased accumulator.
+            arithmetic_result(v.operation, product, first, second);
+        } else if (product_->negated != negated)
+            code_.FNEG(product, product);
         if (accumulate) {
             // The product is now in scratch V0. Inputs are no longer needed;
             // only now may V1 be reused for an upper-lane accumulator.
@@ -95,6 +107,15 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
                 accumulator = temporary;
             }
             code_.FADD(destination, accumulator, product);
+            // FADD leaves V0 intact only with a resident destination. A write
+            // to either source revokes the proof for the next instruction.
+            // Repeating this nontrapping multiplication would only reassert
+            // already-sticky FPSR flags; every status/control boundary clears it.
+            if (unconditional_ && destination.index() != 0 &&
+                !feedback)
+                product_ = Product { v.first, v.second, v.wide, negated };
+            else
+                product_.reset();
         }
     };
     if (v.wide) {
