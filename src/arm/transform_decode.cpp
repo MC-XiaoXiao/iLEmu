@@ -60,6 +60,19 @@ bool decode_integer_transform(Instruction& out, std::uint32_t word,
     } else {
         if (out.condition == 15)
             return false;
+        // ARM PKHBT/PKHTB share the existing Thumb pack execution path.
+        // Bit 6 selects LSL/ASR; a zero ASR field denotes a shift of 32.
+        if ((word & 0x0ff00030U) == 0x06800010U) {
+            out.rd = (word >> 12U) & 15U;
+            out.rn = (word >> 16U) & 15U;
+            out.rm = word & 15U;
+            if (out.rd == 15 || out.rn == 15 || out.rm == 15)
+                return true;
+            out.kind = InstructionKind::PackHalfword;
+            out.shift = (word & 0x40U) != 0 ? ShiftKind::Asr : ShiftKind::Lsl;
+            out.shift_amount = (word >> 7U) & 31U;
+            return true;
+        }
         if ((word & 0x0f8003f0U) == 0x06800070U) {
             const auto op = (word >> 20U) & 7U;
             if (op == 1 || op == 5)
