@@ -2,7 +2,7 @@
 #include "instruction_window.hpp"
 #include "address_windows.hpp"
 #include "multiple_emitter.hpp"
-#include "scalar_register_plan.hpp"
+#include "floating_register_plan.hpp"
 #include "vector_memory_emitter.hpp"
 #include "flag_effects.hpp"
 #include "dynamic_backedge.hpp"
@@ -121,10 +121,10 @@ void InstructionWindow::repeat_cycle()
     consumed_ = 0;
     full_flags_dead_ = { };
 }
-ScalarRegisterPlan InstructionWindow::scalar_registers(std::uint32_t start,
+FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
     unsigned start_it, unsigned limit, std::uint64_t budget)
 {
-    ScalarRegisterPlan::Builder builder;
+    FloatingRegisterPlan::Builder builder;
     auto pc = start;
     auto it = start_it;
     for (unsigned n = 0; n < limit; ++n) {
@@ -144,10 +144,12 @@ ScalarRegisterPlan InstructionWindow::scalar_registers(std::uint32_t start,
             const auto target = ((pc + inst.pc_offset) &
                 (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
             return !inst.exchange && target == start && next_it == start_it
-                ? builder.finish() : ScalarRegisterPlan {};
+                ? builder.finish() : FloatingRegisterPlan {};
         }
         if (inst.kind == Kind::FloatingArithmetic)
             builder.observe(std::get<arm::FloatingArithmeticOperands>(inst.vector));
+        else if (inst.kind == Kind::VectorFloatingArithmetic)
+            builder.observe(std::get<arm::VectorFloatingArithmeticOperands>(inst.vector));
         else if (inst.kind == Kind::VectorTransfer)
             builder.observe(std::get<arm::VectorTransferOperands>(inst.vector), inst.load);
         else {

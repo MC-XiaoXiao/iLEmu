@@ -8,7 +8,7 @@
 
 namespace ilemu::execution::arm64 {
 class AddressWindows;
-struct ScalarRegisterPlan;
+struct FloatingRegisterPlan;
 struct DecodedInstruction {
     std::uint32_t pc;
     unsigned it;
@@ -32,7 +32,7 @@ public:
     std::optional<DecodedInstruction> take(std::uint32_t pc, unsigned it,
         bool allow_straddle);
     std::uint64_t timing(DecodedInstruction&);
-    ScalarRegisterPlan scalar_registers(std::uint32_t pc, unsigned it,
+    FloatingRegisterPlan floating_registers(std::uint32_t pc, unsigned it,
         unsigned remaining_instructions, std::uint64_t remaining_ticks);
     // Prove page-local windows for stable bases and bounded offsets.
     AddressWindows address_windows(std::uint32_t pc, unsigned it,

@@ -16,6 +16,7 @@
 #include "simd_emitter.hpp"
 #include "floating_emitter.hpp"
 #include "floating_environment.hpp"
+#include "floating_register_plan.hpp"
 #include "arm/floating_conversion.hpp"
 #include "arm/floating_arithmetic.hpp"
 #include "arm/floating_comparison.hpp"
@@ -66,11 +67,13 @@ namespace {
             std::uint32_t pc, unsigned it, bool single_step,
             std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads,
             std::optional<RegisterShiftRange> shift_range,
-            const AddressWindows* windows, const ScalarRegisterPlan* scalars)
+            const AddressWindows* windows, const FloatingRegisterPlan* floating)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
-            , vectors_(code_, scalars)
+            , vectors_(code_, floating && floating->scalars.count != 0
+                  ? &floating->scalars : nullptr)
             , arithmetic_(code_, vectors_)
+            , floating_(floating && floating->standard_controls)
             , integer_(code_, shift_range)
             , exchanges_(code_, integer_, thumb)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
@@ -436,8 +439,8 @@ namespace {
             floating_.use();
             floating_.standard_controls(code_);
             SimdEmitter { code_, vectors_ }.floating(v);
-            // A conditional instruction must leave either path ready for
-            // scalar VFP and host callbacks. Keep cumulative FPSR untouched.
+            // The cycle plan owns standard controls across proven SIMD paths.
+            // Other traces restore guest controls here. FPSR stays cumulative.
             floating_.guest_controls(code_);
         }
         void comparison(const arm::FloatingComparisonOperands& v, bool preserve_apsr)
@@ -629,9 +632,9 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     const bool cache_reads = !single_step && expansion == CycleExpansion::Hot &&
         window.single_dependent_read_cycle(
             pc, it, maximum_trace_instructions, maximum_ticks);
-    std::optional<ScalarRegisterPlan> scalars;
+    std::optional<FloatingRegisterPlan> floating;
     if (!single_step && expansion == CycleExpansion::Hot) {
-        scalars.emplace(window.scalar_registers(pc, it,
+        floating.emplace(window.floating_registers(pc, it,
             std::min(maximum_trace_instructions, instruction_limit), maximum_ticks));
         window.repeat_cycle();
     }
@@ -663,7 +666,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
         expansion == CycleExpansion::Hot, cache_reads, shift_range, windows,
-        scalars && scalars->count != 0 ? &*scalars : nullptr);
+        floating ? &*floating : nullptr);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;

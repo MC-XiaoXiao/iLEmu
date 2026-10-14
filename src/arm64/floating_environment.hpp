@@ -7,17 +7,23 @@ namespace ilemu::execution::arm64 {
 // A trace owns the hardware FP environment only between host callbacks.
 class FloatingEnvironment {
 public:
+    explicit FloatingEnvironment(bool standard_controls = false)
+        : standard_controls_(standard_controls) { }
     void use() { used_ = true; }
     // X29 holds FPSCR.NZCV; the remaining bits stay in the thread state.
     // Entry and callback restoration cover conditionally executed first uses.
     void use_status() { status_used_ = true; }
     void standard_controls(oaknut::VectorCodeGenerator& code) const
     {
+        if (standard_controls_)
+            return;
         code.MOV(oaknut::util::W16, 0x03000000U);
         code.MSR(oaknut::SystemReg::FPCR, oaknut::util::X16);
     }
     void guest_controls(oaknut::VectorCodeGenerator& code) const
     {
+        if (standard_controls_)
+            return;
         code.LDR(oaknut::util::W16, oaknut::util::X19,
             offsetof(CpuThreadState, fpscr));
         code.AND(oaknut::util::W16, oaknut::util::W16, 0x03c00000U);
@@ -46,7 +52,10 @@ public:
             code.MOV(W16, W29);
         else
             code.LDR(W16, X19, offsetof(CpuThreadState, fpscr));
-        code.AND(W17, W16, 0x03c00000U);
+        if (standard_controls_)
+            code.MOV(W17, 0x03000000U);
+        else
+            code.AND(W17, W16, 0x03c00000U);
         code.MSR(SystemReg::FPCR, X17);
         code.MOV(W17, 0x9fU);
         code.AND(W16, W16, W17);
@@ -87,6 +96,9 @@ public:
     }
 
 private:
+    // A proven Advanced SIMD cycle owns these controls across every path,
+    // including entry and restoration after the existing host poll callback.
+    bool standard_controls_;
     bool used_ = false;
     bool status_used_ = false;
 };
