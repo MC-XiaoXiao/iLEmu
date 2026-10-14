@@ -1,8 +1,37 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "integer_emitter.hpp"
+#include "arm/multiply.hpp"
+#include "arm/pc_write.hpp"
+#include "arm/saturating_arithmetic.hpp"
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
+bool IntegerEmitter::preserves_vector_scratch(const arm::Instruction& inst) noexcept
+{
+    using Kind = arm::InstructionKind;
+    switch (inst.kind) {
+    case Kind::DataProcessing:
+        return !arm::alu_writes_pc(inst);
+    case Kind::Multiply:
+        return !arm::dual_halfword_multiply(
+            static_cast<arm::MultiplyOperation>(inst.opcode));
+    case Kind::SaturatingArithmetic: {
+        const auto operation = static_cast<arm::SaturatingOperation>(inst.opcode);
+        return operation != arm::SaturatingOperation::SignedHalfwords &&
+               operation != arm::SaturatingOperation::UnsignedHalfwords;
+    }
+    case Kind::WideImmediate:
+    case Kind::IntegerDivide:
+    case Kind::IntegerTransform:
+    case Kind::PackHalfword:
+    case Kind::ParallelArithmetic:
+    case Kind::IfThen:
+    case Kind::Nop:
+        return true;
+    default:
+        return false;
+    }
+}
 void IntegerEmitter::divide(const arm::Instruction& inst)
 {
     const WReg d { static_cast<int>(inst.rd) }, n { static_cast<int>(inst.rn) },

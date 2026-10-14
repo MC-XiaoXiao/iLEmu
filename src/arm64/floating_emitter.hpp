@@ -11,13 +11,14 @@ public:
         , vectors_(vectors)
     {
     }
-    // Scratch V0 is reusable only across adjacent unconditional arithmetic.
-    // Other instructions and conditional paths cannot publish a product proof.
-    void observe(const arm::Instruction& inst)
+    bool has_product() const noexcept { return product_.has_value(); }
+    // Only unconditional arithmetic publishes a product. Intervening GPR
+    // operations may retain it when their lowering leaves vector scratch intact.
+    void observe(const arm::Instruction& inst, bool preserves_scratch)
     {
         unconditional_ = inst.kind == arm::InstructionKind::FloatingArithmetic &&
                          inst.condition == 14;
-        if (!unconditional_)
+        if (!unconditional_ && !preserves_scratch)
             product_.reset();
     }
     void immediate(const arm::FloatingImmediateOperands&, bool unconditional);

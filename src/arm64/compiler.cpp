@@ -98,7 +98,12 @@ namespace {
         }
         void observe_instruction(const arm::Instruction& inst)
         {
-            arithmetic_.observe(inst);
+            // Static branch continuations neither call out nor touch SIMD.
+            // Each compiled entry still defines its first product before use.
+            arithmetic_.observe(inst, arithmetic_.has_product() &&
+                (inst.kind == arm::InstructionKind::Branch ||
+                    inst.kind == arm::InstructionKind::CompareBranch ||
+                    IntegerEmitter::preserves_vector_scratch(inst)));
         }
         void location(unsigned it, unsigned size)
         {

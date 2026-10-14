@@ -18,6 +18,8 @@ public:
     {
     }
     void enter_shift_range();
+    // Keep floating scratch proofs only across lowerings that use GPRs alone.
+    static bool preserves_vector_scratch(const arm::Instruction&) noexcept;
     // pc_value is the encoding's architectural PC operand, including alignment.
     oaknut::WReg reg(
         unsigned index, std::uint32_t pc_value, oaknut::WReg scratch);
