@@ -166,8 +166,8 @@ void VectorMemoryEmitter::emit(
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
     Label checked, aligned, done;
-    if (key && inst.condition == 14)
-        addresses_.begin_guard(*key);
+    if (key)
+        addresses_.begin_guard(*key, inst.condition);
     if (inst.rn == 15)
         code_.MOV(W15, inst.align_pc ? (pc + inst.pc_offset) & ~3U
                                    : pc + inst.pc_offset);
@@ -209,8 +209,8 @@ void VectorMemoryEmitter::emit(
     code_.CBZ(X17, checked);
     code_.ADD(X21, X17, X15);
     AddressCache::Reference pointer { X21 };
-    if (key && inst.condition == 14)
-        pointer = addresses_.remember(*key, X21);
+    if (key)
+        pointer = addresses_.remember(*key, X21, inst.condition);
     access(inst, pointer);
     addresses_.writeback(inst);
     code_.B(done);

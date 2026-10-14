@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory_resource>
 #include <oaknut/oaknut.hpp>
 #include <optional>
 #include <vector>
@@ -12,8 +13,10 @@
 
 namespace ilemu::execution::arm64 {
 class AddressWindows;
-// Dominating guards publish into X27/X28 and optional D8/D9 slots. Only invariant
-// slots survive a closed trace backedge; no pointer survives a native
+// Guards publish into X27/X28 and optional D8/D9 slots. Conditional entries
+// become dominating only when predicates cover the same NZCV snapshot. Lazy
+// guards can reuse an invariant pointer after its first executed publication.
+// Only invariant slots survive a closed trace backedge; no pointer survives a native
 // invocation or checked exit. Callers revoke entries on every architectural
 // address input write.
 class AddressCache {
@@ -44,10 +47,10 @@ public:
     // Extra slots share D8/D9 with ReadPageCache, so the caller grants them
     // only when that dynamic page resolver is disabled for this trace.
     AddressCache(oaknut::VectorCodeGenerator&, bool extra_slots_available,
-        const AddressWindows* = nullptr);
+        const AddressWindows*, bool conditional, std::pmr::memory_resource*);
     std::optional<Reference> find(const Key&) const;
-    void begin_guard(const Key&);
-    Reference remember(const Key&, oaknut::XReg pointer);
+    void begin_guard(const Key&, unsigned condition);
+    Reference remember(const Key&, oaknut::XReg pointer, unsigned condition);
     void observe(const arm::Instruction&);
     void writeback(const arm::Instruction&);
     void enter(oaknut::VectorCodeGenerator&) const;
@@ -60,16 +63,29 @@ private:
     Identity identity(const Key&) const;
     std::uint32_t inputs(const Identity&) const;
     Reference reference(const Key&, const Identity&, oaknut::XReg) const;
+    struct Entry {
+        Identity identity;
+        std::uint16_t coverage = 0;
+        bool dominates = false;
+    };
+    struct LateGuard {
+        unsigned slot;
+        std::ptrdiff_t branch, target = 0;
+    };
+    unsigned slot(const Identity&) const;
     struct Guard {
         Identity identity;
         std::ptrdiff_t branch, target;
     };
     oaknut::VectorCodeGenerator& code_;
-    std::array<std::optional<Identity>, 4> entries_;
+    std::array<std::optional<Entry>, 4> entries_;
     std::array<std::optional<Guard>, 4> first_;
+    std::array<bool, 4> mixed_ { };
+    std::pmr::vector<LateGuard> late_;
+    std::optional<unsigned> pending_;
     const AddressWindows* windows_;
     std::optional<AddressDisplacements> displacements_;
     unsigned slot_count_, next_ = 0, written_ = 0;
-    bool used_extra_ = false;
+    bool used_extra_ = false, conditional_, coverage_used_ = false;
 };
 }

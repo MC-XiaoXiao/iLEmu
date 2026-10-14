@@ -18,7 +18,7 @@ public:
         bool load;
         std::int64_t first, end;
         unsigned keys = 0;
-        bool unconditional = false, indexed = false, adjusted = false, enabled = false;
+        bool indexed = false, adjusted = false, enabled = false;
     };
     explicit AddressWindows(std::pmr::memory_resource* resource)
         : accesses_(resource)
@@ -38,7 +38,7 @@ private:
         Key key;
         std::int64_t first = 0, end = 0;
         unsigned residue = 0;
-        bool valid = true, unconditional = false, adjusted = false;
+        bool valid = true, adjusted = false;
         std::optional<unsigned> window = { };
     };
     std::array<std::optional<std::uint32_t>, 16> bits_ { };

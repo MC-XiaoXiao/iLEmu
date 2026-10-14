@@ -32,8 +32,8 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
             return;
         }
     }
-    if (key && inst.condition == 14)
-        addresses_.begin_guard(*key);
+    if (key)
+        addresses_.begin_guard(*key, inst.condition);
     constexpr auto offset = offsetof(NativeOutcome, multiple);
     constexpr auto memory = offsetof(NativeOutcome, memory);
     const auto base = WReg { static_cast<int>(inst.rn) };
@@ -80,8 +80,8 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         code_.B(checked);
     code_.ADD(X21, X21, X15);
     AddressCache::Reference pointer { X21 };
-    if (key && inst.condition == 14)
-        pointer = addresses_.remember(*key, X21);
+    if (key)
+        pointer = addresses_.remember(*key, X21, inst.condition);
     access(inst, pointer, exits);
     code_.B(done);
     code_.l(checked);

@@ -72,7 +72,8 @@ namespace {
             , vectors_(code_, scalars)
             , integer_(code_, shift_range)
             , exchanges_(code_, integer_, thumb)
-            , memory_(code_, integer_, big_endian, fast_reads, cache_reads, temporary, windows)
+            , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
+                fast_reads && !single_step, temporary, windows)
             , thumb_(thumb)
             , backedge_(pc, it, thumb, !single_step)
             , head_(*temporary), loop_tail_(*temporary), epilogue_(*temporary)

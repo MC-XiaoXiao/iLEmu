@@ -265,8 +265,8 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     Label checked { labels }, done { labels };
     const bool dual = inst.kind == arm::InstructionKind::DualTransfer;
     const auto length = dual ? 8U : inst.access_size;
-    if (key && inst.condition == 14)
-        addresses_.begin_guard(*key);
+    if (key)
+        addresses_.begin_guard(*key, inst.condition);
     // W16 holds the offset/new base; W15 the effective guest address.
     integer_.address_offset(inst, pc);
     const auto base = integer_.reg(
@@ -316,8 +316,8 @@ void MemoryEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     code_.CBZ(X21, checked);
     code_.ADD(X21, X21, X15);
     AddressCache::Reference pointer { X21 };
-    if (key && inst.condition == 14)
-        pointer = addresses_.remember(*key, X21);
+    if (key)
+        pointer = addresses_.remember(*key, X21, inst.condition);
     access(inst, pc, pointer, exits);
     code_.B(done);
     code_.l(checked);

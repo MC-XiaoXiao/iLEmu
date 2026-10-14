@@ -24,7 +24,6 @@ void AddressWindows::observe(
             found = std::prev(accesses_.end());
         }
         auto& access = *found;
-        access.unconditional |= inst.condition == 14;
         std::int64_t low =
             key->add ? key->offset : -std::int64_t { key->offset };
         auto high = low;
@@ -104,14 +103,13 @@ void AddressWindows::finish(unsigned slots)
         found->first = std::min(found->first, access.first);
         found->end = std::max(found->end, access.end);
         ++found->keys;
-        found->unconditional |= access.unconditional;
         found->indexed |= key.index.has_value();
         found->adjusted |= access.adjusted || displacements_.modified(key.base);
     }
     for (unsigned slot = 0; slot < slots; ++slot) {
         Window* best = nullptr;
         for (auto& w : windows_)
-            if (!w.enabled && w.unconditional && (w.keys > 1 || w.indexed || w.adjusted) &&
+            if (!w.enabled && (w.keys > 1 || w.indexed || w.adjusted) &&
                 fits(w.first, w.end) && (!best || w.keys > best->keys))
                 best = &w;
         if (!best)
