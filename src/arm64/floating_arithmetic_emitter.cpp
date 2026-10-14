@@ -30,6 +30,25 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
     using namespace oaknut::util;
     using Op = arm::FloatingArithmeticOperation;
     if (v.operation == Op::Move) {
+        if (v.wide) {
+            if (auto destination = vectors_.resident_d(v.destination / 2U)) {
+                code_.FMOV(*destination, vectors_.scalar_d(v.first / 2U, Q1));
+                return;
+            }
+            if (auto source = vectors_.resident_d(v.first / 2U)) {
+                vectors_.write_d(v.destination / 2U, QReg { source->index() });
+                return;
+            }
+        } else {
+            if (auto destination = vectors_.resident_s(v.destination)) {
+                code_.FMOV(*destination, vectors_.scalar_s(v.first, Q1));
+                return;
+            }
+            if (auto source = vectors_.resident_s(v.first)) {
+                vectors_.write_s(v.destination, QReg { source->index() });
+                return;
+            }
+        }
         // A lane copy preserves all neighbouring architectural lanes without
         // first materializing the scalar in a temporary vector register.
         if (v.wide)
@@ -49,7 +68,10 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
         const auto first = scalar(v.first, Q1);
         const auto second = unary || v.first == v.second
             ? first : scalar(v.second, Q2);
-        arithmetic_result(v.operation, destination, first, second);
+        // A resident destination can alias the old accumulator. Round the
+        // product in scratch before reading that accumulator, as before.
+        const decltype(destination) product { accumulate ? 0 : destination.index() };
+        arithmetic_result(v.operation, product, first, second);
         if (accumulate) {
             // The product is now in scratch V0. Inputs are no longer needed;
             // only now may V1 be reused for an upper-lane accumulator.
@@ -60,19 +82,23 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
                 code_.FNEG(temporary, accumulator);
                 accumulator = temporary;
             }
-            code_.FADD(destination, accumulator, destination);
+            code_.FADD(destination, accumulator, product);
         }
     };
     if (v.wide) {
-        emit(D0, [&](unsigned word, QReg scratch) {
+        const auto resident = vectors_.resident_d(v.destination / 2U);
+        emit(resident.value_or(D0), [&](unsigned word, QReg scratch) {
             return vectors_.scalar_d(word / 2U, scratch);
         });
-        vectors_.write_d(v.destination / 2U, Q0);
+        if (!resident)
+            vectors_.write_d(v.destination / 2U, Q0);
     } else {
-        emit(S0, [&](unsigned word, QReg scratch) {
+        const auto resident = vectors_.resident_s(v.destination);
+        emit(resident.value_or(S0), [&](unsigned word, QReg scratch) {
             return vectors_.scalar_s(word, scratch);
         });
-        vectors_.write_s(v.destination, Q0);
+        if (!resident)
+            vectors_.write_s(v.destination, Q0);
     }
 }
 }

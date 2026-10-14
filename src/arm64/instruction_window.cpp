@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "instruction_window.hpp"
 #include "address_windows.hpp"
+#include "scalar_register_plan.hpp"
 #include "vector_memory_emitter.hpp"
 #include "flag_effects.hpp"
 #include "dynamic_backedge.hpp"
@@ -115,6 +116,61 @@ void InstructionWindow::repeat_cycle()
     pending_.resize(consumed_);
     consumed_ = 0;
     comparison_flags_dead_.reset();
+}
+ScalarRegisterPlan InstructionWindow::scalar_registers(std::uint32_t start,
+    unsigned start_it, unsigned limit, std::uint64_t budget)
+{
+    ScalarRegisterPlan::Builder builder;
+    auto pc = start;
+    auto it = start_it;
+    for (unsigned n = 0; n < limit; ++n) {
+        auto entry = take(pc, it, false);
+        if (!entry || !entry->word || entry->instruction.condition == 15 ||
+            std::uint64_t { pc } + entry->instruction.size > region_.end)
+            return {};
+        const auto& inst = entry->instruction;
+        const auto cost = timing(*entry);
+        if (cost == 0 || cost > budget)
+            return {};
+        budget -= cost;
+        const auto next_it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
+            ? inst.immediate : arm::advance_it(it)) : 0U;
+        using Kind = arm::InstructionKind;
+        if (inst.kind == Kind::Branch) {
+            const auto target = ((pc + inst.pc_offset) &
+                (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
+            return !inst.exchange && target == start && next_it == start_it
+                ? builder.finish() : ScalarRegisterPlan {};
+        }
+        if (inst.kind == Kind::FloatingArithmetic)
+            builder.observe(std::get<arm::FloatingArithmeticOperands>(inst.vector));
+        else {
+            // Other extension consumers/producers keep the packed-bank path.
+            // This also excludes constants sharing the five resident slots.
+            switch (inst.kind) {
+            case Kind::DataProcessing:
+                if (arm::alu_writes_pc(inst))
+                    return {};
+                break;
+            case Kind::Multiply:
+            case Kind::IntegerDivide:
+            case Kind::PackHalfword:
+            case Kind::IntegerTransform:
+            case Kind::ParallelSaturating:
+            case Kind::ParallelArithmetic:
+            case Kind::SaturatingArithmetic:
+            case Kind::WideImmediate:
+            case Kind::Nop:
+            case Kind::IfThen:
+                break;
+            default:
+                return {};
+            }
+        }
+        pc += inst.size;
+        it = next_it;
+    }
+    return {};
 }
 AddressWindows InstructionWindow::address_windows(std::uint32_t start,
     unsigned start_it, unsigned limit, std::uint64_t budget)

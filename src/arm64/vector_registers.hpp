@@ -2,6 +2,7 @@
 #pragma once
 #include "execution/arm_state.hpp"
 #include "simd_immediate_emitter.hpp"
+#include "scalar_register_plan.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -10,15 +11,17 @@
 
 namespace ilemu::execution::arm64 {
 // Sixteen guest Q registers alias all thirty-two D registers. V16..V31 are
-// caller-saved; V0..V2 remain scratch, V3..V7 hold immutable constants,
+// caller-saved; V0..V2 remain scratch, V3..V7 share constants and scalar views.
+// A whole-cycle scalar plan may also reuse untouched guest-bank registers,
 // and host V8/V9 are reserved for invocation-local memory caches. Other
 // callee-saved vectors are untouched. Masks describe the whole trace, including conditional
 // paths. Entry loads preserve neighbours even for a write-only D or lane
 // destination.
 class VectorRegisters {
 public:
-    explicit VectorRegisters(oaknut::VectorCodeGenerator& code)
-        : code_(code)
+    explicit VectorRegisters(oaknut::VectorCodeGenerator& code,
+        const ScalarRegisterPlan* scalars = nullptr)
+        : code_(code), scalars_(scalars)
     {
     }
     oaknut::QReg read(unsigned d)
@@ -41,6 +44,8 @@ public:
     // Read-only scalar views need a copy only for an upper lane.
     oaknut::SReg scalar_s(unsigned s, oaknut::QReg scratch)
     {
+        if (auto resident = resident_s(s))
+            return *resident;
         const auto bank = read(s / 2U);
         if (s % 4U == 0)
             return oaknut::SReg { bank.index() };
@@ -49,19 +54,41 @@ public:
     }
     oaknut::DReg scalar_d(unsigned d, oaknut::QReg scratch)
     {
+        if (auto resident = resident_d(d))
+            return *resident;
         const auto bank = read(d);
         if (d % 2U == 0)
             return oaknut::DReg { bank.index() };
         code_.DUP(scratch.D2(), bank.Delem()[d % 2U]);
         return oaknut::DReg { scratch.index() };
     }
+    std::optional<oaknut::SReg> resident_s(unsigned s) const
+    {
+        if (scalars_)
+            if (auto slot = scalars_->find(s, false))
+                return oaknut::SReg { static_cast<int>(scalars_->entries[*slot].host) };
+        return {};
+    }
+    std::optional<oaknut::DReg> resident_d(unsigned d) const
+    {
+        if (scalars_)
+            if (auto slot = scalars_->find(d * 2U, true))
+                return oaknut::DReg { static_cast<int>(scalars_->entries[*slot].host) };
+        return {};
+    }
     void write_d(unsigned d, oaknut::QReg value)
     {
-        code_.INS(write(d).Delem()[d % 2U], value.Delem()[0]);
+        if (auto resident = resident_d(d))
+            code_.FMOV(*resident, oaknut::DReg { value.index() });
+        else
+            code_.INS(write(d).Delem()[d % 2U], value.Delem()[0]);
     }
     void write_s(unsigned s, oaknut::QReg value)
     {
-        code_.INS(write(s / 2U).Selem()[s % 4U], value.Selem()[0]);
+        if (auto resident = resident_s(s))
+            code_.FMOV(*resident, oaknut::SReg { value.index() });
+        else
+            code_.INS(write(s / 2U).Selem()[s % 4U], value.Selem()[0]);
     }
     bool constant_is_known(unsigned word, bool wide, std::uint8_t imm8) const
     {
@@ -77,11 +104,11 @@ public:
         for (unsigned i = 0; i < constant_count_; ++i)
             if (!constants_[i].vector && constants_[i].wide == wide &&
                 constants_[i].imm8 == imm8)
-                return oaknut::QReg { 3 + static_cast<int>(i) };
-        if (constant_count_ < constants_.size()) {
+                return oaknut::QReg { 3 + static_cast<int>(constant_slots() + i) };
+        if (constant_slots() + constant_count_ < constants_.size()) {
             const auto slot = constant_count_++;
             constants_[slot] = { wide, imm8 };
-            return oaknut::QReg { 3 + static_cast<int>(slot) };
+            return oaknut::QReg { 3 + static_cast<int>(constant_slots() + slot) };
         }
         // A bounded plan keeps larger constant sets on the ordinary scratch path.
         materialize(code_, 0, { wide, imm8 });
@@ -97,12 +124,12 @@ public:
             if (entry.vector && entry.imm8 == value.imm8 &&
                 entry.cmode == value.cmode && entry.op == value.op &&
                 entry.upper == upper)
-                return oaknut::QReg { 3 + static_cast<int>(i) };
+                return oaknut::QReg { 3 + static_cast<int>(constant_slots() + i) };
         }
-        if (constant_count_ < constants_.size()) {
+        if (constant_slots() + constant_count_ < constants_.size()) {
             const auto slot = constant_count_++;
             constants_[slot] = requested;
-            return oaknut::QReg { 3 + static_cast<int>(slot) };
+            return oaknut::QReg { 3 + static_cast<int>(constant_slots() + slot) };
         }
         materialize(code_, 0, requested);
         return oaknut::util::Q0;
@@ -113,12 +140,46 @@ public:
         // Entry initialization covers conditional first uses. Host callbacks may
         // clobber all caller-saved registers, so every restore reloads constants.
         for (unsigned i = 0; i < constant_count_; ++i)
-            materialize(code, 3 + static_cast<int>(i), constants_[i]);
+            materialize(code, 3 + static_cast<int>(constant_slots() + i), constants_[i]);
+        scalar_transfer(code, true);
     }
     void restore() const { restore(code_); }
-    void flush() const { transfer(code_, dirty_, false); }
+    void flush() const
+    {
+        // Packed neighbours may be stale. Resident writes override only their
+        // own words after the ordinary bank publication, on every exit path.
+        transfer(code_, dirty_, false);
+        scalar_transfer(code_, false);
+    }
 
 private:
+    unsigned constant_slots() const
+    {
+        return scalars_ ? scalars_->constant_slots() : 0U;
+    }
+    void scalar_transfer(oaknut::VectorCodeGenerator& code, bool load) const
+    {
+        if (!scalars_)
+            return;
+        for (unsigned i = 0; i < scalars_->count; ++i) {
+            const auto& entry = scalars_->entries[i];
+            if (!load && !entry.written)
+                continue;
+            const auto offset = static_cast<std::ptrdiff_t>(
+                offsetof(CpuThreadState, extension_registers) +
+                entry.word * sizeof(std::uint32_t));
+            const auto emit = [&](auto reg) {
+                if (load)
+                    code.LDR(reg, oaknut::util::X19, offset);
+                else
+                    code.STR(reg, oaknut::util::X19, offset);
+            };
+            if (entry.wide)
+                emit(oaknut::DReg { static_cast<int>(entry.host) });
+            else
+                emit(oaknut::SReg { static_cast<int>(entry.host) });
+        }
+    }
     struct ScalarConstant {
         bool wide;
         std::uint8_t imm8;
@@ -172,8 +233,10 @@ private:
         }
     }
     oaknut::VectorCodeGenerator& code_;
+    // Borrowed only during compilation; no plan pointer enters native code.
+    const ScalarRegisterPlan* scalars_;
     unsigned used_ = 0, dirty_ = 0;
-    std::array<Constant, 5> constants_ { };
+    std::array<Constant, ScalarRegisterPlan::constant_capacity> constants_ { };
     unsigned constant_count_ = 0;
     // Compile-time knowledge only; every entry still emits its first write.
     std::array<std::optional<ScalarConstant>, 64> known_constants_ { };

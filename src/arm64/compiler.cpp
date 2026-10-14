@@ -66,10 +66,10 @@ namespace {
             std::uint32_t pc, unsigned it, bool single_step,
             std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads,
             std::optional<RegisterShiftRange> shift_range,
-            const AddressWindows* windows)
+            const AddressWindows* windows, const ScalarRegisterPlan* scalars)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
-            , vectors_(code_)
+            , vectors_(code_, scalars)
             , integer_(code_, shift_range)
             , exchanges_(code_, integer_, thumb)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads, temporary, windows)
@@ -618,6 +618,12 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     const bool cache_reads = !single_step && expansion == CycleExpansion::Hot &&
         window.single_dependent_read_cycle(
             pc, it, maximum_trace_instructions, maximum_ticks);
+    std::optional<ScalarRegisterPlan> scalars;
+    if (!single_step && expansion == CycleExpansion::Hot) {
+        scalars.emplace(window.scalar_registers(pc, it,
+            std::min(maximum_trace_instructions, instruction_limit), maximum_ticks));
+        window.repeat_cycle();
+    }
     CompiledTrace out;
     auto first = window.take(pc, it, true);
     // Standalone unconditional stops share portable retirement and need no
@@ -645,7 +651,8 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     // Larger read fallbacks are earned by the existing hot-cycle tier, so
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
-        expansion == CycleExpansion::Hot, cache_reads, shift_range, windows);
+        expansion == CycleExpansion::Hot, cache_reads, shift_range, windows,
+        scalars && scalars->count != 0 ? &*scalars : nullptr);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
