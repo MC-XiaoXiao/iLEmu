@@ -23,6 +23,19 @@ public:
         const ScalarRegisterPlan* scalars = nullptr)
         : code_(code), scalars_(scalars)
     {
+        // Reserve units before any other constant use, including conditional
+        // first uses. They share the existing entry/callback initialization.
+        if (scalars_)
+            for (unsigned wide = 0; wide < 2; ++wide)
+                if ((scalars_->accumulation_units & (1U << wide)) != 0)
+                    constants_[constant_count_++] = { wide != 0, 0x70 };
+    }
+    std::optional<oaknut::QReg> accumulation_unit(bool wide)
+    {
+        if (!scalars_ ||
+            (scalars_->accumulation_units & (1U << unsigned(wide))) == 0)
+            return {};
+        return constant(wide, 0x70); // The reserved 1.0 cannot use scratch V0.
     }
     oaknut::QReg read(unsigned d)
     {

@@ -83,6 +83,11 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
         const bool negated = v.operation == Op::MultiplySubtract ||
                              v.operation == Op::NegatedMultiplyAdd;
         const bool feedback = v.destination == v.first || v.destination == v.second;
+        // Source feedback needs the shorter ordinary multiply/add dependency
+        // chain; the unit-multiplier form is for independent accumulators.
+        const auto unit = accumulate && !feedback
+            ? vectors_.accumulation_unit(v.wide) : std::nullopt;
+        bool product_negated = negated;
         // A sign toggle would lengthen a source-feedback chain. Recompute the
         // product in parallel instead of chaining two dependent negations.
         const bool reuse = accumulate && unconditional_ && product_ &&
@@ -94,26 +99,46 @@ void FloatingEmitter::arithmetic(const arm::FloatingArithmeticOperands& v)
                 ? first : scalar(v.second, Q2);
             // Round the product before reading an aliased accumulator.
             arithmetic_result(v.operation, product, first, second);
-        } else if (product_->negated != negated)
-            code_.FNEG(product, product);
+        } else {
+            product_negated = product_->negated;
+            if (!unit && product_negated != negated) {
+                code_.FNEG(product, product);
+                product_negated = negated;
+            }
+        }
         if (accumulate) {
             // The product is now in scratch V0. Inputs are no longer needed;
             // only now may V1 be reused for an upper-lane accumulator.
             auto accumulator = scalar(v.destination, Q1);
-            if (v.operation == Op::NegatedMultiplyAdd ||
-                v.operation == Op::NegatedMultiplySubtract) {
-                const decltype(destination) temporary { 1 };
-                code_.FNEG(temporary, accumulator);
-                accumulator = temporary;
+            const bool negative_accumulator = v.operation == Op::NegatedMultiplyAdd ||
+                                              v.operation == Op::NegatedMultiplySubtract;
+            if (unit && (negative_accumulator || product_negated != negated)) {
+                const decltype(destination) one { unit->index() };
+                // FMUL has already rounded the legacy product. Multiplying
+                // that result by 1 preserves the second rounding and lets the
+                // instruction negate operands before addend-first NaN handling.
+                if (negative_accumulator) {
+                    if (product_negated != negated)
+                        code_.FNMADD(destination, product, one, accumulator);
+                    else
+                        code_.FNMSUB(destination, product, one, accumulator);
+                } else
+                    code_.FMSUB(destination, product, one, accumulator);
+            } else {
+                if (negative_accumulator) {
+                    const decltype(destination) temporary { 1 };
+                    code_.FNEG(temporary, accumulator);
+                    accumulator = temporary;
+                }
+                code_.FADD(destination, accumulator, product);
             }
-            code_.FADD(destination, accumulator, product);
-            // FADD leaves V0 intact only with a resident destination. A write
+            // Accumulation leaves V0 intact with a resident destination. A write
             // to either source revokes the proof for the next instruction.
             // Repeating this nontrapping multiplication would only reassert
             // already-sticky FPSR flags; every status/control boundary clears it.
             if (unconditional_ && destination.index() != 0 &&
                 !feedback)
-                product_ = Product { v.first, v.second, v.wide, negated };
+                product_ = Product { v.first, v.second, v.wide, product_negated };
             else
                 product_.reset();
         }

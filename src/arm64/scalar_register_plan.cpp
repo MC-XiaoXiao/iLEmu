@@ -31,8 +31,16 @@ void ScalarRegisterPlan::Builder::observe(
         use(v.second, v.wide, false, 0, v.wide);
     if (v.operation == Op::MultiplyAdd || v.operation == Op::MultiplySubtract ||
         v.operation == Op::NegatedMultiplyAdd ||
-        v.operation == Op::NegatedMultiplySubtract)
+        v.operation == Op::NegatedMultiplySubtract) {
         use(v.destination, v.wide, false, 0, v.wide);
+        if (v.destination != v.first && v.destination != v.second) {
+            product_signs_[v.wide] |= v.operation == Op::MultiplySubtract ||
+                v.operation == Op::NegatedMultiplyAdd ? 2U : 1U;
+            if (v.operation == Op::NegatedMultiplyAdd ||
+                v.operation == Op::NegatedMultiplySubtract)
+                negative_accumulators_ |= 1U << unsigned(v.wide);
+        }
+    }
 }
 void ScalarRegisterPlan::Builder::observe(
     const arm::VectorTransferOperands& v, bool load)
@@ -83,6 +91,12 @@ ScalarRegisterPlan ScalarRegisterPlan::Builder::finish() const
         }
     }
     ScalarRegisterPlan plan;
+    for (unsigned wide = 0; wide < 2; ++wide)
+        if (product_signs_[wide] == 3U ||
+            (negative_accumulators_ & (1U << wide)) != 0)
+            plan.accumulation_units |= 1U << wide;
+    const auto scalar_capacity = constant_capacity -
+        static_cast<unsigned>(std::popcount(plan.accumulation_units));
     unsigned occupied = 0;
     for (unsigned word = 0; word < singles_.size(); ++word)
         if (blocked_[word] || singles_[word].present ||
@@ -90,7 +104,7 @@ ScalarRegisterPlan ScalarRegisterPlan::Builder::finish() const
             occupied |= 1U << (word / 4U);
     // All architectural operands in the entire cycle reserve their packed bank,
     // including overlapping precisions and candidates that cannot be selected.
-    const auto available = constant_capacity + 16U -
+    const auto available = scalar_capacity + 16U -
                            static_cast<unsigned>(std::popcount(occupied));
     std::sort(candidates.begin(), candidates.begin() + candidate_count,
         [](const Candidate& a, const Candidate& b) {
@@ -109,7 +123,7 @@ ScalarRegisterPlan ScalarRegisterPlan::Builder::finish() const
     }
     unsigned bank = 0;
     for (unsigned i = 0; i < plan.count; ++i) {
-        if (i < constant_capacity)
+        if (i < scalar_capacity)
             plan.entries[i].host = 3U + i;
         else {
             while ((occupied & (1U << bank)) != 0)
