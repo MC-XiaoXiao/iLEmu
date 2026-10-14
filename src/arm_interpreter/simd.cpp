@@ -15,10 +15,21 @@ void floating_vector(
     // vector length/stride and trap enables. Exceptions still accumulate in
     // the actual FPSCR; neighbouring D lanes and all control bits survive.
     constexpr std::uint32_t standard_controls = 0x03000000U;
-    for (unsigned i = 0; i < (v.quad ? 4U : 2U); ++i) {
+    const auto lanes = v.quad ? 4U : 2U;
+    std::array<std::uint32_t, 4> first, second, accumulator;
+    // Pairwise and broadcast sources can alias a lane written earlier in
+    // the result. Read the complete input before publishing any output.
+    for (unsigned i = 0; i < lanes; ++i) {
+        first[i] = state.extension_registers[v.first * 2U + i];
+        second[i] = state.extension_registers[v.second * 2U +
+            (v.scalar_lane ? *v.scalar_lane : i)];
+        accumulator[i] = state.extension_registers[v.destination * 2U + i];
+    }
+    for (unsigned i = 0; i < lanes; ++i) {
+        const auto a = v.pairwise ? (i == 0 ? first[0] : second[0]) : first[i];
+        const auto b = v.pairwise ? (i == 0 ? first[1] : second[1]) : second[i];
         const auto result = arm::calculate_floating(scalar,
-            state.extension_registers[v.first * 2U + i],
-            state.extension_registers[v.second * 2U + i], 0, standard_controls);
+            a, b, accumulator[i], standard_controls);
         state.extension_registers[v.destination * 2U + i] =
             static_cast<std::uint32_t>(result.value);
         state.fpscr |= result.exceptions;

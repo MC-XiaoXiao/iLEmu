@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include <cstdint>
+#include <optional>
 #include <variant>
 
 namespace ilemu::arm {
@@ -128,6 +129,9 @@ struct VectorFloatingArithmeticOperands {
     unsigned destination = 0, first = 0, second = 0;
     FloatingArithmeticOperation operation = FloatingArithmeticOperation::Add;
     bool quad = false;
+    bool pairwise = false;
+    // A scalar form broadcasts one F32 lane of the second D register.
+    std::optional<std::uint8_t> scalar_lane;
 };
 struct FloatingComparisonOperands {
     // Word indices in the shared S/D extension bank.
