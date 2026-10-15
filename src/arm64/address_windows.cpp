@@ -226,20 +226,27 @@ void AddressWindows::guard(oaknut::VectorCodeGenerator& code,
         if (!w.enabled || (registers && w.advance == 0 && w.stride_advance == 0))
             continue;
         if (w.stride) {
+            // Entry runs before NativeFrame saves callee-saved registers;
+            // group checks can use its established X21 scratch instead.
+            const auto offset = registers ? X21 : X2;
+            if (registers)
+                code.MOV(WReg { offset.index() }, WReg { static_cast<int>(w.base) });
+            else
+                code.LDR(WReg { offset.index() }, X0, w.base * sizeof(std::uint32_t));
+            code.AND(WReg { offset.index() }, WReg { offset.index() }, 4095);
             if (registers)
                 code.MOV(W15, WReg { static_cast<int>(*w.stride) });
             else
                 code.LDR(W15, X0, *w.stride * sizeof(std::uint32_t));
             const auto bound = [&](std::int64_t constant, std::int64_t coefficient) {
-                if (registers)
-                    code.MOV(W16, WReg { static_cast<int>(w.base) });
-                else
-                    code.LDR(W16, X0, w.base * sizeof(std::uint32_t));
-                code.AND(W16, W16, 4095);
+                // The unadjusted page offset is already within this page.
+                if (constant == 0 && coefficient == 0)
+                    return;
                 if (coefficient != 0) {
                     code.MOV(W17, static_cast<std::uint32_t>(coefficient));
-                    code.SMADDL(X16, W15, W17, X16);
-                }
+                    code.SMADDL(X16, W15, W17, offset);
+                } else
+                    code.MOV(X16, offset);
                 if (constant < 0)
                     code.SUB(X16, X16, static_cast<unsigned>(-constant));
                 else if (constant != 0)
