@@ -35,6 +35,7 @@ public:
     void regions(CodeRegions regions);
     // Rewind only after the compiler accepts another copy of its entry cycle.
     void repeat_cycle();
+    std::size_t cached_instructions() const noexcept { return pending_.size(); }
     std::optional<DecodedInstruction> take(std::uint32_t pc, unsigned it,
         bool allow_straddle);
     std::uint64_t timing(DecodedInstruction&);

@@ -685,6 +685,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     // Code-free stops above need no lookahead. Ordinary traces also own
     // standard SIMD controls when every emitted path permits it; reuse each
     // inspected decode and timing during emission rather than fetching twice.
+    std::size_t reservation_instructions = 1;
     bool cache_reads = false;
     std::optional<FloatingRegisterPlan> floating;
     if (!single_step) {
@@ -695,6 +696,9 @@ static CompiledTrace compile_trace(InstructionSource& source,
         floating.emplace(window.floating_registers(pc, it,
             std::min(maximum_trace_instructions, instruction_limit), maximum_ticks,
             expansion == CycleExpansion::Hot, path));
+        reservation_instructions = path ? path.steps() : window.cached_instructions();
+        if (!path)
+            reservation_instructions *= CycleTier::natural_copies(expansion);
         window.mode(thumb);
         window.repeat_cycle();
         first = window.take(pc, it, true);
@@ -703,9 +707,11 @@ static CompiledTrace compile_trace(InstructionSource& source,
     const bool has_data_memory = source.data_memory() != nullptr;
     const auto alu_profile = source.alu_pc_write_profile();
     const bool mixed_timing = source.supports_mixed_instruction_timing();
-    // Native frame and exits dominate short traces. Reserve a small code
-    // buffer once; standalone stops above still allocate no machine code.
-    out.words.reserve(256);
+    // Reuse paid lookahead for a bounded initial allocation. Larger traces
+    // keep ordinary vector growth; standalone stops above allocate no code.
+    const auto estimated_instructions = std::min<std::uint64_t>(
+        { maximum_trace_instructions, maximum_ticks, reservation_instructions });
+    out.words.reserve(std::max<std::size_t>(256, 128 + 32 * estimated_instructions));
     // Larger read fallbacks are earned by the existing hot-cycle tier, so
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
