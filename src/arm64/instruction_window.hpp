@@ -43,7 +43,8 @@ public:
         bool reserve_scalars = true, const TracePath& path = TracePath {});
     // Prove page-local windows for stable bases and bounded offsets.
     AddressWindows address_windows(std::uint32_t pc, unsigned it,
-        unsigned remaining_instructions, std::uint64_t remaining_ticks);
+        unsigned remaining_instructions, std::uint64_t remaining_ticks,
+        const TracePath& path = TracePath {});
     // A conservative linear-cycle proof avoids serializing parallel read
     // chains through one page-cache slot. Prefetched decodes feed emission.
     bool single_dependent_read_cycle(std::uint32_t pc, unsigned it,

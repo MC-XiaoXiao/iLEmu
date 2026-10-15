@@ -255,15 +255,24 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
     return builder.finish(false);
 }
 AddressWindows InstructionWindow::address_windows(std::uint32_t start,
-    unsigned start_it, unsigned limit, std::uint64_t budget)
+    unsigned start_it, unsigned limit, std::uint64_t budget, const TracePath& path)
 {
     auto* resource = pending_.get_allocator().resource();
     AddressWindows result(resource);
-    const auto slots = single_dependent_read_cycle(start, start_it, limit, budget)
+    const auto slots = !path && single_dependent_read_cycle(start, start_it, limit, budget)
         ? 2U : 4U;
     auto pc = start;
     auto it = start_it;
+    if (path)
+        limit = std::min(limit, path.steps());
     for (unsigned n = 0; n < limit; ++n) {
+        if (path) {
+            mode(path[n].thumb);
+            pc = path[n].pc;
+            it = path[n].it;
+        }
+        if (!regions_.containing(pc))
+            return AddressWindows(resource);
         auto entry = take(pc, it, false);
         if (!entry || !entry->word || entry->instruction.condition == 15 ||
             std::uint64_t { pc } + entry->instruction.size > regions_.containing(pc)->end)
@@ -275,17 +284,21 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
         budget -= cost;
         const auto next_it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
             ? inst.immediate : arm::advance_it(it)) : 0U;
-        const auto next_pc = inst.kind == arm::InstructionKind::Branch
+        const auto edge = path ? path.edge(n, inst, next_it,
+            DynamicBackedge::ends_trace(inst)) : std::nullopt;
+        if (path && !edge)
+            return AddressWindows(resource);
+        const auto next_pc = path ? path[n + 1U].pc : inst.kind == arm::InstructionKind::Branch
             ? ((pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) + inst.immediate
             : pc + inst.size;
-        if ((inst.kind == arm::InstructionKind::Branch && inst.exchange) ||
-            DynamicBackedge::ends_trace(inst) || arm::ArchitecturalStop::from(inst) ||
+        if ((!path && ((inst.kind == arm::InstructionKind::Branch && inst.exchange) ||
+                DynamicBackedge::ends_trace(inst))) || arm::ArchitecturalStop::from(inst) ||
             inst.kind == arm::InstructionKind::Unsupported ||
             inst.kind == arm::InstructionKind::ExclusiveTransfer ||
             inst.kind == arm::InstructionKind::Swap ||
             inst.kind == arm::InstructionKind::ClearExclusive ||
             inst.kind == arm::InstructionKind::SystemControl ||
-            inst.kind == arm::InstructionKind::CompareBranch)
+            (!path && inst.kind == arm::InstructionKind::CompareBranch))
             return AddressWindows(resource);
         std::optional<AddressCache::Key> key;
         if (inst.kind == arm::InstructionKind::Transfer ||
@@ -299,7 +312,8 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
         result.observe(inst, key);
         pc = next_pc;
         it = next_it;
-        if (pc == start && it == start_it) {
+        if ((path && n + 1U == path.steps()) ||
+            (!path && pc == start && it == start_it)) {
             result.finish(slots, n + 1U);
             return result;
         }

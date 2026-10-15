@@ -657,8 +657,6 @@ static CompiledTrace compile_trace(InstructionSource& source,
         ? CodeRegions { source.instruction_region(pc) } : CodeRegions { permitted_regions };
     if (!regions.containing(pc))
         throw std::invalid_argument("invalid instruction region");
-    if (path && path[0] != TraceLocation { pc, thumb, it })
-        throw std::invalid_argument("instruction path entry mismatch");
     if (path)
         instruction_limit = std::min(instruction_limit, path.steps());
     // Scratch containers stay in this call. Returned machine code keeps its
@@ -1148,26 +1146,29 @@ static CompiledTrace compile_trace(InstructionSource& source,
 }
 static CompiledTrace compile_hot(InstructionSource& source,
     std::span<const InstructionRegion> permitted_regions, std::uint32_t pc,
-    std::uint64_t maximum_ticks, bool big_endian, bool thumb, unsigned it)
+    std::uint64_t maximum_ticks, bool big_endian, bool thumb, unsigned it,
+    const TracePath& path = TracePath {})
 {
     const CodeRegions regions = permitted_regions.empty()
         ? CodeRegions { source.instruction_region(pc) } : CodeRegions { permitted_regions };
     if (!regions.containing(pc))
         return compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
-            thumb, it, CycleExpansion::Hot);
+            thumb, it, CycleExpansion::Hot, {}, nullptr, maximum_trace_instructions, path);
     alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
     std::pmr::monotonic_buffer_resource temporary {
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
     InstructionWindow window(source, regions, thumb, &temporary, true);
-    auto count = window.invariant_shift_count(
-        pc, it, maximum_trace_instructions, maximum_ticks);
+    auto count = path ? std::optional<InvariantShiftCount> {}
+                      : window.invariant_shift_count(
+                            pc, it, maximum_trace_instructions, maximum_ticks);
     if (!count) {
         window.repeat_cycle();
         auto windows = window.address_windows(pc, it,
-            maximum_trace_instructions, maximum_ticks);
+            maximum_trace_instructions, maximum_ticks, path);
         if (!windows.empty()) {
             auto slow = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
-                big_endian, thumb, it, CycleExpansion::Hot);
+                big_endian, thumb, it, CycleExpansion::Hot, {}, nullptr,
+                maximum_trace_instructions, path);
             windows.expand(slow.instructions);
             if (windows.empty())
                 return slow;
@@ -1175,7 +1176,7 @@ static CompiledTrace compile_hot(InstructionSource& source,
             // Keep the existing read-cache copy budget when the fast body is smaller.
             auto fast = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, &windows,
-                slow.instructions);
+                slow.instructions, path);
             return windows.select(std::move(fast), std::move(slow));
         }
     }
@@ -1214,7 +1215,7 @@ static CompiledTrace compile_hot(InstructionSource& source,
             return std::move(*selected);
     }
     return compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
-        thumb, it, CycleExpansion::Hot);
+        thumb, it, CycleExpansion::Hot, {}, nullptr, maximum_trace_instructions, path);
 }
 CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
@@ -1223,6 +1224,10 @@ CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     std::span<const TraceLocation> locations)
 {
     const TracePath path { locations };
+    if (path && path[0] != TraceLocation { pc, thumb, it })
+        throw std::invalid_argument("instruction path entry mismatch");
+    if (path && !single_step && expansion == CycleExpansion::Hot)
+        return compile_hot(source, permitted_regions, pc, maximum_ticks, big_endian, thumb, it, path);
     if (path)
         return compile_trace(source, permitted_regions, pc, single_step, maximum_ticks,
             big_endian, thumb, it, expansion, {}, nullptr, path.steps(), path);
