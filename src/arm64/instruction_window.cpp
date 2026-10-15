@@ -215,7 +215,7 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
             if (inst.exchange || target != start || next_it != start_it)
                 return AddressWindows(resource);
             result.observe(inst, {});
-            result.finish(slots);
+            result.finish(slots, n + 1U);
             return result;
         }
         if (DynamicBackedge::ends_trace(inst) || arm::ArchitecturalStop::from(inst) ||

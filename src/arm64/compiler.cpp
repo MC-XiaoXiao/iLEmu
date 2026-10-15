@@ -78,6 +78,7 @@ namespace {
             , exchanges_(code_, integer_, thumb)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
                 fast_reads && !single_step, temporary, windows)
+            , windows_(windows)
             , thumb_(thumb)
             , backedge_(pc, it, thumb, !single_step)
             , head_(*temporary), loop_tail_(*temporary), epilogue_(*temporary)
@@ -189,6 +190,11 @@ namespace {
                 code_.SUB(X23, X23, 1);
                 code_.CBZ(X23, exit(StopReason::None, 0, backedge_.pc(), { },
                     0, false, backedge_.it()));
+                // The selector proved the first group before entry. Validate
+                // advancing windows only when another group will execute.
+                if (windows_ && windows_->advances())
+                    windows_->guard_group(code_, exit(StopReason::None, 0,
+                        backedge_.pc(), {}, 0, false, backedge_.it()));
                 code_.SUB(X30, X30, 1);
                 code_.CBNZ(X30, head_);
                 // Preserve caller-saved guest registers and flags across the
@@ -605,6 +611,7 @@ namespace {
         IntegerEmitter integer_;
         ExchangePaths exchanges_;
         MemoryEmitter memory_;
+        const AddressWindows* windows_;
         bool thumb_;
         bool continued_cycle_ = false;
         DynamicBackedge backedge_;
@@ -1083,6 +1090,9 @@ static CompiledTrace compile_hot(InstructionSource& source, std::uint32_t pc,
         if (!windows.empty()) {
             auto slow = compile_trace(source, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot);
+            windows.expand(slow.instructions);
+            if (windows.empty())
+                return slow;
             // A single cache entry needs the same paid group in either body.
             // Keep the existing read-cache copy budget when the fast body is smaller.
             auto fast = compile_trace(source, pc, false, maximum_ticks,

@@ -19,6 +19,7 @@ public:
         std::int64_t first, end;
         unsigned keys = 0;
         bool indexed = false, adjusted = false, enabled = false;
+        std::int32_t advance = 0;
     };
     explicit AddressWindows(std::pmr::memory_resource* resource)
         : accesses_(resource)
@@ -26,14 +27,18 @@ public:
     {
     }
     void observe(const arm::Instruction&, const std::optional<Key>&);
-    void finish(unsigned slots);
+    void finish(unsigned slots, unsigned cycle_instructions);
+    void expand(unsigned instructions);
     std::optional<unsigned> find(const Key&) const;
     const Window& window(unsigned index) const { return windows_[index]; }
     bool empty() const;
+    bool advances() const;
+    void guard_group(oaknut::VectorCodeGenerator&, oaknut::Label&) const;
     CompiledTrace select(
         CompiledTrace fast, CompiledTrace slow) const;
 
 private:
+    void guard(oaknut::VectorCodeGenerator&, oaknut::Label&, bool registers) const;
     struct Access {
         Key key;
         std::int64_t first = 0, end = 0;
@@ -45,5 +50,6 @@ private:
     AddressDisplacements displacements_;
     std::pmr::vector<Access> accesses_;
     std::pmr::vector<Window> windows_;
+    unsigned cycle_instructions_ = 0;
 };
 }
