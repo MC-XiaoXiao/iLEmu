@@ -5,11 +5,17 @@ namespace ilemu::execution::arm64 {
 void SimdEmitter::floating(const arm::VectorFloatingArithmeticOperands& v)
 {
     using namespace oaknut::util;
-    const auto first = source(Q1, v.first, v.quad);
-    const auto second = v.scalar_lane ? Q2 : source(Q2, v.second, v.quad);
+    // Vector FP uses packed banks. Two-lane operations can read an even D
+    // directly without copying its unrelated upper neighbour into scratch.
+    const auto operand = [&](oaknut::QReg scratch, unsigned d) {
+        return v.quad || d % 2U == 0 ? vectors_.read(d)
+                                    : source(scratch, d, false);
+    };
+    const auto first = operand(Q1, v.first);
+    const auto second = v.scalar_lane ? Q2 : operand(Q2, v.second);
     if (v.scalar_lane) {
-        vectors_.read_d(Q2, v.second);
-        code_.DUP(Q2.S4(), Q2.Selem()[*v.scalar_lane]);
+        const auto bank = vectors_.read(v.second);
+        code_.DUP(Q2.S4(), bank.Selem()[*v.scalar_lane + (v.second % 2U) * 2U]);
     }
     const auto destination = v.quad ? vectors_.write(v.destination) : Q0;
     using Op = arm::FloatingArithmeticOperation;
