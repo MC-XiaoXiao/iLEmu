@@ -100,6 +100,10 @@ struct LeasedCodeView {
     std::shared_ptr<const CodeIdentity> identity;
     std::optional<std::uint64_t> generation;
     InstructionRegion region;
+    // Opt-in inspection contract, separate from executing cached native code.
+    // fetch16/fetch32 and timing can inspect this entire region under the
+    // current lease without preparing a fetch or charging guest VM events.
+    bool inspectable = false;
 };
 
 // A lease excludes external code writes and mapping/protection changes.

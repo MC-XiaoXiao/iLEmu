@@ -121,7 +121,7 @@ public:
             if (std::uint64_t { pc } + 4 > begin + AddressSpace::page_size)
                 return {};
             if (auto region = continuation_region(); region && base == pages_[0].base)
-                return execution::LeasedCodeView { identity(), generation(), *region };
+                return execution::LeasedCodeView { identity(), generation(), *region, true };
             // Do not allocate or erase view metadata while the primary View&
             // is borrowed. An unobserved page cannot have a reusable entry.
             const auto found = owner_.views_.find(base);
@@ -162,7 +162,7 @@ public:
                 }
                 auto& view = found->second;
                 return execution::LeasedCodeView { view.identity,
-                    view.observe(page->stamp()), { begin, begin + AddressSpace::page_size } };
+                    view.observe(page->stamp()), { begin, begin + AddressSpace::page_size }, true };
             } catch (...) {
                 // Optional pinning cannot throw through a native continuation.
                 return {};
@@ -231,6 +231,10 @@ public:
             for (unsigned i = 0; i < count_; ++i)
                 if (pages_[i].base == base)
                     return &pages_[i];
+            if (continued_)
+                for (unsigned i = 0; i < continued_->count; ++i)
+                    if (continued_->pages[i].base == base)
+                        return &continued_->pages[i];
             return nullptr;
         }
         static std::uint32_t read(
