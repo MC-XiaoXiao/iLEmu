@@ -184,26 +184,36 @@ void VectorMemoryEmitter::emit(
         code_.ADD(W16, W15, length);
     else
         code_.ADD(W16, W15, WReg { static_cast<int>(inst.rm) });
-    // W21 carries the effective alignment to the checked transaction.
-    code_.MOV(W21, v.alignment);
-    if (natural_alignment > v.alignment) {
+    const bool fixed_alignment = natural_alignment <= v.alignment;
+    if (fixed_alignment) {
+        if (v.alignment > 1) {
+            code_.AND(W17, W15, v.alignment - 1U);
+            code_.CBNZ(W17, checked);
+        }
+    } else {
+        // Runtime unaligned support selects the checked transaction's alignment.
+        code_.MOV(W21, v.alignment);
         code_.LDR(W17, X20, memory + offsetof(DirectMemory, permits_unaligned));
         code_.CBNZ(W17, aligned);
         code_.MOV(W21, natural_alignment);
         code_.l(aligned);
+        code_.SUB(W17, W21, 1);
+        code_.AND(W17, W15, W17);
+        code_.CBNZ(W17, checked);
     }
-    code_.SUB(W17, W21, 1);
-    code_.AND(W17, W15, W17);
-    code_.CBNZ(W17, checked);
     const auto table = inst.load ? X25 : X26;
     code_.CBZ(table, checked);
     // Entire transfer must fit one page. Checked accesses preserve
     // architectural prefix completion and release executable page locks before
     // any store.
-    code_.AND(W17, W15, 4095);
-    code_.ADD(W17, W17, length - 1U);
-    code_.LSR(W17, W17, 12);
-    code_.CBNZ(W17, checked);
+    // Explicit power-of-two alignment is always checked above. When it covers
+    // the transfer length, even the last aligned address fits in its page.
+    if (length > v.alignment) {
+        code_.AND(W17, W15, 4095);
+        code_.ADD(W17, W17, length - 1U);
+        code_.LSR(W17, W17, 12);
+        code_.CBNZ(W17, checked);
+    }
     code_.LSR(W17, W15, 12);
     code_.LDR(X17, table, W17, IndexExt::UXTW, 3);
     code_.CBZ(X17, checked);
@@ -215,6 +225,8 @@ void VectorMemoryEmitter::emit(
     addresses_.writeback(inst);
     code_.B(done);
     code_.l(checked);
+    if (fixed_alignment)
+        code_.MOV(W21, v.alignment);
     code_.STR(
         W15, X20, transfer + offsetof(arm_memory::VectorTransfer, address));
     code_.STR(W16, X20,
