@@ -140,13 +140,15 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
         const auto next_it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
             ? inst.immediate : arm::advance_it(it)) : 0U;
         using Kind = arm::InstructionKind;
+        // Follow the same taken path as emission, including rotated cycles
+        // that return to their entry after a linear instruction.
+        const auto next_pc = inst.kind == Kind::Branch
+            ? ((pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) + inst.immediate
+            : pc + inst.size;
         if (inst.kind == Kind::Branch) {
-            const auto target = ((pc + inst.pc_offset) &
-                (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
-            return !inst.exchange && target == start && next_it == start_it
-                ? builder.finish() : FloatingRegisterPlan {};
-        }
-        if (inst.kind == Kind::FloatingArithmetic)
+            if (inst.exchange)
+                return {};
+        } else if (inst.kind == Kind::FloatingArithmetic)
             builder.observe(std::get<arm::FloatingArithmeticOperands>(inst.vector));
         else if (inst.kind == Kind::VectorFloatingArithmetic)
             builder.observe(std::get<arm::VectorFloatingArithmeticOperands>(inst.vector));
@@ -183,8 +185,10 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
                 return {};
             }
         }
-        pc += inst.size;
+        pc = next_pc;
         it = next_it;
+        if (pc == start && it == start_it)
+            return builder.finish();
     }
     return {};
 }
@@ -209,16 +213,11 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
         budget -= cost;
         const auto next_it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
             ? inst.immediate : arm::advance_it(it)) : 0U;
-        if (inst.kind == arm::InstructionKind::Branch) {
-            const auto target = ((pc + inst.pc_offset) &
-                (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
-            if (inst.exchange || target != start || next_it != start_it)
-                return AddressWindows(resource);
-            result.observe(inst, {});
-            result.finish(slots, n + 1U);
-            return result;
-        }
-        if (DynamicBackedge::ends_trace(inst) || arm::ArchitecturalStop::from(inst) ||
+        const auto next_pc = inst.kind == arm::InstructionKind::Branch
+            ? ((pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) + inst.immediate
+            : pc + inst.size;
+        if ((inst.kind == arm::InstructionKind::Branch && inst.exchange) ||
+            DynamicBackedge::ends_trace(inst) || arm::ArchitecturalStop::from(inst) ||
             inst.kind == arm::InstructionKind::Unsupported ||
             inst.kind == arm::InstructionKind::ExclusiveTransfer ||
             inst.kind == arm::InstructionKind::Swap ||
@@ -236,8 +235,12 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
             inst.rn != 15)
             key = VectorMemoryEmitter::address(inst);
         result.observe(inst, key);
-        pc += inst.size;
+        pc = next_pc;
         it = next_it;
+        if (pc == start && it == start_it) {
+            result.finish(slots, n + 1U);
+            return result;
+        }
     }
     return AddressWindows(resource);
 }
