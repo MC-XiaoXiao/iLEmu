@@ -400,8 +400,8 @@ bool CodeCache::prepare_continuations(Entry& root,
     native.active_continuation = &native.root_continuation;
     native.continuations = table->entries.data();
     native.continuation_dispatch = continuations_->dispatcher();
-    native.continuation_remaining = std::min<std::uint64_t>(remaining, 32768);
-    native.continuation_hops = 32;
+    native.continuation_remaining = std::min<std::uint64_t>(remaining, NativeContinuations::maximum_ticks);
+    native.continuation_hops = NativeContinuations::maximum_hops;
     return true;
 }
 void CodeCache::observe_continuation(NativeContinuation& descriptor, bool linked)

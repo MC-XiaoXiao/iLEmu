@@ -25,6 +25,10 @@ struct NativeContinuation {
 static_assert(sizeof(NativeContinuation) == 64);
 class NativeContinuations {
 public:
+    // Independent of table capacity: every edge polls stops, and paid guest
+    // ticks bound the whole invocation even when its fragments are tiny.
+    static constexpr std::uint64_t maximum_ticks = 32768;
+    static constexpr unsigned maximum_hops = 512;
     struct Table {
         const void* domain = nullptr;
         std::uint64_t revision = 0, begin = 0, end = 0;
