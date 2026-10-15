@@ -47,6 +47,9 @@ public:
     std::optional<std::uint32_t> fetch32(std::uint32_t) override;
     std::uint64_t ticks_for_instruction(
         std::uint32_t, std::uint32_t) const override;
+    bool supports_mixed_instruction_timing() const noexcept override { return true; }
+    std::uint64_t ticks_for_instruction(
+        bool thumb, std::uint32_t address, std::uint32_t word) const override;
     execution::DirectMemory direct_memory() override;
     std::unique_ptr<execution::ExclusiveMonitor> create_exclusive_monitor() override;
     execution::MemoryRead read(std::uint32_t, execution::AccessSize) override;

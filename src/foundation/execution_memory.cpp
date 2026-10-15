@@ -133,6 +133,13 @@ std::uint64_t ExecutionMemory::ticks_for_instruction(
     return impl_->model_.ticks_for_instruction(
         impl_->active_->thumb(), address, word);
 }
+std::uint64_t ExecutionMemory::ticks_for_instruction(
+    bool thumb, std::uint32_t address, std::uint32_t word) const
+{
+    if (!impl_->active_)
+        throw std::logic_error("instruction timing requires a code lease");
+    return impl_->model_.ticks_for_instruction(thumb, address, word);
+}
 execution::DirectMemory ExecutionMemory::direct_memory()
 {
     if (!impl_->active_)

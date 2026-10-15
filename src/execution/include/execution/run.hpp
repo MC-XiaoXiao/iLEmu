@@ -227,6 +227,17 @@ public:
     {
         return 1;
     }
+    // Fixed throughout a Run, and part of native compilation identity.
+    // Sources whose timing depends on the entry lease can keep the default.
+    virtual bool supports_mixed_instruction_timing() const noexcept
+    {
+        return false;
+    }
+    virtual std::uint64_t ticks_for_instruction(
+        bool, std::uint32_t pc, std::uint32_t word) const
+    {
+        return ticks_for_instruction(pc, word);
+    }
 };
 
 // A backend binds architectural context and memory only for this call. Runtime
