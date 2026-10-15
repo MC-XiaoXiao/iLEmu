@@ -70,8 +70,9 @@ AddressCache::AddressCache(VectorCodeGenerator& code, bool extra_slots_available
 }
 AddressCache::Identity AddressCache::identity(const Key& key) const
 {
-    if (windows_ && displacements_->get(key.base))
-        if (auto window = windows_->find(key))
+    if (windows_)
+        if (auto window = windows_->find(key); window &&
+            (windows_->window(*window).stride || displacements_->get(key.base)))
             return *window;
     return key;
 }
@@ -87,6 +88,21 @@ AddressCache::Reference AddressCache::reference(
 {
     if (std::holds_alternative<Key>(id))
         return { base };
+    if (windows_->window(std::get<unsigned>(id)).stride) {
+        // A dynamic window retains the validated page translation bias.
+        // Re-form the current effective address modulo32 before adding it;
+        // temporary guest-base wraparound must not become host-pointer wrap.
+        if (key.offset == 0) {
+            code_.ADD(X21, base, XReg { static_cast<int>(key.base) });
+        } else {
+            if (key.add)
+                code_.ADD(W17, WReg { static_cast<int>(key.base) }, key.offset);
+            else
+                code_.SUB(W17, WReg { static_cast<int>(key.base) }, key.offset);
+            code_.ADD(X21, base, X17);
+        }
+        return { X21 };
+    }
     const auto displacement = displacements_->get(key.base).value();
     if (key.index) {
         if (displacement != 0)
@@ -160,15 +176,18 @@ AddressCache::Reference AddressCache::remember(
         // The selector proved every planned offset stays in this same page.
         // The original instruction just validated its read/write page view.
         code_.SUB(result, pointer, X15);
-        const auto displacement = displacements_->get(key.base).value();
-        if (displacement == 0)
-            code_.ADD(result, result, XReg { static_cast<int>(key.base) });
-        else {
-            // Reconstruct the entry base modulo32 before host-pointer addition.
-            // A temporary wrapped base can still have a page-local access.
-            code_.MOV(W17, static_cast<std::uint32_t>(displacement));
-            code_.SUB(W17, WReg { static_cast<int>(key.base) }, W17);
-            code_.ADD(result, result, X17);
+        const auto dynamic = windows_->window(std::get<unsigned>(id)).stride.has_value();
+        if (!dynamic) {
+            const auto displacement = displacements_->get(key.base).value();
+            if (displacement == 0)
+                code_.ADD(result, result, XReg { static_cast<int>(key.base) });
+            else {
+                // Reconstruct the entry base modulo32 before host-pointer addition.
+                // A temporary wrapped base can still have a page-local access.
+                code_.MOV(W17, static_cast<std::uint32_t>(displacement));
+                code_.SUB(W17, WReg { static_cast<int>(key.base) }, W17);
+                code_.ADD(result, result, X17);
+            }
         }
     } else if (result.index() != pointer.index())
         code_.MOV(result, pointer);

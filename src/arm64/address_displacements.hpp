@@ -12,10 +12,28 @@ namespace ilemu::execution::arm64 {
 class AddressDisplacements {
 public:
     struct Change { unsigned reg; std::int32_t delta; };
+    struct Expression {
+        std::int32_t constant = 0, coefficient = 0;
+        std::optional<unsigned> index;
+        std::optional<Expression> added(const Expression& other) const
+        {
+            if (index && other.index && index != other.index)
+                return {};
+            Expression result {
+                std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(constant) +
+                    static_cast<std::uint32_t>(other.constant)),
+                std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(coefficient) +
+                    static_cast<std::uint32_t>(other.coefficient)),
+                index ? index : other.index };
+            if (result.coefficient == 0)
+                result.index.reset();
+            return result;
+        }
+    };
     AddressDisplacements()
     {
         for (auto& value : values_)
-            value = 0;
+            value = Expression {};
     }
     static std::optional<Change> writeback(const arm::Instruction& inst)
     {
@@ -46,7 +64,14 @@ public:
             return {};
         return Change { inst.rn, std::bit_cast<std::int32_t>(delta) };
     }
-    std::optional<std::int32_t> get(unsigned reg) const { return values_[reg]; }
+    std::optional<std::int32_t> get(unsigned reg) const
+    {
+        const auto value = values_[reg];
+        return value && !value->index
+            ? std::make_optional(value->constant) : std::nullopt;
+    }
+    std::optional<Expression> expression(unsigned reg) const { return values_[reg]; }
+    bool invariant(unsigned reg) const { return (written_ & (1U << reg)) == 0; }
     bool modified(unsigned reg) const { return (modified_ & (1U << reg)) != 0; }
     void observe(const arm::Instruction& inst)
     {
@@ -56,19 +81,35 @@ public:
             (inst.opcode == 2 || inst.opcode == 4))
             change = Change { inst.rd, std::bit_cast<std::int32_t>(
                 inst.opcode == 4 ? inst.immediate : 0U - inst.immediate) };
+        std::optional<Expression> increment;
+        if (change)
+            increment = Expression { change->delta, 0, {} };
+        if (inst.kind == arm::InstructionKind::DataProcessing &&
+            !inst.immediate_operand && !inst.register_shift &&
+            inst.shift == arm::ShiftKind::Lsl && inst.shift_amount < 32 &&
+            inst.rd == inst.rn && inst.rd < 15 && inst.rm < 15 &&
+            inst.rm != inst.rd && invariant(inst.rm) &&
+            (inst.opcode == 2 || inst.opcode == 4)) {
+            auto scale = std::uint32_t { 1 } << inst.shift_amount;
+            if (inst.opcode == 2)
+                scale = 0U - scale;
+            change = Change { inst.rd, 0 };
+            increment = Expression { 0, std::bit_cast<std::int32_t>(scale), inst.rm };
+        }
         if (inst.condition != 14)
             change.reset();
-        const auto before = change ? get(change->reg) : std::nullopt;
-        for_written_register(inst, [&](unsigned reg) { values_[reg].reset(); });
+        const auto before = change ? expression(change->reg) : std::nullopt;
+        for_written_register(inst, [&](unsigned reg) {
+            values_[reg].reset();
+            written_ |= 1U << reg;
+        });
         if (before) {
             modified_ |= 1U << change->reg;
-            values_[change->reg] = std::bit_cast<std::int32_t>(
-                static_cast<std::uint32_t>(*before) +
-                static_cast<std::uint32_t>(change->delta));
+            values_[change->reg] = before->added(*increment);
         }
     }
 private:
-    std::array<std::optional<std::int32_t>, 16> values_;
-    unsigned modified_ = 0;
+    std::array<std::optional<Expression>, 16> values_;
+    unsigned modified_ = 0, written_ = 0;
 };
 }

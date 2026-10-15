@@ -2,6 +2,7 @@
 #include "address_windows.hpp"
 #include "arm/integer_semantics.hpp"
 #include "register_writes.hpp"
+#include "flag_effects.hpp"
 #include <algorithm>
 #include <oaknut/oaknut.hpp>
 namespace ilemu::execution::arm64 {
@@ -24,10 +25,11 @@ void AddressWindows::observe(
             found = std::prev(accesses_.end());
         }
         auto& access = *found;
+        ++access.uses;
         std::int64_t low =
             key->add ? key->offset : -std::int64_t { key->offset };
         auto high = low;
-        const auto displacement = displacements_.get(key->base);
+        const auto displacement = displacements_.expression(key->base);
         const auto alignment = std::max(key->alignment, key->natural_alignment);
         bool valid = displacement.has_value();
         if (key->index) {
@@ -46,20 +48,32 @@ void AddressWindows::observe(
                 high = key->add ? shifted : 0;
             }
         }
-        low += displacement.value_or(0);
-        high += std::int64_t { displacement.value_or(0) } + key->size;
+        const auto constant = displacement ? displacement->constant : 0;
+        const auto coefficient = displacement ? displacement->coefficient : 0;
+        if (displacement && displacement->index) {
+            valid &= (!access.stride || access.stride == displacement->index) &&
+                !key->index && coefficient % static_cast<std::int32_t>(alignment) == 0;
+            access.stride = displacement->index;
+        }
+        low += constant;
+        high += std::int64_t { constant } + key->size;
         valid &= fits(low, high);
         const auto residue = static_cast<unsigned>(low) & (alignment - 1U);
         if ((access.end != 0 || access.first != 0) && access.residue != residue)
             valid = false;
-        access.adjusted |= displacement.value_or(0) != 0 || inst.writeback;
+        access.adjusted |= constant != 0 || coefficient != 0 || inst.writeback;
         if (access.valid && valid) {
             if (access.end == 0 && access.first == 0) {
                 access.first = low;
                 access.end = high;
+                access.first_coefficient = access.last_coefficient = coefficient;
             } else {
                 access.first = std::min(access.first, low);
                 access.end = std::max(access.end, high);
+                access.first_coefficient = std::min<std::int64_t>(
+                    access.first_coefficient, coefficient);
+                access.last_coefficient = std::max<std::int64_t>(
+                    access.last_coefficient, coefficient);
             }
             access.residue = residue;
         }
@@ -75,39 +89,67 @@ void AddressWindows::observe(
     }
     for_written_register(inst, [&](unsigned reg) {
         bits_[reg].reset();
+        if (counter_ == reg)
+            counter_.reset();
     });
+    if (flag_effects(inst).possible_write != 0)
+        counter_.reset();
+    if (inst.kind == arm::InstructionKind::DataProcessing &&
+        inst.condition == 14 && inst.set_flags && inst.opcode == 2 &&
+        inst.immediate_operand && inst.immediate == 1 &&
+        inst.rd == inst.rn && inst.rd < 15)
+        counter_ = inst.rd;
     if (result)
         bits_[inst.rd] = result;
     displacements_.observe(inst);
+    if (inst.kind == arm::InstructionKind::Branch) {
+        if (!counter_ || displacements_.get(*counter_) != -1 ||
+            (inst.condition != 1 && inst.condition != 12))
+            counter_.reset();
+        signed_counter_ = inst.condition == 12;
+    }
 }
 void AddressWindows::finish(unsigned slots, unsigned cycle_instructions)
 {
     cycle_instructions_ = cycle_instructions;
     for (auto& access : accesses_) {
         const auto& key = access.key;
-        const auto advance = displacements_.get(key.base);
+        const auto advance = displacements_.expression(key.base);
+        const auto stride = advance && advance->index ? advance->index : access.stride;
+        const auto alignment = static_cast<std::int32_t>(
+            std::max(key.alignment, key.natural_alignment));
         if (!access.valid || !advance ||
-            (*advance % static_cast<std::int32_t>(
-                std::max(key.alignment, key.natural_alignment))) != 0)
+            advance->constant % alignment != 0 || advance->coefficient % alignment != 0 ||
+            (access.stride && advance->index && access.stride != advance->index) ||
+            (stride && (!displacements_.invariant(*stride) || key.index)))
             continue;
         auto found = std::find_if(
             windows_.begin(), windows_.end(), [&](const Window& w) {
                 return w.base == key.base && w.load == key.load &&
                        w.alignment == key.alignment &&
                        w.natural_alignment == key.natural_alignment &&
-                       w.residue == access.residue;
+                       w.residue == access.residue && w.stride == stride;
             });
         if (found == windows_.end()) {
             windows_.push_back(
                 Window { key.base, key.alignment, key.natural_alignment,
                     access.residue, key.load, access.first, access.end });
             found = std::prev(windows_.end());
-            found->advance = *advance;
+            found->advance = advance->constant;
+            found->stride = stride;
+            found->stride_advance = advance->coefficient;
+            found->first_coefficient = access.first_coefficient;
+            found->last_coefficient = access.last_coefficient;
         }
         access.window = static_cast<unsigned>(found - windows_.begin());
         found->first = std::min(found->first, access.first);
         found->end = std::max(found->end, access.end);
+        found->first_coefficient = std::min(found->first_coefficient,
+            access.first_coefficient);
+        found->last_coefficient = std::max(found->last_coefficient,
+            access.last_coefficient);
         ++found->keys;
+        found->uses += access.uses;
         found->indexed |= key.index.has_value();
         found->adjusted |= access.adjusted || displacements_.modified(key.base);
     }
@@ -133,7 +175,7 @@ void AddressWindows::expand(unsigned instructions)
     }
     const auto copies = instructions / cycle_instructions_;
     for (auto& w : windows_) {
-        if (!w.enabled || w.advance == 0)
+        if (!w.enabled || (w.advance == 0 && w.stride_advance == 0))
             continue;
         if (copies == 0) {
             w.enabled = false;
@@ -142,7 +184,11 @@ void AddressWindows::expand(unsigned instructions)
         const auto last = std::int64_t { w.advance } * (copies - 1U);
         w.first += std::min<std::int64_t>(0, last);
         w.end += std::max<std::int64_t>(0, last);
-        w.enabled = fits(w.first, w.end);
+        const auto stride_last = std::int64_t { w.stride_advance } * (copies - 1U);
+        w.first_coefficient += std::min<std::int64_t>(0, stride_last);
+        w.last_coefficient += std::max<std::int64_t>(0, stride_last);
+        w.enabled = fits(w.first, w.end) &&
+            w.first_coefficient >= INT32_MIN && w.last_coefficient <= INT32_MAX;
     }
 }
 std::optional<unsigned> AddressWindows::find(const Key& key) const
@@ -162,7 +208,9 @@ bool AddressWindows::empty() const
 bool AddressWindows::advances() const
 {
     return std::any_of(windows_.begin(), windows_.end(),
-        [](const Window& w) { return w.enabled && w.advance != 0; });
+        [](const Window& w) {
+            return w.enabled && (w.advance != 0 || w.stride_advance != 0);
+        });
 }
 void AddressWindows::guard_group(
     oaknut::VectorCodeGenerator& code, oaknut::Label& fallback) const
@@ -175,8 +223,48 @@ void AddressWindows::guard(oaknut::VectorCodeGenerator& code,
     using namespace oaknut;
     using namespace oaknut::util;
     for (const auto& w : windows_) {
-        if (!w.enabled || (registers && w.advance == 0))
+        if (!w.enabled || (registers && w.advance == 0 && w.stride_advance == 0))
             continue;
+        if (w.stride) {
+            if (registers)
+                code.MOV(W15, WReg { static_cast<int>(*w.stride) });
+            else
+                code.LDR(W15, X0, *w.stride * sizeof(std::uint32_t));
+            const auto bound = [&](std::int64_t constant, std::int64_t coefficient) {
+                if (registers)
+                    code.MOV(W16, WReg { static_cast<int>(w.base) });
+                else
+                    code.LDR(W16, X0, w.base * sizeof(std::uint32_t));
+                code.AND(W16, W16, 4095);
+                if (coefficient != 0) {
+                    code.MOV(W17, static_cast<std::uint32_t>(coefficient));
+                    code.SMADDL(X16, W15, W17, X16);
+                }
+                if (constant < 0)
+                    code.SUB(X16, X16, static_cast<unsigned>(-constant));
+                else if (constant != 0)
+                    code.ADD(X16, X16, static_cast<unsigned>(constant));
+                // Signed products fit in64bits. A negative or out-of-page
+                // endpoint has nonzero high bits; guest NZCV stays untouched.
+                code.LSR(X17, X16, 12);
+                code.CBNZ(X17, fallback);
+            };
+            if (w.first_coefficient == w.last_coefficient) {
+                bound(w.first, w.first_coefficient);
+                bound(w.end - 1, w.last_coefficient);
+            } else {
+                Label negative, done;
+                code.TBNZ(W15, 31, negative);
+                bound(w.first, w.first_coefficient);
+                bound(w.end - 1, w.last_coefficient);
+                code.B(done);
+                code.l(negative);
+                bound(w.first, w.last_coefficient);
+                bound(w.end - 1, w.first_coefficient);
+                code.l(done);
+            }
+            continue;
+        }
         if (registers)
             code.MOV(W16, WReg { static_cast<int>(w.base) });
         else
@@ -201,6 +289,12 @@ CompiledTrace AddressWindows::select(
         return slow;
     if (fast.words == slow.words)
         return fast;
+    const bool dynamic = std::any_of(windows_.begin(), windows_.end(),
+        [](const Window& w) { return w.enabled && w.stride.has_value(); });
+    const bool only_dynamic = std::all_of(windows_.begin(), windows_.end(),
+        [](const Window& w) { return !w.enabled || w.stride.has_value(); });
+    if (dynamic && only_dynamic && fast.words.size() >= slow.words.size())
+        return slow;
     using namespace oaknut;
     using namespace oaknut::util;
     CompiledTrace result;
@@ -208,6 +302,17 @@ CompiledTrace AddressWindows::select(
     result.words.reserve(fast.words.size() + slow.words.size() + 256);
     VectorCodeGenerator code(result.words);
     Label fallback;
+    // Two signed endpoint checks per stream need several reused iterations.
+    // A proven decrement/conditional backedge identifies the remaining work.
+    // Mixed static windows and within-cycle reuse keep their existing choice.
+    if (counter_ && dynamic && std::all_of(windows_.begin(), windows_.end(),
+            [](const Window& w) { return !w.enabled || (w.stride && w.uses == 1); })) {
+        constexpr unsigned short_loop_iterations = 4;
+        code.LDR(W16, X0, *counter_ * sizeof(std::uint32_t));
+        code.CMP(W16, short_loop_iterations);
+        code.B(signed_counter_ ? Cond::LE : Cond::LS, fallback);
+        // Both paths enter NativeFrame, which installs guest NZCV anew.
+    }
     guard(code, fallback, false);
     code.align(16);
     result.words.insert(

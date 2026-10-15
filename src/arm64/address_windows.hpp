@@ -20,6 +20,10 @@ public:
         unsigned keys = 0;
         bool indexed = false, adjusted = false, enabled = false;
         std::int32_t advance = 0;
+        std::optional<unsigned> stride = {};
+        std::int64_t first_coefficient = 0, last_coefficient = 0;
+        std::int32_t stride_advance = 0;
+        unsigned uses = 0;
     };
     explicit AddressWindows(std::pmr::memory_resource* resource)
         : accesses_(resource)
@@ -45,11 +49,16 @@ private:
         unsigned residue = 0;
         bool valid = true, adjusted = false;
         std::optional<unsigned> window = { };
+        std::optional<unsigned> stride = {};
+        std::int64_t first_coefficient = 0, last_coefficient = 0;
+        unsigned uses = 0;
     };
     std::array<std::optional<std::uint32_t>, 16> bits_ { };
     AddressDisplacements displacements_;
     std::pmr::vector<Access> accesses_;
     std::pmr::vector<Window> windows_;
     unsigned cycle_instructions_ = 0;
+    std::optional<unsigned> counter_;
+    bool signed_counter_ = false;
 };
 }
