@@ -122,12 +122,14 @@ void InstructionWindow::repeat_cycle()
     full_flags_dead_ = { };
 }
 FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
-    unsigned start_it, unsigned limit, std::uint64_t budget)
+    unsigned start_it, unsigned limit, std::uint64_t budget, bool reserve_scalars)
 {
     FloatingRegisterPlan::Builder builder;
     auto pc = start;
     auto it = start_it;
     for (unsigned n = 0; n < limit; ++n) {
+        if (pc < region_.begin || pc >= region_.end)
+            return builder.finish(false);
         auto entry = take(pc, it, false);
         if (!entry || !entry->word || entry->instruction.condition == 15 ||
             std::uint64_t { pc } + entry->instruction.size > region_.end)
@@ -135,7 +137,7 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
         const auto& inst = entry->instruction;
         const auto cost = timing(*entry);
         if (cost == 0 || cost > budget)
-            return {};
+            return builder.finish(false);
         budget -= cost;
         const auto next_it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
             ? inst.immediate : arm::advance_it(it)) : 0U;
@@ -147,25 +149,45 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
             : pc + inst.size;
         if (inst.kind == Kind::Branch) {
             if (inst.exchange)
+                return builder.finish(false);
+        } else if (inst.kind == Kind::FloatingArithmetic) {
+            if (!reserve_scalars)
                 return {};
-        } else if (inst.kind == Kind::FloatingArithmetic)
             builder.observe(std::get<arm::FloatingArithmeticOperands>(inst.vector));
-        else if (inst.kind == Kind::VectorFloatingArithmetic)
+        } else if (inst.kind == Kind::VectorFloatingArithmetic)
             builder.observe(std::get<arm::VectorFloatingArithmeticOperands>(inst.vector));
         else if (inst.kind == Kind::VectorTransfer)
             builder.observe(std::get<arm::VectorTransferOperands>(inst.vector), inst.load);
         else {
-            // Other extension consumers/producers retain their existing path.
+            // Packed integer SIMD does not consume guest FP controls, but
+            // must keep its aliases out of scalar reservations.
             switch (inst.kind) {
+            case Kind::VectorDuplicate:
+            case Kind::VectorBitwise:
+            case Kind::VectorExtract:
+            case Kind::VectorImmediate:
+            case Kind::VectorIntegerArithmetic:
+            case Kind::VectorCoreMove:
+                builder.use_packed();
+                break;
+            case Kind::Svc:
+                if (inst.condition == 14)
+                    return builder.finish(false);
+                break;
+            case Kind::Breakpoint:
+                return builder.finish(false);
             case Kind::DataProcessing:
                 if (arm::alu_writes_pc(inst))
-                    return {};
+                    return builder.finish(false);
                 break;
             case Kind::Transfer:
             case Kind::MultipleTransfer:
                 if (DynamicBackedge::ends_trace(inst))
-                    return {};
+                    return builder.finish(false);
                 break;
+            case Kind::BranchExchange:
+            case Kind::TableBranch:
+                return builder.finish(false);
             case Kind::DualTransfer:
             case Kind::ExclusiveTransfer:
             case Kind::ClearExclusive:
@@ -188,9 +210,9 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
         pc = next_pc;
         it = next_it;
         if (pc == start && it == start_it)
-            return builder.finish();
+            return builder.finish(reserve_scalars);
     }
-    return {};
+    return builder.finish(false);
 }
 AddressWindows InstructionWindow::address_windows(std::uint32_t start,
     unsigned start_it, unsigned limit, std::uint64_t budget)

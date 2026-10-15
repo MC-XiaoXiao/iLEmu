@@ -33,7 +33,8 @@ public:
         bool allow_straddle);
     std::uint64_t timing(DecodedInstruction&);
     FloatingRegisterPlan floating_registers(std::uint32_t pc, unsigned it,
-        unsigned remaining_instructions, std::uint64_t remaining_ticks);
+        unsigned remaining_instructions, std::uint64_t remaining_ticks,
+        bool reserve_scalars = true);
     // Prove page-local windows for stable bases and bounded offsets.
     AddressWindows address_windows(std::uint32_t pc, unsigned it,
         unsigned remaining_instructions, std::uint64_t remaining_ticks);

@@ -450,7 +450,7 @@ namespace {
             floating_.use();
             floating_.standard_controls(code_);
             SimdEmitter { code_, vectors_ }.floating(v);
-            // The cycle plan owns standard controls across proven SIMD paths.
+            // The trace plan owns standard controls across proven SIMD paths.
             // Other traces restore guest controls here. FPSR stays cumulative.
             floating_.guest_controls(code_);
         }
@@ -640,17 +640,7 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
     std::pmr::monotonic_buffer_resource temporary {
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
-    InstructionWindow window(source, region, thumb, &temporary,
-        !single_step && expansion != CycleExpansion::Compact);
-    const bool cache_reads = !single_step && expansion == CycleExpansion::Hot &&
-        window.single_dependent_read_cycle(
-            pc, it, maximum_trace_instructions, maximum_ticks);
-    std::optional<FloatingRegisterPlan> floating;
-    if (!single_step && expansion == CycleExpansion::Hot) {
-        floating.emplace(window.floating_registers(pc, it,
-            std::min(maximum_trace_instructions, instruction_limit), maximum_ticks));
-        window.repeat_cycle();
-    }
+    InstructionWindow window(source, region, thumb, &temporary, !single_step);
     CompiledTrace out;
     auto first = window.take(pc, it, true);
     // Standalone unconditional stops share portable retirement and need no
@@ -667,6 +657,22 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
                 return out;
             }
         }
+    }
+    // Code-free stops above need no lookahead. Ordinary traces also own
+    // standard SIMD controls when every emitted path permits it; reuse each
+    // inspected decode and timing during emission rather than fetching twice.
+    bool cache_reads = false;
+    std::optional<FloatingRegisterPlan> floating;
+    if (!single_step) {
+        window.repeat_cycle();
+        cache_reads = expansion == CycleExpansion::Hot &&
+            window.single_dependent_read_cycle(
+                pc, it, maximum_trace_instructions, maximum_ticks);
+        floating.emplace(window.floating_registers(pc, it,
+            std::min(maximum_trace_instructions, instruction_limit), maximum_ticks,
+            expansion == CycleExpansion::Hot));
+        window.repeat_cycle();
+        first = window.take(pc, it, true);
     }
     // Source capabilities and PC-write policy are fixed throughout a Run.
     const bool has_data_memory = source.data_memory() != nullptr;
