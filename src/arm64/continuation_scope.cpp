@@ -55,6 +55,11 @@ NativeContinuation* CodeCache::ContinuationScope::resolve(
         auto& entry = found->second;
         if (!entry.code || entry.stop || entry.maximum_ticks == 0 || entry.tier.ready())
             return nullptr;
+        // A warmed path must reach the ordinary owner before it can acquire
+        // dependencies or replace code. Native resolution remains cache-only.
+        if ((entry.wants_path() ||
+                (!entry.closed && !entry.views && entry.view_heat == 0)) && view->inspectable)
+            return nullptr;
         if (entry.views) {
             if (!entry.views->pin(scope.lease_, view->region,
                     TraceViews::EntryAuthorization::Cached))

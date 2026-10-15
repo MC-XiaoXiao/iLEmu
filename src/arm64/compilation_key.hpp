@@ -8,7 +8,7 @@ using TranslationKey = std::tuple<std::uint32_t, bool, bool, bool, unsigned, boo
     std::uint64_t, ThumbArithmeticProfile, VfpRegisterProfile,
     ArmInstructionProfile, FloatingExceptionProfile, AluPcWriteProfile,
     VfpInstructionProfile, IntegerDivideProfile, ThumbMemoryProfile,
-    AdvancedSimdProfile>;
+    AdvancedSimdProfile, bool>;
 struct CompilationKey {
     CompilationIdentity identity;
     TranslationKey entry;

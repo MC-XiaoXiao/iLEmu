@@ -180,7 +180,7 @@ CodeCache::Binding CodeCache::bind(InstructionLease& lease)
 CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     const Binding& binding, std::uint32_t pc, bool step, bool big_endian,
     bool thumb, unsigned it_state, TranslationObserver* observer,
-    std::uint64_t timing_limit)
+    std::uint64_t timing_limit, std::span<const TraceLocation> recorded)
 {
     const Key key { pc, step, big_endian, thumb, it_state,
         source.data_memory() != nullptr, timing_limit,
@@ -188,7 +188,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         source.arm_instruction_profile(), source.floating_exception_profile(),
         source.alu_pc_write_profile(), source.vfp_instruction_profile(),
         source.integer_divide_profile(), source.thumb_memory_profile(),
-        source.advanced_simd_profile() };
+        source.advanced_simd_profile(), source.supports_mixed_instruction_timing() };
     Entry* previous = nullptr;
     if (auto* domain = find(binding)) {
         if (const auto it = domain->entries.find(key); it != domain->entries.end()) {
@@ -203,15 +203,18 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     }
     auto expansion = binding.generation ? CycleExpansion::Compact
                                        : CycleExpansion::Untracked;
+    const bool recording = !recorded.empty() && binding.execution_lease &&
+        !step && timing_limit == UINT64_MAX && source.supports_mixed_instruction_timing();
     const bool widening = previous && !previous->closed &&
         previous->view_heat == 0 && binding.execution_lease &&
         !step && timing_limit == UINT64_MAX;
+    const bool extending = widening || recording;
     const auto hit = [&]() -> Entry& {
         recent_.splice(recent_.end(), recent_, previous->recency);
         ++stats_.cache_hits;
         return *previous;
     };
-    if (previous && !previous->tier.ready() && !widening)
+    if (previous && !previous->tier.ready() && !extending)
         return hit();
     const auto started = std::chrono::steady_clock::now();
     const auto elapsed = [&] {
@@ -220,24 +223,38 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     };
     const auto fallback = [&]() -> Entry& {
         stats_.compilation_nanoseconds += elapsed();
-        return hit();
+        if (previous)
+            return hit();
+        return entry(source, binding, pc, step, big_endian, thumb, it_state,
+            observer, timing_limit);
     };
     std::unique_ptr<TraceViews> views;
     std::optional<CompiledTrace> widened;
-    if (widening) {
+    if (extending) {
         ++stats_.multi_view_attempts;
         // An unavailable pin or a path that does not close must not compile
         // again on every hit. Reconsider after substantial observed execution.
-        previous->view_heat = CycleTier::maximum_copies * CycleTier::maximum_copies;
+        if (previous)
+            previous->view_heat = CycleTier::maximum_copies * CycleTier::maximum_copies;
         try {
-            views = TraceViews::capture(*binding.execution_lease,
-                source.instruction_region(pc), pc);
+            if (recording) {
+                expansion = CycleExpansion::Hot;
+                views = TraceViews::capture_path(*binding.execution_lease,
+                    source.instruction_region(pc), TracePath { recorded });
+            } else
+                views = TraceViews::capture(source, *binding.execution_lease,
+                    source.instruction_region(pc), pc, thumb, it_state);
             if (views) {
+                const auto authorized = views->regions();
                 widened = compile(source, pc, false, timing_limit,
-                    big_endian, thumb, it_state, expansion, views->region());
-                if (!widened->closed)
+                    big_endian, thumb, it_state, expansion, authorized,
+                    recording ? recorded : std::span<const TraceLocation> {});
+                if (!widened->closed || (recording &&
+                        widened->instructions + 1U != recorded.size()))
                     widened.reset();
             }
+        } catch (const std::invalid_argument&) {
+            widened.reset();
         } catch (const std::bad_alloc&) {
             widened.reset();
         }
@@ -249,6 +266,8 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
             views = std::make_unique<TraceViews>(*previous->views);
     }
     const auto region = views ? views->region() : source.instruction_region(pc);
+    const auto authorized = views ? views->regions()
+        : std::array<InstructionRegion, CodeRegions::capacity> {};
     const auto view_bytes = views ? views->retained_bytes() : 0;
     std::optional<CompilationKey> shared_key;
     if (!views && binding.compilation_lease) {
@@ -265,10 +284,11 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     if (!plan) {
         const auto compiled = widened ? std::move(*widened) :
             compile(source, pc, step, timing_limit, big_endian, thumb, it_state,
-                expansion, views ? std::optional { region } : std::nullopt);
+                expansion, views ? std::span<const InstructionRegion> { authorized }
+                                 : std::span<const InstructionRegion> {});
         const auto bytes = std::as_bytes(std::span { compiled.words });
         if (bytes.size() > 256U * 1024U) {
-            if (widening)
+            if (extending)
                 return fallback();
             throw std::length_error("ARM64 trace exceeds code limit");
         }
@@ -279,7 +299,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
                 if (!allocation)
                     throw std::bad_alloc { };
             } catch (const std::bad_alloc&) {
-                if (widening)
+                if (extending)
                     return fallback();
                 throw;
             }
@@ -288,7 +308,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         // Reserve domain overhead even if eviction will recreate this domain.
         const auto overhead = entry_bytes + view_bytes + (binding.identity ? domain_bytes : 0);
         if (capacity > budget_ - overhead) {
-            if (widening)
+            if (extending)
                 return fallback();
             throw std::length_error("ARM64 trace exceeds cache budget");
         }
@@ -302,7 +322,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
                 static_cast<const TraceMetadata&>(compiled),
                 std::move(allocation), bytes.size() });
         } catch (const std::bad_alloc&) {
-            if (widening)
+            if (extending)
                 return fallback();
             throw;
         }
@@ -331,6 +351,9 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
             region, std::move(views), { } });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");
+    it->second.direct_exchange = plan->direct_exchange &&
+        source.supports_mixed_instruction_timing() && !step && timing_limit == UINT64_MAX;
+    it->second.recorded_path = recording;
     try {
         it->second.recency = recent_.insert(recent_.end(), { &domain, it });
     } catch (...) {
@@ -351,6 +374,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     // Shared hits report their actual lookup and local installation cost.
     ++stats_.compiled_regions;
     stats_.multi_view_compilations += multi_view;
+    stats_.recorded_path_compilations += recording;
     stats_.emitted_bytes += plan->emitted_bytes;
     const auto duration = elapsed();
     stats_.compilation_nanoseconds += duration;

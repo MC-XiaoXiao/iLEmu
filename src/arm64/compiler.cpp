@@ -53,12 +53,12 @@ namespace {
         std::optional<StopReason> reason;
         std::uint64_t ticks;
         std::uint32_t state_pc, report_pc, word, svc;
-        bool dynamic_pc, instruction, backedge;
+        bool dynamic_pc, instruction, backedge, thumb;
         unsigned it;
         auto payload() const
         {
             return std::tuple { reason, state_pc, report_pc, word, svc,
-                dynamic_pc, instruction, it };
+                dynamic_pc, instruction, it, thumb };
         }
     };
     class Emitter {
@@ -81,6 +81,7 @@ namespace {
             , vector_splits_(*temporary)
             , windows_(windows)
             , thumb_(thumb)
+            , entry_thumb_(thumb)
             , split_vectors_(fast_reads && !single_step && !windows)
             , backedge_(pc, it, thumb, !single_step)
             , head_(*temporary), loop_tail_(*temporary), epilogue_(*temporary)
@@ -99,6 +100,7 @@ namespace {
             exits_.push_back({ label(), reason, ticks,
                 reason == StopReason::Svc ? pc + size_ : pc, pc,
                 word.value_or(0), svc, dynamic_pc, word.has_value(), backedge,
+                thumb_,
                 it.value_or(it_) });
             return exits_.back().label;
         }
@@ -117,6 +119,7 @@ namespace {
             size_ = size;
         }
         void retired(unsigned it) { it_ = it; }
+        void mode(bool thumb) { thumb_ = thumb; }
         void disable_backedges() { backedge_.disable(); }
         unsigned expansion_copies(unsigned maximum)
         {
@@ -182,6 +185,8 @@ namespace {
             if (!natural_backedge)
                 code_.B(exit(StopReason::None, trace_.maximum_ticks, pc));
             if (trace_.closed) {
+                // Every accepted edge has returned to the entry ISA/IT.
+                mode(entry_thumb_);
                 code_.l(loop_tail_);
                 if (AddSubImm::is_valid(trace_.maximum_ticks))
                     code_.ADD(X24, X24, AddSubImm { trace_.maximum_ticks });
@@ -229,6 +234,7 @@ namespace {
             vector_splits_.finish(code_, memory_.addresses(), vectors_);
             for (auto& fallback : exchanges_.pending()) {
                 code_.l(fallback.label);
+                mode(fallback.thumb);
                 location(fallback.it, fallback.instruction.size);
                 if (arm::alu_writes_pc(fallback.instruction)) {
                     alu_target(fallback.instruction, fallback.pc,
@@ -375,6 +381,8 @@ namespace {
             std::uint32_t word, std::uint64_t before, std::uint64_t ticks,
             unsigned next_it, bool interworks)
         {
+            if (!interworks && thumb_ != entry_thumb_)
+                return false;
             if (!backedge_.accepts(StopReason::None, ticks, true, next_it, ticks))
                 return false;
             if (inst.condition != 14)
@@ -382,7 +390,7 @@ namespace {
                     exit(StopReason::None, ticks, pc + inst.size,
                         { }, 0, false, next_it));
             exchanges_.emit(inst, pc, word, before, ticks, it_, next_it,
-                backedge_.pc(), interworks);
+                backedge_.pc(), interworks, thumb_);
             return true;
         }
         bool invariant_indirect() const { return exchanges_.invariant(); }
@@ -596,7 +604,7 @@ namespace {
                 X20, offsetof(NativeOutcome, has_instruction));
             // IT state is deterministic along the emitted path. Publish
             // it at exits instead of adding work to every guest operation.
-            if (thumb_) {
+            if (out.thumb) {
                 code_.BFI(W22, WZR, 10, 6);
                 code_.BFI(W22, WZR, 25, 2);
                 if (out.it != 0) {
@@ -624,6 +632,7 @@ namespace {
         VectorMemoryEmitter::Splits vector_splits_;
         const AddressWindows* windows_;
         bool thumb_;
+        bool entry_thumb_;
         bool split_vectors_;
         bool continued_cycle_ = false;
         DynamicBackedge backedge_;
@@ -636,23 +645,28 @@ namespace {
 }
 
 static CompiledTrace compile_trace(InstructionSource& source,
-    std::optional<InstructionRegion> permitted_region, std::uint32_t pc,
+    std::span<const InstructionRegion> permitted_regions, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
     unsigned it, CycleExpansion expansion,
     std::optional<RegisterShiftRange> shift_range = {},
     const AddressWindows* windows = nullptr,
-    unsigned instruction_limit = maximum_trace_instructions)
+    unsigned instruction_limit = maximum_trace_instructions,
+    const TracePath& path = TracePath {})
 {
-    const auto region = permitted_region.value_or(source.instruction_region(pc));
-    if (region.begin > pc || region.end <= pc ||
-        region.end > (std::uint64_t { 1 } << 32U))
+    const CodeRegions regions = permitted_regions.empty()
+        ? CodeRegions { source.instruction_region(pc) } : CodeRegions { permitted_regions };
+    if (!regions.containing(pc))
         throw std::invalid_argument("invalid instruction region");
+    if (path && path[0] != TraceLocation { pc, thumb, it })
+        throw std::invalid_argument("instruction path entry mismatch");
+    if (path)
+        instruction_limit = std::min(instruction_limit, path.steps());
     // Scratch containers stay in this call. Returned machine code keeps its
     // ordinary allocator and cannot retain a pointer into this buffer.
     alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
     std::pmr::monotonic_buffer_resource temporary {
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
-    InstructionWindow window(source, region, thumb, &temporary, !single_step);
+    InstructionWindow window(source, regions, thumb, &temporary, !single_step);
     CompiledTrace out;
     auto first = window.take(pc, it, true);
     // Standalone unconditional stops share portable retirement and need no
@@ -677,19 +691,20 @@ static CompiledTrace compile_trace(InstructionSource& source,
     std::optional<FloatingRegisterPlan> floating;
     if (!single_step) {
         window.repeat_cycle();
-        cache_reads = expansion == CycleExpansion::Hot &&
+        cache_reads = !path && expansion == CycleExpansion::Hot &&
             window.single_dependent_read_cycle(
                 pc, it, maximum_trace_instructions, maximum_ticks);
         floating.emplace(window.floating_registers(pc, it,
             std::min(maximum_trace_instructions, instruction_limit), maximum_ticks,
-            expansion == CycleExpansion::Hot));
+            expansion == CycleExpansion::Hot, path));
+        window.mode(thumb);
         window.repeat_cycle();
         first = window.take(pc, it, true);
     }
     // Source capabilities and PC-write policy are fixed throughout a Run.
     const bool has_data_memory = source.data_memory() != nullptr;
-    const bool alu_interworks =
-        arm::alu_interworks(thumb, source.alu_pc_write_profile());
+    const auto alu_profile = source.alu_pc_write_profile();
+    const bool mixed_timing = source.supports_mixed_instruction_timing();
     // Native frame and exits dominate short traces. Reserve a small code
     // buffer once; standalone stops above still allocate no machine code.
     out.words.reserve(256);
@@ -701,6 +716,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
+    const auto start_thumb = thumb;
     unsigned cycles = 0, cycle_length = 0, natural_copies = 0;
     unsigned original_natural_copies = 0;
     bool comparison_flags_live = false;
@@ -708,8 +724,14 @@ static CompiledTrace compile_trace(InstructionSource& source,
         : std::min(maximum_trace_instructions, instruction_limit);
     for (unsigned n = 0; n < limit; ++n) {
         const bool comparison_flags = std::exchange(comparison_flags_live, false);
-        if (pc < region.begin || pc >= region.end)
+        if (path && path[n] != TraceLocation { pc, thumb, it })
+            throw std::invalid_argument("instruction path position mismatch");
+        const auto region = regions.containing(pc);
+        if (!region)
             break;
+        window.mode(thumb);
+        emit.mode(thumb);
+        const bool alu_interworks = arm::alu_interworks(thumb, alu_profile);
         emit.location(it, thumb ? 2U : 4U);
         auto decoded = n == 0 ? std::move(first) : window.take(pc, it, false);
         if (!decoded)
@@ -717,6 +739,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
         const auto word = decoded->word;
         auto inst = decoded->instruction;
         emit.observe_instruction(inst);
+        out.direct_exchange |= inst.kind == arm::InstructionKind::Branch && inst.exchange;
         if (n == 0)
             out.first_instruction = word;
         if (!word) {
@@ -724,9 +747,9 @@ static CompiledTrace compile_trace(InstructionSource& source,
                 emit.exit(StopReason::FetchFault, out.maximum_ticks, pc));
             break;
         }
-        if (n != 0 && std::uint64_t { pc } + inst.size > region.end)
+        if (n != 0 && std::uint64_t { pc } + inst.size > region->end)
             break;
-        const bool straddles = std::uint64_t { pc } + inst.size > region.end;
+        const bool straddles = std::uint64_t { pc } + inst.size > region->end;
         if (straddles)
             emit.disable_backedges();
         emit.location(it, inst.size);
@@ -754,6 +777,10 @@ static CompiledTrace compile_trace(InstructionSource& source,
                                              ? inst.immediate
                                              : arm::advance_it(it))
                                    : 0U;
+        const auto edge = path ? path.edge(n, inst, next_it,
+            DynamicBackedge::ends_trace(inst)) : std::nullopt;
+        if (path && !edge)
+            throw std::invalid_argument("instruction path successor mismatch");
         const auto floating_mask = inst.kind == arm::InstructionKind::FloatingImmediate
             ? arm::floating_vector_controls
             : inst.kind == arm::InstructionKind::FloatingComparison
@@ -819,7 +846,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
         }
         emit.retired(next_it);
         const auto next_pc = pc + inst.size;
-        const bool closes_natural_cycle = next_pc == start &&
+        const bool closes_natural_cycle = next_pc == start && thumb == start_thumb &&
             next_it == start_it && cycles + 1U >=
                 (natural_copies != 0 ? natural_copies :
                     std::min(CycleTier::natural_copies(expansion),
@@ -856,29 +883,59 @@ static CompiledTrace compile_trace(InstructionSource& source,
             pc = next_pc;
             dynamic_end = true;
         } else if (inst.kind == arm::InstructionKind::Branch) {
-            if (inst.condition != 14)
-                emit.conditional_skip(inst.condition,
-                    emit.exit(StopReason::None, out.maximum_ticks, next_pc));
-            if (inst.link)
-                emit.code().MOV(W14, next_pc | (thumb ? 1U : 0U));
-            pc = ((pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) +
-                 inst.immediate;
-            if (inst.exchange) {
-                emit.code().EOR(W22, W22, 0x20U);
-                emit.code().B(
-                    emit.exit(StopReason::None, out.maximum_ticks, pc));
-                break;
+            const auto target = ((pc + inst.pc_offset) &
+                (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
+            if (edge == TracePath::Edge::NotTaken) {
+                if (inst.link || inst.exchange) {
+                    Label skipped = emit.label();
+                    emit.conditional_skip(inst.condition, skipped);
+                    if (inst.link)
+                        emit.code().MOV(W14, next_pc | (thumb ? 1U : 0U));
+                    if (inst.exchange) {
+                        emit.code().EOR(W22, W22, 0x20U);
+                        emit.code().BFI(W22, WZR, 10, 6);
+                        emit.code().BFI(W22, WZR, 25, 2);
+                    }
+                    emit.mode(inst.exchange ? !thumb : thumb);
+                    emit.code().B(emit.exit(StopReason::None,
+                        out.maximum_ticks, target, {}, 0, false, next_it));
+                    emit.mode(thumb);
+                    emit.code().l(skipped);
+                } else
+                    emit.code().B(static_cast<Cond>(inst.condition),
+                        emit.exit(StopReason::None, out.maximum_ticks, target));
+                pc = next_pc;
+            } else {
+                if (inst.condition != 14)
+                    emit.conditional_skip(inst.condition,
+                        emit.exit(StopReason::None, out.maximum_ticks, next_pc));
+                if (inst.link)
+                    emit.code().MOV(W14, next_pc | (thumb ? 1U : 0U));
+                pc = target;
+                if (inst.exchange) {
+                    emit.code().EOR(W22, W22, 0x20U);
+                    if (!single_step && mixed_timing && next_it == 0 && regions.containing(pc)) {
+                        emit.code().BFI(W22, WZR, 10, 6);
+                        emit.code().BFI(W22, WZR, 25, 2);
+                        thumb = !thumb;
+                        emit.mode(thumb);
+                    } else {
+                        emit.code().B(
+                            emit.exit(StopReason::None, out.maximum_ticks, pc));
+                        break;
+                    }
+                }
             }
         } else if (inst.kind == arm::InstructionKind::CompareBranch) {
-            auto& fallthrough =
-                emit.exit(StopReason::None, out.maximum_ticks, next_pc);
-            if (inst.opcode == 0)
-                emit.code().CBNZ(
-                    WReg { static_cast<int>(inst.rn) }, fallthrough);
+            const auto target = pc + inst.pc_offset + inst.immediate;
+            const bool not_taken = edge == TracePath::Edge::NotTaken;
+            auto& mismatch = emit.exit(StopReason::None, out.maximum_ticks,
+                not_taken ? target : next_pc);
+            if ((inst.opcode == 0) != not_taken)
+                emit.code().CBNZ(WReg { static_cast<int>(inst.rn) }, mismatch);
             else
-                emit.code().CBZ(
-                    WReg { static_cast<int>(inst.rn) }, fallthrough);
-            pc += inst.pc_offset + inst.immediate;
+                emit.code().CBZ(WReg { static_cast<int>(inst.rn) }, mismatch);
+            pc = not_taken ? next_pc : target;
         } else if (inst.kind == arm::InstructionKind::Svc) {
             if (inst.condition == 14) {
                 out.ends_with_stop = true;
@@ -1059,6 +1116,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
                     window.repeat_cycle();
                     pc = start;
                     it = start_it;
+                    thumb = start_thumb;
                     continue;
                 }
             }
@@ -1066,7 +1124,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
                 out.closed = true;
             break;
         }
-        if (!single_step && pc == start && it == start_it) {
+        if (!single_step && pc == start && it == start_it && thumb == start_thumb) {
             ++cycles;
             if (cycle_length == 0) {
                 cycle_length = n + 1;
@@ -1089,18 +1147,18 @@ static CompiledTrace compile_trace(InstructionSource& source,
     return out;
 }
 static CompiledTrace compile_hot(InstructionSource& source,
-    std::optional<InstructionRegion> permitted_region, std::uint32_t pc,
+    std::span<const InstructionRegion> permitted_regions, std::uint32_t pc,
     std::uint64_t maximum_ticks, bool big_endian, bool thumb, unsigned it)
 {
-    const auto region = permitted_region.value_or(source.instruction_region(pc));
-    if (region.begin > pc || region.end <= pc ||
-        region.end > (std::uint64_t { 1 } << 32U))
-        return compile_trace(source, permitted_region, pc, false, maximum_ticks, big_endian,
+    const CodeRegions regions = permitted_regions.empty()
+        ? CodeRegions { source.instruction_region(pc) } : CodeRegions { permitted_regions };
+    if (!regions.containing(pc))
+        return compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
             thumb, it, CycleExpansion::Hot);
     alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
     std::pmr::monotonic_buffer_resource temporary {
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
-    InstructionWindow window(source, region, thumb, &temporary, true);
+    InstructionWindow window(source, regions, thumb, &temporary, true);
     auto count = window.invariant_shift_count(
         pc, it, maximum_trace_instructions, maximum_ticks);
     if (!count) {
@@ -1108,14 +1166,14 @@ static CompiledTrace compile_hot(InstructionSource& source,
         auto windows = window.address_windows(pc, it,
             maximum_trace_instructions, maximum_ticks);
         if (!windows.empty()) {
-            auto slow = compile_trace(source, permitted_region, pc, false, maximum_ticks,
+            auto slow = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot);
             windows.expand(slow.instructions);
             if (windows.empty())
                 return slow;
             // A single cache entry needs the same paid group in either body.
             // Keep the existing read-cache copy budget when the fast body is smaller.
-            auto fast = compile_trace(source, permitted_region, pc, false, maximum_ticks,
+            auto fast = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, &windows,
                 slow.instructions);
             return windows.select(std::move(fast), std::move(slow));
@@ -1124,7 +1182,7 @@ static CompiledTrace compile_hot(InstructionSource& source,
     if (count && count->carry_kinds != 0) {
         std::array<CompiledTrace, 4> variants;
         const auto variant = [&](ShiftCountRange range) {
-            return compile_trace(source, permitted_region, pc, false, maximum_ticks,
+            return compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot,
                 RegisterShiftRange { count->reg, range, count->carry_kinds });
         };
@@ -1146,26 +1204,31 @@ static CompiledTrace compile_hot(InstructionSource& source,
             pc, it, maximum_trace_instructions, maximum_ticks, false);
     }
     if (count) {
-        auto below = compile_trace(source, permitted_region, pc, false, maximum_ticks, big_endian,
+        auto below = compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
             thumb, it, CycleExpansion::Hot,
             RegisterShiftRange { count->reg, ShiftCountRange::BelowWord });
-        auto above = compile_trace(source, permitted_region, pc, false, maximum_ticks, big_endian,
+        auto above = compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
             thumb, it, CycleExpansion::Hot,
             RegisterShiftRange { count->reg, ShiftCountRange::AtLeastWord });
         if (auto selected = GuardedShiftTrace::select(count->reg, std::move(below), std::move(above)))
             return std::move(*selected);
     }
-    return compile_trace(source, permitted_region, pc, false, maximum_ticks, big_endian,
+    return compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
         thumb, it, CycleExpansion::Hot);
 }
 CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
     unsigned it, CycleExpansion expansion,
-    std::optional<InstructionRegion> permitted_region)
+    std::span<const InstructionRegion> permitted_regions,
+    std::span<const TraceLocation> locations)
 {
+    const TracePath path { locations };
+    if (path)
+        return compile_trace(source, permitted_regions, pc, single_step, maximum_ticks,
+            big_endian, thumb, it, expansion, {}, nullptr, path.steps(), path);
     if (!single_step && expansion == CycleExpansion::Hot)
-        return compile_hot(source, permitted_region, pc, maximum_ticks, big_endian, thumb, it);
-    return compile_trace(source, permitted_region, pc, single_step, maximum_ticks, big_endian,
+        return compile_hot(source, permitted_regions, pc, maximum_ticks, big_endian, thumb, it);
+    return compile_trace(source, permitted_regions, pc, single_step, maximum_ticks, big_endian,
         thumb, it, expansion);
 }
 }

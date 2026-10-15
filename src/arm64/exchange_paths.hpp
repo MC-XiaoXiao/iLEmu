@@ -17,7 +17,7 @@ public:
         std::uint32_t pc, word;
         std::uint64_t before, ticks;
         unsigned it, next_it;
-        bool interworks;
+        bool interworks, thumb;
     };
     ExchangePaths(oaknut::VectorCodeGenerator& code, IntegerEmitter& integer,
         bool thumb)
@@ -28,7 +28,8 @@ public:
     }
     void emit(const arm::Instruction& inst, std::uint32_t pc,
         std::uint32_t word, std::uint64_t before, std::uint64_t ticks,
-        unsigned it, unsigned next_it, std::uint32_t entry, bool interworks)
+        unsigned it, unsigned next_it, std::uint32_t entry, bool interworks,
+        bool current_thumb)
     {
         using namespace oaknut;
         using namespace oaknut::util;
@@ -39,7 +40,8 @@ public:
         const bool second_input = !alu || !inst.immediate_operand;
         const bool reads_pc = (first_input && inst.rn == 15) ||
                               (second_input && inst.rm == 15);
-        const Target key { word, reads_pc ? pc_value : 0U, entry, interworks };
+        const Target key { word, reads_pc ? pc_value : 0U, entry,
+            interworks, current_thumb };
         const auto input_mask =
             (first_input && inst.rn != 15 ? 1U << inst.rn : 0U) |
             (second_input && inst.rm != 15 ? 1U << inst.rm : 0U);
@@ -57,30 +59,36 @@ public:
                 : arm::shift(pc_value, inst.shift, inst.shift_amount, false, false).value;
             const auto raw = arm::calculate_alu(inst.opcode, false,
                 first_input ? pc_value : 0U, { operand, false }, 0).value;
-            const auto target = arm::alu_write_pc(raw, thumb_, interworks
+            const auto target = arm::alu_write_pc(raw, current_thumb, interworks
                 ? AluPcWriteProfile::Interworking : AluPcWriteProfile::Branch);
-            if (target && target->address == entry && target->thumb == thumb_)
+            if (target && target->address == entry && target->thumb == thumb_) {
+                if (current_thumb != thumb_)
+                    code_.EOR(W22, W22, 0x20U);
                 return;
+            }
         }
         if (!first_ || *first_ != key || !invariant_) {
             pending_.push_back(
-                { { }, inst, pc, word, before, ticks, it, next_it, interworks });
+                { { }, inst, pc, word, before, ticks, it, next_it,
+                    interworks, current_thumb });
             const auto target = alu ? W15 : integer_.reg(inst.rm, pc_value, W17);
             if (alu)
                 integer_.alu(inst, pc);
             // BranchWritePC ignores alignment bits without changing ISA.
             if (!interworks)
-                code_.AND(W17, target, thumb_ ? ~1U : ~3U);
+                code_.AND(W17, target, current_thumb ? ~1U : ~3U);
             code_.MOV(W16, entry | (interworks && thumb_ ? 1U : 0U));
             code_.EOR(W16, interworks ? target : W17, W16);
             code_.CBNZ(W16, pending_.back().label);
             if (!first_)
                 first_ = key;
         }
-        // The raw target proves both legality and unchanged PC/ISA. Read it
+        // The raw target proves both legality and the entry PC/ISA. Read it
         // before writing LR, including BLX LR, and preserve guest NZCV.
         if (inst.link)
-            code_.MOV(W14, (pc + inst.size) | (thumb_ ? 1U : 0U));
+            code_.MOV(W14, (pc + inst.size) | (current_thumb ? 1U : 0U));
+        if (current_thumb != thumb_)
+            code_.EOR(W22, W22, 0x20U);
     }
     // Written inputs revoke reuse even when conditional or later restored.
     // The first guard still executes each native group and after every lease.
@@ -92,7 +100,7 @@ public:
 private:
     struct Target {
         std::uint32_t word, pc_value, entry;
-        bool interworks;
+        bool interworks, source_thumb;
         bool operator==(const Target&) const = default;
     };
     oaknut::VectorCodeGenerator& code_;

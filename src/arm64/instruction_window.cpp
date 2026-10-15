@@ -18,7 +18,14 @@ namespace ilemu::execution::arm64 {
 InstructionWindow::InstructionWindow(InstructionSource& source,
     InstructionRegion region, bool thumb, std::pmr::memory_resource* temporary,
     bool retain_cycle)
-    : source_(source), region_(region), thumb_(thumb)
+    : InstructionWindow(source, CodeRegions { region }, thumb, temporary, retain_cycle)
+{
+}
+InstructionWindow::InstructionWindow(InstructionSource& source,
+    CodeRegions regions, bool thumb, std::pmr::memory_resource* temporary,
+    bool retain_cycle)
+    : source_(source), regions_(regions), thumb_(thumb)
+    , mixed_timing_(source.supports_mixed_instruction_timing())
     , arithmetic_(source.thumb_arithmetic_profile())
     , vfp_(source.vfp_register_profile())
     , floating_instructions_(source.vfp_instruction_profile())
@@ -30,17 +37,35 @@ InstructionWindow::InstructionWindow(InstructionSource& source,
     , retain_cycle_(retain_cycle)
 {
 }
+void InstructionWindow::mode(bool thumb)
+{
+    if (thumb_ == thumb)
+        return;
+    thumb_ = thumb;
+    // Decodes and NZCV proofs are mode-specific, including numerical PC aliases.
+    pending_.clear();
+    consumed_ = 0;
+    full_flags_dead_ = {};
+}
+void InstructionWindow::regions(CodeRegions regions)
+{
+    regions_ = regions;
+    pending_.clear();
+    consumed_ = 0;
+    full_flags_dead_ = {};
+}
 std::optional<DecodedInstruction> InstructionWindow::decode(
     std::uint64_t pc, unsigned it, bool allow_straddle)
 {
-    if (pc < region_.begin || pc >= region_.end)
+    const auto region = regions_.containing(pc);
+    if (!region)
         return { };
     DecodedInstruction out { static_cast<std::uint32_t>(pc), it, { }, { }, { } };
     if (thumb_) {
         const auto first = source_.fetch16(out.pc);
         std::optional<std::uint16_t> second;
         if (first && arm::thumb_is_wide(*first)) {
-            if (!allow_straddle && pc + 4U > region_.end)
+            if (!allow_straddle && pc + 4U > region->end)
                 return { };
             second = source_.fetch16(out.pc + 2U);
         }
@@ -102,7 +127,9 @@ std::optional<DecodedInstruction> InstructionWindow::take(
 std::uint64_t InstructionWindow::timing(DecodedInstruction& entry)
 {
     if (!entry.ticks)
-        entry.ticks = source_.ticks_for_instruction(entry.pc, *entry.word);
+        entry.ticks = mixed_timing_
+            ? source_.ticks_for_instruction(thumb_, entry.pc, *entry.word)
+            : source_.ticks_for_instruction(entry.pc, *entry.word);
     // take() returns a copy; retain its paid timing in the original decode.
     if (retain_cycle_ && consumed_ != 0) {
         auto& original = pending_[consumed_ - 1U];
@@ -122,17 +149,26 @@ void InstructionWindow::repeat_cycle()
     full_flags_dead_ = { };
 }
 FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
-    unsigned start_it, unsigned limit, std::uint64_t budget, bool reserve_scalars)
+    unsigned start_it, unsigned limit, std::uint64_t budget, bool reserve_scalars,
+    const TracePath& path)
 {
     FloatingRegisterPlan::Builder builder;
     auto pc = start;
     auto it = start_it;
+    if (path)
+        limit = std::min(limit, path.steps());
     for (unsigned n = 0; n < limit; ++n) {
-        if (pc < region_.begin || pc >= region_.end)
+        if (path) {
+            mode(path[n].thumb);
+            pc = path[n].pc;
+            it = path[n].it;
+        }
+        const auto region = regions_.containing(pc);
+        if (!region)
             return builder.finish(false);
         auto entry = take(pc, it, false);
         if (!entry || !entry->word || entry->instruction.condition == 15 ||
-            std::uint64_t { pc } + entry->instruction.size > region_.end)
+            std::uint64_t { pc } + entry->instruction.size > regions_.containing(pc)->end)
             return {};
         const auto& inst = entry->instruction;
         const auto cost = timing(*entry);
@@ -142,14 +178,17 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
         const auto next_it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
             ? inst.immediate : arm::advance_it(it)) : 0U;
         using Kind = arm::InstructionKind;
-        // Follow the same taken path as emission, including rotated cycles
+        if (path && !path.edge(n, inst, next_it, DynamicBackedge::ends_trace(inst)))
+            return {};
+        // Follow the same chosen path as emission, including rotated cycles
         // that return to their entry after a linear instruction.
-        const auto next_pc = inst.kind == Kind::Branch
+        const auto next_pc = path ? path[n + 1U].pc : inst.kind == Kind::Branch
             ? ((pc + inst.pc_offset) & (inst.align_pc ? ~3U : ~0U)) + inst.immediate
             : pc + inst.size;
         if (inst.kind == Kind::Branch) {
-            if (inst.exchange)
-                return builder.finish(false);
+            if (inst.exchange && !path)
+                return mixed_timing_ && next_it == 0 && regions_.containing(next_pc)
+                    ? FloatingRegisterPlan {} : builder.finish(false);
         } else if (inst.kind == Kind::FloatingArithmetic) {
             if (!reserve_scalars)
                 return {};
@@ -178,16 +217,16 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
                 return builder.finish(false);
             case Kind::DataProcessing:
                 if (arm::alu_writes_pc(inst))
-                    return builder.finish(false);
+                    return builder.finish(path && n + 1U == path.steps() && reserve_scalars);
                 break;
             case Kind::Transfer:
             case Kind::MultipleTransfer:
                 if (DynamicBackedge::ends_trace(inst))
-                    return builder.finish(false);
+                    return builder.finish(path && n + 1U == path.steps() && reserve_scalars);
                 break;
             case Kind::BranchExchange:
             case Kind::TableBranch:
-                return builder.finish(false);
+                return builder.finish(path && n + 1U == path.steps() && reserve_scalars);
             case Kind::DualTransfer:
             case Kind::ExclusiveTransfer:
             case Kind::ClearExclusive:
@@ -209,7 +248,8 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
         }
         pc = next_pc;
         it = next_it;
-        if (pc == start && it == start_it)
+        if ((path && n + 1U == path.steps()) ||
+            (!path && pc == start && it == start_it))
             return builder.finish(reserve_scalars);
     }
     return builder.finish(false);
@@ -226,7 +266,7 @@ AddressWindows InstructionWindow::address_windows(std::uint32_t start,
     for (unsigned n = 0; n < limit; ++n) {
         auto entry = take(pc, it, false);
         if (!entry || !entry->word || entry->instruction.condition == 15 ||
-            std::uint64_t { pc } + entry->instruction.size > region_.end)
+            std::uint64_t { pc } + entry->instruction.size > regions_.containing(pc)->end)
             return AddressWindows(resource);
         const auto& inst = entry->instruction;
         const auto cost = timing(*entry);
@@ -283,7 +323,7 @@ bool InstructionWindow::single_dependent_read_cycle(std::uint32_t start,
         }
         auto& entry = pending_[consumed_ + i];
         const auto& inst = entry.instruction;
-        if (!entry.word || pc + inst.size > region_.end || inst.condition == 15)
+        if (!entry.word || pc + inst.size > regions_.containing(pc)->end || inst.condition == 15)
             return false;
         const auto cost = timing(entry);
         if (cost == 0 || cost > remaining_ticks)
@@ -326,7 +366,7 @@ std::optional<InvariantShiftCount> InstructionWindow::invariant_shift_count(
     for (unsigned n = 0; n < limit; ++n) {
         auto entry = take(pc, it, false);
         if (!entry || !entry->word || entry->instruction.condition == 15 ||
-            std::uint64_t { pc } + entry->instruction.size > region_.end)
+            std::uint64_t { pc } + entry->instruction.size > regions_.containing(pc)->end)
             return {};
         const auto& inst = entry->instruction;
         const auto cost = timing(*entry);
@@ -432,7 +472,7 @@ bool InstructionWindow::flags_dead(unsigned live, std::uint32_t next_pc,
         auto& entry = pending_[consumed_ + i];
         if (cached && live == 0xfU && guarded_controls == initial_controls)
             reusable_prefix = i + 1U;
-        if (!entry.word || pc + entry.instruction.size > region_.end)
+        if (!entry.word || pc + entry.instruction.size > regions_.containing(pc)->end)
             return terminal_failure();
         auto effects = flag_effects(entry.instruction);
         if (entry.instruction.kind == arm::InstructionKind::FloatingComparison &&

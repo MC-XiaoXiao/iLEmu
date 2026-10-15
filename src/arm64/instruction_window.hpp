@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
 #include "arm/instruction.hpp"
+#include "code_regions.hpp"
+#include "trace_path.hpp"
 #include "execution/run.hpp"
 #include <array>
 #include <deque>
@@ -27,6 +29,10 @@ class InstructionWindow {
 public:
     InstructionWindow(InstructionSource& source, InstructionRegion region,
         bool thumb, std::pmr::memory_resource* temporary, bool retain_cycle = false);
+    InstructionWindow(InstructionSource& source, CodeRegions regions,
+        bool thumb, std::pmr::memory_resource* temporary, bool retain_cycle = false);
+    void mode(bool thumb);
+    void regions(CodeRegions regions);
     // Rewind only after the compiler accepts another copy of its entry cycle.
     void repeat_cycle();
     std::optional<DecodedInstruction> take(std::uint32_t pc, unsigned it,
@@ -34,7 +40,7 @@ public:
     std::uint64_t timing(DecodedInstruction&);
     FloatingRegisterPlan floating_registers(std::uint32_t pc, unsigned it,
         unsigned remaining_instructions, std::uint64_t remaining_ticks,
-        bool reserve_scalars = true);
+        bool reserve_scalars = true, const TracePath& path = TracePath {});
     // Prove page-local windows for stable bases and bounded offsets.
     AddressWindows address_windows(std::uint32_t pc, unsigned it,
         unsigned remaining_instructions, std::uint64_t remaining_ticks);
@@ -67,8 +73,9 @@ private:
         bool allow_straddle);
     void match(std::uint32_t pc, unsigned it);
     InstructionSource& source_;
-    InstructionRegion region_;
+    CodeRegions regions_;
     bool thumb_;
+    bool mixed_timing_;
     ThumbArithmeticProfile arithmetic_;
     VfpRegisterProfile vfp_;
     VfpInstructionProfile floating_instructions_;

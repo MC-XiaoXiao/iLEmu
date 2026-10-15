@@ -5,6 +5,7 @@
 #include "code_cache.hpp"
 #include "compiler.hpp"
 #include "run_control.hpp"
+#include "path_recorder.hpp"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -32,6 +33,7 @@ public:
         cache_.begin_run();
         arm64::RunControl control { context_.stops, request };
         RunResult result;
+        arm64::PathRecorder recorder;
         for (;;) {
             result.pc = state.registers[15];
             result.instruction.reset();
@@ -80,9 +82,24 @@ public:
             }
             const auto binding = cache_.bind(*lease);
             const bool big_endian = (state.cpsr & (1U << 9U)) != 0;
+            const auto path = recorder.ready(binding.identity, binding.generation, state);
+            bool recording = recorder.active();
             auto* selected = &cache_.entry(
-                source, binding, result.pc, step, big_endian, thumb, it_state,
-                request.translation_observer);
+                source, binding, result.pc, step || recording, big_endian, thumb, it_state,
+                request.translation_observer, UINT64_MAX, path);
+            if (recorder.complete())
+                recorder.clear();
+            if (!step && !recording && selected->wants_path()) {
+                selected->defer_path();
+                const auto view = lease->cached_continuation(result.pc);
+                if (view && view->inspectable &&
+                    recorder.begin(binding.identity, binding.generation, state)) {
+                    ++stats_.path_recording_attempts;
+                    recording = true;
+                    selected = &cache_.entry(source, binding, result.pc, true,
+                        big_endian, thumb, it_state, request.translation_observer);
+                }
+            }
             const auto remaining =
                 step ? UINT64_MAX : request.tick_budget - result.ticks_consumed;
             // Short budget tails execute a native one-instruction entry. This
@@ -105,7 +122,7 @@ public:
             native.control = &control;
             auto* memory = source.data_memory();
             arm64::CodeCache::ContinuationScope scope { cache_, *lease, native, memory };
-            const bool continuations = !step && cache_.prepare_continuations(
+            const bool continuations = !step && !recording && cache_.prepare_continuations(
                 *selected, scope, remaining);
             if (memory && (selected->accesses_memory || continuations))
                 native.memory = memory->direct_memory();
@@ -195,6 +212,13 @@ public:
                 result.instruction = native.word;
             if (has_reason(result.reason, StopReason::Svc))
                 result.svc = native.svc;
+            if (recording) {
+                if (result.reason == StopReason::None && native.ticks != 0) {
+                    ++stats_.path_recording_steps;
+                    recorder.retired(state);
+                } else
+                    recorder.clear();
+            }
             if (step && (result.reason == StopReason::None ||
                             has_reason(result.reason, StopReason::Svc) ||
                             has_reason(result.reason, StopReason::Breakpoint))) {

@@ -20,6 +20,9 @@ struct Arm64Statistics {
     std::uint64_t continuation_resolution_hits = 0;
     std::uint64_t multi_view_attempts = 0;
     std::uint64_t multi_view_compilations = 0;
+    std::uint64_t path_recording_attempts = 0;
+    std::uint64_t path_recording_steps = 0;
+    std::uint64_t recorded_path_compilations = 0;
 };
 class Arm64Executor final : public Executor {
 public:

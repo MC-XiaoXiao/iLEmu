@@ -6,10 +6,12 @@
 #include "arm_memory/vector_transfer.hpp"
 #include "execution/run.hpp"
 #include "cycle_tier.hpp"
+#include "trace_path.hpp"
 #include "native_continuations.hpp"
 #include "trace_metadata.hpp"
 #include "arm/architectural_stop.hpp"
 #include <cstdint>
+#include <span>
 #include <vector>
 namespace ilemu::execution::arm64 {
 // Plain native ABI; no backend or standard-library object layout is embedded
@@ -60,5 +62,6 @@ CompiledTrace compile(InstructionSource&, std::uint32_t pc, bool single_step,
     std::uint64_t maximum_ticks = UINT64_MAX, bool big_endian = false,
     bool thumb = false, unsigned it = 0,
     CycleExpansion = CycleExpansion::Untracked,
-    std::optional<InstructionRegion> permitted_region = {});
+    std::span<const InstructionRegion> permitted_regions = {},
+    std::span<const TraceLocation> path = {});
 }

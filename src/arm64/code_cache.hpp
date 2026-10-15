@@ -41,6 +41,14 @@ public:
         std::uint64_t continuation_revision = 0;
         unsigned continuation_cooldown = 0;
         unsigned view_heat = CycleTier::maximum_copies;
+        bool direct_exchange = false, recorded_path = false;
+        unsigned path_heat = CycleTier::maximum_copies * CycleTier::maximum_copies;
+        bool wants_path() const { return direct_exchange && !recorded_path && path_heat == 0; }
+        void defer_path()
+        {
+            path_heat = CycleTier::maximum_copies * CycleTier::maximum_copies *
+                CycleTier::maximum_copies;
+        }
     };
     // This context borrows the current lease only for the native invocation.
     // Cache-only resolution cannot compile, invalidate, or reclaim live entries.
@@ -82,14 +90,24 @@ public:
     Entry& entry(InstructionSource&, const Binding&, std::uint32_t pc,
         bool step, bool big_endian, bool thumb, unsigned it_state,
         TranslationObserver*,
-        std::uint64_t timing_limit = UINT64_MAX);
+        std::uint64_t timing_limit = UINT64_MAX,
+        std::span<const TraceLocation> path = {});
 
 private:
-    static void observe_visits(Entry& entry, std::uint64_t visits)
+    void observe_visits(Entry& entry, std::uint64_t visits)
     {
-        if (!entry.closed && !entry.views)
+        if (entry.direct_exchange && !entry.recorded_path && entry.path_heat != 0) {
+            entry.path_heat -= static_cast<unsigned>(
+                std::min<std::uint64_t>(entry.path_heat, visits));
+            if (entry.path_heat == 0)
+                ++revision_;
+        }
+        if (!entry.closed && !entry.views && entry.view_heat != 0) {
             entry.view_heat -= static_cast<unsigned>(
                 std::min<std::uint64_t>(entry.view_heat, visits));
+            if (entry.view_heat == 0)
+                ++revision_;
+        }
     }
     using Key = TranslationKey;
     using Entries = std::map<Key, Entry>;
