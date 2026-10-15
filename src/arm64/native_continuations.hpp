@@ -28,7 +28,8 @@ public:
     // Independent of table capacity: every edge polls stops, and paid guest
     // ticks bound the whole invocation even when its fragments are tiny.
     static constexpr std::uint64_t maximum_ticks = 32768;
-    static constexpr unsigned maximum_hops = 512;
+    // Tiny fragments must not exhaust hops before the paid-tick bound.
+    static constexpr unsigned maximum_hops = static_cast<unsigned>(maximum_ticks);
     struct Table {
         const void* domain = nullptr;
         std::uint64_t revision = 0, begin = 0, end = 0;
