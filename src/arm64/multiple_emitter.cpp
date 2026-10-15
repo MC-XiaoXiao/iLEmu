@@ -51,7 +51,7 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     if (!inst.load && (inst.registers & 0x8000U) != 0) {
         code_.LDR(W17, X20, memory + offsetof(DirectMemory, pc_store_offset));
         code_.EOR(W21, W17, 8);
-        Label valid;
+        Label valid { labels_ };
         code_.CBZ(W21, valid);
         code_.EOR(W21, W17, 12);
         code_.CBNZ(W21, exits.get(MemoryExits::Kind::Unsupported));
@@ -61,7 +61,7 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
         code_.STR(W17, X20,
             offset + offsetof(arm_memory::MultipleTransfer, pc_value));
     }
-    Label checked, done;
+    Label checked { labels_ }, done { labels_ };
     const auto table = inst.load ? X25 : X26;
     // The fast path only touches aligned ordinary memory in one resident page.
     // A whole-instruction checked boundary handles crossing, MMIO, COW and SMC.
@@ -164,7 +164,7 @@ void MultipleEmitter::access(const arm::Instruction& inst,
     }
     const bool load_pc = inst.load && (inst.registers & 0x8000U) != 0;
     if (load_pc) {
-        Label valid;
+        Label valid { labels_ };
         code_.TBNZ(W17, 0, valid);
         code_.TBNZ(W17, 1, exits.get(MemoryExits::Kind::Unsupported));
         code_.l(valid);

@@ -46,6 +46,8 @@ public:
     static std::optional<unsigned> dependent_read_destination(
         const arm::Instruction&, std::uint32_t pc);
     AddressCache& addresses() { return addresses_; }
+    // Sibling transfer emitters share this lazy compile-scoped fixup pool.
+    std::pmr::memory_resource& label_memory();
 
 private:
     static bool is_dependent_read(
@@ -63,7 +65,6 @@ private:
     };
     void store_value(const arm::Instruction&, std::uint32_t pc);
     void endian(unsigned size, oaknut::WReg value);
-    std::pmr::memory_resource& label_memory();
     oaknut::VectorCodeGenerator& code_;
     IntegerEmitter& integer_;
     bool big_endian_;

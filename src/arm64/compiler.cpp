@@ -286,7 +286,7 @@ namespace {
             vectors_.flush();
             NativeFrame::publish(trace_.words);
             memory_.leave();
-            Label leave;
+            Label leave = label();
             code_.LDR(X16, X20, offsetof(NativeOutcome, continuation_dispatch));
             code_.CBZ(X16, leave);
             code_.BR(X16);
@@ -410,7 +410,7 @@ namespace {
             unsigned before_it, bool big_endian)
         {
             VectorMemoryEmitter { code_, big_endian, memory_.addresses(),
-                vectors_ }
+                vectors_, memory_.label_memory() }
                 .emit(inst, pc, cost,
                     exit(static_cast<StopReason>(vector_exit), before, pc,
                         word, 0, false, before_it));
@@ -549,7 +549,8 @@ namespace {
         {
             InstructionMemoryExits exits { *this, pc, word, before,
                 cost, before_it, static_cast<StopReason>(multiple_exit) };
-            MultipleEmitter { code_, big_endian, memory_.addresses() }
+            MultipleEmitter { code_, big_endian, memory_.addresses(),
+                memory_.label_memory() }
                 .emit(inst, pc, cost, exits);
         }
 

@@ -165,7 +165,7 @@ void VectorMemoryEmitter::emit(
     }
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
-    Label checked, aligned, done;
+    Label checked { labels_ }, aligned { labels_ }, done { labels_ };
     if (key)
         addresses_.begin_guard(*key, inst.condition);
     if (inst.rn == 15)

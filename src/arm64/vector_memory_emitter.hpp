@@ -4,16 +4,19 @@
 #include "arm/instruction.hpp"
 #include "vector_registers.hpp"
 #include <oaknut/oaknut.hpp>
+#include <memory_resource>
 
 namespace ilemu::execution::arm64 {
 class VectorMemoryEmitter {
 public:
     VectorMemoryEmitter(oaknut::VectorCodeGenerator& code, bool big_endian,
-        AddressCache& addresses, VectorRegisters& vectors)
+        AddressCache& addresses, VectorRegisters& vectors,
+        std::pmr::memory_resource& labels)
         : code_(code)
         , big_endian_(big_endian)
         , addresses_(addresses)
         , vectors_(vectors)
+        , labels_(labels)
     {
     }
     static std::optional<AddressCache::Key> address(const arm::Instruction&);
@@ -37,5 +40,6 @@ private:
     bool big_endian_;
     AddressCache& addresses_;
     VectorRegisters& vectors_;
+    std::pmr::memory_resource& labels_;
 };
 }
