@@ -624,14 +624,15 @@ namespace {
     };
 }
 
-static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
+static CompiledTrace compile_trace(InstructionSource& source,
+    std::optional<InstructionRegion> permitted_region, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
     unsigned it, CycleExpansion expansion,
     std::optional<RegisterShiftRange> shift_range = {},
     const AddressWindows* windows = nullptr,
     unsigned instruction_limit = maximum_trace_instructions)
 {
-    const auto region = source.instruction_region(pc);
+    const auto region = permitted_region.value_or(source.instruction_region(pc));
     if (region.begin > pc || region.end <= pc ||
         region.end > (std::uint64_t { 1 } << 32U))
         throw std::invalid_argument("invalid instruction region");
@@ -1076,13 +1077,14 @@ static CompiledTrace compile_trace(InstructionSource& source, std::uint32_t pc,
     emit.finish(pc);
     return out;
 }
-static CompiledTrace compile_hot(InstructionSource& source, std::uint32_t pc,
+static CompiledTrace compile_hot(InstructionSource& source,
+    std::optional<InstructionRegion> permitted_region, std::uint32_t pc,
     std::uint64_t maximum_ticks, bool big_endian, bool thumb, unsigned it)
 {
-    const auto region = source.instruction_region(pc);
+    const auto region = permitted_region.value_or(source.instruction_region(pc));
     if (region.begin > pc || region.end <= pc ||
         region.end > (std::uint64_t { 1 } << 32U))
-        return compile_trace(source, pc, false, maximum_ticks, big_endian,
+        return compile_trace(source, permitted_region, pc, false, maximum_ticks, big_endian,
             thumb, it, CycleExpansion::Hot);
     alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
     std::pmr::monotonic_buffer_resource temporary {
@@ -1095,14 +1097,14 @@ static CompiledTrace compile_hot(InstructionSource& source, std::uint32_t pc,
         auto windows = window.address_windows(pc, it,
             maximum_trace_instructions, maximum_ticks);
         if (!windows.empty()) {
-            auto slow = compile_trace(source, pc, false, maximum_ticks,
+            auto slow = compile_trace(source, permitted_region, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot);
             windows.expand(slow.instructions);
             if (windows.empty())
                 return slow;
             // A single cache entry needs the same paid group in either body.
             // Keep the existing read-cache copy budget when the fast body is smaller.
-            auto fast = compile_trace(source, pc, false, maximum_ticks,
+            auto fast = compile_trace(source, permitted_region, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, &windows,
                 slow.instructions);
             return windows.select(std::move(fast), std::move(slow));
@@ -1111,7 +1113,7 @@ static CompiledTrace compile_hot(InstructionSource& source, std::uint32_t pc,
     if (count && count->carry_kinds != 0) {
         std::array<CompiledTrace, 4> variants;
         const auto variant = [&](ShiftCountRange range) {
-            return compile_trace(source, pc, false, maximum_ticks,
+            return compile_trace(source, permitted_region, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot,
                 RegisterShiftRange { count->reg, range, count->carry_kinds });
         };
@@ -1133,25 +1135,26 @@ static CompiledTrace compile_hot(InstructionSource& source, std::uint32_t pc,
             pc, it, maximum_trace_instructions, maximum_ticks, false);
     }
     if (count) {
-        auto below = compile_trace(source, pc, false, maximum_ticks, big_endian,
+        auto below = compile_trace(source, permitted_region, pc, false, maximum_ticks, big_endian,
             thumb, it, CycleExpansion::Hot,
             RegisterShiftRange { count->reg, ShiftCountRange::BelowWord });
-        auto above = compile_trace(source, pc, false, maximum_ticks, big_endian,
+        auto above = compile_trace(source, permitted_region, pc, false, maximum_ticks, big_endian,
             thumb, it, CycleExpansion::Hot,
             RegisterShiftRange { count->reg, ShiftCountRange::AtLeastWord });
         if (auto selected = GuardedShiftTrace::select(count->reg, std::move(below), std::move(above)))
             return std::move(*selected);
     }
-    return compile_trace(source, pc, false, maximum_ticks, big_endian,
+    return compile_trace(source, permitted_region, pc, false, maximum_ticks, big_endian,
         thumb, it, CycleExpansion::Hot);
 }
 CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,
-    unsigned it, CycleExpansion expansion)
+    unsigned it, CycleExpansion expansion,
+    std::optional<InstructionRegion> permitted_region)
 {
     if (!single_step && expansion == CycleExpansion::Hot)
-        return compile_hot(source, pc, maximum_ticks, big_endian, thumb, it);
-    return compile_trace(source, pc, single_step, maximum_ticks, big_endian,
+        return compile_hot(source, permitted_region, pc, maximum_ticks, big_endian, thumb, it);
+    return compile_trace(source, permitted_region, pc, single_step, maximum_ticks, big_endian,
         thumb, it, expansion);
 }
 }

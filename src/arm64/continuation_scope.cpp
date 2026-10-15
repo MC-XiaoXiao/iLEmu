@@ -53,16 +53,25 @@ NativeContinuation* CodeCache::ContinuationScope::resolve(
         if (found == domain->entries.end())
             return nullptr;
         auto& entry = found->second;
-        if (!entry.code || entry.stop || entry.maximum_ticks == 0 || entry.tier.ready() ||
-            entry.dependency.begin < view->region.begin ||
-            entry.dependency.end > view->region.end)
+        if (!entry.code || entry.stop || entry.maximum_ticks == 0 || entry.tier.ready())
+            return nullptr;
+        if (entry.views) {
+            if (!entry.views->pin(scope.lease_, view->region,
+                    TraceViews::EntryAuthorization::Cached))
+                return nullptr;
+        } else if (entry.dependency.begin < view->region.begin ||
+                   entry.dependency.end > view->region.end)
             return nullptr;
         // Pinning an executable shared alias may revoke unsafe direct stores.
         // Each tail entry reloads these tables; no invocation-local page cache
         // remains live after the previous trace's canonical-state epilogue.
         if (scope.memory_)
             scope.native_.memory = scope.memory_->direct_memory();
-        const auto* validation = scope.validate_view(domain, view->region);
+        // Multi-view entries have distinct dependency sets even when their
+        // roots share a page. A root-page cookie cannot validate all of them.
+        const auto* validation = scope.validate_view(
+            entry.views ? static_cast<const void*>(&entry) : domain,
+            entry.views ? entry.dependency : view->region);
         if (!validation)
             return nullptr;
         auto& slot = scope.table_->entries[NativeContinuation::slot(pc, status)];

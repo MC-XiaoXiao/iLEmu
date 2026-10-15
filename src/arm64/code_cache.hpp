@@ -3,6 +3,7 @@
 #include "arm64/executor.hpp"
 #include "compilation_key.hpp"
 #include "native_continuations.hpp"
+#include "trace_views.hpp"
 #include "arm64/shared_compilation_cache.hpp"
 #include "arm/architectural_stop.hpp"
 #include <list>
@@ -22,6 +23,7 @@ public:
         // Borrowed only until the caller releases its live instruction lease.
         // Query physical provenance lazily on a local miss, keeping hits cheap.
         const InstructionLease* compilation_lease = nullptr;
+        InstructionLease* execution_lease = nullptr;
     };
     struct Entry {
         std::shared_ptr<const ExecutableCode> code;
@@ -34,9 +36,11 @@ public:
         std::size_t accounted_bytes;
         CycleTier tier;
         InstructionRegion dependency;
+        std::unique_ptr<TraceViews> views;
         std::list<Recency>::iterator recency;
         std::uint64_t continuation_revision = 0;
         unsigned continuation_cooldown = 0;
+        unsigned view_heat = CycleTier::maximum_copies;
     };
     // This context borrows the current lease only for the native invocation.
     // Cache-only resolution cannot compile, invalidate, or reclaim live entries.
@@ -66,6 +70,7 @@ public:
     void begin_run();
     void observe(Entry& entry, std::uint64_t ticks)
     {
+        observe_visits(entry, 1);
         const bool ready = entry.tier.ready();
         entry.tier.observe(ticks, entry.maximum_ticks);
         if (!ready && entry.tier.ready())
@@ -73,13 +78,19 @@ public:
     }
     bool prepare_continuations(Entry&, ContinuationScope&, std::uint64_t remaining);
     void finish_continuations(NativeOutcome&);
-    Binding bind(const InstructionLease&);
+    Binding bind(InstructionLease&);
     Entry& entry(InstructionSource&, const Binding&, std::uint32_t pc,
         bool step, bool big_endian, bool thumb, unsigned it_state,
         TranslationObserver*,
         std::uint64_t timing_limit = UINT64_MAX);
 
 private:
+    static void observe_visits(Entry& entry, std::uint64_t visits)
+    {
+        if (!entry.closed && !entry.views)
+            entry.view_heat -= static_cast<unsigned>(
+                std::min<std::uint64_t>(entry.view_heat, visits));
+    }
     using Key = TranslationKey;
     using Entries = std::map<Key, Entry>;
     struct Domain {

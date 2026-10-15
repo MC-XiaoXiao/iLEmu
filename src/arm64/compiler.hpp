@@ -54,8 +54,11 @@ inline constexpr std::uint32_t memory_exit = 1U << 31U;
 struct CompiledTrace : TraceMetadata {
     std::vector<std::uint32_t> words;
 };
+// An extended region is allowed only while every contributing view is pinned
+// and explicitly permits side-effect-free inspection through this source.
 CompiledTrace compile(InstructionSource&, std::uint32_t pc, bool single_step,
     std::uint64_t maximum_ticks = UINT64_MAX, bool big_endian = false,
     bool thumb = false, unsigned it = 0,
-    CycleExpansion = CycleExpansion::Untracked);
+    CycleExpansion = CycleExpansion::Untracked,
+    std::optional<InstructionRegion> permitted_region = {});
 }

@@ -18,6 +18,8 @@ struct Arm64Statistics {
     std::uint64_t cross_region_calls = 0;
     std::uint64_t continuation_resolutions = 0;
     std::uint64_t continuation_resolution_hits = 0;
+    std::uint64_t multi_view_attempts = 0;
+    std::uint64_t multi_view_compilations = 0;
 };
 class Arm64Executor final : public Executor {
 public:

@@ -153,10 +153,10 @@ CodeCache::Domain& CodeCache::obtain(const Binding& binding)
     it->second.generation = binding.generation;
     return it->second;
 }
-CodeCache::Binding CodeCache::bind(const InstructionLease& lease)
+CodeCache::Binding CodeCache::bind(InstructionLease& lease)
 {
     Binding binding { lease.identity(), lease.generation(),
-        shared_ ? &lease : nullptr };
+        shared_ ? &lease : nullptr, &lease };
     if (!binding.generation) {
         // Losing the epoch revokes any previously persistent translations.
         if (binding.identity) {
@@ -169,6 +169,7 @@ CodeCache::Binding CodeCache::bind(const InstructionLease& lease)
         }
         binding.identity.reset();
         binding.compilation_lease = nullptr;
+        binding.execution_lease = nullptr;
         invalidate(anonymous_);
     } else if (auto* domain = find(binding);
         domain && domain->generation != binding.generation) {
@@ -188,23 +189,69 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         source.alu_pc_write_profile(), source.vfp_instruction_profile(),
         source.integer_divide_profile(), source.thumb_memory_profile(),
         source.advanced_simd_profile() };
-    auto expansion = binding.generation ? CycleExpansion::Compact
-                                       : CycleExpansion::Untracked;
+    Entry* previous = nullptr;
     if (auto* domain = find(binding)) {
-        if (const auto it = domain->entries.find(key);
-            it != domain->entries.end()) {
-            if (!it->second.tier.ready()) {
-                recent_.splice(recent_.end(), recent_, it->second.recency);
-                ++stats_.cache_hits;
-                return it->second;
+        if (const auto it = domain->entries.find(key); it != domain->entries.end()) {
+            previous = &it->second;
+            if (previous->views && (!binding.execution_lease ||
+                    !previous->views->pin(*binding.execution_lease,
+                        source.instruction_region(pc)))) {
+                erase_entry(*domain, it);
+                previous = nullptr;
             }
-            expansion = CycleExpansion::Hot;
         }
     }
+    auto expansion = binding.generation ? CycleExpansion::Compact
+                                       : CycleExpansion::Untracked;
+    const bool widening = previous && !previous->closed &&
+        previous->view_heat == 0 && binding.execution_lease &&
+        !step && timing_limit == UINT64_MAX;
+    const auto hit = [&]() -> Entry& {
+        recent_.splice(recent_.end(), recent_, previous->recency);
+        ++stats_.cache_hits;
+        return *previous;
+    };
+    if (previous && !previous->tier.ready() && !widening)
+        return hit();
     const auto started = std::chrono::steady_clock::now();
-    const auto region = source.instruction_region(pc);
+    const auto elapsed = [&] {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<
+            std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+    };
+    const auto fallback = [&]() -> Entry& {
+        stats_.compilation_nanoseconds += elapsed();
+        return hit();
+    };
+    std::unique_ptr<TraceViews> views;
+    std::optional<CompiledTrace> widened;
+    if (widening) {
+        ++stats_.multi_view_attempts;
+        // An unavailable pin or a path that does not close must not compile
+        // again on every hit. Reconsider after substantial observed execution.
+        previous->view_heat = CycleTier::maximum_copies * CycleTier::maximum_copies;
+        try {
+            views = TraceViews::capture(*binding.execution_lease,
+                source.instruction_region(pc), pc);
+            if (views) {
+                widened = compile(source, pc, false, timing_limit,
+                    big_endian, thumb, it_state, expansion, views->region());
+                if (!widened->closed)
+                    widened.reset();
+            }
+        } catch (const std::bad_alloc&) {
+            widened.reset();
+        }
+        if (!widened)
+            return fallback();
+    } else if (previous) {
+        expansion = CycleExpansion::Hot;
+        if (previous->views)
+            views = std::make_unique<TraceViews>(*previous->views);
+    }
+    const auto region = views ? views->region() : source.instruction_region(pc);
+    const auto view_bytes = views ? views->retained_bytes() : 0;
     std::optional<CompilationKey> shared_key;
-    if (binding.compilation_lease) {
+    if (!views && binding.compilation_lease) {
         const auto provenance = binding.compilation_lease->compilation_identity();
         if (provenance && provenance->semantics && provenance->page_count != 0 &&
             provenance->page_count <= provenance->pages.size() &&
@@ -216,35 +263,55 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     auto plan = shared_key ? shared_->find(*shared_key) : nullptr;
     const bool reused = bool(plan);
     if (!plan) {
-        const auto compiled = compile(source, pc, step, timing_limit,
-            big_endian, thumb, it_state, expansion);
+        const auto compiled = widened ? std::move(*widened) :
+            compile(source, pc, step, timing_limit, big_endian, thumb, it_state,
+                expansion, views ? std::optional { region } : std::nullopt);
         const auto bytes = std::as_bytes(std::span { compiled.words });
-        if (bytes.size() > 256U * 1024U)
+        if (bytes.size() > 256U * 1024U) {
+            if (widening)
+                return fallback();
             throw std::length_error("ARM64 trace exceeds code limit");
+        }
         std::unique_ptr<ExecutableCode> allocation;
         if (!compiled.stop) {
-            allocation = allocator_.allocate(bytes.size());
-            if (!allocation)
-                throw std::bad_alloc { };
+            try {
+                allocation = allocator_.allocate(bytes.size());
+                if (!allocation)
+                    throw std::bad_alloc { };
+            } catch (const std::bad_alloc&) {
+                if (widening)
+                    return fallback();
+                throw;
+            }
         }
         const auto capacity = allocation ? allocation->capacity() : 0;
         // Reserve domain overhead even if eviction will recreate this domain.
-        const auto overhead = entry_bytes + (binding.identity ? domain_bytes : 0);
-        if (capacity > budget_ - overhead)
+        const auto overhead = entry_bytes + view_bytes + (binding.identity ? domain_bytes : 0);
+        if (capacity > budget_ - overhead) {
+            if (widening)
+                return fallback();
             throw std::length_error("ARM64 trace exceeds cache budget");
+        }
         if (allocation) {
             allocation->publish(bytes);
             if (!allocation->entry())
                 throw std::runtime_error("ARM64 code was not published");
         }
-        plan = std::make_shared<const PublishedTrace>(PublishedTrace {
-            static_cast<const TraceMetadata&>(compiled),
-            std::move(allocation), bytes.size() });
+        try {
+            plan = std::make_shared<const PublishedTrace>(PublishedTrace {
+                static_cast<const TraceMetadata&>(compiled),
+                std::move(allocation), bytes.size() });
+        } catch (const std::bad_alloc&) {
+            if (widening)
+                return fallback();
+            throw;
+        }
     }
-    const auto overhead = entry_bytes + (binding.identity ? domain_bytes : 0);
+    const auto overhead = entry_bytes + view_bytes + (binding.identity ? domain_bytes : 0);
     if (plan->capacity() > budget_ - overhead)
         throw std::length_error("ARM64 trace exceeds cache budget");
-    const auto accounted = plan->capacity() + entry_bytes;
+    const auto accounted = plan->capacity() + entry_bytes + view_bytes;
+    const bool multi_view = bool(views);
     // Entry lookup happens between native invocations under a fresh code
     // lease. Publish successfully before replacing the cold allocation.
     if (auto* domain = find(binding)) {
@@ -261,7 +328,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
             plan->closed, plan->accesses_memory, plan->ends_with_stop,
             plan->first_instruction, accounted,
             CycleTier { plan->closed, expansion == CycleExpansion::Hot },
-            source.instruction_region(pc), { } });
+            region, std::move(views), { } });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");
     try {
@@ -283,14 +350,12 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
         ++stats_.shared_compilation_hits;
     // Shared hits report their actual lookup and local installation cost.
     ++stats_.compiled_regions;
+    stats_.multi_view_compilations += multi_view;
     stats_.emitted_bytes += plan->emitted_bytes;
-    const auto elapsed = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - started)
-            .count());
-    stats_.compilation_nanoseconds += elapsed;
+    const auto duration = elapsed();
+    stats_.compilation_nanoseconds += duration;
     if (observer)
-        observer->translation_completed(elapsed);
+        observer->translation_completed(duration);
     return it->second;
 }
 CodeCache::Key CodeCache::continuation_profile(Key key)
@@ -342,7 +407,8 @@ bool CodeCache::prepare_continuations(Entry& root,
     const auto profile = continuation_profile(root_key);
     const auto pc = std::uint64_t { std::get<0>(root_key) };
     if (pc < region->begin || pc + 4 > region->end ||
-        root.dependency.begin < region->begin || root.dependency.end > region->end)
+        (!root.views && (root.dependency.begin < region->begin ||
+                        root.dependency.end > region->end)))
         return false;
     const auto cached = lease.cached_continuation(static_cast<std::uint32_t>(pc));
     const bool resolvable = cached && cached->identity == domain->identity &&
@@ -386,12 +452,17 @@ bool CodeCache::prepare_continuations(Entry& root,
     // of the number of dormant translations in the domain. Repeated paths
     // discover their successors naturally through ordinary dispatcher misses.
     native.continuation_cookie = ++continuation_cookie_;
+    scope.table_ = table;
     table->views[0] = { domain, region->begin, region->end, native.continuation_cookie };
     auto descriptor = continuation(root);
-    descriptor.validation = &table->views[0].cookie;
+    if (root.views) {
+        descriptor.validation = scope.validate_view(&root, root.dependency);
+        if (!descriptor.validation)
+            return false;
+    } else
+        descriptor.validation = &table->views[0].cookie;
     table->entries[NativeContinuation::slot(
         descriptor.pc, descriptor.status)] = descriptor;
-    scope.table_ = table;
     if (resolvable) {
         native.resolve_continuation = ContinuationScope::resolve;
         native.continuation_context = &scope;
@@ -409,6 +480,7 @@ void CodeCache::observe_continuation(NativeContinuation& descriptor, bool linked
     if (descriptor.visits == 0)
         return;
     auto& entry = *static_cast<Entry*>(descriptor.owner);
+    observe_visits(entry, descriptor.visits);
     const bool ready = entry.tier.ready();
     entry.tier.observe_groups(descriptor.heat);
     if (!ready && entry.tier.ready())
