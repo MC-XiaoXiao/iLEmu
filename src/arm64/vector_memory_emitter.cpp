@@ -149,7 +149,7 @@ std::optional<AddressCache::Key> VectorMemoryEmitter::address(const arm::Instruc
 }
 void VectorMemoryEmitter::emit(
     const arm::Instruction& inst, std::uint32_t pc, std::uint64_t cost,
-    Label& checked_exit)
+    Label& checked_exit, Split* split)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
     const auto length = arm_memory::vector_transfer_length(v);
@@ -165,7 +165,8 @@ void VectorMemoryEmitter::emit(
     }
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
-    Label checked { labels_ }, aligned { labels_ }, done { labels_ };
+    Label local_checked { labels_ }, aligned { labels_ }, done { labels_ };
+    auto& checked = split ? split->checked : local_checked;
     if (key)
         addresses_.begin_guard(*key, inst.condition);
     if (inst.rn == 15)
@@ -212,7 +213,7 @@ void VectorMemoryEmitter::emit(
         code_.AND(W17, W15, 4095);
         code_.ADD(W17, W17, length - 1U);
         code_.LSR(W17, W17, 12);
-        code_.CBNZ(W17, checked);
+        code_.CBNZ(W17, split ? split->entry : checked);
     }
     code_.LSR(W17, W15, 12);
     code_.LDR(X17, table, W17, IndexExt::UXTW, 3);

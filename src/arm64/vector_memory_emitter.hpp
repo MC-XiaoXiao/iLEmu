@@ -5,10 +5,32 @@
 #include "vector_registers.hpp"
 #include <oaknut/oaknut.hpp>
 #include <memory_resource>
+#include <list>
 
 namespace ilemu::execution::arm64 {
 class VectorMemoryEmitter {
 public:
+    struct Split {
+        Split(const arm::Instruction& value, bool big,
+            std::pmr::memory_resource& labels, oaknut::Label& destination)
+            : instruction(value), big_endian(big), entry(labels), checked(labels),
+              completed(destination) { }
+        arm::Instruction instruction;
+        bool big_endian;
+        oaknut::Label entry, checked;
+        oaknut::Label& completed;
+    };
+    // Compile-only ownership keeps cold fragments out of the unrolled body.
+    class Splits {
+    public:
+        explicit Splits(std::pmr::memory_resource& labels)
+            : labels_(labels), paths_(&labels) { }
+        Split& add(const arm::Instruction&, bool big_endian, oaknut::Label& completed);
+        void finish(oaknut::VectorCodeGenerator&, AddressCache&, VectorRegisters&);
+    private:
+        std::pmr::memory_resource& labels_;
+        std::pmr::list<Split> paths_;
+    };
     VectorMemoryEmitter(oaknut::VectorCodeGenerator& code, bool big_endian,
         AddressCache& addresses, VectorRegisters& vectors,
         std::pmr::memory_resource& labels)
@@ -20,8 +42,9 @@ public:
     {
     }
     static std::optional<AddressCache::Key> address(const arm::Instruction&);
+    static bool supports_split(const arm::Instruction&);
     void emit(const arm::Instruction&, std::uint32_t pc, std::uint64_t cost,
-        oaknut::Label& checked_exit);
+        oaknut::Label& checked_exit, Split* split = nullptr);
 
 private:
     template<typename Element>
@@ -35,6 +58,8 @@ private:
     void access(const arm::Instruction&, AddressCache::Reference);
     bool resident_scalar(const arm::Instruction&, AddressCache::Reference);
     void scalar_multiple(const arm::Instruction&, oaknut::XReg pointer);
+    void split_access(const arm::Instruction&, oaknut::XReg table,
+        oaknut::Label& checked, oaknut::Label& completed);
     void endian(oaknut::QReg, unsigned size, bool quad);
     oaknut::VectorCodeGenerator& code_;
     bool big_endian_;

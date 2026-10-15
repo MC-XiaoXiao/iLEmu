@@ -78,8 +78,10 @@ namespace {
             , exchanges_(code_, integer_, thumb)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
                 fast_reads && !single_step, temporary, windows)
+            , vector_splits_(*temporary)
             , windows_(windows)
             , thumb_(thumb)
+            , split_vectors_(fast_reads && !single_step && !windows)
             , backedge_(pc, it, thumb, !single_step)
             , head_(*temporary), loop_tail_(*temporary), epilogue_(*temporary)
             , exits_(temporary)
@@ -224,6 +226,7 @@ namespace {
             if (natural_backedge)
                 code_.B(exit(StopReason::None, 0, pc));
             memory_.finish();
+            vector_splits_.finish(code_, memory_.addresses(), vectors_);
             for (auto& fallback : exchanges_.pending()) {
                 code_.l(fallback.label);
                 location(fallback.it, fallback.instruction.size);
@@ -409,11 +412,17 @@ namespace {
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
             unsigned before_it, bool big_endian)
         {
+            auto& checked = exit(static_cast<StopReason>(vector_exit), before,
+                pc, word, 0, false, before_it);
+            VectorMemoryEmitter::Split* split = nullptr;
+            if (split_vectors_ && VectorMemoryEmitter::supports_split(inst)) {
+                auto& completed = exit(StopReason::None, before + cost,
+                    pc + inst.size, {}, 0, false, {}, false);
+                split = &vector_splits_.add(inst, big_endian, completed);
+            }
             VectorMemoryEmitter { code_, big_endian, memory_.addresses(),
                 vectors_, memory_.label_memory() }
-                .emit(inst, pc, cost,
-                    exit(static_cast<StopReason>(vector_exit), before, pc,
-                        word, 0, false, before_it));
+                .emit(inst, pc, cost, checked, split);
         }
         VectorRegisters& vectors() { return vectors_; }
         bool needs_floating_guard(std::uint32_t mask) const
@@ -612,8 +621,10 @@ namespace {
         IntegerEmitter integer_;
         ExchangePaths exchanges_;
         MemoryEmitter memory_;
+        VectorMemoryEmitter::Splits vector_splits_;
         const AddressWindows* windows_;
         bool thumb_;
+        bool split_vectors_;
         bool continued_cycle_ = false;
         DynamicBackedge backedge_;
         std::size_t entry_end_ = 0, cycle_end_ = 0, first_cycle_words_ = 0;
