@@ -41,6 +41,11 @@ struct NativeOutcome {
     std::uint32_t continuation_hops = 0;
     std::uint32_t continuation_calls = 0;
     std::uint32_t continuation_stopped = 0;
+    std::uint64_t continuation_cookie = 0;
+    NativeContinuation* (*resolve_continuation)(
+        void*, std::uint32_t, std::uint32_t) noexcept = nullptr;
+    void* continuation_context = nullptr;
+    std::uint32_t cross_region_calls = 0;
 };
 inline constexpr std::uint32_t exclusive_exit = 1U << 28U;
 inline constexpr std::uint32_t vector_exit = 1U << 29U;

@@ -12,10 +12,11 @@ NativeContinuations::NativeContinuations(CodeAllocator& allocator)
     using namespace oaknut::util;
     std::vector<std::uint32_t> words;
     VectorCodeGenerator code(words);
-    Label leave, no_heat, budget_ok, groups_ready, resume;
+    Label leave, no_heat, budget_ok, groups_ready, resume, resolve, resolved, same_page;
     // The trace has published all architectural state and restored host FP
     // controls and callee-saved vector registers before entering this thunk.
     code.LDR(X21, X20, offsetof(NativeOutcome, active_continuation));
+    code.LDR(X28, X21, offsetof(NativeContinuation, validation));
     code.LDR(X22, X20, offsetof(NativeOutcome, ticks));
     code.LDR(X23, X21, offsetof(NativeContinuation, visits));
     code.ADD(X23, X23, 1);
@@ -60,12 +61,27 @@ NativeContinuations::NativeContinuations(CodeAllocator& allocator)
     code.LDR(X27, X20, offsetof(NativeOutcome, continuations));
     code.ADD(X27, X27, X26, LSL, 6);
     code.LDR(X16, X27, offsetof(NativeContinuation, entry));
-    code.CBZ(X16, leave);
+    code.CBZ(X16, resolve);
     code.LDP(W16, W17, X27, offsetof(NativeContinuation, pc));
     code.CMP(W16, W25);
-    code.B(Cond::NE, leave);
+    code.B(Cond::NE, resolve);
     code.CMP(W17, W24);
-    code.B(Cond::NE, leave);
+    code.B(Cond::NE, resolve);
+    code.LDR(X16, X27, offsetof(NativeContinuation, validation));
+    code.LDR(X16, X16);
+    code.LDR(X17, X20, offsetof(NativeOutcome, continuation_cookie));
+    code.CMP(X16, X17);
+    code.B(Cond::EQ, resolved);
+    code.l(resolve);
+    code.LDR(X16, X20, offsetof(NativeOutcome, resolve_continuation));
+    code.CBZ(X16, leave);
+    code.LDR(X0, X20, offsetof(NativeOutcome, continuation_context));
+    code.MOV(W1, W25);
+    code.MOV(W2, W24);
+    code.BLR(X16);
+    code.CBZ(X0, leave);
+    code.MOV(X27, X0);
+    code.l(resolved);
     code.LDR(X24, X27, offsetof(NativeContinuation, maximum_ticks));
     code.CMP(X24, X23);
     code.B(Cond::CC, budget_ok);
@@ -94,6 +110,13 @@ NativeContinuations::NativeContinuations(CodeAllocator& allocator)
     code.STR(WZR, X20, offsetof(NativeOutcome, has_instruction));
     code.B(leave);
     code.l(resume);
+    code.LDR(X16, X27, offsetof(NativeContinuation, validation));
+    code.CMP(X16, X28);
+    code.B(Cond::EQ, same_page);
+    code.LDR(W16, X20, offsetof(NativeOutcome, cross_region_calls));
+    code.ADD(W16, W16, 1);
+    code.STR(W16, X20, offsetof(NativeOutcome, cross_region_calls));
+    code.l(same_page);
     code.STR(X27, X20, offsetof(NativeOutcome, active_continuation));
     code.LDR(W16, X20, offsetof(NativeOutcome, continuation_calls));
     code.ADD(W16, W16, 1);

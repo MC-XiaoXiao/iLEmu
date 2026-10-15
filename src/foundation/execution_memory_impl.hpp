@@ -26,6 +26,25 @@ public:
         std::uint64_t epoch = 1;
         bool initialized = false, has_second = false;
         PageStamp first_stamp, second_stamp;
+        std::optional<std::uint64_t> observe(
+            PageStamp first, std::optional<PageStamp> second = {}) noexcept
+        {
+            const bool changed = initialized &&
+                (first != first_stamp || (second && has_second && *second != second_stamp));
+            if (changed) {
+                if (epoch == std::numeric_limits<std::uint64_t>::max())
+                    return {};
+                ++epoch;
+                has_second = false;
+            }
+            initialized = true;
+            first_stamp = first;
+            if (second) {
+                has_second = true;
+                second_stamp = *second;
+            }
+            return epoch;
+        }
     };
     class Lease final : public execution::InstructionLease {
         struct Page {
@@ -91,25 +110,63 @@ public:
         {
             if (count_ == 0)
                 return std::nullopt;
-            const auto first = pages_[0].stamp();
-            const auto second = count_ == 2 ? pages_[1].stamp() : PageStamp { };
-            const bool changed = view_.initialized &&
-                (first != view_.first_stamp ||
-                    (count_ == 2 && view_.has_second &&
-                        second != view_.second_stamp));
-            if (changed) {
-                if (view_.epoch == std::numeric_limits<std::uint64_t>::max())
-                    return std::nullopt;
-                ++view_.epoch;
-                view_.has_second = false;
+            return view_.observe(pages_[0].stamp(),
+                count_ == 2 ? std::optional { pages_[1].stamp() } : std::nullopt);
+        }
+        std::optional<execution::LeasedCodeView>
+        cached_continuation(std::uint32_t pc) noexcept override
+        {
+            const auto base = execution_page_base(pc);
+            const auto begin = std::uint64_t { base };
+            if (std::uint64_t { pc } + 4 > begin + AddressSpace::page_size)
+                return {};
+            if (auto region = continuation_region(); region && base == pages_[0].base)
+                return execution::LeasedCodeView { identity(), generation(), *region };
+            // Do not allocate or erase view metadata while the primary View&
+            // is borrowed. An unobserved page cannot have a reusable entry.
+            const auto found = owner_.views_.find(base);
+            if (found == owner_.views_.end())
+                return {};
+            try {
+                Page* page = nullptr;
+                if (continued_)
+                    for (unsigned i = 0; i < continued_->count; ++i)
+                        if (continued_->pages[i].base == base)
+                            page = &continued_->pages[i];
+                if (!page) {
+                    if (continued_ && continued_->count == continued_->pages.size())
+                        return {};
+                    auto ready = owner_.memory_.instruction_page_view(pc);
+                    if (!ready || !ready->backing || ready->bytes.size() != AddressSpace::page_size)
+                        return {};
+                    Page candidate;
+                    candidate.base = base;
+                    candidate.backing = std::move(ready->backing);
+                    candidate.bytes = ready->bytes;
+                    candidate.write_generation = ready->write_generation;
+                    bool already_locked = false;
+                    for (unsigned i = 0; i < count_; ++i)
+                        already_locked |= pages_[i].backing == candidate.backing;
+                    if (continued_)
+                        for (unsigned i = 0; i < continued_->count; ++i)
+                            already_locked |= continued_->pages[i].backing == candidate.backing;
+                    if (!already_locked) {
+                        candidate.lock = candidate.backing->try_lock_instruction_read();
+                        if (!candidate.lock.owns_lock())
+                            return {};
+                    }
+                    if (!continued_)
+                        continued_ = std::make_unique<ContinuedPages>();
+                    page = &continued_->pages[continued_->count++];
+                    *page = std::move(candidate);
+                }
+                auto& view = found->second;
+                return execution::LeasedCodeView { view.identity,
+                    view.observe(page->stamp()), { begin, begin + AddressSpace::page_size } };
+            } catch (...) {
+                // Optional pinning cannot throw through a native continuation.
+                return {};
             }
-            view_.initialized = true;
-            view_.first_stamp = first;
-            if (count_ == 2) {
-                view_.has_second = true;
-                view_.second_stamp = second;
-            }
-            return view_.epoch;
         }
         template <typename T>
         std::optional<T> fetch(std::uint32_t address) const noexcept
@@ -193,6 +250,12 @@ public:
         bool thumb_;
         std::array<Page, 2> pages_;
         unsigned count_ = 0;
+        // Bounded invocation-only pins; never retained in the translation cache.
+        struct ContinuedPages {
+            std::array<Page, 4> pages;
+            unsigned count = 0;
+        };
+        std::unique_ptr<ContinuedPages> continued_;
     };
     Impl(AddressSpace& memory, const ArmCpuModel& model,
         ExecutionMemoryPolicy policy, std::size_t maximum_views)

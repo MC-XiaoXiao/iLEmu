@@ -317,6 +317,10 @@ struct GuestPageBacking {
     {
         return std::shared_lock { instruction_mutex_ };
     }
+    [[nodiscard]] std::shared_lock<std::shared_mutex> try_lock_instruction_read() const
+    {
+        return std::shared_lock { instruction_mutex_, std::try_to_lock };
+    }
     [[nodiscard]] std::unique_lock<std::shared_mutex> lock_instruction_write(
         bool shared = true) const
     {

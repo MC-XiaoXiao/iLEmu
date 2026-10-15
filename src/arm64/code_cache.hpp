@@ -38,6 +38,24 @@ public:
         std::uint64_t continuation_revision = 0;
         unsigned continuation_cooldown = 0;
     };
+    // This context borrows the current lease only for the native invocation.
+    // Cache-only resolution cannot compile, invalidate, or reclaim live entries.
+    class ContinuationScope {
+    public:
+        ContinuationScope(CodeCache& cache, InstructionLease& lease,
+            NativeOutcome& native, MemoryAccess* memory)
+            : cache_(cache), lease_(lease), native_(native), memory_(memory) {}
+    private:
+        friend class CodeCache;
+        static NativeContinuation* resolve(
+            void*, std::uint32_t pc, std::uint32_t status) noexcept;
+        const std::uint64_t* validate_view(const void*, InstructionRegion);
+        CodeCache& cache_;
+        InstructionLease& lease_;
+        NativeOutcome& native_;
+        MemoryAccess* memory_;
+        NativeContinuations::Table* table_ = nullptr;
+    };
     CodeCache(CodeAllocator&, std::size_t, Arm64Statistics&,
         std::shared_ptr<SharedCompilationCache> = {});
     // Recency nodes refer to stable domain storage in this owner.
@@ -53,8 +71,7 @@ public:
         if (!ready && entry.tier.ready())
             ++revision_;
     }
-    bool prepare_continuations(Entry&, const InstructionLease&,
-        NativeOutcome&, std::uint64_t remaining);
+    bool prepare_continuations(Entry&, ContinuationScope&, std::uint64_t remaining);
     void finish_continuations(NativeOutcome&);
     Binding bind(const InstructionLease&);
     Entry& entry(InstructionSource&, const Binding&, std::uint32_t pc,
@@ -81,9 +98,11 @@ private:
     Domain* find(const Binding&);
     Domain& obtain(const Binding&);
     NativeContinuation continuation(Entry&);
+    void observe_continuation(NativeContinuation&, bool linked);
     static Key continuation_profile(Key);
     std::unique_ptr<NativeContinuations> continuations_;
     std::uint64_t revision_ = 1;
+    std::uint64_t continuation_cookie_ = 0;
     CodeAllocator& allocator_;
     std::shared_ptr<SharedCompilationCache> shared_;
     std::size_t budget_;

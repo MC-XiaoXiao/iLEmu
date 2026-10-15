@@ -13,7 +13,7 @@ struct NativeContinuation {
     void* owner = nullptr;
     std::uint64_t visits = 0, heat = 0;
     std::uint32_t pc = 0, status = 0, flags = 0, reserved = 0;
-    std::uint64_t padding = 0;
+    const std::uint64_t* validation = nullptr;
     static constexpr std::uint32_t closed = 1, ends_with_stop = 2;
     static constexpr std::uint32_t status_mask = 0x0600fe20U;
     static constexpr unsigned slot(std::uint32_t pc, std::uint32_t status)
@@ -29,6 +29,13 @@ public:
         const void* domain = nullptr;
         std::uint64_t revision = 0, begin = 0, end = 0;
         TranslationKey profile;
+        struct View {
+            const void* domain = nullptr;
+            std::uint64_t begin = 0, end = 0, cookie = 0;
+        };
+        // Validation belongs to a region as well as its opaque identity: a
+        // custom source may use one identity for many separately pinned views.
+        std::array<View, 6> views;
         std::array<NativeContinuation, 32> entries;
     };
     explicit NativeContinuations(CodeAllocator&);

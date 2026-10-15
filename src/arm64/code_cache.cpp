@@ -36,6 +36,7 @@ void CodeCache::clear()
 {
     ++revision_;
     continuations_.reset();
+    continuation_cookie_ = 0;
     recent_.clear();
     anonymous_ = { };
     domains_.clear();
@@ -319,9 +320,10 @@ NativeContinuation CodeCache::continuation(Entry& entry)
     return result;
 }
 bool CodeCache::prepare_continuations(Entry& root,
-    const InstructionLease& lease, NativeOutcome& native,
-    std::uint64_t remaining)
+    ContinuationScope& scope, std::uint64_t remaining)
 {
+    auto& lease = scope.lease_;
+    auto& native = scope.native_;
     // A table miss or a long completed batch can make repeated link attempts
     // cost more than they save. Retry periodically and immediately after any
     // cache change; a different guest path always retains the ordinary exit.
@@ -333,7 +335,7 @@ bool CodeCache::prepare_continuations(Entry& root,
     const auto& root_key = root.recency->entry->first;
     const auto region = lease.continuation_region();
     auto* domain = root.recency->domain;
-    if (!region || !domain->identity || !domain->generation || root.stop ||
+    if (continuation_cookie_ == UINT64_MAX || !region || !domain->identity || !domain->generation || root.stop ||
         !root.code || root.maximum_ticks == 0 || std::get<1>(root_key) ||
         std::get<6>(root_key) != UINT64_MAX || remaining <= root.maximum_ticks)
         return false;
@@ -342,10 +344,14 @@ bool CodeCache::prepare_continuations(Entry& root,
     if (pc < region->begin || pc + 4 > region->end ||
         root.dependency.begin < region->begin || root.dependency.end > region->end)
         return false;
+    const auto cached = lease.cached_continuation(static_cast<std::uint32_t>(pc));
+    const bool resolvable = cached && cached->identity == domain->identity &&
+        cached->generation && cached->generation == domain->generation;
     if (!continuations_) {
         // Optional acceleration must neither evict the caller's live entry nor
         // raise the normal code-cache budget. Try again after ordinary eviction.
-        if (budget_ - stats_.retained_bytes < 16384U || domain->entries.size() < 2)
+        if (budget_ - stats_.retained_bytes < 16384U ||
+            (resolvable ? recent_.size() : domain->entries.size()) < 2)
             return false;
         try {
             auto candidate = std::make_unique<NativeContinuations>(allocator_);
@@ -379,9 +385,17 @@ bool CodeCache::prepare_continuations(Entry& root,
     // Page changes and cache churn therefore do constant work, irrespective
     // of the number of dormant translations in the domain. Repeated paths
     // discover their successors naturally through ordinary dispatcher misses.
+    native.continuation_cookie = ++continuation_cookie_;
+    table->views[0] = { domain, region->begin, region->end, native.continuation_cookie };
     auto descriptor = continuation(root);
+    descriptor.validation = &table->views[0].cookie;
     table->entries[NativeContinuation::slot(
         descriptor.pc, descriptor.status)] = descriptor;
+    scope.table_ = table;
+    if (resolvable) {
+        native.resolve_continuation = ContinuationScope::resolve;
+        native.continuation_context = &scope;
+    }
     native.root_continuation = descriptor;
     native.active_continuation = &native.root_continuation;
     native.continuations = table->entries.data();
@@ -390,31 +404,32 @@ bool CodeCache::prepare_continuations(Entry& root,
     native.continuation_hops = 32;
     return true;
 }
+void CodeCache::observe_continuation(NativeContinuation& descriptor, bool linked)
+{
+    if (descriptor.visits == 0)
+        return;
+    auto& entry = *static_cast<Entry*>(descriptor.owner);
+    const bool ready = entry.tier.ready();
+    entry.tier.observe_groups(descriptor.heat);
+    if (!ready && entry.tier.ready())
+        ++revision_;
+    recent_.splice(recent_.end(), recent_, entry.recency);
+    if (linked)
+        stats_.cache_hits += descriptor.visits;
+    descriptor.visits = descriptor.heat = 0;
+}
 void CodeCache::finish_continuations(NativeOutcome& native)
 {
-    const auto observe = [&](NativeContinuation& descriptor, bool linked) {
-        if (descriptor.visits == 0)
-            return;
-        auto& entry = *static_cast<Entry*>(descriptor.owner);
-        const bool ready = entry.tier.ready();
-        entry.tier.observe_groups(descriptor.heat);
-        if (!ready && entry.tier.ready())
-            ++revision_;
-        recent_.splice(recent_.end(), recent_, entry.recency);
-        if (linked)
-            stats_.cache_hits += descriptor.visits;
-        descriptor.visits = descriptor.heat = 0;
-    };
     auto& root = *static_cast<Entry*>(native.root_continuation.owner);
     if (native.continuation_calls == 0 && native.reason == 0) {
         root.continuation_revision = revision_;
         root.continuation_cooldown = 63;
     }
-    observe(native.root_continuation, false);
+    observe_continuation(native.root_continuation, false);
     for (auto& table : continuations_->tables) {
         if (table.entries.data() == native.continuations) {
             for (auto& descriptor : table.entries)
-                observe(descriptor, true);
+                observe_continuation(descriptor, true);
             break;
         }
     }

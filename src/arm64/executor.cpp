@@ -104,8 +104,9 @@ public:
             native.poll = arm64::RunControl::poll;
             native.control = &control;
             auto* memory = source.data_memory();
+            arm64::CodeCache::ContinuationScope scope { cache_, *lease, native, memory };
             const bool continuations = !step && cache_.prepare_continuations(
-                *selected, *lease, native, remaining);
+                *selected, scope, remaining);
             if (memory && (selected->accesses_memory || continuations))
                 native.memory = memory->direct_memory();
             if (selected->closed && selected->maximum_ticks != 0) {
@@ -135,6 +136,7 @@ public:
 #endif
             ++stats_.execution_calls;
             stats_.continuation_calls += native.continuation_calls;
+            stats_.cross_region_calls += native.cross_region_calls;
             if (continuations)
                 cache_.finish_continuations(native);
             else

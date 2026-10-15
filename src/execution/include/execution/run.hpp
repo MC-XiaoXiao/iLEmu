@@ -94,6 +94,14 @@ struct InstructionRegion {
     std::uint64_t end = std::uint64_t { 1 } << 32U;
 };
 
+// A code view validated and pinned by a live lease. This is an opaque token,
+// not ownership of guest bytes; all validity ends with the enclosing lease.
+struct LeasedCodeView {
+    std::shared_ptr<const CodeIdentity> identity;
+    std::optional<std::uint64_t> generation;
+    InstructionRegion region;
+};
+
 // A lease excludes external code writes and mapping/protection changes.
 // Owner checked accesses may change code/mappings, but must end native
 // execution before doing so and reacquire the lease before any subsequent
@@ -106,6 +114,12 @@ struct InstructionRegion {
 class InstructionLease {
 public:
     virtual ~InstructionLease() = default;
+    // Optional cache-only continuation lookup. Never prepares a fetch, charges
+    // guest VM events, materializes memory, or reports a speculative fault.
+    // Success pins the complete region and validates its current view until
+    // lease release. Contention or an unavailable view returns empty promptly.
+    virtual std::optional<LeasedCodeView>
+    cached_continuation(std::uint32_t) noexcept { return {}; }
     // Prepared executable bytes, permissions, timing and mappings throughout
     // this region stay valid until release, including successor entry fetches.
     // Cached native entries may continue here without preparing another fetch.
