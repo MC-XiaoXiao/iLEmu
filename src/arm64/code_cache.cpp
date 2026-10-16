@@ -480,9 +480,7 @@ bool CodeCache::prepare_continuations(Entry& root,
     table->views[0] = { domain, region->begin, region->end, native.continuation_cookie };
     auto descriptor = continuation(root);
     if (root.views) {
-        descriptor.validation = scope.validate_view(&root, root.dependency);
-        if (!descriptor.validation)
-            return false;
+        descriptor.validation = root.views->continuation_validation(native.continuation_cookie);
     } else
         descriptor.validation = &table->views[0].cookie;
     table->select(descriptor.pc, descriptor.status) = descriptor;

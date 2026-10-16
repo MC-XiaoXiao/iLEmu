@@ -19,6 +19,14 @@ public:
     enum class EntryAuthorization { Prepared, Cached };
     bool pin(InstructionLease&, InstructionRegion root,
         EntryAuthorization = EntryAuthorization::Prepared) const noexcept;
+    // Confirm only after all dependencies have been pinned for this invocation.
+    // The cookie shares the entry's lifetime; cache erasure revokes table revisions
+    // before reclaiming either the owner or this validation address.
+    const std::uint64_t* continuation_validation(std::uint64_t cookie) noexcept
+    {
+        continuation_cookie_ = cookie;
+        return &continuation_cookie_;
+    }
     InstructionRegion region() const noexcept { return region_; }
     std::array<InstructionRegion, CodeRegions::capacity> regions() const noexcept
     {
@@ -42,5 +50,6 @@ private:
     std::array<Dependency, CodeRegions::capacity> views_;
     unsigned count_ = 0;
     InstructionRegion region_;
+    std::uint64_t continuation_cookie_ = 0;
 };
 }

@@ -72,11 +72,11 @@ NativeContinuation* CodeCache::ContinuationScope::resolve(
         // remains live after the previous trace's canonical-state epilogue.
         if (scope.memory_)
             scope.native_.memory = scope.memory_->direct_memory();
-        // Multi-view entries have distinct dependency sets even when their
-        // roots share a page. A root-page cookie cannot validate all of them.
-        const auto* validation = scope.validate_view(
-            entry.views ? static_cast<const void*>(&entry) : domain,
-            entry.views ? entry.dependency : view->region);
+        // Multi-view entries own their complete dependency cookie. Only entries
+        // confined to one view share the table's regional validation cells.
+        const auto* validation = entry.views
+            ? entry.views->continuation_validation(scope.native_.continuation_cookie)
+            : scope.validate_view(domain, view->region);
         if (!validation)
             return nullptr;
         auto& slot = scope.table_->select(pc, status);
