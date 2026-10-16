@@ -79,7 +79,7 @@ NativeContinuation* CodeCache::ContinuationScope::resolve(
             entry.views ? entry.dependency : view->region);
         if (!validation)
             return nullptr;
-        auto& slot = scope.table_->entries[NativeContinuation::slot(pc, status)];
+        auto& slot = scope.table_->select(pc, status);
         // A collision may replace a fragment already visited in this scope.
         // Account its separate invocations before replacing the borrowed slot.
         cache.observe_continuation(slot, true);

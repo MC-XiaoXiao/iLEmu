@@ -485,8 +485,7 @@ bool CodeCache::prepare_continuations(Entry& root,
             return false;
     } else
         descriptor.validation = &table->views[0].cookie;
-    table->entries[NativeContinuation::slot(
-        descriptor.pc, descriptor.status)] = descriptor;
+    table->select(descriptor.pc, descriptor.status) = descriptor;
     if (resolvable) {
         native.resolve_continuation = ContinuationScope::resolve;
         native.continuation_context = &scope;

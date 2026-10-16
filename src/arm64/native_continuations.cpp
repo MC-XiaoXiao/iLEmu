@@ -12,7 +12,7 @@ NativeContinuations::NativeContinuations(CodeAllocator& allocator)
     using namespace oaknut::util;
     std::vector<std::uint32_t> words;
     VectorCodeGenerator code(words);
-    Label leave, no_heat, budget_ok, groups_ready, resume, resolve, resolved, same_page;
+    Label leave, no_heat, budget_ok, groups_ready, resume, alternate, resolve, resolved, same_page;
     // The trace has published all architectural state and restored host FP
     // controls and callee-saved vector registers before entering this thunk.
     code.LDR(X21, X20, offsetof(NativeOutcome, active_continuation));
@@ -57,21 +57,27 @@ NativeContinuations::NativeContinuations(CodeAllocator& allocator)
     code.EOR(W26, W26, W24, LSR, 5);
     code.EOR(W26, W26, W24, LSR, 10);
     code.EOR(W26, W26, W24, LSR, 25);
-    code.AND(W26, W26, 31);
+    code.AND(W26, W26, NativeContinuation::set_count - 1U);
     code.LDR(X27, X20, offsetof(NativeOutcome, continuations));
     code.ADD(X27, X27, X26, LSL, 6);
-    code.LDR(X16, X27, offsetof(NativeContinuation, entry));
-    code.CBZ(X16, resolve);
-    code.LDP(W16, W17, X27, offsetof(NativeContinuation, pc));
-    code.CMP(W16, W25);
-    code.B(Cond::NE, resolve);
-    code.CMP(W17, W24);
-    code.B(Cond::NE, resolve);
-    code.LDR(X16, X27, offsetof(NativeContinuation, validation));
-    code.LDR(X16, X16);
-    code.LDR(X17, X20, offsetof(NativeOutcome, continuation_cookie));
-    code.CMP(X16, X17);
-    code.B(Cond::EQ, resolved);
+    const auto probe = [&](Label& mismatch) {
+        code.LDR(X16, X27, offsetof(NativeContinuation, entry));
+        code.CBZ(X16, mismatch);
+        code.LDP(W16, W17, X27, offsetof(NativeContinuation, pc));
+        code.CMP(W16, W25);
+        code.B(Cond::NE, mismatch);
+        code.CMP(W17, W24);
+        code.B(Cond::NE, mismatch);
+        code.LDR(X16, X27, offsetof(NativeContinuation, validation));
+        code.LDR(X16, X16);
+        code.LDR(X17, X20, offsetof(NativeOutcome, continuation_cookie));
+        code.CMP(X16, X17);
+        code.B(Cond::EQ, resolved);
+    };
+    probe(alternate);
+    code.l(alternate);
+    code.ADD(X27, X27, NativeContinuation::set_count * sizeof(NativeContinuation));
+    probe(resolve);
     code.l(resolve);
     code.LDR(X16, X20, offsetof(NativeOutcome, resolve_continuation));
     code.CBZ(X16, leave);

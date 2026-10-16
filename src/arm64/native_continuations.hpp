@@ -16,10 +16,11 @@ struct NativeContinuation {
     const std::uint64_t* validation = nullptr;
     static constexpr std::uint32_t closed = 1, ends_with_stop = 2;
     static constexpr std::uint32_t status_mask = 0x0600fe20U;
+    static constexpr unsigned set_count = 32, ways = 2;
     static constexpr unsigned slot(std::uint32_t pc, std::uint32_t status)
     {
         return ((pc >> 1U) ^ (pc >> 6U) ^ (status >> 5U) ^
-            (status >> 10U) ^ (status >> 25U)) & 31U;
+            (status >> 10U) ^ (status >> 25U)) & (set_count - 1U);
     }
 };
 static_assert(sizeof(NativeContinuation) == 64);
@@ -41,7 +42,28 @@ public:
         // Validation belongs to a region as well as its opaque identity: a
         // custom source may use one identity for many separately pinned views.
         std::array<View, 6> views;
-        std::array<NativeContinuation, 32> entries;
+        // Keep the primary lookup unchanged. A second way holds conflicting
+        // fragments without another lease lookup on every alternating edge.
+        std::array<NativeContinuation, NativeContinuation::set_count *
+            NativeContinuation::ways> entries;
+        std::uint32_t replacement_mask = 0;
+        NativeContinuation& select(std::uint32_t pc, std::uint32_t status)
+        {
+            const auto first = NativeContinuation::slot(pc, status);
+            for (unsigned way = 0; way < NativeContinuation::ways; ++way) {
+                auto& entry = entries[first + way * NativeContinuation::set_count];
+                if (entry.entry && entry.pc == pc && entry.status == status)
+                    return entry;
+            }
+            for (unsigned way = 0; way < NativeContinuation::ways; ++way) {
+                auto& entry = entries[first + way * NativeContinuation::set_count];
+                if (!entry.entry)
+                    return entry;
+            }
+            const auto way = (replacement_mask >> first) & 1U;
+            replacement_mask ^= 1U << first;
+            return entries[first + way * NativeContinuation::set_count];
+        }
     };
     explicit NativeContinuations(CodeAllocator&);
     std::size_t retained_bytes() const { return sizeof(*this) + dispatcher_->capacity(); }
