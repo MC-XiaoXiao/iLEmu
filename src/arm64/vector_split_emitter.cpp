@@ -34,21 +34,28 @@ bool VectorMemoryEmitter::supports_split(const arm::Instruction& inst)
     // Bound the heat-earned unrolled fallback. Cold and larger transfers keep
     // the existing checked transaction, including its precise fault prefix.
     constexpr unsigned maximum_split_bytes = 64;
-    return v.alignment >= (scalar ? 4U : v.element_size) &&
-        v.alignment >= 4 && length > v.alignment && length <= maximum_split_bytes;
+    return length > v.alignment && length <= maximum_split_bytes;
 }
 void VectorMemoryEmitter::split_access(const arm::Instruction& inst, XReg table,
     Label& checked, Label& completed)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
     const auto length = arm_memory::vector_transfer_length(v);
+    // Encodings may promise less alignment than the actual address. Keep
+    // unaligned words on the existing checked transaction; earlier guards
+    // still enforce the instruction and runtime alignment policy.
+    if (v.alignment < 4) {
+        code_.AND(W17, W15, 3);
+        code_.CBNZ(W17, checked);
+    }
     // At most two pages, including modulo32 wrap. Validate both before any
     // architectural update; unavailable/observable views use checked accesses.
     for (unsigned offset : { 0U, length - 1U }) {
         code_.ADD(W17, W15, offset);
-        code_.LSR(W21, W17, 12);
-        code_.LDR(X21, table, W21, IndexExt::UXTW, 3);
-        code_.CBZ(X21, checked);
+        // W21 carries the runtime-selected alignment into checked exits.
+        code_.LSR(W17, W17, 12);
+        code_.LDR(X17, table, W17, IndexExt::UXTW, 3);
+        code_.CBZ(X17, checked);
     }
     const auto first = v.first *
         (v.mode == arm::VectorTransferMode::ScalarMultiple ? v.element_size / 4U : 2U);
