@@ -673,7 +673,8 @@ static CompiledTrace compile_trace(InstructionSource& source,
     std::optional<RegisterShiftRange> shift_range = {},
     const AddressWindows* windows = nullptr,
     unsigned instruction_limit = maximum_trace_instructions,
-    const TracePath& path = TracePath {})
+    const TracePath& path = TracePath {},
+    const AddressSegments* shared_segments = nullptr)
 {
     const CodeRegions regions = permitted_regions.empty()
         ? CodeRegions { source.instruction_region(pc) } : CodeRegions { permitted_regions };
@@ -711,7 +712,8 @@ static CompiledTrace compile_trace(InstructionSource& source,
     // inspected decode and timing during emission rather than fetching twice.
     std::size_t reservation_instructions = 1;
     bool cache_reads = false;
-    std::optional<AddressSegments> segments;
+    std::optional<AddressSegments> local_segments;
+    const auto* segments = shared_segments;
     std::optional<FloatingRegisterPlan> floating;
     if (!single_step) {
         window.repeat_cycle();
@@ -729,10 +731,11 @@ static CompiledTrace compile_trace(InstructionSource& source,
         reservation_instructions = path ? path.steps() : window.cached_instructions();
         if (!path)
             reservation_instructions *= CycleTier::natural_copies(expansion);
-        if (path && expansion == CycleExpansion::Hot) {
+        if (path && expansion == CycleExpansion::Hot && !segments) {
             window.repeat_cycle();
-            segments.emplace(window.address_segments(
+            local_segments.emplace(window.address_segments(
                 std::min(maximum_instructions, instruction_limit), maximum_ticks, path));
+            segments = &*local_segments;
         }
         window.mode(thumb);
         window.repeat_cycle();
@@ -751,7 +754,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
         expansion == CycleExpansion::Hot, cache_reads, shift_range, windows,
-        floating ? &*floating : nullptr, segments ? &*segments : nullptr);
+        floating ? &*floating : nullptr, segments);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
@@ -1223,9 +1226,16 @@ static CompiledTrace compile_hot(InstructionSource& source,
         auto windows = window.address_windows(pc, it,
             limit, maximum_ticks, path);
         if (!windows.empty()) {
+            // Both guarded bodies inspect the same recorded path. Keep its
+            // immutable local bounds in this compilation's temporary arena.
+            std::optional<AddressSegments> segments;
+            if (path) {
+                window.repeat_cycle();
+                segments.emplace(window.address_segments(limit, maximum_ticks, path));
+            }
             auto slow = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, nullptr,
-                limit, path);
+                limit, path, segments ? &*segments : nullptr);
             windows.expand(slow.instructions);
             if (windows.empty())
                 return slow;
@@ -1233,7 +1243,8 @@ static CompiledTrace compile_hot(InstructionSource& source,
             // Keep the existing read-cache copy budget when the fast body is smaller.
             auto fast = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, &windows,
-                slow.instructions, path);
+                slow.instructions, path,
+                segments && slow.instructions == limit ? &*segments : nullptr);
             return windows.select(std::move(fast), std::move(slow));
         }
     }
