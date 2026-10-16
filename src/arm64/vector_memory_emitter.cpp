@@ -184,7 +184,7 @@ void VectorMemoryEmitter::emit(
     const auto key = address(inst);
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
-    Label local_checked { labels_ }, aligned { labels_ }, done { labels_ };
+    Label local_checked { labels_ }, aligned { labels_ }, policy { labels_ }, done { labels_ };
     auto& checked = split ? split->checked : local_checked;
     if (key)
         addresses_.begin_guard(*key, inst.condition);
@@ -211,15 +211,11 @@ void VectorMemoryEmitter::emit(
             code_.CBNZ(W17, checked);
         }
     } else {
-        // Runtime unaligned support selects the checked transaction's alignment.
-        code_.MOV(W21, v.alignment);
-        code_.LDR(W17, X20, memory + offsetof(DirectMemory, permits_unaligned));
-        code_.CBNZ(W17, aligned);
-        code_.MOV(W21, natural_alignment);
+        // Natural alignment satisfies both runtime policies. Its common
+        // path falls through without loading the selected-alignment policy.
+        code_.AND(W17, W15, natural_alignment - 1U);
+        code_.CBNZ(W17, policy);
         code_.l(aligned);
-        code_.SUB(W17, W21, 1);
-        code_.AND(W17, W15, W17);
-        code_.CBNZ(W17, checked);
     }
     const auto table = inst.load ? X25 : X26;
     code_.CBZ(table, checked);
@@ -248,12 +244,21 @@ void VectorMemoryEmitter::emit(
     access(inst, pointer);
     addresses_.writeback(inst);
     code_.B(done);
+    if (!fixed_alignment) {
+        code_.l(policy);
+        code_.LDR(W17, X20, memory + offsetof(DirectMemory, permits_unaligned));
+        if (v.alignment > 1) {
+            code_.CBZ(W17, checked);
+            code_.AND(W17, W15, v.alignment - 1U);
+            code_.CBZ(W17, aligned);
+        } else
+            code_.CBNZ(W17, aligned);
+    }
     code_.l(checked);
-    // A finite-range check may use X21 after ordinary alignment validation.
-    // Reconstruct the exact checked payload on every cold exit.
-    if (fixed_alignment || segment)
-        code_.MOV(W21, v.alignment);
-    if (segment && !fixed_alignment) {
+    // Hot guards need no selected-alignment value. Rebuild the checked
+    // transaction's exact policy after any segment or split scratch use.
+    code_.MOV(W21, v.alignment);
+    if (!fixed_alignment) {
         Label unaligned { labels_ };
         code_.LDR(W17, X20, memory + offsetof(DirectMemory, permits_unaligned));
         code_.CBNZ(W17, unaligned);
