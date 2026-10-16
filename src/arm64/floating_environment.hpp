@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
+#include "arm/instruction.hpp"
 #include "execution/arm_state.hpp"
 #include <cstddef>
 #include <oaknut/oaknut.hpp>
@@ -13,21 +14,51 @@ public:
     // X29 holds FPSCR.NZCV; the remaining bits stay in the thread state.
     // Entry and callback restoration cover conditionally executed first uses.
     void use_status() { status_used_ = true; }
-    void standard_controls(oaknut::VectorCodeGenerator& code) const
+    void standard_controls(oaknut::VectorCodeGenerator& code)
     {
-        if (standard_controls_)
+        if (standard_controls_ || controls_ == Controls::Standard)
             return;
         code.MOV(oaknut::util::W16, 0x03000000U);
         code.MSR(oaknut::SystemReg::FPCR, oaknut::util::X16);
+        controls_ = Controls::Standard;
+        switched_controls_ = true;
     }
-    void guest_controls(oaknut::VectorCodeGenerator& code) const
+    void guest_controls(oaknut::VectorCodeGenerator& code)
     {
-        if (standard_controls_)
+        if (standard_controls_ || controls_ == Controls::Guest)
             return;
         code.LDR(oaknut::util::W16, oaknut::util::X19,
             offsetof(CpuThreadState, fpscr));
         code.AND(oaknut::util::W16, oaknut::util::W16, 0x03c00000U);
         code.MSR(oaknut::SystemReg::FPCR, oaknut::util::X16);
+        controls_ = Controls::Guest;
+    }
+    void join(const arm::Instruction& inst)
+    {
+        if (inst.condition == 14 || standard_controls_)
+            return;
+        using Kind = arm::InstructionKind;
+        switch (inst.kind) {
+        case Kind::VectorFloatingArithmetic:
+        case Kind::FloatingArithmetic:
+        case Kind::FloatingComparison:
+        case Kind::FloatingConversion:
+        case Kind::FloatingSystem:
+            // The skipped path may retain the preceding control mode.
+            controls_ = Controls::Unknown;
+            break;
+        default:
+            break;
+        }
+    }
+    void next_group(oaknut::VectorCodeGenerator& code)
+    {
+        if (!switched_controls_)
+            return;
+        // Earlier matching indirect edges can join here from either mode.
+        // Entry and callback resume both establish guest controls as well.
+        controls_ = Controls::Unknown;
+        guest_controls(code);
     }
     void enter(oaknut::VectorCodeGenerator& code) const
     {
@@ -96,6 +127,9 @@ public:
     }
 
 private:
+    enum class Controls { Guest, Standard, Unknown };
+    Controls controls_ = Controls::Guest;
+    bool switched_controls_ = false;
     // A proven Advanced SIMD cycle owns these controls across every path,
     // including entry and restoration after the existing host poll callback.
     bool standard_controls_;

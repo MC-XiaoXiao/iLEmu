@@ -202,6 +202,7 @@ namespace {
                 if (windows_ && windows_->advances())
                     windows_->guard_group(code_, exit(StopReason::None, 0,
                         backedge_.pc(), {}, 0, false, backedge_.it()));
+                floating_.next_group(code_);
                 code_.SUB(X30, X30, 1);
                 code_.CBNZ(X30, head_);
                 // Preserve caller-saved guest registers and flags across the
@@ -396,6 +397,7 @@ namespace {
         bool invariant_indirect() const { return exchanges_.invariant(); }
         void invalidate_written_registers(const arm::Instruction& inst)
         {
+            floating_.join(inst);
             if (inst.kind != arm::InstructionKind::ParallelSaturating)
                 integer_.clear_parallel_values();
             // Static branches leave X17 intact; ALU emission revokes scratch
@@ -460,6 +462,7 @@ namespace {
         void arithmetic(const arm::FloatingArithmeticOperands& v)
         {
             floating_.use();
+            floating_.guest_controls(code_);
             arithmetic_.arithmetic(v);
         }
         void vector_arithmetic(const arm::VectorFloatingArithmeticOperands& v)
@@ -467,19 +470,20 @@ namespace {
             floating_.use();
             floating_.standard_controls(code_);
             SimdEmitter { code_, vectors_ }.floating(v);
-            // The trace plan owns standard controls across proven SIMD paths.
-            // Other traces restore guest controls here. FPSR stays cumulative.
-            floating_.guest_controls(code_);
+            // Retain standard controls until a guest-control consumer needs
+            // them. Predicate joins and group backedges revoke that knowledge.
         }
         void comparison(const arm::FloatingComparisonOperands& v, bool preserve_apsr)
         {
             floating_.use();
             floating_.use_status();
+            floating_.guest_controls(code_);
             FloatingEmitter { code_, vectors_ }.comparison(v, preserve_apsr);
         }
         void conversion(const arm::FloatingConversionOperands& v)
         {
             floating_.use();
+            floating_.guest_controls(code_);
             FloatingEmitter { code_, vectors_ }.conversion(v);
         }
         void floating_system(const arm::FloatingSystemOperands& v,
@@ -492,6 +496,7 @@ namespace {
                 return;
             }
             floating_.use();
+            floating_.guest_controls(code_);
             if (v.to_core) {
                 floating_.synchronize(code_);
                 code_.LDR(WReg { static_cast<int>(v.core) }, X19,
