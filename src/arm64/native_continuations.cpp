@@ -76,6 +76,13 @@ NativeContinuations::NativeContinuations(CodeAllocator& allocator)
     };
     probe(alternate);
     code.l(alternate);
+    // Replace the primary address group with the next group for way two.
+    // W26 still contains the primary index, including all status bits.
+    code.EOR(W26, W26, W25, LSR, 6);
+    code.EOR(W26, W26, W25, LSR, 11);
+    code.AND(W26, W26, NativeContinuation::set_count - 1U);
+    code.LDR(X27, X20, offsetof(NativeOutcome, continuations));
+    code.ADD(X27, X27, X26, LSL, 6);
     code.ADD(X27, X27, NativeContinuation::set_count * sizeof(NativeContinuation));
     probe(resolve);
     code.l(resolve);
