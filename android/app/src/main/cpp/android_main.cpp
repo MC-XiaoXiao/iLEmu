@@ -9,16 +9,47 @@
 #include <SDL_system.h>
 #include <android/log.h>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <fcntl.h>
 #include <filesystem>
 #include <jni.h>
 #include <string>
+#include <system_error>
 #include <unistd.h>
 
 namespace {
 std::atomic<bool> stop_requested { false };
 std::atomic<bool> running { false };
+
+void redirect_native_log(const std::filesystem::path& path)
+{
+    std::fflush(stderr);
+    std::fflush(stdout);
+    const int fd = ::open(path.c_str(),
+        O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0600);
+    if (fd < 0)
+        throw std::system_error(errno, std::generic_category(), "Open native log");
+    int error = 0;
+    for (const int target : { STDERR_FILENO, STDOUT_FILENO }) {
+        // Keep standard descriptors occupied: freopen's close/open interval
+        // lets Android's other threads claim them for their own resources.
+        while (::dup2(fd, target) < 0) {
+            if (errno != EINTR) {
+                error = errno;
+                break;
+            }
+        }
+    }
+    if (fd != STDERR_FILENO && fd != STDOUT_FILENO)
+        ::close(fd);
+    if (error != 0)
+        throw std::system_error(error, std::generic_category(), "Redirect native log");
+    for (auto* stream : { stderr, stdout }) {
+        std::clearerr(stream);
+        setvbuf(stream, nullptr, _IOLBF, 0);
+    }
+}
 
 bool send_command(const char* path, const char* command)
 {
@@ -77,10 +108,7 @@ extern "C" int SDL_main(int argc, char** argv)
         if (!storage)
             throw std::runtime_error("Android internal storage is unavailable");
         const std::filesystem::path files { storage };
-        std::freopen((files / "native.log").c_str(), "w", stderr);
-        std::freopen((files / "native.log").c_str(), "a", stdout);
-        setvbuf(stderr, nullptr, _IOLBF, 0);
-        setvbuf(stdout, nullptr, _IOLBF, 0);
+        redirect_native_log(files / "native.log");
         // A background transition must allow the command loop to consume quit.
         SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
         SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
