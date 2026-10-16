@@ -41,9 +41,9 @@ public:
         std::uint64_t continuation_revision = 0;
         unsigned continuation_cooldown = 0;
         unsigned view_heat = CycleTier::maximum_copies;
-        bool direct_exchange = false, recorded_path = false;
+        bool path_candidate = false, recorded_path = false;
         unsigned path_heat = CycleTier::maximum_copies * CycleTier::maximum_copies;
-        bool wants_path() const { return direct_exchange && !recorded_path && path_heat == 0; }
+        bool wants_path() const { return path_candidate && !recorded_path && path_heat == 0; }
         void defer_path()
         {
             path_heat = CycleTier::maximum_copies * CycleTier::maximum_copies *
@@ -96,7 +96,7 @@ public:
 private:
     void observe_visits(Entry& entry, std::uint64_t visits)
     {
-        if (entry.direct_exchange && !entry.recorded_path && entry.path_heat != 0) {
+        if (entry.path_candidate && !entry.recorded_path && entry.path_heat != 0) {
             entry.path_heat -= static_cast<unsigned>(
                 std::min<std::uint64_t>(entry.path_heat, visits));
             if (entry.path_heat == 0)

@@ -9,8 +9,8 @@ struct TraceMetadata {
     std::uint64_t maximum_ticks = 0;
     unsigned instructions = 0;
     bool closed = false;
-    // A direct ISA exchange is a useful root for earned path recording.
-    bool direct_exchange = false;
+    // A hot call or ISA exchange can justify recording its retired cycle.
+    bool path_candidate = false;
     bool accesses_memory = false;
     // Every path reaching maximum_ticks returns a stop before a successor fetch.
     // Earlier exits have strictly smaller paid costs.
@@ -20,7 +20,7 @@ struct TraceMetadata {
     {
         return !stop && !other.stop && maximum_ticks == other.maximum_ticks &&
             instructions == other.instructions && closed == other.closed &&
-            direct_exchange == other.direct_exchange &&
+            path_candidate == other.path_candidate &&
             accesses_memory == other.accesses_memory &&
             ends_with_stop == other.ends_with_stop &&
             first_instruction == other.first_instruction;

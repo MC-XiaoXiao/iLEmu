@@ -351,7 +351,7 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
             region, std::move(views), { } });
     if (!inserted)
         throw std::logic_error("duplicate ARM64 cache entry");
-    it->second.direct_exchange = plan->direct_exchange &&
+    it->second.path_candidate = plan->path_candidate &&
         source.supports_mixed_instruction_timing() && !step && timing_limit == UINT64_MAX;
     it->second.recorded_path = recording;
     try {

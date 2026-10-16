@@ -178,7 +178,9 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
         const auto next_it = thumb_ ? (inst.kind == arm::InstructionKind::IfThen
             ? inst.immediate : arm::advance_it(it)) : 0U;
         using Kind = arm::InstructionKind;
-        if (path && !path.edge(n, inst, next_it, DynamicBackedge::ends_trace(inst)))
+        const auto edge = path ? path.edge(n, inst, next_it,
+            DynamicBackedge::ends_trace(inst)) : std::nullopt;
+        if (path && !edge)
             return {};
         // Follow the same chosen path as emission, including rotated cycles
         // that return to their entry after a linear instruction.
@@ -216,16 +218,21 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
             case Kind::Breakpoint:
                 return builder.finish(false);
             case Kind::DataProcessing:
-                if (arm::alu_writes_pc(inst))
+                if (arm::alu_writes_pc(inst) && edge != TracePath::Edge::NotTaken)
                     return builder.finish(path && n + 1U == path.steps() && reserve_scalars);
                 break;
             case Kind::Transfer:
             case Kind::MultipleTransfer:
-                if (DynamicBackedge::ends_trace(inst))
+                if (DynamicBackedge::ends_trace(inst) && edge != TracePath::Edge::NotTaken)
                     return builder.finish(path && n + 1U == path.steps() && reserve_scalars);
                 break;
             case Kind::BranchExchange:
+                if (path && n + 1U < path.steps())
+                    break;
+                [[fallthrough]];
             case Kind::TableBranch:
+                if (edge == TracePath::Edge::NotTaken)
+                    break;
                 return builder.finish(path && n + 1U == path.steps() && reserve_scalars);
             case Kind::DualTransfer:
             case Kind::ExclusiveTransfer:

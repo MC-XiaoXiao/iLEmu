@@ -19,17 +19,15 @@ public:
         unsigned it, next_it;
         bool interworks, thumb;
     };
-    ExchangePaths(oaknut::VectorCodeGenerator& code, IntegerEmitter& integer,
-        bool thumb)
+    ExchangePaths(oaknut::VectorCodeGenerator& code, IntegerEmitter& integer)
         : code_(code)
         , integer_(integer)
-        , thumb_(thumb)
     {
     }
     void emit(const arm::Instruction& inst, std::uint32_t pc,
         std::uint32_t word, std::uint64_t before, std::uint64_t ticks,
         unsigned it, unsigned next_it, std::uint32_t entry, bool interworks,
-        bool current_thumb)
+        bool current_thumb, bool target_thumb)
     {
         using namespace oaknut;
         using namespace oaknut::util;
@@ -41,7 +39,7 @@ public:
         const bool reads_pc = (first_input && inst.rn == 15) ||
                               (second_input && inst.rm == 15);
         const Target key { word, reads_pc ? pc_value : 0U, entry,
-            interworks, current_thumb };
+            interworks, current_thumb, target_thumb };
         const auto input_mask =
             (first_input && inst.rn != 15 ? 1U << inst.rn : 0U) |
             (second_input && inst.rm != 15 ? 1U << inst.rm : 0U);
@@ -61,8 +59,8 @@ public:
                 first_input ? pc_value : 0U, { operand, false }, 0).value;
             const auto target = arm::alu_write_pc(raw, current_thumb, interworks
                 ? AluPcWriteProfile::Interworking : AluPcWriteProfile::Branch);
-            if (target && target->address == entry && target->thumb == thumb_) {
-                if (current_thumb != thumb_)
+            if (target && target->address == entry && target->thumb == target_thumb) {
+                if (current_thumb != target_thumb)
                     code_.EOR(W22, W22, 0x20U);
                 return;
             }
@@ -77,7 +75,7 @@ public:
             // BranchWritePC ignores alignment bits without changing ISA.
             if (!interworks)
                 code_.AND(W17, target, current_thumb ? ~1U : ~3U);
-            code_.MOV(W16, entry | (interworks && thumb_ ? 1U : 0U));
+            code_.MOV(W16, entry | (interworks && target_thumb ? 1U : 0U));
             code_.EOR(W16, interworks ? target : W17, W16);
             code_.CBNZ(W16, pending_.back().label);
             if (!first_)
@@ -87,7 +85,7 @@ public:
         // before writing LR, including BLX LR, and preserve guest NZCV.
         if (inst.link)
             code_.MOV(W14, (pc + inst.size) | (current_thumb ? 1U : 0U));
-        if (current_thumb != thumb_)
+        if (current_thumb != target_thumb)
             code_.EOR(W22, W22, 0x20U);
     }
     // Written inputs revoke reuse even when conditional or later restored.
@@ -100,12 +98,11 @@ public:
 private:
     struct Target {
         std::uint32_t word, pc_value, entry;
-        bool interworks, source_thumb;
+        bool interworks, source_thumb, target_thumb;
         bool operator==(const Target&) const = default;
     };
     oaknut::VectorCodeGenerator& code_;
     IntegerEmitter& integer_;
-    bool thumb_;
     unsigned written_ = 0;
     bool invariant_ = false;
     std::optional<Target> first_;

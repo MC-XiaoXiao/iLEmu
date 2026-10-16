@@ -75,7 +75,7 @@ namespace {
             , arithmetic_(code_, vectors_)
             , floating_(floating && floating->standard_controls)
             , integer_(code_, shift_range)
-            , exchanges_(code_, integer_, thumb)
+            , exchanges_(code_, integer_)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
                 fast_reads && !single_step, temporary, windows)
             , vector_splits_(*temporary)
@@ -380,18 +380,26 @@ namespace {
         }
         bool fast_indirect(const arm::Instruction& inst, std::uint32_t pc,
             std::uint32_t word, std::uint64_t before, std::uint64_t ticks,
-            unsigned next_it, bool interworks)
+            unsigned next_it, bool interworks,
+            std::optional<TraceLocation> successor = {})
         {
-            if (!interworks && thumb_ != entry_thumb_)
+            const auto destination = successor.value_or(
+                TraceLocation { backedge_.pc(), entry_thumb_, backedge_.it() });
+            if (!interworks && thumb_ != destination.thumb)
                 return false;
-            if (!backedge_.accepts(StopReason::None, ticks, true, next_it, ticks))
+            if (successor ? destination.it != next_it :
+                !backedge_.accepts(StopReason::None, ticks, true, next_it, ticks))
                 return false;
             if (inst.condition != 14)
                 conditional_skip(inst.condition,
                     exit(StopReason::None, ticks, pc + inst.size,
                         { }, 0, false, next_it));
             exchanges_.emit(inst, pc, word, before, ticks, it_, next_it,
-                backedge_.pc(), interworks, thumb_);
+                destination.pc, interworks, thumb_, destination.thumb);
+            if (successor && thumb_ != destination.thumb) {
+                code_.BFI(W22, WZR, 10, 6);
+                code_.BFI(W22, WZR, 25, 2);
+            }
             return true;
         }
         bool invariant_indirect() const { return exchanges_.invariant(); }
@@ -664,6 +672,8 @@ static CompiledTrace compile_trace(InstructionSource& source,
         throw std::invalid_argument("invalid instruction region");
     if (path)
         instruction_limit = std::min(instruction_limit, path.steps());
+    const auto maximum_instructions = path ? TracePath::maximum_steps
+                                          : maximum_trace_instructions;
     // Scratch containers stay in this call. Returned machine code keeps its
     // ordinary allocator and cannot retain a pointer into this buffer.
     alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
@@ -699,7 +709,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
             window.single_dependent_read_cycle(
                 pc, it, maximum_trace_instructions, maximum_ticks);
         floating.emplace(window.floating_registers(pc, it,
-            std::min(maximum_trace_instructions, instruction_limit), maximum_ticks,
+            std::min(maximum_instructions, instruction_limit), maximum_ticks,
             expansion == CycleExpansion::Hot, path));
         reservation_instructions = path ? path.steps() : window.cached_instructions();
         if (!path)
@@ -715,7 +725,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     // Reuse paid lookahead for a bounded initial allocation. Larger traces
     // keep ordinary vector growth; standalone stops above allocate no code.
     const auto estimated_instructions = std::min<std::uint64_t>(
-        { maximum_trace_instructions, maximum_ticks, reservation_instructions });
+        { maximum_instructions, maximum_ticks, reservation_instructions });
     out.words.reserve(std::max<std::size_t>(256, 128 + 32 * estimated_instructions));
     // Larger read fallbacks are earned by the existing hot-cycle tier, so
     // short cold traces retain their compact code and translation cost.
@@ -730,7 +740,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     unsigned original_natural_copies = 0;
     bool comparison_flags_live = false;
     const auto limit = single_step ? 1U
-        : std::min(maximum_trace_instructions, instruction_limit);
+        : std::min(maximum_instructions, instruction_limit);
     for (unsigned n = 0; n < limit; ++n) {
         const bool comparison_flags = std::exchange(comparison_flags_live, false);
         if (path && path[n] != TraceLocation { pc, thumb, it })
@@ -748,7 +758,8 @@ static CompiledTrace compile_trace(InstructionSource& source,
         const auto word = decoded->word;
         auto inst = decoded->instruction;
         emit.observe_instruction(inst);
-        out.direct_exchange |= inst.kind == arm::InstructionKind::Branch && inst.exchange;
+        out.path_candidate |= (inst.kind == arm::InstructionKind::Branch && inst.exchange) ||
+            (inst.kind == arm::InstructionKind::BranchExchange && inst.link);
         if (n == 0)
             out.first_instruction = word;
         if (!word) {
@@ -811,13 +822,20 @@ static CompiledTrace compile_trace(InstructionSource& source,
         const bool writes_pc = arm::alu_writes_pc(inst);
         const auto cost = window.timing(*decoded);
         const bool valid_timing = cost != 0 && cost <= maximum_ticks - before;
+        const auto indirect_successor = path && n + 1U < path.steps() &&
+            edge == TracePath::Edge::Dynamic &&
+            inst.kind == arm::InstructionKind::BranchExchange
+            ? std::optional { path[n + 1U] } : std::nullopt;
         Label exchange_failed = emit.label();
         const bool fast_indirect =
             (inst.kind == arm::InstructionKind::BranchExchange || writes_pc) &&
             expansion == CycleExpansion::Hot &&
+            edge != TracePath::Edge::NotTaken &&
+            (!indirect_successor || mixed_timing) &&
             valid_timing && emit.fast_indirect(inst, pc, *word, before,
                 before + cost, next_it,
-                inst.kind == arm::InstructionKind::BranchExchange || alu_interworks);
+                inst.kind == arm::InstructionKind::BranchExchange || alu_interworks,
+                indirect_successor);
         if (inst.kind == arm::InstructionKind::BranchExchange &&
             !fast_indirect) {
             emit.conditional_skip(inst.condition, exchange_failed);
@@ -889,8 +907,14 @@ static CompiledTrace compile_trace(InstructionSource& source,
                 if (inst.condition != 14)
                     emit.code().l(exchange_failed);
             }
-            pc = next_pc;
-            dynamic_end = true;
+            if (fast_indirect && indirect_successor) {
+                pc = indirect_successor->pc;
+                thumb = indirect_successor->thumb;
+                emit.mode(thumb);
+            } else {
+                pc = next_pc;
+                dynamic_end = edge != TracePath::Edge::NotTaken;
+            }
         } else if (inst.kind == arm::InstructionKind::Branch) {
             const auto target = ((pc + inst.pc_offset) &
                 (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
@@ -1092,7 +1116,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
                     emit.code().l(skip);
             }
             pc = next_pc;
-            if (DynamicBackedge::ends_trace(inst)) {
+            if (DynamicBackedge::ends_trace(inst) && edge != TracePath::Edge::NotTaken) {
                 dynamic_end = true;
             }
             if ((inst.kind == arm::InstructionKind::ExclusiveTransfer ||
@@ -1160,26 +1184,27 @@ static CompiledTrace compile_hot(InstructionSource& source,
     std::uint64_t maximum_ticks, bool big_endian, bool thumb, unsigned it,
     const TracePath& path = TracePath {})
 {
+    const auto limit = path ? path.steps() : maximum_trace_instructions;
     const CodeRegions regions = permitted_regions.empty()
         ? CodeRegions { source.instruction_region(pc) } : CodeRegions { permitted_regions };
     if (!regions.containing(pc))
         return compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
-            thumb, it, CycleExpansion::Hot, {}, nullptr, maximum_trace_instructions, path);
+            thumb, it, CycleExpansion::Hot, {}, nullptr, limit, path);
     alignas(std::max_align_t) std::array<std::byte, 12U * 1024U> scratch;
     std::pmr::monotonic_buffer_resource temporary {
         scratch.data(), scratch.size(), std::pmr::new_delete_resource() };
     InstructionWindow window(source, regions, thumb, &temporary, true);
     auto count = path ? std::optional<InvariantShiftCount> {}
                       : window.invariant_shift_count(
-                            pc, it, maximum_trace_instructions, maximum_ticks);
+                            pc, it, limit, maximum_ticks);
     if (!count) {
         window.repeat_cycle();
         auto windows = window.address_windows(pc, it,
-            maximum_trace_instructions, maximum_ticks, path);
+            limit, maximum_ticks, path);
         if (!windows.empty()) {
             auto slow = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, nullptr,
-                maximum_trace_instructions, path);
+                limit, path);
             windows.expand(slow.instructions);
             if (windows.empty())
                 return slow;
@@ -1213,7 +1238,7 @@ static CompiledTrace compile_hot(InstructionSource& source,
         // publication cannot fit its bounded code allowance.
         window.repeat_cycle();
         count = window.invariant_shift_count(
-            pc, it, maximum_trace_instructions, maximum_ticks, false);
+            pc, it, limit, maximum_ticks, false);
     }
     if (count) {
         auto below = compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
@@ -1226,7 +1251,7 @@ static CompiledTrace compile_hot(InstructionSource& source,
             return std::move(*selected);
     }
     return compile_trace(source, permitted_regions, pc, false, maximum_ticks, big_endian,
-        thumb, it, CycleExpansion::Hot, {}, nullptr, maximum_trace_instructions, path);
+        thumb, it, CycleExpansion::Hot, {}, nullptr, limit, path);
 }
 CompiledTrace compile(InstructionSource& source, std::uint32_t pc,
     bool single_step, std::uint64_t maximum_ticks, bool big_endian, bool thumb,

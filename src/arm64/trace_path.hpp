@@ -19,7 +19,7 @@ struct TraceLocation {
 class TracePath {
 public:
     enum class Edge { Sequential, Taken, NotTaken, Dynamic };
-    static constexpr unsigned maximum_steps = 256;
+    static constexpr unsigned maximum_steps = 512;
     explicit TracePath(std::span<const TraceLocation> locations = {})
         : locations_(locations)
     {
@@ -55,9 +55,16 @@ public:
                 return Edge::NotTaken;
             return {};
         }
-        if (dynamic)
-            return n + 1U == steps() && next.it == next_it
-                ? std::optional { Edge::Dynamic } : std::nullopt;
+        if (dynamic) {
+            if (inst.condition != 14 && next == linear)
+                return Edge::NotTaken;
+            if ((n + 1U != steps() &&
+                    inst.kind != arm::InstructionKind::BranchExchange) ||
+                next.it != next_it || (!next.thumb && next.it != 0) ||
+                (next.pc & (next.thumb ? 1U : 3U)) != 0)
+                return {};
+            return Edge::Dynamic;
+        }
         return next == linear ? std::optional { Edge::Sequential } : std::nullopt;
     }
 private:
