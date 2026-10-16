@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "address_segments.hpp"
 #include <algorithm>
+#include <array>
 #include <limits>
+#include <utility>
 
 namespace ilemu::execution::arm64 {
 void AddressSegments::observe(unsigned step, const arm::Instruction& inst,
@@ -116,12 +118,27 @@ void AddressSegments::guard(oaknut::VectorCodeGenerator& code,
         code.LSR(X21, X21, 12);
         code.CBNZ(X21, checked);
     };
-    bound(access.first, access.first_coefficient);
-    bound(access.end - 1, access.last_coefficient);
-    if (access.first_coefficient != access.last_coefficient) {
-        // Both signs are bounded without touching live architectural NZCV.
-        bound(access.first, access.last_coefficient);
-        bound(access.end - 1, access.first_coefficient);
+    // The checked base and aligned coefficients place each endpoint on the
+    // same alignment lattice. Round the inclusive upper constant down: its
+    // remaining bytes cannot cross a page. Unknown coefficient alignment
+    // retains byte-granular bounds.
+    const auto coefficients = static_cast<std::uint32_t>(access.first_coefficient) |
+        static_cast<std::uint32_t>(access.last_coefficient);
+    const auto granularity = (coefficients & (alignment - 1U)) == 0 ? alignment : 1U;
+    const auto last = (access.end - 1) & -std::int64_t { granularity };
+    const std::array bounds {
+        std::pair { access.first, access.first_coefficient },
+        std::pair { last, access.last_coefficient },
+        std::pair { access.first, access.last_coefficient },
+        std::pair { last, access.first_coefficient }
+    };
+    for (auto it = bounds.begin(); it != bounds.end(); ++it) {
+        // A zero endpoint is the masked page offset itself. The four corners
+        // also collapse when coefficients or normalized constants coincide.
+        if ((it->first == 0 && it->second == 0) ||
+            std::find(bounds.begin(), it, *it) != it)
+            continue;
+        bound(it->first, it->second);
     }
 }
 }
