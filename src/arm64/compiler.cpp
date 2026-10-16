@@ -3,6 +3,7 @@
 #include "register_writes.hpp"
 #include "address_windows.hpp"
 #include "address_segments.hpp"
+#include "window_compilation.hpp"
 #include "native_frame.hpp"
 #include "arm/program_status.hpp"
 #include "cycle_tier.hpp"
@@ -684,7 +685,8 @@ static CompiledTrace compile_trace(InstructionSource& source,
     unsigned instruction_limit = maximum_trace_instructions,
     const TracePath& path = TracePath {},
     const AddressSegments* shared_segments = nullptr,
-    const AddressWindows* promotion_windows = nullptr)
+    const AddressWindows* promotion_windows = nullptr,
+    CycleFormation* formation = nullptr)
 {
     const CodeRegions regions = permitted_regions.empty()
         ? CodeRegions { source.instruction_region(pc) } : CodeRegions { permitted_regions };
@@ -1203,6 +1205,14 @@ static CompiledTrace compile_trace(InstructionSource& source,
                 natural_copies = emit.expansion_copies(original_natural_copies);
             const auto copies =
                 std::min(natural_copies, limit / cycle_length);
+            if (cycles == 2 && formation)
+                if (auto completed = formation->try_complete(
+                        out, cycle_length, copies, maximum_ticks)) {
+                    // No code has been published. Unbound local fixups own
+                    // only offsets, so the unused prefix can be discarded.
+                    out = std::move(*completed);
+                    return out;
+                }
             if (cycles >= copies) {
                 out.closed = true;
                 break;
@@ -1243,40 +1253,20 @@ static CompiledTrace compile_hot(InstructionSource& source,
                 window.repeat_cycle();
                 segments.emplace(window.address_segments(limit, maximum_ticks, path));
             }
+            const auto lower = [&](const AddressWindows* selected, unsigned instructions,
+                                   const AddressWindows* promotion) {
+                const auto* shared = segments && (!selected || instructions == limit)
+                    ? &*segments : nullptr;
+                return compile_trace(source, permitted_regions, pc, false, maximum_ticks,
+                    big_endian, thumb, it, CycleExpansion::Hot, {}, selected,
+                    instructions, path, shared, promotion);
+            };
+            WindowCompilation builder { windows, path, lower };
             auto slow = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, nullptr,
-                limit, path, segments ? &*segments : nullptr);
-            const auto fallback_limit = windows.fallback_limit(slow.instructions);
-            std::optional<AddressWindows> fallback_windows;
-            if (!path && windows.advances() && fallback_limit < slow.instructions)
-                fallback_windows.emplace(windows);
-            windows.expand(slow.instructions);
-            if (windows.empty())
-                return slow;
-            // A single cache entry needs the same paid group in either body.
-            // Keep the existing read-cache copy budget when the fast body is smaller.
-            auto fast = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
-                big_endian, thumb, it, CycleExpansion::Hot, {}, &windows,
-                slow.instructions, path,
-                segments && slow.instructions == limit ? &*segments : nullptr);
-            if (fallback_windows && windows.can_select(fast, slow)) {
-                auto tail_slow = compile_trace(source, permitted_regions, pc, false,
-                    maximum_ticks, big_endian, thumb, it, CycleExpansion::Hot,
-                    {}, nullptr, fallback_limit);
-                fallback_windows->expand(tail_slow.instructions);
-                if (!fallback_windows->empty()) {
-                    auto tail_fast = compile_trace(source, permitted_regions, pc, false,
-                        maximum_ticks, big_endian, thumb, it, CycleExpansion::Hot,
-                        {}, &*fallback_windows, tail_slow.instructions, TracePath {}, nullptr, &windows);
-                    if (fallback_windows->can_select(tail_fast, tail_slow)) {
-                        auto bounded = fallback_windows->select(
-                            std::move(tail_fast), std::move(tail_slow));
-                        if (windows.can_select(fast, bounded))
-                            return windows.select(std::move(fast), std::move(bounded), false);
-                    }
-                }
-            }
-            return windows.select(std::move(fast), std::move(slow));
+                limit, path, segments ? &*segments : nullptr, nullptr,
+                !path && windows.advances() ? &builder : nullptr);
+            return builder.select(std::move(slow));
         }
     }
     if (count && count->carry_kinds != 0) {
