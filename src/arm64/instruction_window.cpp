@@ -148,6 +148,49 @@ void InstructionWindow::repeat_cycle()
     consumed_ = 0;
     full_flags_dead_ = { };
 }
+unsigned InstructionWindow::entry_prefix_limit(std::uint32_t start,
+    unsigned start_it, unsigned limit, std::uint64_t budget)
+{
+    auto pc = start;
+    auto it = start_it;
+    for (unsigned n = 0; n < limit; ++n) {
+        const auto region = regions_.containing(pc);
+        if (!region)
+            break;
+        auto entry = take(pc, it, false);
+        if (!entry || !entry->word || entry->instruction.condition == 15 ||
+            std::uint64_t { pc } + entry->instruction.size > region->end)
+            break;
+        const auto& inst = entry->instruction;
+        const auto cost = timing(*entry);
+        if (cost == 0 || cost > budget)
+            break;
+        budget -= cost;
+        using Kind = arm::InstructionKind;
+        const auto next_it = thumb_ ? (inst.kind == Kind::IfThen
+            ? inst.immediate : arm::advance_it(it)) : 0U;
+        if (inst.kind == Kind::Branch || inst.kind == Kind::CompareBranch) {
+            if (inst.link || inst.exchange)
+                break;
+            const auto target = ((pc + inst.pc_offset) &
+                (inst.align_pc ? ~3U : ~0U)) + inst.immediate;
+            if (target > start && target <= pc)
+                return n + 1U;
+            pc = target;
+        } else {
+            if (DynamicBackedge::ends_trace(inst) || inst.kind == Kind::Breakpoint ||
+                (inst.kind == Kind::Svc && inst.condition == 14) ||
+                (inst.kind == Kind::SystemControl && inst.system ==
+                    arm::SystemOperation::InstructionSynchronizationBarrier))
+                break;
+            pc += inst.size;
+        }
+        it = next_it;
+        if (pc == start && it == start_it)
+            break;
+    }
+    return limit;
+}
 FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
     unsigned start_it, unsigned limit, std::uint64_t budget, bool reserve_scalars,
     const TracePath& path)

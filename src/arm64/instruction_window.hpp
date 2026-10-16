@@ -39,6 +39,10 @@ public:
     std::optional<DecodedInstruction> take(std::uint32_t pc, unsigned it,
         bool allow_straddle);
     std::uint64_t timing(DecodedInstruction&);
+    // Select an entry-prefix boundary before dataflow can look past its exit.
+    // Calls and ISA changes keep their existing trace formation policy.
+    unsigned entry_prefix_limit(std::uint32_t pc, unsigned it,
+        unsigned instruction_limit, std::uint64_t remaining_ticks);
     FloatingRegisterPlan floating_registers(std::uint32_t pc, unsigned it,
         unsigned remaining_instructions, std::uint64_t remaining_ticks,
         bool reserve_scalars = true, const TracePath& path = TracePath {});

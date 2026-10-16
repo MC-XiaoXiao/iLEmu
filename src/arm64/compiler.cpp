@@ -705,6 +705,11 @@ static CompiledTrace compile_trace(InstructionSource& source,
     std::optional<FloatingRegisterPlan> floating;
     if (!single_step) {
         window.repeat_cycle();
+        if (!path) {
+            instruction_limit = window.entry_prefix_limit(pc, it,
+                std::min(maximum_instructions, instruction_limit), maximum_ticks);
+            window.repeat_cycle();
+        }
         cache_reads = !path && expansion == CycleExpansion::Hot &&
             window.single_dependent_read_cycle(
                 pc, it, maximum_trace_instructions, maximum_ticks);
