@@ -433,6 +433,11 @@ namespace {
             std::uint32_t word, std::uint64_t before, std::uint64_t cost,
             unsigned before_it, bool big_endian)
         {
+            VectorMemoryEmitter emitter { code_, big_endian, memory_.addresses(),
+                vectors_, memory_.label_memory() };
+            // A dominating reference needs no checked or completed exit.
+            if (emitter.emit_cached(inst))
+                return;
             auto& checked = exit(static_cast<StopReason>(vector_exit), before,
                 pc, word, 0, false, before_it);
             VectorMemoryEmitter::Split* split = nullptr;
@@ -444,9 +449,7 @@ namespace {
                 split = &vector_splits_.add(inst, big_endian, completed,
                     checked, cost, page_split);
             }
-            VectorMemoryEmitter { code_, big_endian, memory_.addresses(),
-                vectors_, memory_.label_memory() }
-                .emit(inst, pc, cost, checked, split);
+            emitter.emit(inst, pc, cost, checked, split);
         }
         VectorRegisters& vectors() { return vectors_; }
         bool needs_floating_guard(std::uint32_t mask) const

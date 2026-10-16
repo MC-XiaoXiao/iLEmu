@@ -147,22 +147,29 @@ std::optional<AddressCache::Key> VectorMemoryEmitter::address(const arm::Instruc
         scalar && inst.index ? inst.immediate : 0U, inst.add, inst.load,
         v.alignment, scalar ? 4U : v.element_size };
 }
-void VectorMemoryEmitter::emit(
-    const arm::Instruction& inst, std::uint32_t pc, std::uint64_t cost,
-    Label& checked_exit, Split* split)
+bool VectorMemoryEmitter::emit_cached(const arm::Instruction& inst)
 {
-    const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
-    const auto length = arm_memory::vector_transfer_length(v);
-    const bool scalar = v.mode == arm::VectorTransferMode::ScalarMultiple;
-    const auto natural_alignment = scalar ? 4U : v.element_size;
     const auto key = address(inst);
     if (key) {
         if (const auto pointer = addresses_.find(*key)) {
             access(inst, *pointer);
             addresses_.writeback(inst);
-            return;
+            return true;
         }
     }
+    return false;
+}
+void VectorMemoryEmitter::emit(
+    const arm::Instruction& inst, std::uint32_t pc, std::uint64_t cost,
+    Label& checked_exit, Split* split)
+{
+    if (emit_cached(inst))
+        return;
+    const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
+    const auto length = arm_memory::vector_transfer_length(v);
+    const bool scalar = v.mode == arm::VectorTransferMode::ScalarMultiple;
+    const auto natural_alignment = scalar ? 4U : v.element_size;
+    const auto key = address(inst);
     constexpr auto memory = offsetof(NativeOutcome, memory);
     constexpr auto transfer = offsetof(NativeOutcome, vector);
     Label local_checked { labels_ }, aligned { labels_ }, done { labels_ };

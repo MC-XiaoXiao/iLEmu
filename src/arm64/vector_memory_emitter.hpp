@@ -50,6 +50,7 @@ public:
     }
     static std::optional<AddressCache::Key> address(const arm::Instruction&);
     static bool supports_split(const arm::Instruction&);
+    bool emit_cached(const arm::Instruction&);
     void emit(const arm::Instruction&, std::uint32_t pc, std::uint64_t cost,
         oaknut::Label& checked_exit, Split* split = nullptr);
 
