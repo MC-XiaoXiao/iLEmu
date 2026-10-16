@@ -1,10 +1,21 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "vector_memory_emitter.hpp"
 #include "arm_memory/vector_transfer.hpp"
+#include <map>
+#include <tuple>
 
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
 using namespace oaknut::util;
+namespace {
+    auto split_key(const arm::Instruction& inst, bool big_endian)
+    {
+        const auto change = AddressDisplacements::writeback(inst);
+        return std::tuple { arm_memory::vector_control(inst),
+            std::get<arm::VectorTransferOperands>(inst.vector).alignment,
+            big_endian, change ? std::optional { change->delta } : std::nullopt };
+    }
+}
 VectorMemoryEmitter::Split& VectorMemoryEmitter::Splits::add(
     const arm::Instruction& inst, bool big_endian, Label& completed)
 {
@@ -13,15 +24,54 @@ VectorMemoryEmitter::Split& VectorMemoryEmitter::Splits::add(
 void VectorMemoryEmitter::Splits::finish(
     VectorCodeGenerator& code, AddressCache& addresses, VectorRegisters& vectors)
 {
+    if (paths_.empty())
+        return;
+    struct Body {
+        Body(std::pmr::memory_resource& memory, const Split& path)
+            : entry(memory), example(path) { }
+        Label entry;
+        const Split& example;
+        unsigned count = 0;
+    };
+    std::pmr::map<decltype(split_key(arm::Instruction {}, false)), Body> bodies { &labels_ };
+    for (const auto& path : paths_)
+        if (path.checked.is_bound())
+            ++bodies.try_emplace(split_key(path.instruction, path.big_endian),
+                labels_, path).first->second.count;
+    for (auto& [key, body] : bodies) {
+        if (body.count == 1)
+            continue;
+        const auto& path = body.example;
+        code.l(body.entry);
+        Label checked { labels_ }, completed { labels_ };
+        VectorMemoryEmitter { code, path.big_endian, addresses, vectors, labels_ }
+            .split_access(path.instruction, path.instruction.load ? X25 : X26,
+                checked, completed);
+        code.l(checked);
+        code.ADD(X30, X30, 4);
+        code.RET();
+        code.l(completed);
+        code.RET();
+    }
     for (auto& path : paths_) {
         // A cached one-page reference can satisfy the instruction before it
         // emits any guards; such a deferred fragment has no incoming branch.
         if (!path.checked.is_bound())
             continue;
         code.l(path.entry);
-        VectorMemoryEmitter { code, path.big_endian, addresses, vectors, labels_ }
-            .split_access(path.instruction, path.instruction.load ? X25 : X26,
-                path.checked, path.completed);
+        auto& body = bodies.at(split_key(path.instruction, path.big_endian));
+        if (body.count == 1) {
+            VectorMemoryEmitter { code, path.big_endian, addresses, vectors, labels_ }
+                .split_access(path.instruction, path.instruction.load ? X25 : X26,
+                    path.checked, path.completed);
+            continue;
+        }
+        // Both outcomes leave through the canonical epilogue, so the group
+        // poll countdown in X30 is dead. Host LR is still saved by NativeFrame.
+        // Keep each site's original exits, including its exact prefix ticks.
+        code.BL(body.entry);
+        code.B(path.completed);
+        code.B(path.checked);
     }
 }
 bool VectorMemoryEmitter::supports_split(const arm::Instruction& inst)
