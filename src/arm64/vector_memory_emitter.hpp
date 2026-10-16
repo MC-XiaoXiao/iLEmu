@@ -12,20 +12,27 @@ class VectorMemoryEmitter {
 public:
     struct Split {
         Split(const arm::Instruction& value, bool big,
-            std::pmr::memory_resource& labels, oaknut::Label& destination)
+            std::pmr::memory_resource& labels, oaknut::Label& destination,
+            oaknut::Label& failure, std::uint64_t cost, bool crosses)
             : instruction(value), big_endian(big), entry(labels), checked(labels),
-              completed(destination) { }
+              completed(destination), range(labels), failure(failure), cost(cost),
+              page_split(crosses) { }
         arm::Instruction instruction;
         bool big_endian;
         oaknut::Label entry, checked;
         oaknut::Label& completed;
+        oaknut::Label range;
+        oaknut::Label& failure;
+        std::uint64_t cost;
+        bool page_split, range_used = false;
     };
     // Compile-only ownership keeps cold fragments out of the unrolled body.
     class Splits {
     public:
         explicit Splits(std::pmr::memory_resource& labels)
             : labels_(labels), paths_(&labels) { }
-        Split& add(const arm::Instruction&, bool big_endian, oaknut::Label& completed);
+        Split& add(const arm::Instruction&, bool big_endian, oaknut::Label& completed,
+            oaknut::Label& failure, std::uint64_t cost, bool page_split);
         void finish(oaknut::VectorCodeGenerator&, AddressCache&, VectorRegisters&);
     private:
         std::pmr::memory_resource& labels_;

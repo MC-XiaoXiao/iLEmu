@@ -2,6 +2,7 @@
 #include "address_cache.hpp"
 #include "native_frame.hpp"
 #include "address_windows.hpp"
+#include "address_segments.hpp"
 #include "flag_effects.hpp"
 #include "arm/integer_semantics.hpp"
 namespace ilemu::execution::arm64 {
@@ -62,8 +63,9 @@ XReg AddressCache::Reference::immediate(VectorCodeGenerator& code) const
 }
 AddressCache::AddressCache(VectorCodeGenerator& code, bool extra_slots_available,
     const AddressWindows* windows, bool conditional,
-    std::pmr::memory_resource* temporary)
+    std::pmr::memory_resource* temporary, const AddressSegments* segments)
     : code_(code), late_(temporary), windows_(windows),
+      segments_(segments),
       displacements_(windows ? std::make_optional<AddressDisplacements>() : std::nullopt),
       slot_count_(extra_slots_available ? 4U : 2U), conditional_(conditional)
 {
@@ -74,7 +76,22 @@ AddressCache::Identity AddressCache::identity(const Key& key) const
         if (auto window = windows_->find(key); window &&
             (windows_->window(*window).stride || displacements_->get(key.base)))
             return *window;
+    if (segments_)
+        if (const auto* access = segments_->find(step_, key))
+            return Segment { access->id };
     return key;
+}
+bool AddressCache::guard_segment(const Key& key, Label& checked) const
+{
+    if (uses_segment(key)) {
+        segments_->guard(code_, *segments_->find(step_, key), checked);
+        return true;
+    }
+    return false;
+}
+bool AddressCache::uses_segment(const Key& key) const
+{
+    return std::holds_alternative<Segment>(identity(key));
 }
 std::uint32_t AddressCache::inputs(const Identity& id) const
 {
@@ -88,7 +105,8 @@ AddressCache::Reference AddressCache::reference(
 {
     if (std::holds_alternative<Key>(id))
         return { base };
-    if (windows_->window(std::get<unsigned>(id)).stride) {
+    if (std::holds_alternative<Segment>(id) ||
+        windows_->window(std::get<unsigned>(id)).stride) {
         // A dynamic window retains the validated page translation bias.
         // Re-form the current effective address modulo32 before adding it;
         // temporary guest-base wraparound must not become host-pointer wrap.
@@ -172,11 +190,12 @@ AddressCache::Reference AddressCache::remember(
     entry->dominates = entry->coverage == UINT16_MAX;
     coverage_used_ |= condition != 14;
     const auto result = slot < 2 ? integer_register(slot) : X21;
-    if (std::holds_alternative<unsigned>(id)) {
+    if (!std::holds_alternative<Key>(id)) {
         // The selector proved every planned offset stays in this same page.
         // The original instruction just validated its read/write page view.
         code_.SUB(result, pointer, X15);
-        const auto dynamic = windows_->window(std::get<unsigned>(id)).stride.has_value();
+        const auto dynamic = std::holds_alternative<Segment>(id) ||
+            windows_->window(std::get<unsigned>(id)).stride.has_value();
         if (!dynamic) {
             const auto displacement = displacements_->get(key.base).value();
             if (displacement == 0)
@@ -260,7 +279,8 @@ void AddressCache::finalize(bool closed, std::vector<std::uint32_t>& words,
     for (unsigned slot = 0; slot < slot_count_; ++slot) {
         const auto& first = first_[slot];
         if (!first || first->target == 0 || (!entries_[slot] || entries_[slot]->identity != first->identity) ||
-            (written_ & inputs(first->identity)) != 0)
+            (written_ & inputs(first->identity)) != 0 ||
+            std::holds_alternative<Segment>(first->identity))
             continue;
         if (const auto* window = std::get_if<unsigned>(&first->identity);
             window && displacements_->get(windows_->window(*window).base) != 0)

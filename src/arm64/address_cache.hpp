@@ -13,6 +13,7 @@
 
 namespace ilemu::execution::arm64 {
 class AddressWindows;
+class AddressSegments;
 // Guards publish into X27/X28 and optional D8/D9 slots. Conditional entries
 // become dominating only when predicates cover the same NZCV snapshot. Lazy
 // guards can reuse an invariant pointer after its first executed publication.
@@ -47,7 +48,11 @@ public:
     // Extra slots share D8/D9 with ReadPageCache, so the caller grants them
     // only when that dynamic page resolver is disabled for this trace.
     AddressCache(oaknut::VectorCodeGenerator&, bool extra_slots_available,
-        const AddressWindows*, bool conditional, std::pmr::memory_resource*);
+        const AddressWindows*, bool conditional, std::pmr::memory_resource*,
+        const AddressSegments* = nullptr);
+    void position(unsigned step) { step_ = step; }
+    bool guard_segment(const Key&, oaknut::Label&) const;
+    bool uses_segment(const Key&) const;
     std::optional<Reference> find(const Key&) const;
     void begin_guard(const Key&, unsigned condition);
     Reference remember(const Key&, oaknut::XReg pointer, unsigned condition);
@@ -59,7 +64,11 @@ public:
         oaknut::VectorCodeGenerator& entry) const;
 
 private:
-    using Identity = std::variant<Key, unsigned>;
+    struct Segment {
+        unsigned id;
+        bool operator==(const Segment&) const = default;
+    };
+    using Identity = std::variant<Key, unsigned, Segment>;
     Identity identity(const Key&) const;
     std::uint32_t inputs(const Identity&) const;
     Reference reference(const Key&, const Identity&, oaknut::XReg) const;
@@ -84,6 +93,8 @@ private:
     std::pmr::vector<LateGuard> late_;
     std::optional<unsigned> pending_;
     const AddressWindows* windows_;
+    const AddressSegments* segments_;
+    unsigned step_ = 0;
     std::optional<AddressDisplacements> displacements_;
     unsigned slot_count_, next_ = 0, written_ = 0;
     bool used_extra_ = false, conditional_, coverage_used_ = false;

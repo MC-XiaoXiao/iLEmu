@@ -72,6 +72,8 @@ void MultipleEmitter::emit(const arm::Instruction& inst, std::uint32_t pc,
     code_.ADD(W17, W17, length - 1U);
     code_.LSR(W17, W17, 12);
     code_.CBNZ(W17, checked);
+    if (key)
+        addresses_.guard_segment(*key, checked);
     code_.LSR(W17, W15, 12);
     code_.LDR(X21, table, W17, IndexExt::UXTW, 3);
     code_.CBZ(X21, checked);

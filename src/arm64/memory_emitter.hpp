@@ -16,12 +16,13 @@ public:
     MemoryEmitter(oaknut::VectorCodeGenerator& code, IntegerEmitter& integer,
         bool big_endian, bool expanded, bool cache_reads, bool conditional_guards,
         std::pmr::memory_resource* temporary,
-        const AddressWindows* windows = nullptr)
+        const AddressWindows* windows = nullptr,
+        const AddressSegments* segments = nullptr)
         : code_(code)
         , integer_(integer)
         , big_endian_(big_endian)
         // Only the existing hot tier earns extra ABI save/restore state.
-        , addresses_(code, expanded && !cache_reads, windows, conditional_guards, temporary)
+        , addresses_(code, expanded && !cache_reads, windows, conditional_guards, temporary, segments)
         , read_pages_(code, cache_reads)
         , fast_reads_(expanded)
         , pending_(temporary)

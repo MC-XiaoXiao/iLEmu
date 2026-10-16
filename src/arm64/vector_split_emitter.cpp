@@ -17,9 +17,11 @@ namespace {
     }
 }
 VectorMemoryEmitter::Split& VectorMemoryEmitter::Splits::add(
-    const arm::Instruction& inst, bool big_endian, Label& completed)
+    const arm::Instruction& inst, bool big_endian, Label& completed,
+    Label& failure, std::uint64_t cost, bool page_split)
 {
-    return paths_.emplace_back(inst, big_endian, labels_, completed);
+    return paths_.emplace_back(inst, big_endian, labels_, completed,
+        failure, cost, page_split);
 }
 void VectorMemoryEmitter::Splits::finish(
     VectorCodeGenerator& code, AddressCache& addresses, VectorRegisters& vectors)
@@ -35,7 +37,7 @@ void VectorMemoryEmitter::Splits::finish(
     };
     std::pmr::map<decltype(split_key(arm::Instruction {}, false)), Body> bodies { &labels_ };
     for (const auto& path : paths_)
-        if (path.checked.is_bound())
+        if (path.page_split && path.checked.is_bound())
             ++bodies.try_emplace(split_key(path.instruction, path.big_endian),
                 labels_, path).first->second.count;
     for (auto& [key, body] : bodies) {
@@ -56,7 +58,7 @@ void VectorMemoryEmitter::Splits::finish(
     for (auto& path : paths_) {
         // A cached one-page reference can satisfy the instruction before it
         // emits any guards; such a deferred fragment has no incoming branch.
-        if (!path.checked.is_bound())
+        if (!path.page_split || !path.checked.is_bound())
             continue;
         code.l(path.entry);
         auto& body = bodies.at(split_key(path.instruction, path.big_endian));
@@ -72,6 +74,19 @@ void VectorMemoryEmitter::Splits::finish(
         code.BL(body.entry);
         code.B(path.completed);
         code.B(path.checked);
+    }
+    for (auto& path : paths_) {
+        if (!path.range_used)
+            continue;
+        code.l(path.range);
+        // A failed future range does not invalidate this instruction's own
+        // direct-memory path. Reuse its ordinary lowering without a cached
+        // pointer, then leave at its precise paid boundary. No local backedge
+        // may borrow an address-cache publication skipped by this fragment.
+        AddressCache uncached { code, false, nullptr, false, &labels_ };
+        VectorMemoryEmitter { code, path.big_endian, uncached, vectors, labels_ }
+            .emit(path.instruction, 0, path.cost, path.failure);
+        code.B(path.completed);
     }
 }
 bool VectorMemoryEmitter::supports_split(const arm::Instruction& inst)

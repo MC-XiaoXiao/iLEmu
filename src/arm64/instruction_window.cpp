@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "instruction_window.hpp"
 #include "address_windows.hpp"
+#include "address_segments.hpp"
 #include "multiple_emitter.hpp"
 #include "floating_register_plan.hpp"
 #include "vector_memory_emitter.hpp"
@@ -15,6 +16,37 @@
 #include <array>
 
 namespace ilemu::execution::arm64 {
+AddressSegments InstructionWindow::address_segments(unsigned limit,
+    std::uint64_t budget, const TracePath& path)
+{
+    AddressSegments result(pending_.get_allocator().resource());
+    const auto steps = std::min(limit, path.steps());
+    for (unsigned n = 0; n < steps; ++n) {
+        const auto& at = path[n];
+        mode(at.thumb);
+        auto entry = take(at.pc, at.it, false);
+        const auto region = regions_.containing(at.pc);
+        if (!entry || !entry->word || !region ||
+            std::uint64_t { at.pc } + entry->instruction.size > region->end)
+            break;
+        const auto cost = timing(*entry);
+        if (cost == 0 || cost > budget)
+            break;
+        budget -= cost;
+        const auto& inst = entry->instruction;
+        std::optional<AddressCache::Key> key;
+        using Kind = arm::InstructionKind;
+        if (inst.kind == Kind::Transfer || inst.kind == Kind::DualTransfer)
+            key = MemoryEmitter::address(inst, at.pc);
+        else if (inst.kind == Kind::MultipleTransfer)
+            key = MultipleEmitter::address(inst);
+        else if (inst.kind == Kind::VectorTransfer && inst.rn != 15)
+            key = VectorMemoryEmitter::address(inst);
+        result.observe(n, inst, key);
+    }
+    result.finish(steps);
+    return result;
+}
 InstructionWindow::InstructionWindow(InstructionSource& source,
     InstructionRegion region, bool thumb, std::pmr::memory_resource* temporary,
     bool retain_cycle)

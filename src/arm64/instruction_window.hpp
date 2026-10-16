@@ -10,6 +10,7 @@
 
 namespace ilemu::execution::arm64 {
 class AddressWindows;
+class AddressSegments;
 struct FloatingRegisterPlan;
 struct DecodedInstruction {
     std::uint32_t pc;
@@ -50,6 +51,8 @@ public:
     AddressWindows address_windows(std::uint32_t pc, unsigned it,
         unsigned remaining_instructions, std::uint64_t remaining_ticks,
         const TracePath& path = TracePath {});
+    AddressSegments address_segments(unsigned limit, std::uint64_t budget,
+        const TracePath&);
     // A conservative linear-cycle proof avoids serializing parallel read
     // chains through one page-cache slot. Prefetched decodes feed emission.
     bool single_dependent_read_cycle(std::uint32_t pc, unsigned it,

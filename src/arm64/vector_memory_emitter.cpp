@@ -213,8 +213,12 @@ void VectorMemoryEmitter::emit(
         code_.AND(W17, W15, 4095);
         code_.ADD(W17, W17, length - 1U);
         code_.LSR(W17, W17, 12);
-        code_.CBNZ(W17, split ? split->entry : checked);
+        code_.CBNZ(W17, split && split->page_split ? split->entry : checked);
     }
+    const bool segment = key && addresses_.guard_segment(*key,
+        split ? split->range : checked);
+    if (segment && split)
+        split->range_used = true;
     code_.LSR(W17, W15, 12);
     code_.LDR(X17, table, W17, IndexExt::UXTW, 3);
     code_.CBZ(X17, checked);
@@ -226,8 +230,17 @@ void VectorMemoryEmitter::emit(
     addresses_.writeback(inst);
     code_.B(done);
     code_.l(checked);
-    if (fixed_alignment)
+    // A finite-range check may use X21 after ordinary alignment validation.
+    // Reconstruct the exact checked payload on every cold exit.
+    if (fixed_alignment || segment)
         code_.MOV(W21, v.alignment);
+    if (segment && !fixed_alignment) {
+        Label unaligned { labels_ };
+        code_.LDR(W17, X20, memory + offsetof(DirectMemory, permits_unaligned));
+        code_.CBNZ(W17, unaligned);
+        code_.MOV(W21, natural_alignment);
+        code_.l(unaligned);
+    }
     code_.STR(
         W15, X20, transfer + offsetof(arm_memory::VectorTransfer, address));
     code_.STR(W16, X20,

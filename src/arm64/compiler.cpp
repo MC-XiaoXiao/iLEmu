@@ -2,6 +2,7 @@
 #include "compiler.hpp"
 #include "register_writes.hpp"
 #include "address_windows.hpp"
+#include "address_segments.hpp"
 #include "native_frame.hpp"
 #include "arm/program_status.hpp"
 #include "cycle_tier.hpp"
@@ -67,7 +68,8 @@ namespace {
             std::uint32_t pc, unsigned it, bool single_step,
             std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads,
             std::optional<RegisterShiftRange> shift_range,
-            const AddressWindows* windows, const FloatingRegisterPlan* floating)
+            const AddressWindows* windows, const FloatingRegisterPlan* floating,
+            const AddressSegments* segments)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_, floating && floating->scalars.count != 0
@@ -77,7 +79,7 @@ namespace {
             , integer_(code_, shift_range)
             , exchanges_(code_, integer_)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
-                fast_reads && !single_step, temporary, windows)
+                fast_reads && !single_step, temporary, windows, segments)
             , vector_splits_(*temporary)
             , windows_(windows)
             , thumb_(thumb)
@@ -118,6 +120,7 @@ namespace {
             it_ = it;
             size_ = size;
         }
+        void position(unsigned step) { memory_.addresses().position(step); }
         void retired(unsigned it) { it_ = it; }
         void mode(bool thumb) { thumb_ = thumb; }
         void disable_backedges() { backedge_.disable(); }
@@ -433,10 +436,13 @@ namespace {
             auto& checked = exit(static_cast<StopReason>(vector_exit), before,
                 pc, word, 0, false, before_it);
             VectorMemoryEmitter::Split* split = nullptr;
-            if (split_vectors_ && VectorMemoryEmitter::supports_split(inst)) {
+            const auto key = VectorMemoryEmitter::address(inst);
+            const bool page_split = split_vectors_ && VectorMemoryEmitter::supports_split(inst);
+            if (page_split || (key && memory_.addresses().uses_segment(*key))) {
                 auto& completed = exit(StopReason::None, before + cost,
                     pc + inst.size, {}, 0, false, {}, false);
-                split = &vector_splits_.add(inst, big_endian, completed);
+                split = &vector_splits_.add(inst, big_endian, completed,
+                    checked, cost, page_split);
             }
             VectorMemoryEmitter { code_, big_endian, memory_.addresses(),
                 vectors_, memory_.label_memory() }
@@ -702,6 +708,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     // inspected decode and timing during emission rather than fetching twice.
     std::size_t reservation_instructions = 1;
     bool cache_reads = false;
+    std::optional<AddressSegments> segments;
     std::optional<FloatingRegisterPlan> floating;
     if (!single_step) {
         window.repeat_cycle();
@@ -719,6 +726,11 @@ static CompiledTrace compile_trace(InstructionSource& source,
         reservation_instructions = path ? path.steps() : window.cached_instructions();
         if (!path)
             reservation_instructions *= CycleTier::natural_copies(expansion);
+        if (path && expansion == CycleExpansion::Hot) {
+            window.repeat_cycle();
+            segments.emplace(window.address_segments(
+                std::min(maximum_instructions, instruction_limit), maximum_ticks, path));
+        }
         window.mode(thumb);
         window.repeat_cycle();
         first = window.take(pc, it, true);
@@ -736,7 +748,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
         expansion == CycleExpansion::Hot, cache_reads, shift_range, windows,
-        floating ? &*floating : nullptr);
+        floating ? &*floating : nullptr, segments ? &*segments : nullptr);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
@@ -747,6 +759,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     const auto limit = single_step ? 1U
         : std::min(maximum_instructions, instruction_limit);
     for (unsigned n = 0; n < limit; ++n) {
+        emit.position(n);
         const bool comparison_flags = std::exchange(comparison_flags_live, false);
         if (path && path[n] != TraceLocation { pc, thumb, it })
             throw std::invalid_argument("instruction path position mismatch");
