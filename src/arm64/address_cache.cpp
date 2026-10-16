@@ -3,6 +3,7 @@
 #include "native_frame.hpp"
 #include "address_windows.hpp"
 #include "address_segments.hpp"
+#include "address_registers.hpp"
 #include "flag_effects.hpp"
 #include "arm/integer_semantics.hpp"
 namespace ilemu::execution::arm64 {
@@ -110,6 +111,10 @@ AddressCache::Reference AddressCache::reference(
             return { base, access->offset };
     if (std::holds_alternative<Segment>(id) ||
         windows_->window(std::get<unsigned>(id)).stride) {
+        if (registers_ && registers_->eligible(key.base)) {
+            registers_->acquire(key.base, base);
+            return { XReg { static_cast<int>(key.base) } };
+        }
         // A dynamic window retains the validated page translation bias.
         // Re-form the current effective address modulo32 before adding it;
         // temporary guest-base wraparound must not become host-pointer wrap.
@@ -139,6 +144,8 @@ std::optional<AddressCache::Reference> AddressCache::find(const Key& key) const
     for (unsigned slot = 0; slot < slot_count_; ++slot) {
         if (!entries_[slot] || !entries_[slot]->dominates || entries_[slot]->identity != id)
             continue;
+        if (registers_ && registers_->active(key.base))
+            return Reference { XReg { static_cast<int>(key.base) } };
         if (slot < 2)
             return reference(key, id, integer_register(slot));
         code_.FMOV(X21, spill_register(slot));
@@ -254,6 +261,8 @@ void AddressCache::writeback(const arm::Instruction& inst)
 {
     if (!inst.writeback)
         return;
+    if (registers_ && registers_->writeback(inst))
+        return;
     const auto base = WReg { static_cast<int>(inst.rn) };
     const auto known = AddressDisplacements::writeback(inst);
     if (!known) {
@@ -272,6 +281,13 @@ void AddressCache::writeback(const arm::Instruction& inst)
         code_.MOV(W16, static_cast<std::uint32_t>(change.delta));
         code_.ADD(base, base, W16);
     }
+}
+void AddressCache::read_guest(WReg destination, unsigned reg) const
+{
+    if (registers_)
+        registers_->read_guest(destination, reg);
+    else
+        code_.MOV(destination, WReg { static_cast<int>(reg) });
 }
 void AddressCache::enter(VectorCodeGenerator& code) const
 {

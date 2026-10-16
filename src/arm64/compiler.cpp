@@ -14,6 +14,7 @@
 #include "arm/multiply.hpp"
 #include "integer_emitter.hpp"
 #include "memory_emitter.hpp"
+#include "address_registers.hpp"
 #include "multiple_emitter.hpp"
 #include "simd_emitter.hpp"
 #include "floating_emitter.hpp"
@@ -57,10 +58,11 @@ namespace {
         std::uint32_t state_pc, report_pc, word, svc;
         bool dynamic_pc, instruction, backedge, thumb;
         unsigned it;
+        unsigned address_mask;
         auto payload() const
         {
             return std::tuple { reason, state_pc, report_pc, word, svc,
-                dynamic_pc, instruction, it, thumb };
+                dynamic_pc, instruction, it, thumb, address_mask };
         }
     };
     class Emitter {
@@ -70,7 +72,8 @@ namespace {
             std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads,
             std::optional<RegisterShiftRange> shift_range,
             const AddressWindows* windows, const FloatingRegisterPlan* floating,
-            const AddressSegments* segments, const AddressWindows* promotion_windows)
+            const AddressSegments* segments, const AddressWindows* promotion_windows,
+            bool address_registers)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_, floating && floating->scalars.count != 0
@@ -79,6 +82,8 @@ namespace {
             , floating_(floating && floating->standard_controls)
             , integer_(code_, shift_range)
             , exchanges_(code_, integer_)
+            , address_registers_(code_, address_registers && windows
+                  ? windows->register_plan() : AddressRegisterPlan {})
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
                 fast_reads && !single_step, temporary, windows, segments)
             , vector_splits_(*temporary)
@@ -91,6 +96,7 @@ namespace {
             , head_(*temporary), loop_tail_(*temporary), epilogue_(*temporary)
             , exits_(temporary)
         {
+            memory_.addresses().registers(&address_registers_);
         }
         Label label() const
         {
@@ -105,7 +111,7 @@ namespace {
                 reason == StopReason::Svc ? pc + size_ : pc, pc,
                 word.value_or(0), svc, dynamic_pc, word.has_value(), backedge,
                 thumb_,
-                it.value_or(it_) });
+                it.value_or(it_), address_registers_.mask() });
             return exits_.back().label;
         }
         void observe_instruction(const arm::Instruction& inst)
@@ -193,6 +199,7 @@ namespace {
                 // Every accepted edge has returned to the entry ISA/IT.
                 mode(entry_thumb_);
                 code_.l(loop_tail_);
+                address_registers_.finish_group();
                 if (AddSubImm::is_valid(trace_.maximum_ticks))
                     code_.ADD(X24, X24, AddSubImm { trace_.maximum_ticks });
                 else {
@@ -535,6 +542,7 @@ namespace {
                 floating_checked_ = 0;
             }
         }
+        AddressRegisters& address_registers() { return address_registers_; }
         IntegerEmitter& integer() { return integer_; }
         class InstructionMemoryExits final : public MemoryExits {
         public:
@@ -612,6 +620,7 @@ namespace {
         }
         void publish_exit(const Exit& out)
         {
+            address_registers_.restore(out.address_mask);
             code_.ADD(X16, X24, X16);
             code_.STR(X16, X20, offsetof(NativeOutcome, ticks));
             if (!out.dynamic_pc)
@@ -659,6 +668,7 @@ namespace {
         std::uint32_t floating_checked_ = 0;
         IntegerEmitter integer_;
         ExchangePaths exchanges_;
+        AddressRegisters address_registers_;
         MemoryEmitter memory_;
         VectorMemoryEmitter::Splits vector_splits_;
         const AddressWindows* windows_;
@@ -766,7 +776,8 @@ static CompiledTrace compile_trace(InstructionSource& source,
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
         expansion == CycleExpansion::Hot, cache_reads, shift_range, windows,
-        floating ? &*floating : nullptr, segments, promotion_windows);
+        floating ? &*floating : nullptr, segments, promotion_windows,
+        !path && !single_step && expansion == CycleExpansion::Hot && !segments);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
@@ -1142,7 +1153,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
                         if (!fast_indirect)
                             emit.alu_branch(
                                 inst, pc, out.maximum_ticks, alu_interworks);
-                    } else
+                    } else if (!emit.address_registers().update(inst))
                         emit.integer().alu(inst, pc, logical_flags);
                     break;
                 default:

@@ -17,6 +17,7 @@ namespace {
 void AddressWindows::observe(
     const arm::Instruction& inst, const std::optional<Key>& key)
 {
+    registers_.observe(inst, key && key->offset == 0 && !key->index && !key->pc_base);
     if (key && key->base < 15 && !key->pc_base) {
         auto found = std::find_if(accesses_.begin(), accesses_.end(),
             [&](const Access& access) { return access.key == *key; });
@@ -211,6 +212,30 @@ bool AddressWindows::advances() const
         [](const Window& w) {
             return w.enabled && (w.advance != 0 || w.stride_advance != 0);
         });
+}
+AddressRegisterPlan AddressWindows::register_plan() const
+{
+    AddressRegisterPlan result;
+    for (unsigned reg = 0; reg < 15 && result.count < result.capacity; ++reg) {
+        if (!registers_.permits(reg))
+            continue;
+        std::optional<unsigned> selected;
+        bool valid = true;
+        for (const auto& access : accesses_) {
+            if (access.key.base != reg)
+                continue;
+            if (!access.window || !windows_[*access.window].enabled ||
+                !windows_[*access.window].stride ||
+                (selected && selected != access.window)) {
+                valid = false;
+                break;
+            }
+            selected = access.window;
+        }
+        if (valid && selected)
+            result.bases[result.count++] = reg;
+    }
+    return result;
 }
 void AddressWindows::guard_group(
     oaknut::VectorCodeGenerator& code, oaknut::Label& fallback) const

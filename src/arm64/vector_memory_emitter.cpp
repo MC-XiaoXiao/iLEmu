@@ -192,7 +192,7 @@ void VectorMemoryEmitter::emit(
         code_.MOV(W15, inst.align_pc ? (pc + inst.pc_offset) & ~3U
                                    : pc + inst.pc_offset);
     else
-        code_.MOV(W15, WReg { static_cast<int>(inst.rn) });
+        addresses_.read_guest(W15, inst.rn);
     if (scalar) {
         if (inst.add)
             code_.ADD(W16, W15, inst.immediate);

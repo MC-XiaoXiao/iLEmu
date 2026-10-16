@@ -11,6 +11,7 @@
 #include "trace_metadata.hpp"
 #include "arm/architectural_stop.hpp"
 #include <cstdint>
+#include <array>
 #include <span>
 #include <vector>
 namespace ilemu::execution::arm64 {
@@ -48,6 +49,9 @@ struct NativeOutcome {
         void*, std::uint32_t, std::uint32_t) noexcept = nullptr;
     void* continuation_context = nullptr;
     std::uint32_t cross_region_calls = 0;
+    // Invocation-local biases; earlier native ABI offsets remain unchanged.
+    // An exit reads a slot only after its successful address acquisition.
+    std::array<std::uint64_t, 4> address_biases { };
 };
 inline constexpr std::uint32_t exclusive_exit = 1U << 28U;
 inline constexpr std::uint32_t vector_exit = 1U << 29U;

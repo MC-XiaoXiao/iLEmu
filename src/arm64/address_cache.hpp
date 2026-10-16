@@ -14,6 +14,7 @@
 namespace ilemu::execution::arm64 {
 class AddressWindows;
 class AddressSegments;
+class AddressRegisters;
 // Guards publish into X27/X28 and optional D8/D9 slots. Conditional entries
 // become dominating only when predicates cover the same NZCV snapshot. Lazy
 // guards can reuse an invariant pointer after its first executed publication.
@@ -51,6 +52,8 @@ public:
         const AddressWindows*, bool conditional, std::pmr::memory_resource*,
         const AddressSegments* = nullptr);
     void position(unsigned step) { step_ = step; }
+    void registers(AddressRegisters* registers) { registers_ = registers; }
+    void read_guest(oaknut::WReg destination, unsigned reg) const;
     bool guard_segment(const Key&, oaknut::Label&) const;
     bool uses_segment(const Key&) const;
     std::optional<Reference> find(const Key&) const;
@@ -94,6 +97,7 @@ private:
     std::optional<unsigned> pending_;
     const AddressWindows* windows_;
     const AddressSegments* segments_;
+    AddressRegisters* registers_ = nullptr;
     unsigned step_ = 0;
     std::optional<AddressDisplacements> displacements_;
     unsigned slot_count_, next_ = 0, written_ = 0;

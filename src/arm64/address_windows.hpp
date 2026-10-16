@@ -2,6 +2,7 @@
 #pragma once
 #include "address_cache.hpp"
 #include "address_displacements.hpp"
+#include "address_register_plan.hpp"
 #include "compiler.hpp"
 #include <array>
 #include <memory_resource>
@@ -37,6 +38,7 @@ public:
     const Window& window(unsigned index) const { return windows_[index]; }
     bool empty() const;
     bool advances() const;
+    AddressRegisterPlan register_plan() const;
     unsigned fallback_limit(unsigned instructions) const;
     bool can_select(const CompiledTrace& fast, const CompiledTrace& slow) const;
     void guard_group(oaknut::VectorCodeGenerator&, oaknut::Label&) const;
@@ -57,6 +59,7 @@ private:
     };
     std::array<std::optional<std::uint32_t>, 16> bits_ { };
     AddressDisplacements displacements_;
+    AddressRegisterPlan::Builder registers_;
     std::pmr::vector<Access> accesses_;
     std::pmr::vector<Window> windows_;
     unsigned cycle_instructions_ = 0;
