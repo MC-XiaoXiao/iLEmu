@@ -2,6 +2,7 @@
 #include "arm64/executor.hpp"
 #include "execution/context.hpp"
 #include "arm/t32_decode.hpp"
+#include "arm_interpreter/interpreter.hpp"
 #include "code_cache.hpp"
 #include "compiler.hpp"
 #include "run_control.hpp"
@@ -44,6 +45,22 @@ public:
                 result.reason = result.reason | StopReason::TickBudget;
             if (result.reason != StopReason::None)
                 return result;
+            if (recorder.active()) {
+                // Recording needs the retired successor, not executable code
+                // for each observation. Share reservations and cumulative
+                // ticks with the native backend across this bounded slice.
+                const auto before = result.ticks_consumed;
+                result = ArmInterpreter::run_slice(
+                    state, source, request, context_, 1, before);
+                if (result.reason != StopReason::None)
+                    return result;
+                if (result.ticks_consumed != before) {
+                    ++stats_.path_recording_steps;
+                    recorder.retired(state);
+                } else
+                    recorder.clear();
+                continue;
+            }
             const bool thumb = (state.cpsr & 0x20U) != 0;
             const auto it_state = arm::it_state(state.cpsr);
             if ((state.cpsr & (0x1fU | 0x01000000U)) != 0x10U ||
@@ -83,21 +100,20 @@ public:
             const auto binding = cache_.bind(*lease);
             const bool big_endian = (state.cpsr & (1U << 9U)) != 0;
             const auto path = recorder.ready(binding.identity, binding.generation, state);
-            bool recording = recorder.active();
             auto* selected = &cache_.entry(
-                source, binding, result.pc, step || recording, big_endian, thumb, it_state,
+                source, binding, result.pc, step, big_endian, thumb, it_state,
                 request.translation_observer, UINT64_MAX, path);
             if (recorder.complete())
                 recorder.clear();
-            if (!step && !recording && selected->wants_path()) {
+            if (!step && selected->wants_path()) {
                 selected->defer_path();
                 const auto view = lease->cached_continuation(result.pc);
                 if (view && view->inspectable &&
                     recorder.begin(binding.identity, binding.generation, state)) {
                     ++stats_.path_recording_attempts;
-                    recording = true;
-                    selected = &cache_.entry(source, binding, result.pc, true,
-                        big_endian, thumb, it_state, request.translation_observer);
+                    // Leave this scope before checked execution can write to
+                    // code: its native instruction lease must be released.
+                    continue;
                 }
             }
             const auto remaining =
@@ -122,7 +138,7 @@ public:
             native.control = &control;
             auto* memory = source.data_memory();
             arm64::CodeCache::ContinuationScope scope { cache_, *lease, native, memory };
-            const bool continuations = !step && !recording && cache_.prepare_continuations(
+            const bool continuations = !step && cache_.prepare_continuations(
                 *selected, scope, remaining);
             if (memory && (selected->accesses_memory || continuations))
                 native.memory = memory->direct_memory();
@@ -212,13 +228,6 @@ public:
                 result.instruction = native.word;
             if (has_reason(result.reason, StopReason::Svc))
                 result.svc = native.svc;
-            if (recording) {
-                if (result.reason == StopReason::None && native.ticks != 0) {
-                    ++stats_.path_recording_steps;
-                    recorder.retired(state);
-                } else
-                    recorder.clear();
-            }
             if (step && (result.reason == StopReason::None ||
                             has_reason(result.reason, StopReason::Svc) ||
                             has_reason(result.reason, StopReason::Breakpoint))) {
