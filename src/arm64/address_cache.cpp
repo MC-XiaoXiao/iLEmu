@@ -105,6 +105,9 @@ AddressCache::Reference AddressCache::reference(
 {
     if (std::holds_alternative<Key>(id))
         return { base };
+    if (std::holds_alternative<Segment>(id))
+        if (const auto* access = segments_->find(step_, key); !access->stride)
+            return { base, access->offset };
     if (std::holds_alternative<Segment>(id) ||
         windows_->window(std::get<unsigned>(id)).stride) {
         // A dynamic window retains the validated page translation bias.
@@ -190,7 +193,16 @@ AddressCache::Reference AddressCache::remember(
     entry->dominates = entry->coverage == UINT16_MAX;
     coverage_used_ |= condition != 14;
     const auto result = slot < 2 ? integer_register(slot) : X21;
-    if (!std::holds_alternative<Key>(id)) {
+    const auto* segment = std::holds_alternative<Segment>(id)
+        ? segments_->find(step_, key) : nullptr;
+    if (segment && !segment->stride) {
+        if (segment->offset > 0)
+            code_.SUB(result, pointer, static_cast<unsigned>(segment->offset));
+        else if (segment->offset < 0)
+            code_.ADD(result, pointer, static_cast<unsigned>(-segment->offset));
+        else if (result.index() != pointer.index())
+            code_.MOV(result, pointer);
+    } else if (!std::holds_alternative<Key>(id)) {
         // The selector proved every planned offset stays in this same page.
         // The original instruction just validated its read/write page view.
         code_.SUB(result, pointer, X15);

@@ -17,6 +17,8 @@ public:
         std::int64_t first, end;
         std::int32_t first_coefficient, last_coefficient;
         std::optional<unsigned> stride;
+        // Static segments share the first eligible access as a host anchor.
+        std::int32_t offset;
     };
     explicit AddressSegments(std::pmr::memory_resource* memory)
         : groups_(memory), active_(memory), accesses_(memory) { }

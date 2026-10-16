@@ -58,6 +58,7 @@ void AddressSegments::finish(unsigned steps)
         std::int64_t first = INT64_MAX, end = INT64_MIN;
         std::int64_t first_coefficient = INT64_MAX, last_coefficient = INT64_MIN;
         bool valid = true;
+        std::optional<std::int32_t> origin;
         for (auto it = group.uses.rbegin(); it != group.uses.rend(); ++it) {
             first = std::min<std::int64_t>(first, it->constant);
             end = std::max<std::int64_t>(end, std::int64_t { it->constant } + it->key.size);
@@ -71,8 +72,14 @@ void AddressSegments::finish(unsigned steps)
                 continue;
             accesses_[it->step] = Access { id, it->key,
                 first - it->constant, end - it->constant,
-                static_cast<std::int32_t>(low), static_cast<std::int32_t>(high), group.stride };
+                static_cast<std::int32_t>(low), static_cast<std::int32_t>(high),
+                group.stride, it->constant };
+            origin = it->constant;
         }
+        if (!group.stride && origin)
+            for (const auto& use : group.uses)
+                if (auto& access = accesses_[use.step]; access && access->id == id)
+                    access->offset -= *origin;
     }
     // Only the per-access proof is needed while emitting the native body.
     active_.clear();

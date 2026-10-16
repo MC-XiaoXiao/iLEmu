@@ -28,8 +28,12 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, AddressCache::Ref
 {
     if (resident_scalar(inst, address))
         return;
-    const auto pointer = address.immediate(code_);
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
+    const bool folded = v.mode == arm::VectorTransferMode::Multiple &&
+        v.first % 2U == 0 && v.count % 2U == 0 && address.offset > 0 &&
+        address.offset % 16 == 0 &&
+        static_cast<unsigned>(address.offset) + v.count * 8U <= 16U * 4096U;
+    const auto pointer = folded ? address.base : address.immediate(code_);
     if (v.mode == arm::VectorTransferMode::ScalarMultiple) {
         scalar_multiple(inst, pointer);
         return;
@@ -48,9 +52,13 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, AddressCache::Ref
                 const auto value = quad ? vectors_.write(d) : Q0;
                 // An odd first D can place a Q pair at an eight-byte offset.
                 // Unscaled offsets represent that without another address add.
-                if (quad)
-                    code_.LDUR(value, pointer, r * 8U);
-                else
+                if (quad) {
+                    if (folded)
+                        code_.LDR(value, pointer,
+                            address.offset + static_cast<std::int32_t>(r * 8U));
+                    else
+                        code_.LDUR(value, pointer, r * 8U);
+                } else
                     code_.LDR(value.toD(), pointer, r * 8U);
                 if (big_endian_)
                     endian(value, v.element_size, quad);
@@ -71,9 +79,13 @@ void VectorMemoryEmitter::access(const arm::Instruction& inst, AddressCache::Ref
                     value = Q0;
                     endian(value, v.element_size, quad);
                 }
-                if (quad)
-                    code_.STUR(value, pointer, r * 8U);
-                else
+                if (quad) {
+                    if (folded)
+                        code_.STR(value, pointer,
+                            address.offset + static_cast<std::int32_t>(r * 8U));
+                    else
+                        code_.STUR(value, pointer, r * 8U);
+                } else
                     code_.STR(value.toD(), pointer, r * 8U);
             }
             r += quad ? 2U : 1U;
