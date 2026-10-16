@@ -69,7 +69,7 @@ namespace {
             std::pmr::memory_resource* temporary, bool fast_reads, bool cache_reads,
             std::optional<RegisterShiftRange> shift_range,
             const AddressWindows* windows, const FloatingRegisterPlan* floating,
-            const AddressSegments* segments)
+            const AddressSegments* segments, const AddressWindows* promotion_windows)
             : trace_(trace)
             , code_(trace.words, reinterpret_cast<std::uint32_t*>(0x1000))
             , vectors_(code_, floating && floating->scalars.count != 0
@@ -82,6 +82,7 @@ namespace {
                 fast_reads && !single_step, temporary, windows, segments)
             , vector_splits_(*temporary)
             , windows_(windows)
+            , promotion_windows_(promotion_windows)
             , thumb_(thumb)
             , entry_thumb_(thumb)
             , split_vectors_(fast_reads && !single_step && !windows)
@@ -205,6 +206,13 @@ namespace {
                 if (windows_ && windows_->advances())
                     windows_->guard_group(code_, exit(StopReason::None, 0,
                         backedge_.pc(), {}, 0, false, backedge_.it()));
+                if (promotion_windows_) {
+                    Label stay = label();
+                    promotion_windows_->guard_group(code_, stay);
+                    code_.B(exit(StopReason::None, 0, backedge_.pc(), {},
+                        0, false, backedge_.it()));
+                    code_.l(stay);
+                }
                 floating_.next_group(code_);
                 code_.SUB(X30, X30, 1);
                 code_.CBNZ(X30, head_);
@@ -653,6 +661,7 @@ namespace {
         MemoryEmitter memory_;
         VectorMemoryEmitter::Splits vector_splits_;
         const AddressWindows* windows_;
+        const AddressWindows* promotion_windows_;
         bool thumb_;
         bool entry_thumb_;
         bool split_vectors_;
@@ -674,7 +683,8 @@ static CompiledTrace compile_trace(InstructionSource& source,
     const AddressWindows* windows = nullptr,
     unsigned instruction_limit = maximum_trace_instructions,
     const TracePath& path = TracePath {},
-    const AddressSegments* shared_segments = nullptr)
+    const AddressSegments* shared_segments = nullptr,
+    const AddressWindows* promotion_windows = nullptr)
 {
     const CodeRegions regions = permitted_regions.empty()
         ? CodeRegions { source.instruction_region(pc) } : CodeRegions { permitted_regions };
@@ -754,7 +764,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     // short cold traces retain their compact code and translation cost.
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
         expansion == CycleExpansion::Hot, cache_reads, shift_range, windows,
-        floating ? &*floating : nullptr, segments);
+        floating ? &*floating : nullptr, segments, promotion_windows);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;
@@ -1236,6 +1246,10 @@ static CompiledTrace compile_hot(InstructionSource& source,
             auto slow = compile_trace(source, permitted_regions, pc, false, maximum_ticks,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, nullptr,
                 limit, path, segments ? &*segments : nullptr);
+            const auto fallback_limit = windows.fallback_limit(slow.instructions);
+            std::optional<AddressWindows> fallback_windows;
+            if (!path && windows.advances() && fallback_limit < slow.instructions)
+                fallback_windows.emplace(windows);
             windows.expand(slow.instructions);
             if (windows.empty())
                 return slow;
@@ -1245,6 +1259,23 @@ static CompiledTrace compile_hot(InstructionSource& source,
                 big_endian, thumb, it, CycleExpansion::Hot, {}, &windows,
                 slow.instructions, path,
                 segments && slow.instructions == limit ? &*segments : nullptr);
+            if (fallback_windows && windows.can_select(fast, slow)) {
+                auto tail_slow = compile_trace(source, permitted_regions, pc, false,
+                    maximum_ticks, big_endian, thumb, it, CycleExpansion::Hot,
+                    {}, nullptr, fallback_limit);
+                fallback_windows->expand(tail_slow.instructions);
+                if (!fallback_windows->empty()) {
+                    auto tail_fast = compile_trace(source, permitted_regions, pc, false,
+                        maximum_ticks, big_endian, thumb, it, CycleExpansion::Hot,
+                        {}, &*fallback_windows, tail_slow.instructions, TracePath {}, nullptr, &windows);
+                    if (fallback_windows->can_select(tail_fast, tail_slow)) {
+                        auto bounded = fallback_windows->select(
+                            std::move(tail_fast), std::move(tail_slow));
+                        if (windows.can_select(fast, bounded))
+                            return windows.select(std::move(fast), std::move(bounded), false);
+                    }
+                }
+            }
             return windows.select(std::move(fast), std::move(slow));
         }
     }

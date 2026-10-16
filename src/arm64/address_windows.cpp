@@ -288,20 +288,46 @@ void AddressWindows::guard(oaknut::VectorCodeGenerator& code,
         code.CBNZ(W17, fallback);
     }
 }
-CompiledTrace AddressWindows::select(
-    CompiledTrace fast, CompiledTrace slow) const
+unsigned AddressWindows::fallback_limit(unsigned instructions) const
 {
-    if (!fast.selectable_with(slow) ||
-        fast.words.size() + slow.words.size() + 256 > 128U * 1024U / 4U)
-        return slow;
-    if (fast.words == slow.words)
-        return fast;
+    const auto copies = cycle_instructions_ ? instructions / cycle_instructions_ : 0U;
+    if (copies < 4)
+        return instructions;
+    constexpr unsigned maximum_fallback_copies = 8;
+    return cycle_instructions_ * std::min(maximum_fallback_copies, copies / 2U);
+}
+bool AddressWindows::can_select(const CompiledTrace& fast, const CompiledTrace& slow) const
+{
+    if (fast.maximum_ticks < slow.maximum_ticks || fast.instructions < slow.instructions ||
+        fast.words.size() + slow.words.size() + 256 > 128U * 1024U / 4U ||
+        fast.words == slow.words)
+        return false;
+    auto bounded = static_cast<const TraceMetadata&>(slow);
+    if (!fast.selectable_with(bounded)) {
+        if (!fast.closed || !slow.closed)
+            return false;
+        // Each body publishes its actual paid ticks. The cache may retain
+        // the larger closed group's conservative budget and polling bound.
+        bounded.maximum_ticks = fast.maximum_ticks;
+        bounded.instructions = fast.instructions;
+        if (!fast.selectable_with(bounded))
+            return false;
+    }
     const bool dynamic = std::any_of(windows_.begin(), windows_.end(),
         [](const Window& w) { return w.enabled && w.stride.has_value(); });
     const bool only_dynamic = std::all_of(windows_.begin(), windows_.end(),
         [](const Window& w) { return !w.enabled || w.stride.has_value(); });
-    if (dynamic && only_dynamic && fast.words.size() >= slow.words.size())
+    return !(dynamic && only_dynamic && fast.words.size() >= slow.words.size());
+}
+CompiledTrace AddressWindows::select(
+    CompiledTrace fast, CompiledTrace slow, bool revisit) const
+{
+    if (fast.words == slow.words && fast.selectable_with(slow))
+        return fast;
+    if (!can_select(fast, slow))
         return slow;
+    const bool dynamic = std::any_of(windows_.begin(), windows_.end(),
+        [](const Window& w) { return w.enabled && w.stride.has_value(); });
     using namespace oaknut;
     using namespace oaknut::util;
     CompiledTrace result;
@@ -326,7 +352,7 @@ CompiledTrace AddressWindows::select(
         result.words.end(), fast.words.begin(), fast.words.end());
     code.align(16);
     code.l(fallback);
-    if (advances()) {
+    if (revisit && advances()) {
         // Revisit the selector after one guarded group. A group crossing a
         // page boundary must not keep later page-local groups on the slow body.
         code.MOV(X16, 1);

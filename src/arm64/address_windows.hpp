@@ -37,9 +37,11 @@ public:
     const Window& window(unsigned index) const { return windows_[index]; }
     bool empty() const;
     bool advances() const;
+    unsigned fallback_limit(unsigned instructions) const;
+    bool can_select(const CompiledTrace& fast, const CompiledTrace& slow) const;
     void guard_group(oaknut::VectorCodeGenerator&, oaknut::Label&) const;
     CompiledTrace select(
-        CompiledTrace fast, CompiledTrace slow) const;
+        CompiledTrace fast, CompiledTrace slow, bool revisit = true) const;
 
 private:
     void guard(oaknut::VectorCodeGenerator&, oaknut::Label&, bool registers) const;
