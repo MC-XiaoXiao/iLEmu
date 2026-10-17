@@ -16,10 +16,11 @@ public:
         scalar_arithmetic_ = true;
         scalars_.observe(value);
     }
-    void observe(const arm::VectorFloatingArithmeticOperands&)
+    void observe(const arm::VectorFloatingArithmeticOperands& value)
     {
         vector_arithmetic_ = true;
-        packed_ = true;
+        packed_ |= value.quad;
+        scalars_.observe(value);
     }
     void observe(const arm::VectorTransferOperands& value, bool load)
     {
@@ -28,8 +29,8 @@ public:
     void use_packed() { packed_ = true; }
     FloatingRegisterPlan finish(bool reserve_scalars = true) const
     {
-        // Packed NEON consumers keep all guest banks available. Scalar-only
-        // cycles retain their existing reservations and accumulation units.
+        // Quad and unhandled packed consumers retain their bank aliases.
+        // Single-D operations share coherent scalar entry/exit reservations.
         return { reserve_scalars && !packed_ ? scalars_.finish() : ScalarRegisterPlan {},
             vector_arithmetic_ && !scalar_arithmetic_ };
     }

@@ -43,12 +43,31 @@ void ScalarRegisterPlan::Builder::observe(
     }
 }
 void ScalarRegisterPlan::Builder::observe(
+    const arm::VectorFloatingArithmeticOperands& v)
+{
+    const auto operand = [&](unsigned d, bool quad, bool write) {
+        if (quad) {
+            for (unsigned word = d * 2U; word < d * 2U + 4U; ++word)
+                blocked_[word] = true;
+        } else
+            use(d * 2U, true, write, 0, true);
+    };
+    operand(v.destination, v.quad, true);
+    operand(v.first, v.quad, false);
+    operand(v.second, v.quad && !v.scalar_lane, false);
+}
+void ScalarRegisterPlan::Builder::observe(
     const arm::VectorTransferOperands& v, bool load)
 {
     const bool scalar = v.mode == arm::VectorTransferMode::ScalarMultiple;
     const auto first = v.first * (scalar ? v.element_size / 4U : 2U);
     if (scalar && v.count == 1) {
         use(first, v.element_size == 8, load, 2);
+        return;
+    }
+    if (v.mode == arm::VectorTransferMode::Lane &&
+        v.count == 1 && v.element_size == 4) {
+        use(first, true, load, 2, true);
         return;
     }
     // Bulk and partial vector accesses keep their existing packed lowering.

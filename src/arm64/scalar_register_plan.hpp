@@ -29,6 +29,7 @@ struct ScalarRegisterPlan {
 class ScalarRegisterPlan::Builder {
 public:
     void observe(const arm::FloatingArithmeticOperands&);
+    void observe(const arm::VectorFloatingArithmeticOperands&);
     void observe(const arm::VectorTransferOperands&, bool load);
     ScalarRegisterPlan finish() const;
 

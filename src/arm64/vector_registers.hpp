@@ -114,8 +114,10 @@ public:
     }
     void write_d(unsigned d, oaknut::QReg value)
     {
-        if (auto resident = resident_d(d))
-            code_.FMOV(*resident, oaknut::DReg { value.index() });
+        if (auto resident = resident_d(d)) {
+            if (resident->index() != value.index())
+                code_.FMOV(*resident, oaknut::DReg { value.index() });
+        }
         else if (auto pair = resident_pair(d)) {
             code_.FMOV(pair->first, oaknut::SReg { value.index() });
             code_.DUP(oaknut::QReg { pair->second.index() }.S4(), value.Selem()[1]);

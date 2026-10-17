@@ -8,6 +8,27 @@ bool VectorMemoryEmitter::resident_scalar(
     const arm::Instruction& inst, AddressCache::Reference address)
 {
     const auto& v = std::get<arm::VectorTransferOperands>(inst.vector);
+    if (v.mode == arm::VectorTransferMode::Lane &&
+        v.count == 1 && v.element_size == 4) {
+        if (auto resident = vectors_.resident_d(v.first)) {
+            const auto lane = QReg { resident->index() }.Selem()[v.lane];
+            const auto pointer = address.immediate(code_);
+            if (!big_endian_)
+                access_lane(inst.load, lane, pointer);
+            else {
+                if (inst.load)
+                    code_.LDR(W17, pointer);
+                else
+                    code_.UMOV(W17, lane);
+                code_.REV(W17, W17);
+                if (inst.load)
+                    code_.INS(lane, W17);
+                else
+                    code_.STR(W17, pointer);
+            }
+            return true;
+        }
+    }
     if (v.mode != arm::VectorTransferMode::ScalarMultiple || v.count != 1)
         return false;
     const auto access = [&](auto value) {
@@ -77,6 +98,10 @@ bool VectorMemoryEmitter::resident_scalar(
         }
         if (auto wide = vectors_.resident_d(v.first / 2U)) {
             const auto lane = QReg { wide->index() }.Selem()[v.first % 2U];
+            if (!big_endian_) {
+                access_lane(inst.load, lane, address.immediate(code_));
+                return true;
+            }
             if (!inst.load)
                 code_.UMOV(W17, lane);
             if (!inst.load && big_endian_)
