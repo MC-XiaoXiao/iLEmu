@@ -198,7 +198,7 @@ namespace {
             entry_end_ = cycle_end_ = trace_.words.size();
             code_.l(head_);
         }
-        void finish(std::uint32_t pc)
+        void finish(std::uint32_t pc, CycleExpansion expansion)
         {
             const bool natural_backedge = trace_.closed;
             trace_.closed |= std::any_of(exits_.begin(), exits_.end(),
@@ -290,9 +290,10 @@ namespace {
             };
             std::pmr::map<decltype(Exit { }.payload()), SharedExit> shared {
                 exits_.get_allocator().resource() };
-            // Natural and continued cycles can repeat payloads through
-            // control exits as well as copied guest instructions.
-            const bool share = natural_backedge || continued_cycle_;
+            // Hot guarded dynamic edges can close during finish too. Keep
+            // compact cold exits free of an extra payload-indexing pass.
+            const bool share = natural_backedge || continued_cycle_ ||
+                (trace_.closed && expansion == CycleExpansion::Hot);
             if (share) {
                 for (const auto& out : exits_) {
                     auto& payload = shared.try_emplace(
@@ -1247,7 +1248,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
             window.repeat_cycle();
         }
     }
-    emit.finish(pc);
+    emit.finish(pc, expansion);
     return out;
 }
 static CompiledTrace compile_hot(InstructionSource& source,
