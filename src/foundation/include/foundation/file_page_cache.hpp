@@ -295,7 +295,8 @@ private:
 };
 
 struct GuestPageBacking {
-    mutable GuestPageBytes bytes { };
+    // Preserve vector and cache-line alignment in shared allocations.
+    alignas(64) mutable GuestPageBytes bytes { };
 
     GuestPageBacking();
     ~GuestPageBacking();
