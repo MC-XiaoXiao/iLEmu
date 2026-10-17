@@ -216,25 +216,34 @@ bool AddressWindows::advances() const
 AddressRegisterPlan AddressWindows::register_plan() const
 {
     AddressRegisterPlan result;
-    for (unsigned reg = 0; reg < 15 && result.count < result.capacity; ++reg) {
-        if (!registers_.permits(reg))
-            continue;
-        std::optional<unsigned> selected;
-        bool valid = true;
-        for (const auto& access : accesses_) {
-            if (access.key.base != reg)
+    const auto append = [&](bool deferred) {
+        for (unsigned reg = 0; reg < 15 && result.count < result.capacity; ++reg) {
+            if (!(deferred ? registers_.permits_constant_offsets(reg)
+                          : registers_.permits(reg)))
                 continue;
-            if (!access.window || !windows_[*access.window].enabled ||
-                !windows_[*access.window].stride ||
-                (selected && selected != access.window)) {
-                valid = false;
-                break;
+            std::optional<unsigned> selected;
+            bool valid = true;
+            for (const auto& access : accesses_) {
+                if (access.key.base != reg)
+                    continue;
+                if (!access.window || !windows_[*access.window].enabled ||
+                    windows_[*access.window].stride.has_value() == deferred ||
+                    (selected && selected != access.window)) {
+                    valid = false;
+                    break;
+                }
+                selected = access.window;
             }
-            selected = access.window;
+            if (valid && selected) {
+                result.bases[result.count++] = reg;
+                if (deferred)
+                    result.deferred_mask |= 1U << reg;
+            }
         }
-        if (valid && selected)
-            result.bases[result.count++] = reg;
-    }
+    };
+    // Preserve every existing pointer slot before adding constant-offset bases.
+    append(false);
+    append(true);
     return result;
 }
 void AddressWindows::guard_group(

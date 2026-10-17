@@ -20,8 +20,10 @@ void AddressRegisterPlan::Builder::observe(
     switch (inst.kind) {
     case Kind::DataProcessing:
         if (update(inst)) {
-            if (!inst.immediate_operand)
+            if (!inst.immediate_operand) {
                 forbid(inst.rm);
+                variable_updates_ |= 1U << inst.rd;
+            }
             return;
         }
         for_written_register(inst, [&](unsigned reg) { forbid(reg); });

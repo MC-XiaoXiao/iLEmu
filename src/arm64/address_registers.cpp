@@ -3,6 +3,7 @@
 #include "address_displacements.hpp"
 #include "compiler.hpp"
 #include <cstddef>
+#include <bit>
 #include <stdexcept>
 namespace ilemu::execution::arm64 {
 using namespace oaknut;
@@ -22,7 +23,10 @@ std::optional<unsigned> AddressRegisters::slot(unsigned reg) const
             return i;
     return {};
 }
-bool AddressRegisters::eligible(unsigned reg) const { return slot(reg).has_value(); }
+bool AddressRegisters::eligible(unsigned reg) const
+{
+    return slot(reg).has_value() && !entry_relative(reg);
+}
 void AddressRegisters::acquire(unsigned reg, XReg bias)
 {
     if (active(reg))
@@ -35,7 +39,16 @@ void AddressRegisters::acquire(unsigned reg, XReg bias)
 }
 bool AddressRegisters::update(const arm::Instruction& inst)
 {
-    if ((inst.opcode >= 8 && inst.opcode <= 11) || !active(inst.rd))
+    if (inst.opcode >= 8 && inst.opcode <= 11)
+        return false;
+    if (entry_relative(inst.rd)) {
+        if (!AddressRegisterPlan::update(inst) || !inst.immediate_operand)
+            throw std::logic_error("invalid constant address update");
+        offsets_[slot(inst.rd).value()] +=
+            inst.opcode == 4 ? inst.immediate : 0U - inst.immediate;
+        return true;
+    }
+    if (!active(inst.rd))
         return false;
     if (!AddressRegisterPlan::update(inst))
         throw std::logic_error("invalid native address update");
@@ -58,11 +71,15 @@ bool AddressRegisters::update(const arm::Instruction& inst)
 }
 bool AddressRegisters::writeback(const arm::Instruction& inst)
 {
-    if (!active(inst.rn))
+    if (!active(inst.rn) && !entry_relative(inst.rn))
         return false;
     const auto change = AddressDisplacements::writeback(inst);
     if (!change || change->delta < -4095 || change->delta > 4095)
         throw std::logic_error("invalid native address writeback");
+    if (entry_relative(inst.rn)) {
+        offsets_[slot(inst.rn).value()] += static_cast<std::uint32_t>(change->delta);
+        return true;
+    }
     const auto base = XReg { static_cast<int>(inst.rn) };
     if (change->delta < 0)
         code_.SUB(base, base, static_cast<unsigned>(-change->delta));
@@ -74,7 +91,10 @@ void AddressRegisters::read_guest(WReg destination, unsigned reg) const
 {
     const auto base = WReg { static_cast<int>(reg) };
     if (!active(reg)) {
-        code_.MOV(destination, base);
+        if (entry_relative(reg) && offsets_[slot(reg).value()] != 0)
+            add_offset(destination, base, offsets_[slot(reg).value()]);
+        else
+            code_.MOV(destination, base);
         return;
     }
     code_.LDR(X17, X20, biases + slot(reg).value() * sizeof(std::uint64_t));
@@ -96,6 +116,32 @@ void AddressRegisters::finish_group()
     // Group guards and control polls use architectural W registers. Re-enter
     // through the ordinary first publication to acquire pointers again.
     restore(active_);
+    publish_offsets(offsets_);
     active_ = 0;
+    offsets_ = {};
+}
+void AddressRegisters::add_offset(WReg destination, WReg base,
+    std::uint32_t offset) const
+{
+    const auto value = std::bit_cast<std::int32_t>(offset);
+    const auto magnitude = static_cast<std::uint64_t>(value < 0
+        ? -std::int64_t { value } : std::int64_t { value });
+    if (AddSubImm::is_valid(magnitude)) {
+        if (value < 0)
+            code_.SUB(destination, base, AddSubImm { magnitude });
+        else
+            code_.ADD(destination, base, AddSubImm { magnitude });
+    } else {
+        code_.MOV(W17, offset);
+        code_.ADD(destination, base, W17);
+    }
+}
+void AddressRegisters::publish_offsets(const Offsets& offsets) const
+{
+    for (unsigned i = 0; i < plan_.count; ++i)
+        if (offsets[i] != 0) {
+            const auto reg = WReg { static_cast<int>(plan_.bases[i]) };
+            add_offset(reg, reg, offsets[i]);
+        }
 }
 }

@@ -217,7 +217,9 @@ AddressCache::Reference AddressCache::remember(
             windows_->window(std::get<unsigned>(id)).stride.has_value();
         if (!dynamic) {
             const auto displacement = displacements_->get(key.base).value();
-            if (displacement == 0)
+            // Deferred architectural updates leave the entry base in its GPR,
+            // including when another access replaced this cache slot.
+            if (displacement == 0 || (registers_ && registers_->entry_relative(key.base)))
                 code_.ADD(result, result, XReg { static_cast<int>(key.base) });
             else {
                 // Reconstruct the entry base modulo32 before host-pointer addition.

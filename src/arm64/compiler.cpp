@@ -59,6 +59,7 @@ namespace {
         bool dynamic_pc, instruction, backedge, thumb;
         unsigned it;
         unsigned address_mask;
+        AddressRegisters::Offsets deferred_offsets;
         auto payload() const
         {
             return std::tuple { reason, state_pc, report_pc, word, svc,
@@ -111,7 +112,8 @@ namespace {
                 reason == StopReason::Svc ? pc + size_ : pc, pc,
                 word.value_or(0), svc, dynamic_pc, word.has_value(), backedge,
                 thumb_,
-                it.value_or(it_), address_registers_.mask() });
+                it.value_or(it_), address_registers_.mask(),
+                address_registers_.deferred_offsets() });
             return exits_.back().label;
         }
         void observe_instruction(const arm::Instruction& inst)
@@ -293,6 +295,9 @@ namespace {
                 code_.l(out.label);
                 if (accepts_backedge(out))
                     backedge_.emit(code_, loop_tail_);
+                // Different paid prefixes can share the final state payload
+                // after their entry-relative address updates are published.
+                address_registers_.publish_offsets(out.deferred_offsets);
                 code_.MOV(X16, out.ticks);
                 if (!share) {
                     publish_exit(out);
