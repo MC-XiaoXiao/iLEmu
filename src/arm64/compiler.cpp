@@ -83,8 +83,11 @@ namespace {
             , floating_(floating && floating->standard_controls)
             , integer_(code_, shift_range)
             , exchanges_(code_, integer_)
-            , address_registers_(code_, address_registers && windows
-                  ? windows->register_plan() : AddressRegisterPlan {})
+            , address_registers_(code_, address_registers
+                  ? segments ? segments->registers().plan()
+                             : windows ? windows->register_plan() : AddressRegisterPlan {}
+                  : AddressRegisterPlan {})
+            , address_scopes_(address_registers && segments ? &segments->registers() : nullptr)
             , memory_(code_, integer_, big_endian, fast_reads, cache_reads,
                 fast_reads && !single_step, temporary, windows, segments)
             , vector_splits_(*temporary)
@@ -130,7 +133,14 @@ namespace {
             it_ = it;
             size_ = size;
         }
-        void position(unsigned step) { memory_.addresses().position(step); }
+        void position(unsigned step)
+        {
+            if (address_scopes_) {
+                const auto scope = address_scopes_->at(step);
+                address_registers_.scope(scope.allowed, scope.ending);
+            }
+            memory_.addresses().position(step);
+        }
         void retired(unsigned it) { it_ = it; }
         void mode(bool thumb) { thumb_ = thumb; }
         void disable_backedges() { backedge_.disable(); }
@@ -674,6 +684,7 @@ namespace {
         IntegerEmitter integer_;
         ExchangePaths exchanges_;
         AddressRegisters address_registers_;
+        const AddressRegisterScopes* address_scopes_;
         MemoryEmitter memory_;
         VectorMemoryEmitter::Splits vector_splits_;
         const AddressWindows* windows_;
@@ -782,7 +793,7 @@ static CompiledTrace compile_trace(InstructionSource& source,
     Emitter emit(out, big_endian, thumb, pc, it, single_step, &temporary,
         expansion == CycleExpansion::Hot, cache_reads, shift_range, windows,
         floating ? &*floating : nullptr, segments, promotion_windows,
-        !path && !single_step && expansion == CycleExpansion::Hot && !segments);
+        !single_step && expansion == CycleExpansion::Hot);
     emit.prologue();
     const auto start = pc;
     const auto start_it = it;

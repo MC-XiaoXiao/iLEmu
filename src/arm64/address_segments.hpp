@@ -2,6 +2,7 @@
 #pragma once
 #include "address_cache.hpp"
 #include "address_displacements.hpp"
+#include "address_register_scopes.hpp"
 #include <memory_resource>
 #include <optional>
 #include <vector>
@@ -21,12 +22,13 @@ public:
         std::int32_t offset;
     };
     explicit AddressSegments(std::pmr::memory_resource* memory)
-        : groups_(memory), active_(memory), accesses_(memory) { }
+        : groups_(memory), active_(memory), accesses_(memory), registers_(memory) { }
     void observe(unsigned step, const arm::Instruction&,
         const std::optional<AddressCache::Key>&);
     void finish(unsigned steps);
     const Access* find(unsigned step, const AddressCache::Key&) const;
     void guard(oaknut::VectorCodeGenerator&, const Access&, oaknut::Label&) const;
+    const AddressRegisterScopes& registers() const { return registers_; }
 
 private:
     struct Use {
@@ -38,10 +40,13 @@ private:
         AddressDisplacements offsets;
         std::pmr::vector<Use> uses;
         std::optional<unsigned> stride;
+        AddressRegisterPlan::Builder registers;
+        bool register_safe = false;
         explicit Group(std::pmr::memory_resource* memory) : uses(memory) { }
     };
     std::pmr::vector<Group> groups_;
     std::pmr::vector<unsigned> active_;
     std::pmr::vector<std::optional<Access>> accesses_;
+    AddressRegisterScopes registers_;
 };
 }

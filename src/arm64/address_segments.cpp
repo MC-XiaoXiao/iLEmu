@@ -37,6 +37,17 @@ void AddressSegments::observe(unsigned step, const arm::Instruction& inst,
     }
     for (auto it = active_.begin(); it != active_.end();) {
         auto& group = groups_[*it];
+        const auto& first = group.uses.front().key;
+        bool addressable = key && key->offset == 0 && !key->index && !key->pc_base;
+        if (key && key->base == first.base)
+            addressable &= key->load == first.load &&
+                key->alignment == first.alignment &&
+                key->natural_alignment == first.natural_alignment;
+        group.registers.observe(inst, addressable);
+        // Later non-address uses lie outside this segment's last access. Keep
+        // the proof through that access, before its lifetime is shortened.
+        if (group.uses.back().step == step)
+            group.register_safe = group.registers.permits(first.base);
         group.offsets.observe(inst);
         const auto value = group.offsets.expression(group.uses.front().key.base);
         if (!value || (value->index && !group.offsets.invariant(*value->index)) ||
@@ -50,6 +61,7 @@ void AddressSegments::observe(unsigned step, const arm::Instruction& inst,
 void AddressSegments::finish(unsigned steps)
 {
     accesses_.resize(steps);
+    registers_.resize(steps);
     for (unsigned id = 0; id < groups_.size(); ++id) {
         const auto& group = groups_[id];
         // Range checks must amortize across several actual accesses.
@@ -82,6 +94,17 @@ void AddressSegments::finish(unsigned steps)
             for (const auto& use : group.uses)
                 if (auto& access = accesses_[use.step]; access && access->id == id)
                     access->offset -= *origin;
+        if (group.stride && group.register_safe) {
+            unsigned first_step = steps, count = 0;
+            for (const auto& use : group.uses)
+                if (const auto& access = accesses_[use.step]; access && access->id == id) {
+                    first_step = std::min(first_step, use.step);
+                    ++count;
+                }
+            if (count >= 3)
+                registers_.add(group.uses.front().key.base, first_step,
+                    group.uses.back().step + 1U);
+        }
     }
     // Only the per-access proof is needed while emitting the native body.
     active_.clear();

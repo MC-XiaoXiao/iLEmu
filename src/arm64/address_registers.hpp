@@ -20,6 +20,7 @@ public:
     }
     const Offsets& deferred_offsets() const { return offsets_; }
     void acquire(unsigned reg, oaknut::XReg bias);
+    void scope(unsigned allowed, unsigned ending);
     bool update(const arm::Instruction&);
     bool writeback(const arm::Instruction&);
     void read_guest(oaknut::WReg destination, unsigned reg) const;
@@ -33,6 +34,7 @@ private:
     oaknut::VectorCodeGenerator& code_;
     AddressRegisterPlan plan_;
     unsigned active_ = 0;
+    unsigned allowed_ = ~0U;
     Offsets offsets_ { };
 };
 }

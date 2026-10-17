@@ -25,7 +25,15 @@ std::optional<unsigned> AddressRegisters::slot(unsigned reg) const
 }
 bool AddressRegisters::eligible(unsigned reg) const
 {
-    return slot(reg).has_value() && !entry_relative(reg);
+    return (allowed_ & (1U << reg)) != 0 &&
+        slot(reg).has_value() && !entry_relative(reg);
+}
+void AddressRegisters::scope(unsigned allowed, unsigned ending)
+{
+    const auto finished = active_ & (ending | ~allowed);
+    restore(finished);
+    active_ &= ~finished;
+    allowed_ = allowed;
 }
 void AddressRegisters::acquire(unsigned reg, XReg bias)
 {
