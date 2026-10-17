@@ -19,7 +19,8 @@ struct TraceLocation {
 class TracePath {
 public:
     enum class Edge { Sequential, Taken, NotTaken, Dynamic };
-    static constexpr unsigned maximum_steps = 512;
+    static constexpr unsigned initial_steps = 512;
+    static constexpr unsigned maximum_steps = 4096;
     explicit TracePath(std::span<const TraceLocation> locations = {})
         : locations_(locations)
     {

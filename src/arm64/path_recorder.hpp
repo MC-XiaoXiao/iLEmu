@@ -12,13 +12,14 @@ namespace ilemu::execution::arm64 {
 class PathRecorder {
 public:
     bool begin(std::shared_ptr<const CodeIdentity> identity,
-        std::optional<std::uint64_t> generation, const CpuThreadState& state) noexcept
+        std::optional<std::uint64_t> generation, const CpuThreadState& state,
+        unsigned limit = TracePath::initial_steps) noexcept
     {
         clear();
-        if (!identity || !generation)
+        if (!identity || !generation || limit == 0 || limit > TracePath::maximum_steps)
             return false;
         try {
-            positions_.reserve(TracePath::maximum_steps + 1U);
+            positions_.reserve(limit + 1U);
             positions_.push_back(location(state));
         } catch (const std::bad_alloc&) {
             return false;
@@ -26,6 +27,7 @@ public:
         identity_ = std::move(identity);
         generation_ = generation;
         endian_ = state.cpsr & 0x200U;
+        limit_ = limit;
         active_ = true;
         return true;
     }
@@ -44,7 +46,7 @@ public:
         if (next == positions_.front()) {
             active_ = false;
             complete_ = true;
-        } else if (positions_.size() == TracePath::maximum_steps + 1U)
+        } else if (positions_.size() == limit_ + 1U)
             clear();
     }
     std::span<const TraceLocation> ready(
@@ -73,6 +75,7 @@ private:
     std::shared_ptr<const CodeIdentity> identity_;
     std::optional<std::uint64_t> generation_;
     std::uint32_t endian_ = 0;
+    unsigned limit_ = 0;
     bool active_ = false, complete_ = false;
 };
 }

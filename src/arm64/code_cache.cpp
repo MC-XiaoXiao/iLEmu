@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <span>
 #include <stdexcept>
+#include <oaknut/oaknut_exception.hpp>
 
 namespace ilemu::execution::arm64 {
 CodeCache::CodeCache(
@@ -223,8 +224,13 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
     };
     const auto fallback = [&]() -> Entry& {
         stats_.compilation_nanoseconds += elapsed();
-        if (previous)
+        if (previous) {
+            // A closed observation that cannot be published should not keep
+            // paying for the same optional compilation on later hot visits.
+            if (recording)
+                previous->path_limit = 0;
             return hit();
+        }
         return entry(source, binding, pc, step, big_endian, thumb, it_state,
             observer, timing_limit);
     };
@@ -257,6 +263,10 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
             widened.reset();
         } catch (const std::bad_alloc&) {
             widened.reset();
+        } catch (const oaknut::OaknutException&) {
+            // An optional extension may exceed an encoding's range before
+            // the final byte limit is known. The current entry stays valid.
+            widened.reset();
         }
         if (!widened)
             return fallback();
@@ -287,6 +297,10 @@ CodeCache::Entry& CodeCache::entry(InstructionSource& source,
                 expansion, views ? std::span<const InstructionRegion> { authorized }
                                  : std::span<const InstructionRegion> {});
         const auto bytes = std::as_bytes(std::span { compiled.words });
+        // Recording must not replace compact loops with a large inline body.
+        // Unsuccessful extensions keep the existing executable entry.
+        if (recording && bytes.size() > 64U * 1024U)
+            return fallback();
         if (bytes.size() > 256U * 1024U) {
             if (extending)
                 return fallback();

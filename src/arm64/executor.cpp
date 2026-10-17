@@ -109,7 +109,11 @@ public:
                 selected->defer_path();
                 const auto view = lease->cached_continuation(result.pc);
                 if (view && view->inspectable &&
-                    recorder.begin(binding.identity, binding.generation, state)) {
+                    recorder.begin(binding.identity, binding.generation, state,
+                        selected->path_limit)) {
+                    // Larger paths must earn the existing deferred retry;
+                    // the first bounded observation keeps its cold cost.
+                    selected->path_limit = arm64::TracePath::maximum_steps;
                     ++stats_.path_recording_attempts;
                     // Leave this scope before checked execution can write to
                     // code: its native instruction lease must be released.
