@@ -1089,9 +1089,7 @@ bool GlesResourceStore::materialize_surface_textures(
                 return false;
             }
             level.argb = frame.pixels;
-            level.host_generation =
-                std::max(level.host_surface->cpu_generation(),
-                    level.host_surface->gpu_generation());
+            level.host_generation = mapping.generation();
             level.revision = allocate_texture_revision();
         }
     }

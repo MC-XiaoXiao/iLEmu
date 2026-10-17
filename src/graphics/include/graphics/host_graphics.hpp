@@ -107,6 +107,11 @@ public:
         {
             return surface_->cpu_frame_;
         }
+        // Read the pixel generation under the mapping's existing surface lock.
+        [[nodiscard]] std::uint64_t generation() const
+        {
+            return surface_->cpu_generation_;
+        }
         // Narrows a write mapping to the pixels actually modified. Omitting
         // this keeps the conservative full-surface damage used by callers
         // that expose the raw mapping to arbitrary software.
