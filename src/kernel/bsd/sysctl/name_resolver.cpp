@@ -60,6 +60,8 @@ namespace {
             readable | string_type, "A" },
         NamedObject { "kern.bootargs", control_kernel, kernel_boot_arguments,
             readable | string_type, "A" },
+        NamedObject { "kern.bootsessionuuid", control_kernel,
+            kernel_boot_session_uuid, readable | string_type, "A" },
         NamedObject { "kern.monotonicclock_usecs", control_kernel,
             kernel_monotonic_clock_usecs, readable | quad_type, "Q" },
         NamedObject { "hw.machine", control_hardware, hardware_machine,

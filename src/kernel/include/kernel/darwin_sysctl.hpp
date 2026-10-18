@@ -50,6 +50,8 @@ inline constexpr std::uint32_t kernel_process_arguments = 38;
 inline constexpr std::uint32_t kernel_process_arguments2 = 49;
 inline constexpr std::uint32_t kernel_build_version = 65;
 inline constexpr std::uint32_t kernel_boot_arguments = 1000;
+// Stable local OID for the named node registered as OID_AUTO by XNU.
+inline constexpr std::uint32_t kernel_boot_session_uuid = 1002;
 // Stable OID for the platform-provided named monotonic clock.
 inline constexpr std::uint32_t kernel_monotonic_clock_usecs = 1001;
 inline constexpr std::uint32_t kernel_process_all = 0;

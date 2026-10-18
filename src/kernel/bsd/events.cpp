@@ -2079,6 +2079,9 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             case darwin::sysctl::kernel_boot_arguments:
                 write_read_only_string({});
                 return;
+            case darwin::sysctl::kernel_boot_session_uuid:
+                write_read_only_string(shared_state_->boot_session_uuid);
+                return;
             case darwin::sysctl::kernel_monotonic_clock_usecs: {
                 // The supported ARM32 platform clock exposes a uint64_t
                 // microsecond counter, independent of calendar adjustments.

@@ -10,6 +10,8 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/task.h
 
 #pragma once
+
+#include "crypto/host_uuid.hpp"
 #include <mach/xnu_mig_reference.hpp>
 #include <kernel/credential_groups.hpp>
 #include <kernel/open_file_offset.hpp>
@@ -544,6 +546,8 @@ struct KernelSharedState {
     CompassDevice compass;
     DarwinKernelIdentity darwin_kernel_identity;
     DarwinAbi darwin_abi;
+    // Shared by forked tasks and preserved across exec for this boot.
+    const std::string boot_session_uuid { make_host_uuid() };
     // Resolved once at construction; fork shares it and exec preserves it.
     const PthreadContract& pthread_contract;
     const BsdDispatchTable bsd_dispatch_table;
