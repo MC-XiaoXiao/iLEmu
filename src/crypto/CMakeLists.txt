@@ -10,9 +10,18 @@ add_library(ilemu_crypto STATIC
     core_crypto_hle.cpp
     prime_field_layout.cpp
     host/key_store.cpp
+    host/uuid.cpp
     host/big_number.cpp)
 add_library(iLEmu::crypto ALIAS ilemu_crypto)
 ilemu_configure_module(ilemu_crypto)
 target_include_directories(ilemu_crypto PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(ilemu_crypto PUBLIC iLEmu::foundation
     PRIVATE OpenSSL::Crypto)
+
+if(WIN32)
+    target_link_libraries(ilemu_crypto PRIVATE rpcrt4)
+elseif(NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(ILEMU_UUID REQUIRED IMPORTED_TARGET uuid)
+    target_link_libraries(ilemu_crypto PRIVATE PkgConfig::ILEMU_UUID)
+endif()
