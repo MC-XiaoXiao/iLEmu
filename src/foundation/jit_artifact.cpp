@@ -2793,7 +2793,8 @@ void JitArtifactStore::promote_retention_locked(
     }
     if (const auto resident = artifacts_.find(key);
         resident != artifacts_.end()) {
-        if (!resident->second.boot_working_set) {
+        if (!resident->second.boot_working_set &&
+            !resident->second.artifact->data.native_only()) {
             promote_resident_retention_locked(resident);
             resident->second.benefit_generation = generation();
             changed = true;
@@ -2814,7 +2815,8 @@ void JitArtifactStore::promote_retention_locked(
 void JitArtifactStore::promote_resident_retention_locked(
     ArtifactMap::iterator iterator) const
 {
-    if (iterator->second.boot_working_set)
+    if (iterator->second.boot_working_set ||
+        iterator->second.artifact->data.native_only())
         return;
     const bool had_boot_records = boot_lru_begin_ != lru_.end();
     lru_.splice(lru_.end(), lru_, iterator->second.lru_position);
@@ -2856,6 +2858,12 @@ void JitArtifactStore::insert_locked(
     bool loaded_from_disk, bool startup_prefetched,
     JitArtifactRetention retention) const
 {
+    // Native templates are transient reuse across runtimes, not persisted
+    // startup seeds. Keep them in the common recency queue so old boot code
+    // cannot crowd out reused shared code in other runtimes.
+    const bool native_only = artifact->data.native_only();
+    if (native_only)
+        retention = JitArtifactRetention::Normal;
     auto resident_bytes = serialized_bytes;
     if (artifact->data.native_template) {
         const auto native_bytes =
@@ -2891,9 +2899,9 @@ void JitArtifactStore::insert_locked(
         return;
     }
     const auto disk = disk_artifacts_.find(key);
-    const bool boot_working_set =
-        retention == JitArtifactRetention::BootWorkingSet ||
-        (disk != disk_artifacts_.end() && disk->second.boot_working_set);
+    const bool boot_working_set = !native_only &&
+        (retention == JitArtifactRetention::BootWorkingSet ||
+            (disk != disk_artifacts_.end() && disk->second.boot_working_set));
     const bool membership_added =
         retention == JitArtifactRetention::BootWorkingSet &&
         (disk == disk_artifacts_.end() || !disk->second.boot_working_set);
