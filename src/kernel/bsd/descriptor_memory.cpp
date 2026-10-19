@@ -17,6 +17,7 @@
 #include "kernel/baseband_device.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_file_flags.hpp"
+#include "foundation/code_signature.hpp"
 #include <kernel/virtual_udp_error.hpp>
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
@@ -1267,6 +1268,70 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 bsd_success(cpu, 0);
             }
             return;
+        case darwin::fcntl_command::add_file_signatures_return: {
+            if (!shared_state_->darwin_abi.capabilities.file_signature_end_offset) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            // XNU F_ADDFILESIGS_RETURN consumes a 32-bit fsignatures_t and
+            // replaces its first off_t with the CodeDirectory's covered end.
+            const auto record = registers[2];
+            if (record > std::numeric_limits<std::uint32_t>::max() - 16U) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            const auto file_start = memory_.read64(record);
+            const auto blob_start = memory_.read32(record + 8U);
+            const auto blob_size = memory_.read32(record + 12U);
+            if (!file_start || !blob_start || !blob_size) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            auto descriptor = fd;
+            if (const auto duplicate = duplicated_descriptors_.find(fd);
+                duplicate != duplicated_descriptors_.end())
+                descriptor = duplicate->second;
+            const auto file = file_descriptors_.find(descriptor);
+            if (file == file_descriptors_.end()) {
+                bsd_error(cpu, bsd_support::bad_file_descriptor);
+                return;
+            }
+            constexpr std::uint32_t maximum_signature_size = 40U * 1024U * 1024U;
+            if (*blob_size > maximum_signature_size) {
+                bsd_error(cpu, 7U); // E2BIG
+                return;
+            }
+            std::error_code error;
+            const auto file_size = std::filesystem::file_size(file->second, error);
+            if (error || *file_start > file_size ||
+                *blob_start > file_size - *file_start ||
+                *blob_size > file_size - *file_start - *blob_start) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            std::vector<std::byte> signature(*blob_size);
+            std::ifstream input { file->second, std::ios::binary };
+            input.seekg(static_cast<std::streamoff>(*file_start + *blob_start));
+            if (!input.read(reinterpret_cast<char*>(signature.data()),
+                    static_cast<std::streamsize>(signature.size()))) {
+                bsd_error(cpu, 5U); // EIO
+                return;
+            }
+            const auto covered = CodeSignature::covered_end_offset(signature);
+            if (!covered || *covered > file_size - *file_start) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            std::array<std::byte, 8> result { };
+            for (unsigned i = 0U; i < result.size(); ++i)
+                result[i] = static_cast<std::byte>((*covered >> (i * 8U)) & 0xffU);
+            if (!memory_.copy_to_user(record, result)) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            bsd_success(cpu, 0);
+            return;
+        }
         case darwin::fcntl_command::get_path: {
             auto descriptor = fd;
             if (const auto duplicate = duplicated_descriptors_.find(descriptor);

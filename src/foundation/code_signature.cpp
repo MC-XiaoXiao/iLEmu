@@ -4,6 +4,7 @@
 #include "foundation/code_signature.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <openssl/evp.h>
 
 namespace ilemu {
@@ -17,6 +18,12 @@ namespace {
         return result;
     }
 
+    std::uint64_t be64(std::span<const std::byte> bytes, std::size_t offset)
+    {
+        return (static_cast<std::uint64_t>(be32(bytes, offset)) << 32U) |
+               be32(bytes, offset + 4U);
+    }
+
     bool digest_matches(std::span<const std::byte> bytes,
         std::span<const std::byte> expected, const EVP_MD* algorithm)
     {
@@ -28,6 +35,81 @@ namespace {
                std::equal(expected.begin(), expected.end(),
                    reinterpret_cast<const std::byte*>(digest.data()));
     }
+}
+
+std::optional<std::uint64_t> CodeSignature::covered_end_offset(
+    std::span<const std::byte> signature)
+{
+    if (signature.size() < 12U || be32(signature, 0U) != 0xfade0cc0U)
+        return std::nullopt;
+    const auto length = be32(signature, 4U);
+    const auto count = be32(signature, 8U);
+    if (length < 12U || length > signature.size() ||
+        count > (length - 12U) / 8U)
+        return std::nullopt;
+    signature = signature.first(length);
+    for (std::size_t i = 0U; i < count; ++i) {
+        if (be32(signature, 12U + i * 8U) != 0U)
+            continue;
+        const auto offset = be32(signature, 16U + i * 8U);
+        if (offset > length || length - offset < 44U)
+            return std::nullopt;
+        const auto directory = signature.subspan(offset);
+        const auto directory_size = be32(directory, 4U);
+        if (be32(directory, 0U) != 0xfade0c02U ||
+            directory_size < 44U || directory_size > directory.size())
+            return std::nullopt;
+        const auto version = be32(directory, 8U);
+        const auto hash_offset = be32(directory, 16U);
+        const auto code_slots = be32(directory, 28U);
+        auto code_limit = static_cast<std::uint64_t>(be32(directory, 32U));
+        const auto hash_size = std::to_integer<unsigned>(directory[36]);
+        const auto page_shift = std::to_integer<unsigned>(directory[39]);
+        if (version >= 0x20300U && code_limit == 0xffffffffU) {
+            if (directory_size < 64U)
+                return std::nullopt;
+            code_limit = be64(directory, 56U);
+        }
+        if (code_limit == 0U || hash_size == 0U || page_shift > 30U ||
+            hash_offset > directory_size ||
+            code_slots > (directory_size - hash_offset) / hash_size)
+            return std::nullopt;
+        if (version >= 0x20100U) {
+            if (directory_size < 48U)
+                return std::nullopt;
+            const auto scatter_offset = be32(directory, 44U);
+            if (scatter_offset != 0U) {
+                constexpr std::size_t scatter_entry_size = 24U;
+                if (scatter_offset > directory_size ||
+                    directory_size - scatter_offset < scatter_entry_size)
+                    return std::nullopt;
+                bool terminated = false;
+                std::uint32_t scattered_pages = 0U;
+                for (std::size_t entry = scatter_offset;
+                     entry <= directory_size - scatter_entry_size;
+                     entry += scatter_entry_size) {
+                    const auto count = be32(directory, entry);
+                    if (count == 0U) {
+                        terminated = true;
+                        break;
+                    }
+                    if (count > code_slots - scattered_pages)
+                        return std::nullopt;
+                    scattered_pages += count;
+                }
+                if (!terminated)
+                    return std::nullopt;
+            }
+        }
+        const auto page_size = std::uint64_t { 1 } << page_shift;
+        if (code_limit > std::numeric_limits<std::uint64_t>::max() -
+                             (page_size - 1U))
+            return std::nullopt;
+        if (code_slots != (code_limit + page_size - 1U) / page_size)
+            return std::nullopt;
+        return (code_limit + page_size - 1U) & ~(page_size - 1U);
+    }
+    return std::nullopt;
 }
 
 std::optional<CodeSignature> CodeSignature::inspect(

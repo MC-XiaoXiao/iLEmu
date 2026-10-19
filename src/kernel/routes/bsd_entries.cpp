@@ -215,6 +215,8 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(58, "readlink", Handler::BsdFilesystem);
     add(128, "rename", Handler::BsdFilesystem);
     add(136, "mkdir", Handler::BsdFilesystem);
+    add(475, "mkdirat", Handler::BsdFilesystem, Contract::LaterEpoch,
+        abi.abi_epoch == DarwinAbiEpoch::Later);
     add(137, "rmdir", Handler::BsdFilesystem);
     add(darwin::syscall::update_file_times, "update_file_times",
         Handler::BsdFilesystem);
@@ -240,6 +242,8 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(341, "stat64_extended", Handler::BsdFilesystem);
     add(342, "lstat64_extended", Handler::BsdFilesystem);
     add(343, "fstat64_extended", Handler::BsdFilesystem);
+    add(470, "fstatat64", Handler::BsdFilesystem, Contract::LaterEpoch,
+        abi.abi_epoch == DarwinAbiEpoch::Later);
     add(345, "statfs64", Handler::BsdFilesystem);
     add(346, "fstatfs64", Handler::BsdFilesystem);
     add(347, "getfsstat64", Handler::BsdFilesystem);

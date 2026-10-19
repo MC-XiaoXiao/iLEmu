@@ -107,10 +107,12 @@ namespace {
     {
         if (path.lexically_normal() == root.lexically_normal())
             return hfs_root_catalog_id;
+        if (const auto original = numeric_xattr(
+                path, "user.hfsfuse.record.cnid", follow_symlink))
+            return *original;
         if (status.st_nlink > 1)
             return path_catalog_id(root, path);
-        return numeric_xattr(path, "user.hfsfuse.record.cnid", follow_symlink)
-            .value_or(inode_catalog_id(status));
+        return inode_catalog_id(status);
     }
 
     bool is_within_root(
@@ -394,7 +396,14 @@ std::optional<Metadata> MetadataProvider::query(
         numeric_xattr(path, "user.hfsfuse.record.bsd_flags", follow_symlink)
             .value_or(0);
     result.link_count = static_cast<std::uint32_t>(status.st_nlink);
-    result.permanent_id = inode_catalog_id(status);
+    // Extracted HFS volumes preserve the guest catalog ID as an xattr. Use
+    // that identity for ordinary vnodes; only true hard links need the host
+    // inode to share one identity across multiple catalog names.
+    const auto hardlinked_file = !result.directory && status.st_nlink > 1;
+    result.permanent_id = hardlinked_file
+        ? inode_catalog_id(status)
+        : numeric_xattr(path, "user.hfsfuse.record.cnid", follow_symlink)
+              .value_or(inode_catalog_id(status));
     result.catalog_id = catalog_id(root_, path, status, follow_symlink);
     if (is_root) {
         result.parent_catalog_id = hfs_root_parent_id;

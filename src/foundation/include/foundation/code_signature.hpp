@@ -23,6 +23,10 @@ struct CodeSignature {
     // Trust is determined separately by the firmware's trust cache.
     [[nodiscard]] static std::optional<CodeSignature> inspect(
         std::span<const std::byte> image, std::span<const std::byte> signature);
+    // Return the page-rounded extent covered by a structurally valid embedded
+    // CodeDirectory, relative to the start of its image.
+    [[nodiscard]] static std::optional<std::uint64_t> covered_end_offset(
+        std::span<const std::byte> signature);
 };
 
 class PlatformTrustCache {

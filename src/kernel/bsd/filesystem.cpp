@@ -839,12 +839,17 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
     case 128: // rename
         dispatch_bsd_filesystem_rename(cpu);
         return;
-    case 136: { // mkdir
-        const auto path = memory_.read_c_string(registers[0]);
+    case 136: // mkdir
+    case 475: { // mkdirat
+        const auto path = number == 475
+            ? read_guest_path_at(cpu, registers[0], registers[1])
+            : memory_.read_c_string(registers[0]);
         if (!path) {
-            bsd_error(cpu, bsd_support::bad_address);
+            if (number == 136)
+                bsd_error(cpu, bsd_support::bad_address);
             return;
         }
+        const auto mode = registers[number == 475 ? 2 : 1];
         const auto host = resolve_guest_path(cpu, *path);
         std::error_code error;
         {
@@ -880,7 +885,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 shared_state_->hfs_metadata_overrides[metadata->permanent_id];
             metadata_override.mode =
                 0040000U |
-                (registers[1] & ~process_.file_creation_mask & 07777U);
+                (mode & ~process_.file_creation_mask & 07777U);
             metadata_override.owner = process_.effective_uid;
             metadata_override.group = process_.effective_gid;
             metadata_override.creation_time = timestamp;
@@ -891,7 +896,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             host);
         directory_entries_cache_.clear();
         output_.write("[vfs] mkdir " + *path +
-                      " mode=" + std::to_string(registers[1] & 07777U) + "\n");
+                      " mode=" + std::to_string(mode & 07777U) + "\n");
         bsd_success(cpu, 0);
         return;
     }
@@ -1964,12 +1969,22 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
     case 338: // stat64
     case 340: // lstat64
     case 341: // stat64_extended
-    case 342: { // lstat64_extended
-        const auto path = memory_.read_c_string(registers[0]);
-        if (!path) {
-            bsd_error(cpu, bsd_support::bad_address);
+    case 342: // lstat64_extended
+    case 470: { // fstatat64
+        constexpr std::uint32_t at_symlink_nofollow = 0x20U;
+        if (number == 470 && (registers[3] & ~at_symlink_nofollow) != 0U) {
+            bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
+        const auto path = number == 470
+            ? read_guest_path_at(cpu, registers[0], registers[1])
+            : memory_.read_c_string(registers[0]);
+        if (!path) {
+            if (number != 470)
+                bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        const auto stat_address = registers[number == 470 ? 2 : 1];
         output_.write("[vfs] stat64 " + *path + "\n");
         const auto finish_extended_security = [&, this](
             const std::filesystem::path* host = nullptr,
@@ -2011,7 +2026,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         if (const auto minor = darwin::bpf::device_minor(*path)) {
-            if (!write_guest_device_stat64(registers[1], 32U + *minor, true)) {
+            if (!write_guest_device_stat64(stat_address, 32U + *minor, true)) {
                 bsd_error(cpu, bsd_support::bad_address);
             } else if (finish_extended_security()) {
                 bsd_success(cpu, 0);
@@ -2022,14 +2037,16 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             *path == "/dev/rdisk0s1" || *path == "/dev/rdisk0s2") {
             const auto minor = path->ends_with("s1") ? 1U : 2U;
             if (!write_guest_device_stat64(
-                    registers[1], minor, path->starts_with("/dev/rdisk"))) {
+                stat_address, minor, path->starts_with("/dev/rdisk"))) {
                 bsd_error(cpu, bsd_support::bad_address);
             } else if (finish_extended_security()) {
                 bsd_success(cpu, 0);
             }
             return;
         }
-        const auto follow_symlink = number == 338 || number == 341;
+        const auto follow_symlink = number == 470
+            ? (registers[3] & at_symlink_nofollow) == 0U
+            : number == 338 || number == 341;
         const auto host = resolve_guest_path(cpu, *path, follow_symlink);
         std::error_code error;
         const auto status = follow_symlink
@@ -2039,7 +2056,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, darwin::error::no_entry);
             return;
         }
-        if (!write_guest_stat64(registers[1], host, follow_symlink)) {
+        if (!write_guest_stat64(stat_address, host, follow_symlink)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
