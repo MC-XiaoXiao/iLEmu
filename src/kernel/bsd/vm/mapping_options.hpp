@@ -10,7 +10,8 @@
 namespace ilemu::bsd_vm {
 
 // kern_mman.c validates these before its zero-length return. Anonymous
-// descriptors carry allocation flags from XNU1228; mmap accepts superpage
+// descriptors carry byte-sized memory tags in early ARM libc, then Mach
+// allocation flags in later clients; mmap accepts superpage
 // selectors and defines MAP_JIT from XNU1699 (later than vm_allocate).
 class MappingOptions {
 public:
@@ -26,8 +27,8 @@ public:
             return false;
         if (!anonymous || descriptor == UINT32_MAX)
             return true;
-        if (epoch_ < DarwinAbiEpoch::IphoneOs2)
-            return false;
+        if (anonymous_descriptor_format() == AnonymousDescriptorFormat::MemoryTag)
+            return descriptor <= 0xffU;
         auto allowed = 0xff000002U; // VM_FLAGS_ALIAS_MASK | VM_FLAGS_PURGABLE
         if (epoch_ >= DarwinAbiEpoch::Darwin11)
             allowed |= 0x00070000U; // VM_FLAGS_SUPERPAGE_MASK
@@ -35,6 +36,18 @@ public:
     }
 
 private:
+    enum class AnonymousDescriptorFormat { MemoryTag, AllocationFlags };
+
+    constexpr AnonymousDescriptorFormat anonymous_descriptor_format() const
+    {
+        // Early ARM malloc passes VM_MEMORY_* directly (for example, tag 1
+        // when creating a scalable zone). Later clients use VM_MAKE_TAG and
+        // can combine it with the permitted Mach VM allocation flags.
+        return epoch_ < DarwinAbiEpoch::IphoneOs2
+            ? AnonymousDescriptorFormat::MemoryTag
+            : AnonymousDescriptorFormat::AllocationFlags;
+    }
+
     DarwinAbiEpoch epoch_;
 };
 
