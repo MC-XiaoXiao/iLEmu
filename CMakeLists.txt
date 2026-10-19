@@ -214,6 +214,3 @@ target_link_libraries(ilemu_core INTERFACE
 
 add_subdirectory(src/runtime)
 add_subdirectory(app)
-if(NOT ANDROID)
-    add_subdirectory(tools/guest)
-endif()
