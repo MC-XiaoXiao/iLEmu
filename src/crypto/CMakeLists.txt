@@ -11,6 +11,7 @@ add_library(ilemu_crypto STATIC
     prime_field_layout.cpp
     host/key_store.cpp
     host/uuid.cpp
+    host/entropy.cpp
     host/big_number.cpp)
 add_library(iLEmu::crypto ALIAS ilemu_crypto)
 ilemu_configure_module(ilemu_crypto)

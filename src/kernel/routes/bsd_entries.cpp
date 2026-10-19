@@ -37,6 +37,8 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         abi.coalition_abi != DarwinCoalitionAbi::Unsupported);
     add(460, "necp_match_policy", Handler::BsdNetworkPolicy,
         Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
+    add(500, "getentropy", Handler::BsdEntropy,
+        Contract::CurrentDispatcher, abi.capabilities.getentropy);
     add(461, "getattrlistbulk", Handler::BsdDirectoryAttributes,
         Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
     add(463, "openat", Handler::BsdFilesystem, Contract::LaterEpoch,

@@ -78,6 +78,10 @@ BsdDispatchTable::Adapter BsdDispatchTable::adapter_for(
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
             static_cast<void>(kernel.dispatch_bsd_security(cpu, number));
         };
+    case Handler::BsdEntropy:
+        return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t) {
+            kernel.dispatch_bsd_getentropy(cpu);
+        };
     case Handler::BsdAuditSession:
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
             static_cast<void>(kernel.dispatch_bsd_audit_session(cpu, number));

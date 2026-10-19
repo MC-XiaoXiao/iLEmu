@@ -38,6 +38,8 @@ std::string_view handler_name(Handler value)
         return "dispatch_bsd_code_signing";
     case Handler::BsdSecurity:
         return "dispatch_bsd_security";
+    case Handler::BsdEntropy:
+        return "dispatch_bsd_getentropy";
     case Handler::BsdAuditSession:
         return "dispatch_bsd_audit_session";
     case Handler::BsdFileport:

@@ -29,6 +29,7 @@ enum class Handler {
     BsdKqueue,
     BsdCodeSigning,
     BsdSecurity,
+    BsdEntropy,
     BsdAuditSession,
     BsdFileport,
     BsdGuardedFile,
