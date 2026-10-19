@@ -1107,10 +1107,9 @@ struct KernelSharedState {
         ApplicationLaunchOrigin origin { ApplicationLaunchOrigin::Spawn };
         ApplicationLaunchPhase phase { ApplicationLaunchPhase::Launching };
         // A foreground App can ask SpringBoard to open another App without an
-        // icon touch. Keep that transaction distinct from an ordinary desktop
-        // launch so the firmware's handoff animation runs exactly once.
+        // icon touch. Track that foreground ownership change independently
+        // of the firmware's animation decisions.
         bool foreground_handoff { };
-        bool handoff_animation_dispatched { };
     };
     struct ForegroundTransitionProcess {
         std::uint32_t process_id { };

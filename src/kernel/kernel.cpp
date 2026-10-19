@@ -24,7 +24,6 @@
 #include "graphics/core_animation_remote_abi.hpp"
 #include "telephony/core_telephony_hle.hpp"
 #include "crypto/core_crypto_hle.hpp"
-#include "kernel/core_animation_software_hle.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
@@ -408,7 +407,6 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     register_core_crypto_hle(userland_hle_);
     register_memory_routine_hle(userland_hle_,
         arm_architecture_for_model(device_model_.processor.model));
-    register_core_animation_software_hle(userland_hle_);
     register_mbx_connect_hle(userland_hle_);
     graphics_services_input::register_springboard_alert_observers(userland_hle_,
         [this](std::uint32_t object,
@@ -444,13 +442,6 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
                 KernelSharedState::ApplicationSuspensionReason::Lock,
                 scene_coordinator_.get(), 0U);
         });
-    graphics_services_input::register_springboard_application_handoff_animation(
-        userland_hle_, [this] {
-            return graphics_services_input::
-                take_pending_application_handoff_animation(*shared_state_);
-        });
-    layerkit_hle_.register_handlers(
-        userland_hle_, shared_state_, scene_coordinator_, output_);
     thread_ports_.emplace(0, process_.thread_port);
     if (!mach_task_identity::initialize_root(*shared_state_, process_)) {
         throw std::runtime_error {
@@ -927,7 +918,6 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     opengles_hle_.reset();
     mbx2d_hle_.reset();
     mobile_framebuffer_hle_.reset();
-    layerkit_hle_.reset();
     next_display_scanout_deadline_.reset();
     // execsigs resets caught handlers. Ignored dispositions and the caller's
     // signal mask survive replacement of its address space.
@@ -2957,8 +2947,6 @@ void CompatibilityKernel::inherit_process_state(
     mobile_framebuffer_hle_.set_shared_state(shared_state_);
     mobile_framebuffer_hle_.set_presentation_tracker(presentation_tracker_);
     mobile_framebuffer_hle_.set_scene_coordinator(scene_coordinator_);
-    layerkit_hle_.set_shared_state(shared_state_);
-    layerkit_hle_.set_scene_coordinator(scene_coordinator_);
     opengles_hle_.set_display(display_state_);
     mbx2d_hle_.set_display(display_state_);
     mbx2d_hle_.set_presentation_tracker(presentation_tracker_);
@@ -2971,7 +2959,6 @@ void CompatibilityKernel::inherit_process_state(
         opengles_hle_.inherit_state(parent.opengles_hle_);
         mbx2d_hle_.inherit_state(parent.mbx2d_hle_);
         mobile_framebuffer_hle_.inherit_state(parent.mobile_framebuffer_hle_);
-        layerkit_hle_.inherit_state(parent.layerkit_hle_);
     }
     guest_working_directory_ = parent.working_directory(parent_processor);
     thread_working_directories_.clear();

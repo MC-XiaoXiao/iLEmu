@@ -57,7 +57,6 @@ private:
     enum class SubmissionResult : std::uint8_t {
         Failed,
         Submitted,
-        Deferred,
     };
 
     void register_device_functions(UserlandHleRegistry& registry);
@@ -99,11 +98,6 @@ private:
         HostSurfaceKey surface_key;
         std::uint64_t generation { };
     };
-    struct DeferredForegroundFrame {
-        std::uint32_t scene_process_id { };
-        std::uint64_t generation { };
-    };
-
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<SurfaceStore> surface_store_;
     std::shared_ptr<PresentationTracker> presentation_tracker_;
@@ -131,7 +125,6 @@ private:
     std::uint32_t background_argb_ { 0xff000000U };
     std::uint32_t submitted_background_argb_ { 0xff000000U };
     bool scanout_contents_valid_ { };
-    std::optional<DeferredForegroundFrame> deferred_foreground_frame_;
 };
 
 } // namespace ilemu

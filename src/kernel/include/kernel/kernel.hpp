@@ -55,7 +55,6 @@
 #include "kernel/kernel_control.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "kernel/process_snapshot.hpp"
-#include "kernel/layerkit_hle.hpp"
 #include "device_state/lockdown_state.hpp"
 #include "device_state/darwin_kernel_configuration.hpp"
 #include "kernel/mach_arm_thread_abi.hpp"
@@ -1218,7 +1217,6 @@ private:
     std::uint32_t socket_payload_trace_count_ { };
     std::uint32_t semaphore_wait_trace_count_ { };
     std::uint32_t psynch_trace_count_ { };
-    LayerKitHle layerkit_hle_;
     std::uint32_t baseband_io_trace_count_ { };
     std::optional<std::uint64_t> next_display_scanout_deadline_;
     std::uint32_t virtual_processor_count_ { 1 };

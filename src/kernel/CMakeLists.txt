@@ -59,16 +59,13 @@ add_library(ilemu_kernel_graphics STATIC
     graphics/surface_plane_reader.cpp
     graphics/guest_drawable_geometry.cpp
     graphics/guest_eagl_window.cpp
-    graphics/layerkit_hle.cpp
     graphics/mbx2d_hle.cpp
     graphics/mbx3d_quad_hle.cpp
     graphics/mbx_client_surface.cpp
-    graphics/mbx_swapchain.cpp
     graphics/mobile_framebuffer_hle.cpp
     graphics/mobile_framebuffer_devices.cpp
     graphics/opengles_hle.cpp
     graphics/opengles_dispatch_hle.cpp
-    graphics/core_animation_software_hle.cpp
     graphics/opengles_programmable.cpp
     graphics/opengles_program_draw.cpp
     graphics/opengles_framebuffers.cpp

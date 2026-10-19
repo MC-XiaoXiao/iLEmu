@@ -13,10 +13,6 @@ add_library(ilemu_graphics STATIC
     gles_math.cpp
     host_graphics.cpp
     frame_file_presenter.cpp
-    fixed8_pixel_blender.cpp
-    fixed_point_texture_sampler.cpp
-    layerkit_compatibility.cpp
-    local_scene_background.cpp
     opengles_guest_capabilities.cpp
     eagl_dispatch_profile.cpp
     gles_program_interface_profile.cpp
@@ -24,7 +20,6 @@ add_library(ilemu_graphics STATIC
     gles_program_state.cpp
     gles_program_renderer.cpp
     presentation_tracker.cpp
-    scanout_composition.cpp
     surface_store.cpp)
 target_sources(ilemu_graphics PRIVATE touch_replay.cpp)
 if(NOT TARGET PNG::PNG)

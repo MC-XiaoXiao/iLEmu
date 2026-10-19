@@ -44,11 +44,6 @@ namespace {
     constexpr std::string_view ui_kit_image {
         "/System/Library/Frameworks/UIKit.framework/UIKit"
     };
-    constexpr std::string_view objc_image { "/usr/lib/libobjc.A.dylib" };
-    constexpr std::string_view objc_get_class { "_objc_getClass" };
-    constexpr std::string_view objc_message_send { "_objc_msgSend" };
-    constexpr std::string_view selector_register_name { "_sel_registerName" };
-    constexpr std::uint32_t application_display_setting = 2U;
 
     void write_word(
         std::span<std::byte> bytes, std::size_t offset, std::uint32_t value)
@@ -663,79 +658,6 @@ namespace {
         return TouchInput { input.phase, x, y };
     }
 
-    void animate_application_handoff(
-        UserlandHleCall& call, std::uint32_t application)
-    {
-        const auto controller_class_name = call.intern_string("SBUIController");
-        const auto shared_instance_name = call.intern_string("sharedInstance");
-        const auto animate_launch_name =
-            call.intern_string("animateLaunchOfApplication:");
-        if (application == 0U || controller_class_name == 0U ||
-            shared_instance_name == 0U || animate_launch_name == 0U) {
-            return;
-        }
-
-        call.cpu().registers()[0] = controller_class_name;
-        static_cast<void>(call.call_guest_function(objc_get_class,
-            [application, shared_instance_name, animate_launch_name](
-                UserlandHleCall& class_call) {
-                const auto controller_class = class_call.cpu().registers()[0];
-                if (controller_class == 0U)
-                    return;
-                class_call.cpu().registers()[0] = shared_instance_name;
-                static_cast<void>(class_call.call_guest_function(
-                    selector_register_name,
-                    [application, controller_class, animate_launch_name](
-                        UserlandHleCall& shared_selector_call) {
-                        const auto shared_instance_selector =
-                            shared_selector_call.cpu().registers()[0];
-                        if (shared_instance_selector == 0U)
-                            return;
-                        auto& registers =
-                            shared_selector_call.cpu().registers();
-                        registers[0] = controller_class;
-                        registers[1] = shared_instance_selector;
-                        static_cast<
-                            void>(shared_selector_call.call_guest_function(
-                            objc_message_send,
-                            [application, animate_launch_name](
-                                UserlandHleCall& controller_call) {
-                                const auto controller =
-                                    controller_call.cpu().registers()[0];
-                                if (controller == 0U)
-                                    return;
-                                controller_call.cpu().registers()[0] =
-                                    animate_launch_name;
-                                static_cast<void>(
-                                    controller_call.call_guest_function(
-                                        selector_register_name,
-                                        [application, controller](
-                                            UserlandHleCall&
-                                                animate_selector_call) {
-                                            const auto animate_selector =
-                                                animate_selector_call.cpu()
-                                                    .registers()[0];
-                                            if (animate_selector == 0U)
-                                                return;
-                                            auto& message_registers =
-                                                animate_selector_call.cpu()
-                                                    .registers();
-                                            message_registers[0] = controller;
-                                            message_registers[1] =
-                                                animate_selector;
-                                            message_registers[2] = application;
-                                            static_cast<void>(
-                                                animate_selector_call
-                                                    .call_guest_function(
-                                                        objc_message_send,
-                                                        [](UserlandHleCall&) {
-                                                        }));
-                                        }));
-                            }));
-                    }));
-            }));
-    }
-
     std::uint64_t allocate_application_launch_token_locked(
         KernelSharedState& state)
     {
@@ -1227,8 +1149,7 @@ namespace {
                 KernelSharedState::ApplicationLaunchAttempt {
                     allocate_application_launch_token_locked(state),
                     origin_touch_sequence, origin, phase,
-                    programmatic_foreground_spawn || handoff_foreground_spawn,
-                    false });
+                    programmatic_foreground_spawn || handoff_foreground_spawn });
         static_cast<void>(inserted);
         const auto foreground_transition_phase =
             attempt->second.phase ==
@@ -1894,75 +1815,6 @@ void record_springboard_lock_state(KernelSharedState& state, bool active)
     }
     state.springboard_unlock_touch_pending = false;
     state.springboard_unlock_touch_active = false;
-}
-
-void register_springboard_application_handoff_animation(
-    UserlandHleRegistry& registry,
-    std::function<bool()> foreground_application_observer)
-{
-    registry.register_guest_function(
-        std::string { objc_image }, std::string { objc_get_class });
-    registry.register_guest_function(
-        std::string { objc_image }, std::string { selector_register_name });
-    registry.register_guest_function(
-        std::string { objc_image }, std::string { objc_message_send });
-    registry.register_objc_instance_method(std::string { springboard_image },
-        "SBDisplay", "setActivationSetting:value:",
-        "-[SBDisplay setActivationSetting:value:]", [](UserlandHleCall& call) {
-            constexpr std::uint32_t animation_start_time_setting = 0x1000U;
-            if (call.argument(2) == animation_start_time_setting &&
-                call.argument(3) != 0U) {
-                // SpringBoard records the start before preparing the zoom
-                // layers. Removing only this explicit start lets the
-                // transaction choose its commit time while retaining the
-                // firmware's animation definition.
-                call.cpu().registers()[3] = 0U;
-            }
-            call.resume_original_persistently();
-        });
-    registry.register_objc_instance_method(std::string { springboard_image },
-        "SBDisplay",
-        "setActivationSetting:flag:", "-[SBDisplay setActivationSetting:flag:]",
-        [foreground_application_observer = std::move(
-             foreground_application_observer)](UserlandHleCall& call) {
-            const auto application = call.argument(0);
-            const auto setting = call.argument(2);
-            const auto flag = call.argument(3);
-            if (application == 0U || setting != application_display_setting ||
-                flag != 0U || !foreground_application_observer ||
-                !foreground_application_observer()) {
-                call.resume_original_persistently();
-                return;
-            }
-            // Finish the firmware's setting mutation exactly once, then
-            // schedule its native launch animation before
-            // applicationOpenURL:asPanel: continues into the display-stack
-            // push.
-            call.resume_original_persistently(
-                [application](UserlandHleCall& return_call) {
-                    animate_application_handoff(return_call, application);
-                });
-        });
-}
-
-bool take_pending_application_handoff_animation(KernelSharedState& state)
-{
-    std::lock_guard lock { state.mach_mutex };
-    if (!state.foreground_application_attempt_process_id)
-        return false;
-    auto* attempt = launch_attempt_locked(
-        state, *state.foreground_application_attempt_process_id);
-    if (!attempt || !attempt->foreground_handoff ||
-        attempt->handoff_animation_dispatched ||
-        attempt_interrupted(*attempt) || attempt_held_by_lock(*attempt) ||
-        (attempt->phase !=
-                KernelSharedState::ApplicationLaunchPhase::Launching &&
-            attempt->phase !=
-                KernelSharedState::ApplicationLaunchPhase::Active)) {
-        return false;
-    }
-    attempt->handoff_animation_dispatched = true;
-    return true;
 }
 
 std::optional<std::uint32_t> event_type(std::span<const std::byte> message)

@@ -81,19 +81,6 @@ void record_springboard_alert_state(KernelSharedState& state,
 
 void record_springboard_lock_state(KernelSharedState& state, bool active);
 
-// Restores the firmware's own launch animation when an active application
-// asks SpringBoard to hand the foreground to another ordinary application.
-// Objective-C metadata and libobjc dispatch are used instead of fixed firmware
-// addresses; the observer keeps lifecycle policy in the emulated kernel.
-void register_springboard_application_handoff_animation(
-    UserlandHleRegistry& registry,
-    std::function<bool()> foreground_application_observer);
-
-// Thread-safe lifecycle query shared by the SpringBoard compatibility hook
-// and the spawn classifier.
-[[nodiscard]] bool take_pending_application_handoff_animation(
-    KernelSharedState& state);
-
 // Extracts the leading GSEventRecord type from a message with id 123. This is
 // shared by input injection and Mach tracing so application lifecycle events
 // can be diagnosed without duplicating the private wire offsets.

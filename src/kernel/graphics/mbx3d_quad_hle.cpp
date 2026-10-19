@@ -15,12 +15,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <optional>
 #include <vector>
 
 #include "foundation/address_space.hpp"
-#include "foundation/application_path.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "kernel/kernel_shared_state.hpp"
@@ -38,8 +36,6 @@ namespace {
 
     constexpr float edge_tolerance = 0.01F;
     constexpr std::uint64_t maximum_quad_pixels = 16U * 1024U * 1024U;
-    constexpr std::uint64_t scene_extent_numerator = 3;
-    constexpr std::uint64_t scene_extent_denominator = 4;
 
     bool nearly_equal(float left, float right)
     {
@@ -59,19 +55,6 @@ namespace {
         const auto second = side(3);
         return (first > edge_tolerance && second < -edge_tolerance) ||
                (first < -edge_tolerance && second > edge_tolerance);
-    }
-
-    bool covers_scene_extent(std::int64_t width, std::int64_t height,
-        std::uint32_t destination_width, std::uint32_t destination_height)
-    {
-        if (width <= 0 || height <= 0)
-            return false;
-        return static_cast<std::uint64_t>(width) * scene_extent_denominator >=
-                   static_cast<std::uint64_t>(destination_width) *
-                       scene_extent_numerator &&
-               static_cast<std::uint64_t>(height) * scene_extent_denominator >=
-                   static_cast<std::uint64_t>(destination_height) *
-                       scene_extent_numerator;
     }
 
     std::optional<std::array<Point, 4>> read_quad(
@@ -247,11 +230,6 @@ void Mbx2dHle::quad_color(UserlandHleCall& call)
                               nearly_equal((*positions)[2].y, bottom_value) &&
                               nearly_equal((*positions)[3].x, left_value) &&
                               nearly_equal((*positions)[3].y, bottom_value);
-    if (covers_scene_extent(
-            width, height, destination->width, destination->height)) {
-        prepare_destination_for_frame(
-            call, state_, DamageRegion { left, top, right, bottom }, 0U);
-    }
     const auto composite_mode = host_composite_mode(state_);
     if (axis_aligned && host_graphics_->accelerated() &&
         destination->host_surface && destination->backing &&
@@ -364,87 +342,6 @@ void Mbx2dHle::quad_copy(
         call.set_return(mbx2d_abi::failure);
         return;
     }
-    const auto viewport =
-        display_ ? display_->geometry() : default_display_geometry;
-    [&] {
-        if (!shared_state_ || !source->backing || !destination->backing ||
-            source->width != viewport.width ||
-            source->height != viewport.height ||
-            destination->width != viewport.width ||
-            destination->height != viewport.height) {
-            return false;
-        }
-        std::lock_guard lock { shared_state_->mach_mutex };
-        const auto source_process = shared_state_->processes.find(
-            source->backing->provenance.producer_process_id);
-        const auto destination_process = shared_state_->processes.find(
-            destination->backing->provenance.producer_process_id);
-        if (source_process == shared_state_->processes.end() ||
-            destination_process == shared_state_->processes.end() ||
-            !is_application_executable_path(
-                source_process->second.executable_path) ||
-            is_application_executable_path(
-                destination_process->second.executable_path)) {
-            return false;
-        }
-
-        auto left = (*positions)[0].x;
-        auto right = left;
-        auto top = (*positions)[0].y;
-        auto bottom = top;
-        for (const auto& position : *positions) {
-            left = std::min(left, position.x);
-            right = std::max(right, position.x);
-            top = std::min(top, position.y);
-            bottom = std::max(bottom, position.y);
-        }
-        if (!nearly_equal(left, 0.0F) ||
-            !nearly_equal(right, static_cast<float>(viewport.width)) ||
-            top <= edge_tolerance ||
-            !nearly_equal(bottom, static_cast<float>(viewport.height))) {
-            return false;
-        }
-
-        auto minimum_u = (*texture)[0].x;
-        auto maximum_u = minimum_u;
-        auto minimum_v = (*texture)[0].y;
-        auto maximum_v = minimum_v;
-        for (const auto& coordinate : *texture) {
-            minimum_u = std::min(minimum_u, coordinate.x);
-            maximum_u = std::max(maximum_u, coordinate.x);
-            minimum_v = std::min(minimum_v, coordinate.y);
-            maximum_v = std::max(maximum_v, coordinate.y);
-        }
-        // Firmware texture coordinates address pixel centers, so a full source
-        // may end at half a pixel inside its nominal extent.
-        constexpr auto texture_edge_tolerance = 1.0F;
-        if (minimum_u > texture_edge_tolerance ||
-            maximum_u + texture_edge_tolerance <
-                static_cast<float>(source->width) ||
-            minimum_v > texture_edge_tolerance ||
-            maximum_v + texture_edge_tolerance <
-                static_cast<float>(source->height) ||
-            maximum_v <= minimum_v + edge_tolerance) {
-            return false;
-        }
-
-        // The firmware's first full-screen handoff quad reserves the
-        // destination top band but still addresses the whole source surface,
-        // squeezing the application's client snapshot into the remaining
-        // extent. Keep the source at its native client height; the destination
-        // position already accounts for the reserved band. Later quads are
-        // fractional zoom bounds and intentionally retain firmware texture
-        // coordinates.
-        const auto source_content_height =
-            std::min(static_cast<float>(source->height), bottom - top);
-        const auto texture_height = maximum_v - minimum_v;
-        for (auto& coordinate : *texture) {
-            const auto normalized = (coordinate.y - minimum_v) / texture_height;
-            coordinate.y = minimum_v + std::clamp(normalized, 0.0F, 1.0F) *
-                                           source_content_height;
-        }
-        return true;
-    }();
     if (!source_surface_allowed(*source)) {
         call.set_return(mbx2d_abi::success);
         return;
@@ -545,12 +442,6 @@ void Mbx2dHle::quad_copy(
             (*texture)[1].x + (*texture)[3].x) &&
         nearly_equal((*texture)[0].y + (*texture)[2].y,
             (*texture)[1].y + (*texture)[3].y);
-    if (covers_scene_extent(
-            width, height, destination->width, destination->height)) {
-        prepare_destination_for_frame(call, state,
-            DamageRegion { left, top, right, bottom },
-            state.source ? state.source->surface : 0U);
-    }
     const auto matches_texture = [&](std::array<Point, 4> expected) {
         for (std::size_t index = 0; index < expected.size(); ++index) {
             if (!nearly_equal((*texture)[index].x, expected[index].x) ||

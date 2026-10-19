@@ -120,10 +120,6 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
             release_core_surface_reference(found->second);
         }
         surfaces_.erase(surface);
-        initialized_destinations_.erase(surface);
-        destination_frame_sequences_.erase(surface);
-        destination_scene_damage_.erase(surface);
-        destination_scene_sources_.erase(surface);
         const auto unbind = [surface](RenderState& state) {
             if (state.source && state.source->surface == surface) {
                 state.source.reset();
@@ -260,10 +256,6 @@ void Mbx2dHle::reset()
     contexts_.clear();
     next_context_ = first_context_handle;
     surfaces_.clear();
-    initialized_destinations_.clear();
-    destination_frame_sequences_.clear();
-    destination_scene_damage_.clear();
-    destination_scene_sources_.clear();
     next_surface_ = first_surface_handle;
     framebuffer_surface_ = 0;
     state_ = { };
@@ -280,10 +272,6 @@ void Mbx2dHle::inherit_state(const Mbx2dHle& parent)
     contexts_ = parent.contexts_;
     next_context_ = parent.next_context_;
     surfaces_ = parent.surfaces_;
-    initialized_destinations_ = parent.initialized_destinations_;
-    destination_frame_sequences_ = parent.destination_frame_sequences_;
-    destination_scene_damage_ = parent.destination_scene_damage_;
-    destination_scene_sources_ = parent.destination_scene_sources_;
     next_surface_ = parent.next_surface_;
     framebuffer_surface_ = parent.framebuffer_surface_;
     state_ = parent.state_;
@@ -382,8 +370,6 @@ void Mbx2dHle::bind_surface(
     }
     binding = Binding { handle, call.argument(first + 1U),
         call.argument(first + 2U), call.argument(first + 3U) };
-    if (!source)
-        initialize_destination(call, *state);
     call.set_return(mbx_success);
 }
 

@@ -28,7 +28,6 @@
 #include "graphics/gles_renderer.hpp"
 #include "graphics/gles_resources.hpp"
 #include "graphics/opengles_guest_capabilities.hpp"
-#include "graphics/scanout_composition.hpp"
 
 namespace ilemu {
 
@@ -312,7 +311,6 @@ private:
     std::map<std::uint32_t, SurfaceState> surfaces_;
     SurfaceState compatibility_display_surface_;
     std::uint32_t compatibility_display_process_id_ { };
-    ScanoutComposition scanout_composition_;
     GlesResourceStore resources_;
     GlesProgramState programs_;
     std::unique_ptr<GlesProgramRenderer> program_renderer_;
