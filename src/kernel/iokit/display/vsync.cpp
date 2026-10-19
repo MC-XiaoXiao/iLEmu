@@ -197,7 +197,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const ProcessContext& process, std::uint32_t connection_object,
     std::uint32_t selector, std::span<const std::uint64_t> scalar_input,
     std::span<const std::byte> inband_input,
-    std::uint32_t scalar_output_capacity)
+    std::uint32_t scalar_output_capacity,
+    std::uint32_t inband_output_capacity)
 {
     std::lock_guard lock { state.mach_mutex };
     if (!is_display_connection_locked(state, process, connection_object))
@@ -206,6 +207,11 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const bool external = state.external_framebuffer_service != 0 &&
                           connection.service_port ==
                               state.external_framebuffer_service;
+
+    if (auto frame_info = dispatch_frame_info_method(selector, scalar_input,
+            inband_input, scalar_output_capacity,
+            inband_output_capacity))
+        return frame_info;
 
     if (selector == static_cast<std::uint32_t>(
                         iokit_abi::MobileFramebufferSelector::IsMainDisplay)) {

@@ -2401,7 +2401,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 process, remote_object, request->selector,
                 std::span<const std::uint64_t> {
                     request->scalar_input.data(), request->scalar_input_count },
-                request->inband_input, request->scalar_output_capacity);
+                request->inband_input, request->scalar_output_capacity,
+                request->inband_output_capacity);
         const auto baseband_result =
             display_result
                 ? std::optional<kernel_iokit::baseband::MethodResult> { }
@@ -2517,7 +2518,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                       request->inband_output_capacity);
         const ConnectMethodResult result =
             display_result ? ConnectMethodResult { display_result->return_code,
-                std::move(display_result->scalar_output), { } }
+                std::move(display_result->scalar_output),
+                std::move(display_result->inband_output) }
             : audio_result ? ConnectMethodResult { audio_result->return_code,
                   std::move(audio_result->scalar_output), { } }
             : baseband_result

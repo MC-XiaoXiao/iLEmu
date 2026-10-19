@@ -18,16 +18,19 @@
 #include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
 #include "foundation/cpu.hpp"
+#include "foundation/scene_coordinator.hpp"
+#include "foundation/userland_hle.hpp"
+#include "graphics/presentation_tracker.hpp"
 #include "kernel/graphics_services_input_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_iokit_display.hpp"
 #include "mach/mig_wire_abi.hpp"
-#include "graphics/presentation_tracker.hpp"
-#include "foundation/scene_coordinator.hpp"
-#include "foundation/userland_hle.hpp"
 
 namespace ilemu::graphics_services_input {
 namespace {
+
+    void activate_resolved_application_locked(KernelSharedState& state,
+        std::uint32_t process_id, SceneCoordinator* scenes);
 
     constexpr std::uint32_t copy_send_bits = 19;
     constexpr std::uint32_t graphics_event_message_id = 123;
@@ -1875,7 +1878,7 @@ void record_bootstrap_registration_locked(
 ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
     std::uint32_t reply_object,
     std::span<const KernelSharedState::MachMessage::PortTransfer> transfers,
-    std::uint32_t receiver_process_id)
+    std::uint32_t receiver_process_id, SceneCoordinator* scenes)
 {
     const auto pending =
         state.pending_bootstrap_service_requests.find(reply_object);
@@ -2004,6 +2007,11 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
                         state.application_event_objects_by_process[port
                                 ->receive_owner] = service->object;
                         application_event_port = true;
+                        // The scene and lifecycle event may precede the
+                        // bootstrap reply. Recheck admission when the final
+                        // process-owned event route becomes available too.
+                        activate_resolved_application_locked(
+                            state, port->receive_owner, scenes);
                     }
                 }
             }
@@ -3068,11 +3076,14 @@ void record_application_remote_scene_commit_locked(KernelSharedState& state,
 {
     const auto application = state.processes.find(sender_pid);
     const auto destination_port = state.mach_port_objects.lookup(destination);
+    const auto render_server = destination_port
+                                   ? state.processes.find(
+                                         destination_port->receive_owner)
+                                   : state.processes.end();
     if (application == state.processes.end() || application->second.exited ||
         !is_application_executable_path(application->second.executable_path) ||
-        !destination_port ||
-        !process_is_springboard_locked(
-            state, destination_port->receive_owner) ||
+        !destination_port || destination_port->receive_owner == sender_pid ||
+        render_server == state.processes.end() || render_server->second.exited ||
         scenes == nullptr) {
         return;
     }

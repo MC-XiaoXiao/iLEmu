@@ -20,8 +20,9 @@
 namespace ilemu {
 namespace {
 
-    constexpr std::array<std::string_view, 2> encoder_send_symbols {
+    constexpr std::array<std::string_view, 3> encoder_send_symbols {
         "__ZN2CA6Render7Encoder8send_msgEj",
+        "__ZN2CA6Render7Encoder12send_messageEjj",
         "_CARenderEncoderSend",
     };
 
@@ -56,6 +57,54 @@ namespace {
         const auto expected = add_immediate | (source_register << 16U) |
                               (destination_register << 12U);
         return (instruction & operation_and_register_mask) == expected;
+    }
+
+    std::optional<std::uint32_t> detect_thumb_transaction_message(
+        const MachOImage& image, std::uint32_t function)
+    {
+        // Thumb-2 encoders can materialize the protocol base with MOVW,
+        // combine the inline/OOL selector with ORR, then store the result in
+        // mach_msg_header_t.msgh_id. Read the instruction shape instead of
+        // selecting a firmware build or embedding its message number.
+        constexpr std::uint32_t maximum_function_prefix = 512U;
+        constexpr std::uint32_t maximum_store_distance = 64U;
+        constexpr std::uint32_t message_identifier_offset = 20U;
+        for (std::uint32_t offset = 0; offset < maximum_function_prefix;
+            offset += sizeof(std::uint16_t)) {
+            const auto first = image.read_vm_u16(function + offset);
+            const auto second = image.read_vm_u16(
+                function + offset + sizeof(std::uint16_t));
+            if (!first || !second || (*first & 0xfbf0U) != 0xf240U)
+                continue;
+            const auto destination_register = (*second >> 8U) & 0xfU;
+            if (destination_register > 7U)
+                continue;
+            const auto identifier = ((*first & 0xfU) << 12U) |
+                                    (((*first >> 10U) & 1U) << 11U) |
+                                    (((*second >> 12U) & 7U) << 8U) |
+                                    (*second & 0xffU);
+            if (identifier < 0x8000U || identifier >= 0x100000U)
+                continue;
+            const auto selector_or = image.read_vm_u16(function + offset + 4U);
+            if (!selector_or || (*selector_or & 0xffc0U) != 0x4300U ||
+                (*selector_or & 7U) != destination_register ||
+                ((*selector_or >> 3U) & 7U) != 0U) {
+                continue;
+            }
+            for (std::uint32_t following = 6U;
+                following <= maximum_store_distance;
+                following += sizeof(std::uint16_t)) {
+                const auto store = image.read_vm_u16(function + offset +
+                                                     following);
+                if (store && (*store & 0xf800U) == 0x6000U &&
+                    ((*store >> 6U) & 0x1fU) ==
+                        message_identifier_offset / sizeof(std::uint32_t) &&
+                    (*store & 7U) == destination_register) {
+                    return identifier;
+                }
+            }
+        }
+        return std::nullopt;
     }
 
     std::optional<std::uint32_t> detect_inline_transaction_message(
@@ -126,8 +175,11 @@ std::optional<CoreAnimationRemoteAbi> CoreAnimationRemoteAbi::detect(
     if (encoder == nullptr)
         return std::nullopt;
 
-    const auto inline_message =
-        detect_inline_transaction_message(image, encoder->value);
+    const auto inline_message = encoder->thumb_definition()
+                                    ? detect_thumb_transaction_message(
+                                          image, encoder->value)
+                                    : detect_inline_transaction_message(
+                                          image, encoder->value);
     if (inline_message &&
         *inline_message != std::numeric_limits<std::uint32_t>::max()) {
         return CoreAnimationRemoteAbi {

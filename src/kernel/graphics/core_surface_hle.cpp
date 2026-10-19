@@ -1123,6 +1123,19 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
                 call.memory().write32(call.argument(2), buffer->seed));
         }
         call.set_return(success);
+    } else if (operation == "CopyAllValues") {
+        // The transport has no stored attachments yet. Return a retained,
+        // empty firmware CFDictionary so native CoreVideo can enumerate it.
+        call.cpu().registers()[0] = 0;
+        call.cpu().registers()[1] = 0;
+        call.cpu().registers()[2] = 0;
+        call.cpu().registers()[3] = 0;
+        if (!call.call_guest_function(
+                "_CFDictionaryCreateMutable", [](UserlandHleCall& created) {
+                    created.set_return(created.argument(0));
+                })) {
+            call.set_return(0);
+        }
     } else if (operation == "GetYCbCrMatrix" || operation == "CopyProperty" ||
                operation == "CopyValue") {
         call.set_return(0);

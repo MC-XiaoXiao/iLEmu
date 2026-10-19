@@ -80,6 +80,9 @@ enum class MobileFramebufferSelector : std::uint32_t {
     GetDigitalOutState = 25,
     // Four-scalar callback registration used by the display user client.
     EnableNotifications = 72,
+    // IOMobileFramebuffer enumerates frame-information names through the
+    // display user client before registering frame callbacks.
+    CopySupportedFrameInfoName = 74,
 };
 
 // The four-scalar notification registration passes callback, refcon, kind,

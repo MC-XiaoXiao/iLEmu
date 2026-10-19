@@ -306,7 +306,8 @@ target_link_libraries(ilemu_kernel_iokit_camera PRIVATE
 
 add_library(ilemu_kernel_iokit_display STATIC
     iokit/display/backlight.cpp
-    iokit/display/vsync.cpp)
+    iokit/display/vsync.cpp
+    iokit/display/frame_info.cpp)
 add_library(iLEmu::kernel_iokit_display ALIAS
     ilemu_kernel_iokit_display)
 ilemu_configure_module(ilemu_kernel_iokit_display)

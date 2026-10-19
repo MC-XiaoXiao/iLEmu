@@ -100,7 +100,8 @@ void record_bootstrap_registration_locked(
 [[nodiscard]] ServiceResolution record_bootstrap_reply_locked(
     KernelSharedState& state, std::uint32_t reply_object,
     std::span<const KernelSharedState::MachMessage::PortTransfer> transfers,
-    std::uint32_t receiver_process_id = 0);
+    std::uint32_t receiver_process_id = 0,
+    SceneCoordinator* scenes = nullptr);
 
 // Thread-safe host entry point. Input arriving before SpringBoard has resolved
 // its event service is retained and flushed as soon as launchd replies.

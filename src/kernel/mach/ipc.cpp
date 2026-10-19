@@ -975,7 +975,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             const auto service_resolution =
                 graphics_services_input::record_bootstrap_reply_locked(
                     *shared_state_, bootstrap_reply_object,
-                    bootstrap_transfers, process_.pid);
+                    bootstrap_transfers, process_.pid,
+                    scene_coordinator_.get());
             if (service_resolution.object != 0 &&
                 (service_resolution.application_event_port ||
                     service_resolution.service_name ==
