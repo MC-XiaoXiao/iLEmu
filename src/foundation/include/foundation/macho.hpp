@@ -196,6 +196,10 @@ public:
     void map_into(AddressSpace& memory,
         FileMappingBatchContext* batch_context = nullptr) const;
 
+    // Apply the kernel-selected load slide to parsed VM metadata before the
+    // image is mapped. File offsets and on-disk load commands stay unchanged.
+    void apply_load_slide(std::uint32_t slide);
+
 private:
     [[nodiscard]] std::optional<std::uint32_t> find_objc_method(
         std::string_view class_name, std::string_view selector,

@@ -189,6 +189,40 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     // pathnames and may have independent generations.
     FileMappingBatchContext executable_mapping_context;
     executable.map_into(memory_, &executable_mapping_context);
+    // XNU places a dyld whose header segment declares vmaddr zero just after
+    // the main image. Fixed-address dyld images retain their declared VMAs.
+    const auto dyld_without_load_address = std::any_of(
+        dynamic_linker.segments().begin(), dynamic_linker.segments().end(),
+        [](const MachSegment& segment) {
+            return segment.vm_address == 0U && segment.file_offset == 0U &&
+                   segment.file_size != 0U;
+        });
+    if (dyld_without_load_address) {
+        std::uint64_t main_end = 0U;
+        std::uint64_t dyld_end = 0U;
+        for (const auto& segment : executable.segments()) {
+            if (segment.name != "__PAGEZERO")
+                main_end = std::max(main_end,
+                    static_cast<std::uint64_t>(segment.vm_address) +
+                        segment.vm_size);
+        }
+        for (const auto& segment : dynamic_linker.segments()) {
+            if (segment.name != "__PAGEZERO")
+                dyld_end = std::max(dyld_end,
+                    static_cast<std::uint64_t>(segment.vm_address) +
+                        segment.vm_size);
+        }
+        const auto page_mask = AddressSpace::page_size - 1U;
+        const auto slide = (main_end + page_mask) &
+            ~static_cast<std::uint64_t>(page_mask);
+        const auto bounds = darwin_address_bounds(address_layout_);
+        const auto first_reserved = std::min<std::uint64_t>(
+            bounds.stack_top - initial_user_stack_size,
+            bounds.shared_region_base);
+        if (slide == 0U || slide + dyld_end > first_reserved)
+            throw std::runtime_error { "no address space for dynamic linker" };
+        dynamic_linker.apply_load_slide(static_cast<std::uint32_t>(slide));
+    }
     FileMappingBatchContext dynamic_linker_mapping_context;
     dynamic_linker.map_into(memory_, &dynamic_linker_mapping_context);
     const auto stack_top = darwin_address_bounds(address_layout_).stack_top;

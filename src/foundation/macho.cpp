@@ -1317,6 +1317,43 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
     return std::nullopt;
 }
 
+void MachOImage::apply_load_slide(std::uint32_t slide)
+{
+    if (slide == 0U)
+        return;
+    const auto shifted = [slide](std::uint32_t address) {
+        const auto result = static_cast<std::uint64_t>(address) + slide;
+        if (result > std::numeric_limits<std::uint32_t>::max())
+            throw std::runtime_error { "Mach-O load slide overflows address space" };
+        return static_cast<std::uint32_t>(result);
+    };
+    for (const auto& segment : segments_) {
+        if (segment.name != "__PAGEZERO" &&
+            static_cast<std::uint64_t>(segment.vm_address) +
+                    segment.vm_size + slide >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<std::uint32_t>::max()) + 1U)
+            throw std::runtime_error { "Mach-O load slide overflows address space" };
+    }
+    for (auto& segment : segments_) {
+        if (segment.name == "__PAGEZERO")
+            continue;
+        segment.vm_address = shifted(segment.vm_address);
+        for (auto& section : segment.sections)
+            section.address = shifted(section.address);
+    }
+    for (auto& symbol : symbols_) {
+        if (symbol.section != 0U && symbol.value != 0U)
+            symbol.value = shifted(symbol.value);
+    }
+    for (auto& stub : stubs_)
+        stub.address = shifted(stub.address);
+    for (auto& address : function_starts_)
+        address = shifted(address);
+    if (entry_point_)
+        *entry_point_ = shifted(*entry_point_);
+}
+
 void MachOImage::map_into(
     AddressSpace& memory, FileMappingBatchContext* batch_context) const
 {
