@@ -26,7 +26,7 @@ if(ILEMU_ENABLE_IPO)
     endif()
 endif()
 
-include(CTest)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 find_package(Threads REQUIRED)
 option(ILEMU_ENABLE_SDL2 "Build the optional SDL2 display backend" ON)
 option(ILEMU_ENABLE_VULKAN
@@ -34,8 +34,6 @@ option(ILEMU_ENABLE_VULKAN
 if(ILEMU_ENABLE_VULKAN)
     find_package(Vulkan QUIET)
 endif()
-option(ILEMU_ENABLE_DYNARMIC_TEST_EMIT_FAILURE
-    "Compile Dynarmic portable-emit fault injection for tests" OFF)
 if(NOT ANDROID)
     find_package(PkgConfig QUIET)
     if(ILEMU_ENABLE_SDL2 AND PkgConfig_FOUND)
@@ -65,9 +63,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # these paths from its top-level CMake project without changing this entry
 # point.
 set(ILEMU_WORKSPACE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH
-    "Workspace containing optional tools, tests, docs, and firmware data")
-set(ILEMU_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests" CACHE PATH
-    "Compatibility test source tree; may live in the surrounding workspace")
+    "Workspace containing optional tools, docs, and firmware data")
 
 set(ILEMU_DYNARMIC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/dynarmic" CACHE PATH
     "Path to the patched MC-XiaoXiao Dynarmic checkout")
@@ -105,10 +101,10 @@ else()
         "Dynarmic revision observed during configure" FORCE)
 endif()
 
-# Carry local backend fixes and test hooks as reproducible, idempotent patches.
+# Carry local backend fixes as reproducible, idempotent patches.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_dependency_patch.cmake")
 ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_ilemu_test_emit_failure.patch")
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_remove_test_hooks.patch")
 ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_arm64_halt_width.patch")
 ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
@@ -124,15 +120,13 @@ set(Boost_INCLUDE_DIRS "${ILEMU_BOOST_DIR}" CACHE PATH "" FORCE)
 
 set(DYNARMIC_FRONTENDS A32 CACHE STRING "" FORCE)
 set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
-set(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE
-    "${ILEMU_ENABLE_DYNARMIC_TEST_EMIT_FAILURE}" CACHE BOOL "" FORCE)
 set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
 set(DYNARMIC_USE_LLVM OFF CACHE BOOL "" FORCE)
 set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
 set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
 
 # Public headers are kept with their owning module. The list is intentionally
-# explicit so every target, including the out-of-tree workspace tests, sees
+# explicit so every target, including the application, sees
 # the same <module>/<name>.hpp include spelling. A major module owns one
 # include root; implementation subdirectories do not add public roots.
 # Persistent portable-IR artifacts must not cross a different Dynarmic build.
@@ -217,14 +211,4 @@ add_subdirectory(src/runtime)
 add_subdirectory(app)
 if(NOT ANDROID)
     add_subdirectory(tools/guest)
-endif()
-
-if(BUILD_TESTING)
-    if(EXISTS "${ILEMU_TESTS_DIR}/CMakeLists.txt")
-        add_subdirectory("${ILEMU_TESTS_DIR}" tests)
-    else()
-        message(STATUS
-            "Compatibility tests are not present at ${ILEMU_TESTS_DIR}; "
-            "set ILEMU_TESTS_DIR to enable them.")
-    endif()
 endif()
