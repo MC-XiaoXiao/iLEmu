@@ -35,6 +35,17 @@ namespace {
     constexpr std::uint32_t maximum_string_size = 64U * 1024U;
     constexpr std::uint32_t maximum_port_actions = 256U;
 
+    // Early ARM libc passes a four-word descriptor. Port actions extend that
+    // wire object to six words in the later spawn contract (XNU1228+).
+    struct SpawnDescriptorProfile {
+        bool port_actions;
+
+        static constexpr SpawnDescriptorProfile for_epoch(DarwinAbiEpoch epoch)
+        {
+            return { epoch >= DarwinAbiEpoch::IphoneOs2 };
+        }
+    };
+
     struct SpawnPortAction {
         std::uint32_t type { };
         std::uint32_t port_name { };
@@ -70,7 +81,8 @@ namespace {
     }
 
     std::optional<PosixSpawnAttributes> read_spawn_attributes(
-        const AddressSpace& memory, std::uint32_t address)
+        const AddressSpace& memory, std::uint32_t address,
+        SpawnDescriptorProfile profile)
     {
         PosixSpawnAttributes result;
         if (address == 0)
@@ -112,6 +124,8 @@ namespace {
                     return std::nullopt;
             }
         }
+        if (!profile.port_actions)
+            return result;
         // The 32-bit _posix_spawn_args_desc carries the port-actions block
         // separately from the fixed spawnattr structure. Each action is the
         // six-word _ps_port_action_t defined by XNU's spawn_internal.h.
@@ -209,7 +223,8 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
         path = memory_.read_c_string(registers[1]);
         arguments = read_string_vector(memory_, registers[3]);
         environment = read_string_vector(memory_, registers[4]);
-        attributes = read_spawn_attributes(memory_, registers[2]);
+        attributes = read_spawn_attributes(memory_, registers[2],
+            SpawnDescriptorProfile::for_epoch(shared_state_->darwin_abi.abi_epoch));
     }
     if (!path || !arguments || !environment || !attributes ||
         (pid_address == 0 && !attributes->setexec)) {
