@@ -1009,6 +1009,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_selects_.clear();
     pending_timers_.clear();
     pending_psynch_waits_.clear();
+    pending_ulock_waits_.clear();
     pending_signal_suspends_.clear();
     pending_signal_waits_.clear();
     scheduler_yields_.clear();
@@ -1754,6 +1755,7 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_unix_accepts_.contains(processor) ||
            pending_semaphore_waits_.contains(processor) ||
            pending_psynch_waits_.contains(processor) ||
+           pending_ulock_waits_.contains(processor) ||
            pending_signal_suspends_.contains(processor) ||
            pending_signal_waits_.contains(processor) ||
            pending_timers_.contains(processor) ||
@@ -1861,6 +1863,10 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
     }
     if (const auto found = pending_psynch_waits_.find(processor);
         found != pending_psynch_waits_.end()) {
+        consider(found->second.deadline);
+    }
+    if (const auto found = pending_ulock_waits_.find(processor);
+        found != pending_ulock_waits_.end()) {
         consider(found->second.deadline);
     }
     if (const auto found = pending_kevents_.find(processor);
@@ -2234,6 +2240,32 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         cpu.clear_halt();
         return true;
     }
+    if (const auto pending = pending_ulock_waits_.find(cpu.processor_id());
+        pending != pending_ulock_waits_.end()) {
+        const auto timed_out = !pending->second.awakened &&
+            pending->second.deadline &&
+            shared_state_->clock.now() >= *pending->second.deadline;
+        if (!pending->second.awakened && !timed_out)
+            return false;
+        const auto flags = pending->second.flags;
+        const auto address = pending->second.address;
+        pending_ulock_waits_.erase(pending);
+        if (timed_out) {
+            if ((flags & 0x01000000U) != 0U)
+                bsd_success(cpu, 0U - 60U); // ETIMEDOUT, ULF_NO_ERRNO.
+            else
+                bsd_error(cpu, 60U);
+        } else {
+            const auto remaining = std::count_if(pending_ulock_waits_.begin(),
+                pending_ulock_waits_.end(), [&](const auto& entry) {
+                    return entry.second.address == address;
+                });
+            bsd_success(cpu, static_cast<std::uint32_t>(remaining));
+        }
+        process_.waiting_for_events = false;
+        cpu.clear_halt();
+        return true;
+    }
     if (const auto timer = pending_timers_.find(cpu.processor_id());
         timer != pending_timers_.end()) {
         bool bootstrap_ready = false;
@@ -2506,6 +2538,10 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
         return "psynch(" + std::string { kind } + ",address=" +
                std::to_string(pending->second.address) + ")";
     }
+    if (const auto pending = pending_ulock_waits_.find(processor);
+        pending != pending_ulock_waits_.end()) {
+        return "ulock(address=" + std::to_string(pending->second.address) + ")";
+    }
     if (const auto timer = pending_timers_.find(processor);
         timer != pending_timers_.end()) {
         const auto operation = [&] {
@@ -2644,6 +2680,10 @@ CompatibilityKernel::timer_deadline_snapshot() const
             consider(local_deadline, wait.deadline);
         }
         for (const auto& [processor, wait] : pending_psynch_waits_) {
+            static_cast<void>(processor);
+            consider(local_deadline, wait.deadline);
+        }
+        for (const auto& [processor, wait] : pending_ulock_waits_) {
             static_cast<void>(processor);
             consider(local_deadline, wait.deadline);
         }

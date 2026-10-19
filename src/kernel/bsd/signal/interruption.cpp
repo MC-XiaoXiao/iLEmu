@@ -88,6 +88,15 @@ bool CompatibilityKernel::interrupt_thread_wait(Cpu& cpu, bool restart)
                 { process_.pid, static_cast<std::uint32_t>(processor) });
             bsd_error(cpu, darwin::error::interrupted);
             completed = true;
+        } else if (const auto pending = pending_ulock_waits_.find(processor);
+                   pending != pending_ulock_waits_.end()) {
+            const auto no_errno = (pending->second.flags & 0x01000000U) != 0U;
+            pending_ulock_waits_.erase(pending);
+            if (no_errno)
+                bsd_success(cpu, 0U - darwin::error::interrupted);
+            else
+                bsd_error(cpu, darwin::error::interrupted);
+            completed = true;
         } else if (pending_signal_waits_.contains(processor)) {
             completed = complete_signal_wait(cpu, true);
         } else if (pending_waits_.erase(processor) ||

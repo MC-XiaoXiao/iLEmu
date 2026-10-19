@@ -234,6 +234,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/pthread_state.cpp
     bsd/psynch_runtime.cpp
     bsd/psynch.cpp
+    bsd/ulock.cpp
     bsd/aio.cpp
     bsd/audit_session.cpp
     bsd/guarded_file.cpp

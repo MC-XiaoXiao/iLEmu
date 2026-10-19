@@ -64,6 +64,7 @@ void CompatibilityKernel::release_process_mach_rights()
     pending_mach_sends_.clear();
     pending_mach_receives_.clear();
     pending_psynch_waits_.clear();
+    pending_ulock_waits_.clear();
     pending_signal_suspends_.clear();
     shared_state_->psynch_runtime->clear_process(process_.pid);
     process_.waiting_for_events = false;

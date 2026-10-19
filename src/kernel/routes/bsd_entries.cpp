@@ -39,6 +39,10 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
     add(500, "getentropy", Handler::BsdEntropy,
         Contract::CurrentDispatcher, abi.capabilities.getentropy);
+    add(515, "ulock_wait", Handler::BsdUlock, Contract::CurrentDispatcher,
+        abi.capabilities.user_lock_wait);
+    add(516, "ulock_wake", Handler::BsdUlock, Contract::CurrentDispatcher,
+        abi.capabilities.user_lock_wait);
     add(461, "getattrlistbulk", Handler::BsdDirectoryAttributes,
         Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
     add(463, "openat", Handler::BsdFilesystem, Contract::LaterEpoch,

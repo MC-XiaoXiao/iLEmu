@@ -24,6 +24,8 @@ std::string_view handler_name(Handler value)
         return "dispatch_bsd_shared_region";
     case Handler::BsdPsynch:
         return "dispatch_bsd_psynch";
+    case Handler::BsdUlock:
+        return "dispatch_bsd_ulock";
     case Handler::BsdAio:
         return "dispatch_bsd_aio";
     case Handler::BsdDebug:

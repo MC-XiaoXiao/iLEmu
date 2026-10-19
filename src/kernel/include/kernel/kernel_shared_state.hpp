@@ -385,6 +385,15 @@ struct PendingPsynchWait {
     std::optional<std::uint64_t> deadline;
 };
 
+struct PendingUlockWait {
+    std::uint32_t address { };
+    std::uint32_t opcode { };
+    std::uint32_t flags { };
+    std::uint64_t sequence { };
+    std::optional<std::uint64_t> deadline;
+    bool awakened { };
+};
+
 struct PendingSignalSuspend {
     bool interrupted { };
 };

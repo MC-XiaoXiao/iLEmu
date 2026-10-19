@@ -54,6 +54,10 @@ BsdDispatchTable::Adapter BsdDispatchTable::adapter_for(
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
             static_cast<void>(kernel.dispatch_bsd_psynch(cpu, number));
         };
+    case Handler::BsdUlock:
+        return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
+            kernel.dispatch_bsd_ulock(cpu, number);
+        };
     case Handler::BsdAio:
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
             static_cast<void>(kernel.dispatch_bsd_aio(cpu, number));

@@ -619,6 +619,7 @@ private:
     void dispatch_bsd_process_sockets(Cpu& cpu);
     [[nodiscard]] bool dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_ulock(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool service_bsd_workqueue(Cpu* requesting_cpu);
     [[nodiscard]] bool request_workqueue_kevents(Cpu* requesting_cpu);
     [[nodiscard]] bool prepare_workqueue_kevent_upcall(
@@ -1213,6 +1214,8 @@ private:
     std::map<std::size_t, PendingTimer> pending_timers_;
     std::map<std::size_t, PendingSemaphoreWait> pending_semaphore_waits_;
     std::map<std::size_t, PendingPsynchWait> pending_psynch_waits_;
+    std::map<std::size_t, PendingUlockWait> pending_ulock_waits_;
+    std::uint64_t next_ulock_wait_sequence_ { 1 };
     std::map<std::size_t, PendingSignalSuspend> pending_signal_suspends_;
     std::map<std::size_t, PendingSignalWait> pending_signal_waits_;
     struct PendingIoPollCache {

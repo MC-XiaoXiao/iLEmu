@@ -22,6 +22,7 @@ enum class Handler {
     BsdDescriptorMemory,
     BsdSharedRegion,
     BsdPsynch,
+    BsdUlock,
     BsdAio,
     BsdDebug,
     BsdSocket,
