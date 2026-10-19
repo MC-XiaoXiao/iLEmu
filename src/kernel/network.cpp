@@ -19,6 +19,7 @@
 #include "kernel/kernel_network.hpp"
 #include "kernel/kernel_control.hpp"
 #include "kernel/offline_serial_device.hpp"
+#include "mach/mig_wire_abi.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1683,7 +1684,10 @@ CompatibilityKernel::baseband_open_description(std::uint32_t fd) const
 
 std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     std::size_t processor, std::uint32_t queue_fd, std::uint32_t event_address,
-    std::uint32_t event_count, darwin::kqueue::WireFormat format, bool waking_blocked_receiver)
+    std::uint32_t event_count, darwin::kqueue::WireFormat format,
+    bool waking_blocked_receiver, std::uint32_t* ready_qos,
+    KeventDataBuffer* data_buffer,
+    std::optional<std::uint32_t> required_qos_bucket)
 {
     const KeventWireFormat wire { format };
     const auto queue = kqueues_.find(queue_fd);
@@ -1692,6 +1696,38 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     std::uint32_t written = 0;
     for (auto registration = queue->second.begin();
         registration != queue->second.end();) {
+        if (required_qos_bucket &&
+            darwin::kqueue::workqueue_qos_bucket(registration->qos) !=
+                *required_qos_bucket) {
+            ++registration;
+            continue;
+        }
+        if (registration->deferred_delete && registration->enabled) {
+            if (event_count == 0U) {
+                if (ready_qos)
+                    *ready_qos = registration->qos;
+                return 1U;
+            }
+            if (written == event_count) {
+                ++registration;
+                continue;
+            }
+            const KeventValue deletion {
+                registration->ident, registration->filter,
+                static_cast<std::uint16_t>(darwin::kqueue::event_delete |
+                    darwin::kqueue::event_dispatch |
+                    darwin::kqueue::event_udata_specific |
+                    darwin::kqueue::event_one_shot),
+                0U, 0, registration->user_data,
+                { }, registration->qos,
+            };
+            if (!wire.write(memory_, event_address + written * wire.size(),
+                    deletion))
+                return std::nullopt;
+            ++written;
+            registration = queue->second.erase(registration);
+            continue;
+        }
         // Match the disabled-knote readiness rule before querying ports,
         // processes or vnode watches. Preserve the not-ready edge reset.
         if (!registration->enabled) {
@@ -1707,8 +1743,11 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             registration->process_exit_generation;
         auto result_flags = static_cast<std::uint16_t>(
             registration->flags &
-            (darwin::kqueue::event_clear | darwin::kqueue::event_dispatch |
-                darwin::kqueue::event_one_shot));
+            (darwin::kqueue::event_add | darwin::kqueue::event_enable |
+                darwin::kqueue::event_clear |
+                darwin::kqueue::event_dispatch |
+                darwin::kqueue::event_one_shot |
+                darwin::kqueue::event_udata_specific));
         std::optional<std::uint32_t> ready_mach_name;
         std::optional<std::uint32_t> terminal_listener_pending;
         const auto descriptor = static_cast<std::uint32_t>(registration->ident);
@@ -1832,6 +1871,13 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             ++registration;
             continue;
         }
+        // A zero-capacity query probes workqueue readiness without consuming
+        // the knote. The event is copied out when the kernel starts a worker.
+        if (event_count == 0U) {
+            if (ready_qos)
+                *ready_qos = registration->qos;
+            return 1U;
+        }
         if (written == event_count) {
             ++registration;
             continue;
@@ -1848,19 +1894,48 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         }
         if (format != darwin::kqueue::WireFormat::Legacy32 && registration->filter == darwin::kqueue::filter_mach_port &&
             (registration->filter_flags & darwin::mach_message::option_receive) != 0U) {
+            const auto process_buffer_requested = data_buffer &&
+                registration->extension[1] == 0U;
+            if (process_buffer_requested && data_buffer->remaining <
+                    darwin::mig_wire::header_remote_port_offset) {
+                ++registration;
+                continue;
+            }
+            const auto use_process_buffer = process_buffer_requested;
             const auto received = receive_kevent_mach_message(
-                *registration, processor, waking_blocked_receiver);
+                *registration, processor, waking_blocked_receiver,
+                use_process_buffer ? data_buffer->address : 0U,
+                use_process_buffer ? data_buffer->remaining : 0U);
             if (!received) {
                 ++registration;
                 continue;
             }
-            data = 0;
             filter_flags = received->status;
-            extension[1] = received->message_size;
+            if (received->status == 0U) {
+                data = 0;
+                extension[1] = received->copied_size;
+            } else {
+                extension[1] = received->message_size;
+            }
+            if (use_process_buffer &&
+                (received->status == 0U || received->status ==
+                    darwin::mach_message::receive_too_large)) {
+                // MACH_RCV_LARGE writes a size-only identity header into the
+                // process buffer. libdispatch still needs its address in the
+                // kevent to retry the oversized message on the named port.
+                extension[0] = data_buffer->address;
+                const auto bytes = received->status == 0U
+                    ? received->copied_size
+                    : darwin::mig_wire::header_remote_port_offset;
+                const auto consumed = std::min(
+                    (bytes + 15U) & ~15U, data_buffer->remaining);
+                data_buffer->address += consumed;
+                data_buffer->remaining -= consumed;
+            }
         }
         if (!wire.write(memory_, event, KeventValue { registration->ident,
                 registration->filter, result_flags, filter_flags, data,
-                registration->user_data, extension }))
+                registration->user_data, extension, registration->qos }))
             return std::nullopt;
         ++written;
         if (registration->timer) {
@@ -1875,15 +1950,20 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             if (registration->vnode_watch)
                 registration->vnode_watch->acknowledge(filter_flags);
         }
-        if ((registration->flags & darwin::kqueue::event_dispatch) != 0U) {
-            registration->enabled = false;
-        }
-        if ((filter_flags & darwin::kqueue::process_note_exit) != 0U) {
-            registration = queue->second.erase(registration);
-        } else if ((registration->flags & darwin::kqueue::event_one_shot) !=
-                   0U) {
+        const auto one_shot_delivery =
+            (result_flags & darwin::kqueue::event_one_shot) != 0U;
+        const auto dispatch2 =
+            (registration->flags & (darwin::kqueue::event_dispatch |
+                darwin::kqueue::event_udata_specific)) ==
+                (darwin::kqueue::event_dispatch |
+                    darwin::kqueue::event_udata_specific);
+        if (one_shot_delivery && !dispatch2) {
             registration = queue->second.erase(registration);
         } else {
+            if ((registration->flags & darwin::kqueue::event_dispatch) != 0U)
+                registration->enabled = false;
+            if (one_shot_delivery)
+                registration->deferred_delete = true;
             if (registration->filter == darwin::kqueue::filter_process) {
                 // A later process edge can arrive after readiness was
                 // evaluated but before the event has been copied out. Only

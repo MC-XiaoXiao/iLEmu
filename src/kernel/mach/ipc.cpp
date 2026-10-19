@@ -531,6 +531,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         return outcome;
     }
     outcome.message_size = static_cast<std::uint32_t>(received->message_size);
+    outcome.copied_size = static_cast<std::uint32_t>(received->bytes.size());
     if (received->bytes.size() > receive.receive_size) {
         const auto report_only =
             (receive.options &

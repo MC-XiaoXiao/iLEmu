@@ -230,6 +230,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/network_policy.cpp
     bsd/platform.cpp
     bsd/pthread_runtime.cpp
+    bsd/workqueue_kevents.cpp
     bsd/pthread_state.cpp
     bsd/psynch_runtime.cpp
     bsd/psynch.cpp
@@ -252,6 +253,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/events.cpp
     bsd/apple80211.cpp
     bsd/kqueue.cpp
+    bsd/kqueue_changes.cpp
     bsd/device/offline_serial.cpp
     bsd/device/compass.cpp
     bsd/support.cpp)

@@ -19,6 +19,7 @@ struct KeventValue {
     std::int64_t data { };
     std::uint64_t user_data { };
     std::array<std::uint64_t, 2> extension { };
+    std::uint32_t qos { };
 };
 
 // Event formats share knote state and readiness. XNU 3248's kevent_qos_s
@@ -57,6 +58,8 @@ public:
                                   *memory.read32(address + data_offset()));
         value.user_data = wide() ? *memory.read64(address + user_offset())
                                  : *memory.read32(address + user_offset());
+        if (qos())
+            value.qos = *memory.read32(address + 12U);
         for (std::uint32_t i = 0; i < extension_count(); ++i)
             value.extension[i] =
                 *memory.read64(address + extension_offset() + i * 8U);
@@ -86,9 +89,9 @@ public:
                     address + extension_offset() + i * 8U, value.extension[i]))
                 return false;
         }
-        // XNU 3248's descriptor-backed kqueue copies only ext[0..1]; QoS,
-        // xflags and the other extension words are reserved and zeroed.
-        if (qos() && (!memory.write32(address + 12U, 0U) ||
+        // Preserve the registered QoS class for workqueue delivery; xflags
+        // and the unused extension words remain reserved and zeroed.
+        if (qos() && (!memory.write32(address + 12U, value.qos) ||
                          !memory.write32(address + 28U, 0U) ||
                          !memory.write64(address + 56U, 0U) ||
                          !memory.write64(address + 64U, 0U)))

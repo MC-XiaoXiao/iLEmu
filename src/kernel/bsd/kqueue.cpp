@@ -12,6 +12,10 @@
 #include <string>
 
 namespace ilemu {
+namespace {
+    constexpr std::uint32_t kevent_flag_workqueue = 0x20U;
+}
+
 void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
@@ -57,20 +61,32 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
                 return;
             }
             call_flags = *flags & 0x2fU;
-            // Workqueue-backed queues and stack copyout need separate runtime
-            // support; do not interpret these as ordinary descriptor calls.
-            if ((call_flags & 0x2cU) != 0U) {
+            // Stack-oriented copyout has a different user-buffer contract.
+            if ((call_flags & 0x0cU) != 0U) {
                 bsd_error(cpu, 45); // ENOTSUP
                 return;
             }
         }
-        const auto fd = registers[0];
+        const auto workqueue_queue =
+            qos && (call_flags & kevent_flag_workqueue) != 0U;
+        const auto fd = workqueue_queue
+                            ? darwin::kqueue::workqueue_descriptor
+                            : registers[0];
+        if (workqueue_queue)
+            kqueues_.try_emplace(fd, std::vector<KeventRegistration> { });
         const auto queue = kqueues_.find(fd);
         if (queue == kqueues_.end() || registers[2] > 4096 ||
             registers[4] > 4096) {
             bsd_error(cpu, queue == kqueues_.end()
                                ? bsd_support::bad_file_descriptor
                                : bsd_support::invalid_argument);
+            return;
+        }
+        if (workqueue_queue && registers[4] != 0U &&
+            (call_flags & 0x02U) == 0U) {
+            // Only the kernel's worker upcall can drain this queue. User
+            // kevent_qos calls may request change-error receipts.
+            bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
         const auto valid_range = [&](std::uint32_t address, std::uint32_t count,
@@ -91,11 +107,12 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
         if (registers[2] != 0U)
             shared_state_->note_io_event_transition();
         std::uint32_t receipts_written = 0;
-        const auto write_receipt = [&](KeventValue value) {
+        const auto write_receipt = [&](KeventValue value,
+                                       std::uint32_t error) {
             if (receipts_written >= registers[4] || registers[3] == 0)
                 return false;
             value.flags |= darwin::kqueue::event_error;
-            value.data = 0;
+            value.data = error;
             if (!wire.write(memory_,
                     registers[3] + receipts_written * wire.size(), value))
                 return false;
@@ -109,170 +126,24 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
-            const auto ident = value->ident;
-            const auto flags = value->flags;
-            const auto filter_flags = value->filter_flags;
-            const auto data = value->data;
-            const auto user_data = value->user_data;
-            const auto signed_filter = value->filter;
-            // File descriptors, task IDs and Mach names remain natural-sized.
-            // Timer/user identifiers and opaque cookies retain all 64 bits.
-            if (signed_filter != darwin::kqueue::filter_user &&
-                signed_filter != darwin::kqueue::filter_timer &&
-                ident > UINT32_MAX) {
-                bsd_error(cpu, bsd_support::invalid_argument);
+            const auto change_error = apply_kevent_change(fd, *value);
+            if (change_error != 0U) {
+                if ((call_flags & 2U) != 0U &&
+                    write_receipt(*value, change_error))
+                    continue;
+                bsd_error(cpu, change_error);
                 return;
             }
-            auto found = std::find_if(queue->second.begin(),
-                queue->second.end(), [&](const auto& registration) {
-                    return registration.ident == ident &&
-                           registration.filter == signed_filter;
-                });
-            if ((flags & darwin::kqueue::event_delete) != 0) {
-                if (found != queue->second.end())
-                    queue->second.erase(found);
-                if ((flags & darwin::kqueue::event_receipt) != 0 &&
-                    !write_receipt(*value)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-                continue;
-            }
-            if ((flags & darwin::kqueue::event_add) != 0) {
-                KeventRegistration registration {
-                    ident,
-                    signed_filter,
-                    flags,
-                    filter_flags,
-                    data,
-                    user_data,
-                };
-                registration.extension = value->extension;
-                if (signed_filter == darwin::kqueue::filter_timer) {
-                    registration.timer = KeventTimer::create(data, filter_flags,
-                        shared_state_->clock,
-                        (flags & darwin::kqueue::event_one_shot) != 0U);
-                    if (!registration.timer) {
-                        bsd_error(cpu, bsd_support::invalid_argument);
-                        return;
-                    }
-                    registration.flags |= darwin::kqueue::event_clear;
-                    if ((filter_flags & darwin::kqueue::timer_note_absolute) !=
-                        0U)
-                        registration.flags |= darwin::kqueue::event_one_shot;
-                }
-                registration.enabled =
-                    (flags & darwin::kqueue::event_disable) == 0U;
-                if (signed_filter == darwin::kqueue::filter_vnode) {
-                    if (found != queue->second.end()) {
-                        registration.vnode_watch = found->vnode_watch;
-                    } else if (const auto file = file_descriptors_.find(
-                                   static_cast<std::uint32_t>(ident));
-                        file != file_descriptors_.end()) {
-                        registration.vnode_watch.emplace(file->second,
-                            *shared_state_->guest_file_generation_registry);
-                    }
-                }
-                if (signed_filter == darwin::kqueue::filter_user) {
-                    registration.user_triggered =
-                        (flags & darwin::kqueue::event_trigger) != 0U ||
-                        (filter_flags & darwin::kqueue::user_note_trigger) !=
-                            0U;
-                    registration.filter_flags =
-                        filter_flags & darwin::kqueue::user_note_flags_mask;
-                }
-                if (signed_filter == darwin::kqueue::filter_process) {
-                    std::uint64_t current_exec_generation = 0;
-                    std::uint64_t current_exit_generation = 0;
-                    {
-                        std::lock_guard lock { shared_state_->mach_mutex };
-                        const auto process =
-                            shared_state_->process_kevent_states.find(
-                                static_cast<std::uint32_t>(ident));
-                        if (process !=
-                            shared_state_->process_kevent_states.end()) {
-                            current_exec_generation =
-                                process->second.exec_generation;
-                            current_exit_generation =
-                                process->second.exit_generation;
-                        }
-                    }
-                    if (found != queue->second.end()) {
-                        // EV_ADD modifies an existing knote. Preserve the
-                        // consumed position of notes that remain selected so an
-                        // edge arriving before the update remains pending. A
-                        // newly selected note starts at the current generation
-                        // and does not synthesize historical activity.
-                        const auto retains_exec_note =
-                            (found->filter_flags &
-                                darwin::kqueue::process_note_exec) != 0U &&
-                            (filter_flags &
-                                darwin::kqueue::process_note_exec) != 0U;
-                        const auto retains_exit_note =
-                            (found->filter_flags &
-                                darwin::kqueue::process_note_exit) != 0U &&
-                            (filter_flags &
-                                darwin::kqueue::process_note_exit) != 0U;
-                        registration.process_exec_generation =
-                            retains_exec_note ? found->process_exec_generation
-                                              : current_exec_generation;
-                        registration.process_exit_generation =
-                            retains_exit_note ? found->process_exit_generation
-                                              : current_exit_generation;
-                    } else {
-                        registration.process_exec_generation =
-                            current_exec_generation;
-                        registration.process_exit_generation =
-                            current_exit_generation;
-                    }
-                }
-                if (found == queue->second.end()) {
-                    queue->second.push_back(registration);
-                } else {
-                    *found = registration;
-                }
-            } else if (found != queue->second.end()) {
-                if (signed_filter == darwin::kqueue::filter_user) {
-                    if ((flags & darwin::kqueue::event_trigger) != 0U ||
-                        (filter_flags & darwin::kqueue::user_note_trigger) !=
-                            0U) {
-                        found->user_triggered = true;
-                        // EV_CLEAR consumes a user event's current trigger,
-                        // not future NOTE_TRIGGER edges with identical data.
-                        found->clear_delivered = false;
-                    }
-                    const auto operand =
-                        filter_flags & darwin::kqueue::user_note_flags_mask;
-                    switch (filter_flags &
-                            darwin::kqueue::user_note_ff_control_mask) {
-                    case darwin::kqueue::user_note_ff_and:
-                        found->filter_flags &= operand;
-                        break;
-                    case darwin::kqueue::user_note_ff_or:
-                        found->filter_flags |= operand;
-                        break;
-                    case darwin::kqueue::user_note_ff_copy:
-                        found->filter_flags = operand;
-                        break;
-                    default:
-                        break;
-                    }
-                    found->data = data;
-                    found->user_data = user_data;
-                }
-                if ((flags & darwin::kqueue::event_disable) != 0) {
-                    found->enabled = false;
-                    found->flags |= darwin::kqueue::event_disable;
-                } else if ((flags & darwin::kqueue::event_enable) != 0) {
-                    found->enabled = true;
-                    found->flags &= ~darwin::kqueue::event_disable;
-                }
-            }
-            if ((flags & darwin::kqueue::event_receipt) != 0 &&
-                !write_receipt(*value)) {
+            if ((value->flags & darwin::kqueue::event_receipt) != 0U &&
+                !write_receipt(*value, 0U)) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
+        }
+        if (workqueue_queue &&
+            !request_workqueue_kevents(&cpu)) {
+            bsd_error(cpu, darwin::error::no_memory);
+            return;
         }
         if (receipts_written != 0 || (call_flags & 2U) != 0U) {
             bsd_success(cpu, receipts_written);

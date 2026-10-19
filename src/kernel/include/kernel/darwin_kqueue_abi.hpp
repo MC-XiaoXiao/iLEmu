@@ -15,6 +15,17 @@ namespace ilemu::darwin::kqueue {
 
 enum class WireFormat { Legacy32, Extended64, QualityOfService };
 
+// Process-private kqueue selected by KEVENT_FLAG_WORKQ (no descriptor).
+inline constexpr std::uint32_t workqueue_descriptor = UINT32_MAX;
+inline constexpr std::uint32_t event_manager_qos_flag = 0x0200'0000U;
+inline constexpr std::uint32_t workqueue_qos_class_mask = 0x003f'ff00U;
+[[nodiscard]] constexpr std::uint32_t workqueue_qos_bucket(
+    std::uint32_t qos)
+{
+    return (qos & event_manager_qos_flag) != 0U
+        ? event_manager_qos_flag : qos & workqueue_qos_class_mask;
+}
+
 inline constexpr std::int16_t filter_read = -1;
 inline constexpr std::int16_t filter_write = -2;
 inline constexpr std::int16_t filter_vnode = -4;
@@ -31,6 +42,7 @@ inline constexpr std::uint16_t event_one_shot = 0x0010;
 inline constexpr std::uint16_t event_clear = 0x0020;
 inline constexpr std::uint16_t event_receipt = 0x0040;
 inline constexpr std::uint16_t event_dispatch = 0x0080;
+inline constexpr std::uint16_t event_udata_specific = 0x0100;
 inline constexpr std::uint16_t event_trigger = 0x0100;
 inline constexpr std::uint16_t event_error = 0x4000;
 inline constexpr std::uint16_t event_end_of_file = 0x8000;

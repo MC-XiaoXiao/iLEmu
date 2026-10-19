@@ -17,7 +17,8 @@ namespace ilemu {
 std::optional<CompatibilityKernel::MachReceiveResult>
 CompatibilityKernel::receive_kevent_mach_message(
     const KeventRegistration& registration, std::size_t processor,
-    bool waking_blocked_receiver)
+    bool waking_blocked_receiver, std::uint32_t data_address,
+    std::uint32_t data_size)
 {
     if (registration.extension[0] > UINT32_MAX ||
         registration.extension[1] > UINT32_MAX)
@@ -34,10 +35,17 @@ CompatibilityKernel::receive_kevent_mach_message(
     constexpr std::uint32_t trailer_mask = 0xff00'0000U;
     const auto options = registration.filter_flags &
         (darwin::mach_message::option_receive |
-            darwin::mach_message::option_receive_large | trailer_mask);
+            darwin::mach_message::option_receive_large |
+            darwin::mach_message::option_receive_voucher | trailer_mask);
+    const auto use_process_buffer =
+        registration.extension[1] == 0U && data_size != 0U;
     PendingMachReceive receive {
-        .message_address = static_cast<std::uint32_t>(registration.extension[0]),
-        .receive_size = static_cast<std::uint32_t>(registration.extension[1]),
+        .message_address = use_process_buffer
+            ? data_address
+            : static_cast<std::uint32_t>(registration.extension[0]),
+        .receive_size = use_process_buffer
+            ? data_size
+            : static_cast<std::uint32_t>(registration.extension[1]),
         .receive_name = name,
         .options = options,
         .processor = processor,

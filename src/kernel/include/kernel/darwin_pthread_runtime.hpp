@@ -28,7 +28,7 @@ struct DarwinPthreadRegistration {
     std::uint32_t dispatch_queue_offset { };
 };
 
-enum class DarwinWorkqueueDelivery { WorkItem, DispatchThread };
+enum class DarwinWorkqueueDelivery { WorkItem, DispatchThread, Kevent };
 
 struct DarwinWorkqueueItem {
     std::uint32_t address { };
@@ -37,6 +37,8 @@ struct DarwinWorkqueueItem {
     bool overcommit { };
     DarwinWorkqueueDelivery delivery { DarwinWorkqueueDelivery::WorkItem };
     std::uint32_t thread_class { };
+    bool event_manager { };
+    std::uint32_t kevent_qos_bucket { };
 };
 
 struct DarwinWorkqueueWorker {

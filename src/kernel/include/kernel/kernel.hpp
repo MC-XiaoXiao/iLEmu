@@ -79,6 +79,7 @@
 namespace ilemu {
 
 class MachOImage;
+struct KeventValue;
 
 class CompatibilityKernel {
 public:
@@ -619,6 +620,11 @@ private:
     [[nodiscard]] bool dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool service_bsd_workqueue(Cpu* requesting_cpu);
+    [[nodiscard]] bool request_workqueue_kevents(Cpu* requesting_cpu);
+    [[nodiscard]] bool prepare_workqueue_kevent_upcall(
+        std::array<std::uint32_t, 16>& state,
+        const DarwinWorkqueueWorker& worker,
+        const DarwinWorkqueueItem& item);
     void dispatch_bsd_nosys(Cpu& cpu, bool send_sigsys);
     void dispatch_bsd_coalition(Cpu& cpu);
     [[nodiscard]] std::optional<std::uint32_t> thread_object_for_processor(
@@ -856,13 +862,19 @@ private:
     struct MachReceiveResult {
         std::uint32_t status { };
         std::uint32_t message_size { };
+        std::uint32_t copied_size { };
+    };
+    struct KeventDataBuffer {
+        std::uint32_t address { };
+        std::uint32_t remaining { };
     };
     [[nodiscard]] std::optional<MachReceiveResult> receive_mach_message_locked(
         PendingMachReceive& receive, bool queued_receiver,
         bool waking_blocked_receiver);
     [[nodiscard]] std::optional<MachReceiveResult> receive_kevent_mach_message(
         const KeventRegistration& registration, std::size_t processor,
-        bool waking_blocked_receiver);
+        bool waking_blocked_receiver, std::uint32_t data_address = 0U,
+        std::uint32_t data_size = 0U);
     bool deliver_pending_io_locked(Cpu& cpu);
     bool deliver_pending_file_sync(Cpu& cpu);
     void dispatch_bsd_filesystem_rename(Cpu& cpu);
@@ -981,8 +993,13 @@ private:
     [[nodiscard]] std::optional<std::uint32_t> collect_ready_kevents(
         std::size_t processor, std::uint32_t queue_fd, std::uint32_t event_address,
         std::uint32_t event_count, darwin::kqueue::WireFormat format =
-            darwin::kqueue::WireFormat::Legacy32,
-        bool waking_blocked_receiver = false);
+        darwin::kqueue::WireFormat::Legacy32,
+        bool waking_blocked_receiver = false,
+        std::uint32_t* ready_qos = nullptr,
+        KeventDataBuffer* data_buffer = nullptr,
+        std::optional<std::uint32_t> required_qos_bucket = std::nullopt);
+    [[nodiscard]] std::uint32_t apply_kevent_change(
+        std::uint32_t queue_fd, const KeventValue& value);
     void detach_kevents_for_descriptor(std::uint32_t fd);
     using WokenThread = std::pair<std::uint32_t, std::uint32_t>;
     [[nodiscard]] SemaphoreState* pending_semaphore_state_locked(
@@ -1062,6 +1079,8 @@ private:
     ProcessContext process_;
     void reset_pthread_runtime();
     DarwinPthreadRuntime pthread_runtime_;
+    bool workqueue_kevent_queued_ { };
+    std::map<std::uint32_t, std::set<std::uint32_t>> workqueue_kevent_processors_;
     std::map<std::uint32_t, std::filesystem::path> file_descriptors_;
     std::map<std::uint32_t, std::shared_ptr<bsd::RegularFileOpenDescription>>
         regular_file_open_descriptions_;

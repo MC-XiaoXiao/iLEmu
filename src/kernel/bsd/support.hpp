@@ -26,6 +26,7 @@ inline constexpr std::uint32_t bad_file_descriptor = 9;
 inline constexpr std::uint32_t bad_address = 14;
 inline constexpr std::uint32_t invalid_argument = 22;
 inline constexpr std::uint32_t would_block = 35;
+inline constexpr std::uint32_t operation_in_progress = 36;
 inline constexpr std::uint32_t address_in_use = 48;
 inline constexpr std::uint32_t already_connected = 56;
 inline constexpr std::uint32_t not_connected = 57;

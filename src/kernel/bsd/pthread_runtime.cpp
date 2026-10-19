@@ -13,6 +13,7 @@
 #include "kernel/darwin_abi.hpp"
 #include "device_state/pthread_contract.hpp"
 #include "kernel/kernel.hpp"
+#include "kernel/kevent_wire.hpp"
 
 #include "../mach/support.hpp"
 #include "support.hpp"
@@ -37,8 +38,7 @@ namespace {
     decode_dispatch_workqueue_priority(
         const PthreadContract& contract, std::uint32_t encoded) noexcept
     {
-        if (contract.priority_encoding !=
-            PthreadPriorityEncoding::FineClassBitsV2) {
+        if (contract.priority_encoding == PthreadPriorityEncoding::QueueIndex) {
             return DispatchWorkqueuePriority {
                 encoded & ~DarwinPthreadRuntime::workqueue_overcommit,
                 encoded & ~DarwinPthreadRuntime::workqueue_overcommit,
@@ -47,12 +47,19 @@ namespace {
         }
 
         // The split-libpthread fine-priority SPI passes a QoS bitfield, not
-        // the legacy queue index. Without QOS_MAINTENANCE, the kernel uses
-        // version-2 class bits. The upcall receives the public QoS class.
+        // the legacy queue index. Maintenance support adds the lowest class
+        // and moves the other class bits up by one.
         constexpr std::uint32_t class_mask = 0x00ff'ff00U;
         constexpr std::uint32_t class_shift = 8U;
         constexpr std::uint32_t overcommit_flag = 0x8000'0000U;
-        const auto class_bit = (encoded & class_mask) >> class_shift;
+        auto class_bit = (encoded & class_mask) >> class_shift;
+        if (contract.priority_encoding ==
+            PthreadPriorityEncoding::FineClassBitsWithMaintenance) {
+            if (class_bit == 0x01U)
+                return DispatchWorkqueuePriority { 3U, 0x05U,
+                    (encoded & overcommit_flag) != 0U };
+            class_bit >>= 1U;
+        }
         switch (class_bit) {
         case 0x10U: return DispatchWorkqueuePriority { 0U, 0x21U,
                         (encoded & overcommit_flag) != 0U };
@@ -83,6 +90,7 @@ namespace {
         case 0x15U: return 31;
         case 0x11U: return 20;
         case 0x09U: return 4;
+        case 0x05U: return 2;
         default: return std::nullopt;
         }
     }
@@ -110,13 +118,17 @@ namespace {
         state[2] = worker.stack_bottom;
         state[3] = item.address;
         state[4] = reuse ? 1U : 0U;
-        if (item.delivery == DarwinWorkqueueDelivery::DispatchThread) {
+        if (item.delivery == DarwinWorkqueueDelivery::DispatchThread ||
+            item.delivery == DarwinWorkqueueDelivery::Kevent) {
             // The requested-thread SPI passes no workitem. Userland owns the
             // work queues and receives priority/reuse/overcommit in flags.
             constexpr std::uint32_t dispatch_spi = 0x00040000U;
             constexpr std::uint32_t reused_thread = 0x00020000U;
             state[3] = 0;
             state[4] = dispatch_spi | item.thread_class |
+                (item.delivery == DarwinWorkqueueDelivery::Kevent
+                        ? 0x0008'0000U : 0U) |
+                (item.event_manager ? 0x0010'0000U : 0U) |
                 (reuse ? reused_thread : 0U) |
                 (item.overcommit ? DarwinPthreadRuntime::workqueue_overcommit : 0U);
         }
@@ -157,10 +169,23 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         idle_worker ? std::nullopt : std::optional { active_worker_count });
     if (!next_item)
         return true;
+    if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
+        workqueue_kevent_queued_ = false;
+    const auto requeue = [&] {
+        static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
+        if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
+            workqueue_kevent_queued_ = true;
+    };
 
     if (idle_worker) {
-        const auto state = workqueue_thread_state(
+        auto state = workqueue_thread_state(
             *registration, *idle_worker, *next_item, true);
+        if (next_item->delivery == DarwinWorkqueueDelivery::Kevent &&
+            !prepare_workqueue_kevent_upcall(state, *idle_worker,
+                *next_item)) {
+            requeue();
+            return false;
+        }
         const auto cpsr =
             pthread_start_cpsr(registration->workqueue_thread_start);
         darwin::arm_thread::GeneralState guest_state { };
@@ -177,18 +202,24 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
             updated ? thread_wake_handler_(process_.pid, idle_worker->processor)
                     : XnuThreadWakeResult { };
         if (!updated || !wake_result.handled) {
-            static_cast<void>(
-                pthread_runtime_.enqueue_workitem(*next_item, true));
+            requeue();
             pthread_runtime_.park_worker(idle_worker->processor);
             return false;
         }
         pthread_runtime_.mark_worker_running(
             idle_worker->processor, next_item->priority, next_item->overcommit);
+        if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
+            workqueue_kevent_processors_[next_item->kevent_qos_bucket].insert(
+                idle_worker->processor);
         output_.write(
             "[pthread] workqueue reuse pid=" + std::to_string(process_.pid) +
             " slot=" + std::to_string(idle_worker->processor) +
+            " port=" + std::to_string(idle_worker->port_name) +
             " item=" + std::to_string(next_item->address) +
-            " priority=" + std::to_string(next_item->priority) + "\n");
+            " priority=" + std::to_string(next_item->priority) +
+            " class=" + std::to_string(next_item->thread_class) +
+            " delivery=" + std::to_string(
+                static_cast<unsigned>(next_item->delivery)) + "\n");
         if (requesting_cpu && wake_result.preemption_needed &&
             scheduler_preemption_query_ &&
             scheduler_preemption_query_(requesting_cpu->processor_id())) {
@@ -201,7 +232,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
     const auto total_size64 = static_cast<std::uint64_t>(guard_size) +
                               workqueue_stack_size + registration->pthread_size;
     if (total_size64 > std::numeric_limits<std::uint32_t>::max()) {
-        static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
+        requeue();
         return false;
     }
     const auto total_size = static_cast<std::uint32_t>(total_size64);
@@ -212,7 +243,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
             MemoryPermission::Read | MemoryPermission::Write)) {
         if (base)
             static_cast<void>(memory_.unmap(*base, total_size));
-        static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
+        requeue();
         return false;
     }
 
@@ -232,12 +263,20 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         DarwinSignalState::workqueue_mask, create_error);
     if (!created) {
         static_cast<void>(memory_.unmap(*base, total_size));
-        static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
+        requeue();
         return false;
     }
     worker.processor = static_cast<std::uint32_t>(created->processor);
     worker.port_name = created->port_name;
     state = workqueue_thread_state(*registration, worker, *next_item, false);
+    if (next_item->delivery == DarwinWorkqueueDelivery::Kevent &&
+        !prepare_workqueue_kevent_upcall(state, worker, *next_item)) {
+        if (thread_terminate_handler_)
+            static_cast<void>(thread_terminate_handler_(process_.pid, worker.processor));
+        static_cast<void>(memory_.unmap(*base, total_size));
+        requeue();
+        return false;
+    }
     darwin::arm_thread::GeneralState guest_state { };
     std::copy(state.begin(), state.end(), guest_state.begin());
     guest_state[darwin::arm_thread::cpsr_index] = cpsr;
@@ -255,16 +294,24 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
             static_cast<void>(
                 thread_terminate_handler_(process_.pid, worker.processor));
         static_cast<void>(memory_.unmap(*base, total_size));
-        static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
+        requeue();
         return false;
     }
+
+    if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
+        workqueue_kevent_processors_[next_item->kevent_qos_bucket].insert(
+            worker.processor);
 
     output_.write(
         "[pthread] workqueue create pid=" + std::to_string(process_.pid) +
         " slot=" + std::to_string(worker.processor) +
+        " port=" + std::to_string(worker.port_name) +
         " item=" + std::to_string(next_item->address) +
         " pthread=" + std::to_string(worker.pthread_address) +
-        " priority=" + std::to_string(next_item->priority) + "\n");
+        " priority=" + std::to_string(next_item->priority) +
+        " class=" + std::to_string(next_item->thread_class) +
+        " delivery=" + std::to_string(
+            static_cast<unsigned>(next_item->delivery)) + "\n");
     if (requesting_cpu && scheduler_preemption_query_ &&
         scheduler_preemption_query_(requesting_cpu->processor_id())) {
         requesting_cpu->request_guest_preemption();
@@ -275,6 +322,14 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
 void CompatibilityKernel::clear_thread_pthread_state(std::size_t processor)
 {
     thread_working_directories_.erase(processor);
+    for (auto bucket = workqueue_kevent_processors_.begin();
+        bucket != workqueue_kevent_processors_.end();) {
+        bucket->second.erase(static_cast<std::uint32_t>(processor));
+        if (bucket->second.empty())
+            bucket = workqueue_kevent_processors_.erase(bucket);
+        else
+            ++bucket;
+    }
     if (processor <= std::numeric_limits<std::uint32_t>::max())
         pthread_runtime_.remove_worker(static_cast<std::uint32_t>(processor));
 }
@@ -291,6 +346,8 @@ void CompatibilityKernel::reset_pthread_runtime()
         }
     }
     pthread_runtime_.prepare_exec();
+    workqueue_kevent_queued_ = false;
+    workqueue_kevent_processors_.clear();
 }
 
 void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
@@ -458,16 +515,19 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         const auto stack_size = registers[1];
         const auto thread_port = registers[2];
         const auto semaphore = registers[3];
-        if (stack_address != 0 && stack_size != 0 &&
-            !memory_.unmap(stack_address, stack_size)) {
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return true;
-        }
-
         const auto processor = static_cast<std::uint32_t>(cpu.processor_id());
         const auto thread_object = thread_object_for_processor(processor);
         if (thread_terminate_handler_ &&
             !thread_terminate_handler_(process_.pid, processor)) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return true;
+        }
+
+        // Retire the current CPU before releasing its guest stack mapping.
+        // The syscall dispatcher still unwinds on this CPU until the halt
+        // below, so unmapping first can turn normal teardown into a fault.
+        if (stack_address != 0 && stack_size != 0 &&
+            !memory_.unmap(stack_address, stack_size)) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
@@ -564,6 +624,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         constexpr std::uint32_t queue_add = 1U;
         constexpr std::uint32_t queue_remove = 2U;
         constexpr std::uint32_t thread_return = 4U;
+        constexpr std::uint32_t thread_kevent_return = 0x40U;
         constexpr std::uint32_t thread_set_concurrency = 8U;
         constexpr std::uint32_t query_dispatch_spi = 16U;
         constexpr std::uint32_t request_dispatch_threads = 32U;
@@ -656,7 +717,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             bsd_success(cpu, 0);
             return true;
         }
-        if (operation == thread_return) {
+        if (operation == thread_return || operation == thread_kevent_return) {
             const auto processor =
                 static_cast<std::uint32_t>(cpu.processor_id());
             const auto worker = pthread_runtime_.worker(processor);
@@ -664,25 +725,101 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return true;
             }
+            if (operation == thread_kevent_return && affinity != 0U) {
+                const KeventWireFormat wire {
+                    darwin::kqueue::WireFormat::QualityOfService };
+                const auto bytes = static_cast<std::uint64_t>(affinity) *
+                    wire.size();
+                if (affinity > 4096U || item_address == 0U ||
+                    static_cast<std::uint64_t>(item_address) + bytes >
+                        (1ULL << 32U) ||
+                    !memory_.accessible(item_address,
+                        static_cast<std::uint32_t>(bytes),
+                        MemoryPermission::Read | MemoryPermission::Write)) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return true;
+                }
+                kqueues_.try_emplace(darwin::kqueue::workqueue_descriptor,
+                    std::vector<KeventRegistration> { });
+                std::uint32_t errors = 0U;
+                for (std::uint32_t index = 0U; index < affinity; ++index) {
+                    const auto value = wire.read(memory_, item_address +
+                        index * wire.size());
+                    if (!value) {
+                        bsd_error(cpu, bsd_support::bad_address);
+                        return true;
+                    }
+                    const auto error = apply_kevent_change(
+                        darwin::kqueue::workqueue_descriptor, *value);
+                    if (error != 0U ||
+                        (value->flags & darwin::kqueue::event_receipt) != 0U) {
+                        auto receipt = *value;
+                        receipt.flags |= darwin::kqueue::event_error;
+                        receipt.data = error;
+                        if (!wire.write(memory_, item_address +
+                                errors * wire.size(), receipt)) {
+                            bsd_error(cpu, bsd_support::bad_address);
+                            return true;
+                        }
+                        ++errors;
+                    }
+                }
+                shared_state_->note_io_event_transition();
+                if (errors != 0U) {
+                    bsd_success(cpu, errors);
+                    return true;
+                }
+            }
+            bool returned_kevent = false;
+            for (auto bucket = workqueue_kevent_processors_.begin();
+                bucket != workqueue_kevent_processors_.end();) {
+                if (bucket->second.erase(processor) != 0U) {
+                    returned_kevent = true;
+                }
+                if (bucket->second.empty())
+                    bucket = workqueue_kevent_processors_.erase(bucket);
+                else
+                    ++bucket;
+            }
+            if (returned_kevent)
+                static_cast<void>(request_workqueue_kevents(&cpu));
             // XNU workq_kernreturn resets masks before recycling a worker.
             static_cast<void>(signal_state_.update(processor, 3,
                 DarwinSignalState::workqueue_mask, DarwinSignalState::Scope::Thread));
             const auto next_item =
                 pthread_runtime_.take_workitem(std::nullopt, processor);
             if (next_item) {
+                if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
+                    workqueue_kevent_queued_ = false;
                 const auto& registration = *pthread_runtime_.registration();
                 cpu.registers() = workqueue_thread_state(
                     registration, *worker, *next_item, true);
+                if (next_item->delivery == DarwinWorkqueueDelivery::Kevent &&
+                    !prepare_workqueue_kevent_upcall(
+                        cpu.registers(), *worker, *next_item)) {
+                    static_cast<void>(pthread_runtime_.enqueue_workitem(
+                        *next_item, true));
+                    workqueue_kevent_queued_ = true;
+                    bsd_error(cpu, darwin::error::no_memory);
+                    return true;
+                }
                 cpu.set_cpsr(
                     pthread_start_cpsr(registration.workqueue_thread_start));
                 pthread_runtime_.mark_worker_running(
                     processor, next_item->priority, next_item->overcommit);
+                if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
+                    workqueue_kevent_processors_[
+                        next_item->kevent_qos_bucket].insert(processor);
                 output_.write(
                     "[pthread] workqueue continue pid=" +
                     std::to_string(process_.pid) +
                     " slot=" + std::to_string(processor) +
+                    " port=" + std::to_string(worker->port_name) +
                     " item=" + std::to_string(next_item->address) +
-                    " priority=" + std::to_string(next_item->priority) + "\n");
+                    " priority=" + std::to_string(next_item->priority) +
+                    " class=" + std::to_string(next_item->thread_class) +
+                    " delivery=" + std::to_string(
+                        static_cast<unsigned>(next_item->delivery)) + "\n");
                 return true;
             }
             pthread_runtime_.park_worker(processor);

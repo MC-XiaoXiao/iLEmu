@@ -197,6 +197,9 @@ struct KeventRegistration {
     std::optional<VnodeWatch> vnode_watch;
     std::array<std::uint64_t, 2> extension { };
     std::optional<KeventTimer> timer;
+    std::uint32_t qos { };
+    // XNU defers deletion of a disabled EV_DISPATCH2 knote until EV_ENABLE.
+    bool deferred_delete { };
 };
 
 struct PendingWait {

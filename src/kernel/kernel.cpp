@@ -924,6 +924,9 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     reset_signal_actions_for_exec();
     alternate_signal_stacks_.clear();
     reset_pthread_runtime();
+    // The process-private workqueue kqueue belongs to the old pthread
+    // runtime and its knote udata points into the replaced address space.
+    kqueues_.erase(darwin::kqueue::workqueue_descriptor);
     shared_state_->psynch_runtime->clear_process(process_.pid);
     process_.waiting_for_events = false;
     const auto current_thread_port =
@@ -1641,6 +1644,12 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto io_generation = shared_state_->io_event_generation_snapshot();
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
+    // A Mach message can be enqueued by another task after every workqueue
+    // worker has parked. Redrive the process-private kqueue on that transition
+    // so EVFILT_MACHPORT can schedule its libpthread event worker.
+    if (pending_event_poll_mach_generation_ != mach_generation &&
+        kqueues_.contains(darwin::kqueue::workqueue_descriptor))
+        static_cast<void>(request_workqueue_kevents(nullptr));
     const auto host_now = std::chrono::steady_clock::now();
     const auto guest_now = shared_state_->clock.now();
     const auto topology_changed = !pending_event_poll_observed_ ||
@@ -3020,6 +3029,9 @@ void CompatibilityKernel::inherit_process_state(
     signal_actions_ = parent.signal_actions_;
     signal_state_.reset(0, parent.signal_state_.inherited_mask(parent_processor));
     kqueues_ = parent.kqueues_;
+    // KEVENT_FLAG_WORKQ selects process-private state, not an inheritable
+    // descriptor. The child builds its own queue on first registration.
+    kqueues_.erase(darwin::kqueue::workqueue_descriptor);
     // Descriptors with FD_CLOFORK close in the child. Other guarded
     // descriptors inherit their guard along with the descriptor.
     descriptor_guards_ = parent.descriptor_guards_;
