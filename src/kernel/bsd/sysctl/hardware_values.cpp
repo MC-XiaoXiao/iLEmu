@@ -9,13 +9,16 @@
 namespace ilemu::darwin::sysctl {
 
 std::optional<std::string_view> hardware_string(
-    std::uint32_t selector, std::string_view machine, std::string_view model)
+    std::uint32_t selector, std::string_view machine, std::string_view model,
+    std::string_view target_type)
 {
     switch (selector) {
     case hardware_machine:
         return machine;
     case hardware_model:
         return model;
+    case hardware_target_type:
+        return target_type;
     default:
         return std::nullopt;
     }

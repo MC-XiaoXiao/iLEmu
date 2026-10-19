@@ -68,6 +68,8 @@ namespace {
             readable | string_type, "A" },
         NamedObject { "hw.model", control_hardware, hardware_model,
             readable | string_type, "A" },
+        NamedObject { "hw.targettype", control_hardware, hardware_target_type,
+            readable | string_type, "A" },
         NamedObject { "hw.ncpu", control_hardware, hardware_cpu_count },
         NamedObject { "hw.byteorder", control_hardware, 4 },
         NamedObject { "hw.physmem", control_hardware, 5 },

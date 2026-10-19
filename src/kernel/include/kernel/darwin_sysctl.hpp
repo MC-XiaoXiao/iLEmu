@@ -87,6 +87,8 @@ inline constexpr std::uint32_t hardware_physical_cpu = 1000;
 inline constexpr std::uint32_t hardware_physical_cpu_max = 1001;
 inline constexpr std::uint32_t hardware_logical_cpu = 1002;
 inline constexpr std::uint32_t hardware_logical_cpu_max = 1003;
+// OID_AUTO node backed by the platform device tree's target-type property.
+inline constexpr std::uint32_t hardware_target_type = 1004;
 
 [[nodiscard]] constexpr bool is_hardware_cpu_count_selector(
     std::uint32_t selector)
@@ -127,7 +129,8 @@ struct ObjectMetadata {
 
 // Returns the selected device profile string projected by a CTL_HW selector.
 [[nodiscard]] std::optional<std::string_view> hardware_string(
-    std::uint32_t selector, std::string_view machine, std::string_view model);
+    std::uint32_t selector, std::string_view machine, std::string_view model,
+    std::string_view target_type);
 
 // Encodes the stable prefix consumed by KERN_PROCARGS clients:
 // executable path, word alignment, argv strings, then environment strings.

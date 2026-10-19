@@ -2227,7 +2227,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 *mib0 == darwin::sysctl::control_hardware
                     ? darwin::sysctl::hardware_string(*mib1,
                           shared_state_->device_product_type,
-                          shared_state_->device_hardware_model)
+                          shared_state_->device_hardware_model,
+                          shared_state_->device_board_config)
                     : std::nullopt) {
             write_read_only_string(*hardware_string);
             return;
