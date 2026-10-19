@@ -11,6 +11,7 @@ namespace {
 
     // Fine priority, bsdthread_ctl and QoS default capability bits.
     constexpr std::uint32_t fine_priority_features = 0x2U | 0x4U | 0x40000000U;
+    constexpr std::uint32_t maintenance_feature = 0x10U;
 
     constexpr PthreadContract legacy {
         PthreadRegistrationLayout::Unavailable, 0U,
@@ -37,6 +38,12 @@ namespace {
         PthreadPriorityEncoding::FineClassBitsV2, 4U, fine_priority_features,
         true, true,
     };
+    constexpr PthreadContract register_v1_expanded_tsd_kevent {
+        PthreadRegistrationLayout::Arm32RegisterV1, 0xa4U,
+        PthreadPriorityEncoding::FineClassBitsWithMaintenance, 4U,
+        fine_priority_features | maintenance_feature | 0x01U | 0x40U,
+        true, true,
+    };
     constexpr PthreadContract register_v2 {
         PthreadRegistrationLayout::RegisterV2, 0U,
         PthreadPriorityEncoding::QueueIndex, 0U, 0U, true, false,
@@ -59,6 +66,8 @@ const PthreadContract& resolve_pthread_contract(DarwinPthreadAbi abi)
         return register_v1_expanded_tsd_four_queues;
     case DarwinPthreadAbi::BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues:
         return register_v1_expanded_tsd_fine_priority;
+    case DarwinPthreadAbi::BsdThreadRegisterV1ExpandedTsdKeventWorkqueues:
+        return register_v1_expanded_tsd_kevent;
     case DarwinPthreadAbi::BsdThreadRegisterV2:
         return register_v2;
     }

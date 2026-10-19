@@ -11,7 +11,11 @@
 namespace ilemu {
 
 enum class PthreadRegistrationLayout { Unavailable, Arm32RegisterV1, RegisterV2 };
-enum class PthreadPriorityEncoding { QueueIndex, FineClassBitsV2 };
+enum class PthreadPriorityEncoding {
+    QueueIndex,
+    FineClassBitsV2,
+    FineClassBitsWithMaintenance,
+};
 
 // Resolved ABI properties, not scheduling policy. The catalog instances are
 // immutable and live for the host process. V2 registration remains unsupported;

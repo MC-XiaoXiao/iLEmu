@@ -645,6 +645,31 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         return;
     case 116: { // gettimeofday
         const auto wall_time = shared_state_->clock.wall_time();
+        if (shared_state_->darwin_abi.gettimeofday_abi ==
+            DarwinGettimeofdayAbi::CopyoutTimevalAndAbsoluteTime) {
+            const auto write_pair = [&](std::uint32_t address,
+                                        std::uint32_t first,
+                                        std::uint32_t second) {
+                return address == 0U ||
+                    (address <= UINT32_MAX - 8U &&
+                        memory_.write32(address, first) &&
+                        memory_.write32(address + 4U, second));
+            };
+            if (!write_pair(registers[0],
+                    static_cast<std::uint32_t>(wall_time / 1'000'000'000ULL),
+                    static_cast<std::uint32_t>(
+                        (wall_time / 1'000ULL) % 1'000'000ULL)) ||
+                !write_pair(registers[1], 0U, 0U) ||
+                (registers[2] != 0U &&
+                    (registers[2] > UINT32_MAX - 8U ||
+                        !memory_.write64(registers[2],
+                            shared_state_->clock.now())))) {
+                bsd_error(cpu, darwin::error::bad_address);
+                return;
+            }
+            bsd_success(cpu, 0);
+            return;
+        }
         // iPhone OS 1.0's ARM libSystem wrapper preserves the timeval pointer
         // in r3, invokes syscall 116, then stores the two return registers into
         // it. Returning zero here makes libc overwrite the result with Unix

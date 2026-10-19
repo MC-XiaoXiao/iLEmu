@@ -60,6 +60,9 @@ inline constexpr std::array mach_tables {
     MachTable { "darwin15.0.0-qos-events",
         "xnu-3248.60.10/osfmk/kern/syscall_sw.c",
         { 0x7c3b76ffbfffd400ULL, 0x000000107e000000ULL }, { 0x783b76ffbfffd408ULL, 0x000000007e000000ULL } },
+    MachTable { "darwin16.0.0-qos-events",
+        "xnu-3789.1.32/osfmk/kern/syscall_sw.c",
+        { 0x7c3b7effbfffdc00ULL, 0x000000107e000140ULL }, { 0x0000000000000000ULL, 0x0000000000000000ULL } },
 };
 constexpr const MachTable* mach_table(std::string_view profile)
 {

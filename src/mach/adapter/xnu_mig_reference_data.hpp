@@ -15,6 +15,7 @@ namespace ilemu::xnu::mig::reference::data {
 // xnu-2422.115.4/mig.json sha256=5910acc1adfced2211310dfbfbbdbfe2ea6f9721c224986277b27b6332652b04
 // xnu-2782.40.9/mig.json sha256=3f929699c7ba4848451048e1716fbcfbea4bc7d0bd9897dab2ce341b91690898
 // xnu-3248.60.10/mig.json sha256=0087e1c975b90b1b8f5b99ec016f67673d681eaf0672037871e9dba450dc5f47
+// xnu-3789.1.32/mig.json sha256=f44906e73f72512fc7e5a20728bfbd02011618f53cefb4699e264c450785f71b
 inline constexpr std::array fields_0 {
     Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
 };
@@ -1780,6 +1781,63 @@ inline constexpr std::array fields_222 {
     Field { "multiuser_flags", "data", "uint32_t", "uint32_t", "", "", "", 32, 32, 4, 1, 32, 0, false },
 };
 inline constexpr Layout layout_222 { false, 0, 36, 36, fields_222 };
+inline constexpr std::array fields_223 {
+    Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
+    Field { "msgh_body", "body", "", "", "", "", "", 24, 24, 4, 0, 0, 0, false },
+    Field { "corpse_task_port", "port", "mach_port_t", "mach_port_t", "", "MACH_MSG_TYPE_COPY_SEND", "MACH_MSG_TYPE_PORT_SEND", 28, 28, 12, 0, 0, 1, false },
+};
+inline constexpr Layout layout_223 { true, 1, 40, 40, fields_223 };
+inline constexpr std::array fields_224 {
+    Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
+    Field { "msgh_body", "body", "", "", "", "", "", 24, 24, 4, 0, 0, 0, false },
+    Field { "corspe_task", "port", "task_t", "task_t", "", "MACH_MSG_TYPE_COPY_SEND", "MACH_MSG_TYPE_PORT_SEND", 28, 28, 12, 0, 0, 1, false },
+};
+inline constexpr Layout layout_224 { true, 1, 40, 40, fields_224 };
+inline constexpr std::array fields_225 {
+    Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
+    Field { "NDR", "ndr", "", "", "", "", "", 24, 24, 8, 0, 0, 0, false },
+    Field { "RetCode", "ret_code", "kern_return_t", "kern_return_t", "", "", "", 32, 32, 4, 1, 32, 0, false },
+    Field { "kcd_addr_begin", "data", "vm_address_t", "vm_address_t", "", "", "", 36, 36, 4, 1, 32, 0, false },
+    Field { "kcd_size", "data", "uint32_t", "uint32_t", "", "", "", 40, 40, 4, 1, 32, 0, false },
+};
+inline constexpr Layout layout_225 { false, 0, 44, 44, fields_225 };
+inline constexpr std::array fields_226 {
+    Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
+    Field { "msgh_body", "body", "", "", "", "", "", 24, 24, 4, 0, 0, 0, false },
+    Field { "dyld_images", "ool", "dyld_kernel_image_info_array_t", "dyld_kernel_image_info_array_t", "", "", "", 28, 28, 12, 0, 0, 1, false },
+    Field { "NDR", "ndr", "", "", "", "", "", 40, 40, 8, 0, 0, 0, false },
+    Field { "dyld_imagesCnt", "count", "mach_msg_type_number_t", "mach_msg_type_number_t", "", "", "", 48, 48, 4, 1, 32, 0, false },
+};
+inline constexpr Layout layout_226 { true, 1, 52, 52, fields_226 };
+inline constexpr std::array fields_227 {
+    Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
+    Field { "NDR", "ndr", "", "", "", "", "", 24, 24, 8, 0, 0, 0, false },
+    Field { "dyld_cache_image", "data", "dyld_kernel_image_info_t", "dyld_kernel_image_info_t", "", "", "", 32, 32, 40, 40, 8, 0, false },
+    Field { "no_cache", "data", "boolean_t", "boolean_t", "", "", "", 72, 72, 4, 1, 32, 0, false },
+    Field { "private_cache", "data", "boolean_t", "boolean_t", "", "", "", 76, 76, 4, 1, 32, 0, false },
+};
+inline constexpr Layout layout_227 { false, 0, 80, 80, fields_227 };
+inline constexpr std::array fields_228 {
+    Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
+    Field { "NDR", "ndr", "", "", "", "", "", 24, 24, 8, 0, 0, 0, false },
+    Field { "dyld_state", "data", "uint8_t", "uint8_t", "", "", "", 32, 32, 4, 1, 8, 0, false },
+};
+inline constexpr Layout layout_228 { false, 0, 36, 36, fields_228 };
+inline constexpr std::array fields_229 {
+    Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
+    Field { "NDR", "ndr", "", "", "", "", "", 24, 24, 8, 0, 0, 0, false },
+    Field { "RetCode", "ret_code", "kern_return_t", "kern_return_t", "", "", "", 32, 32, 4, 1, 32, 0, false },
+    Field { "dyld_process_state", "data", "dyld_kernel_process_info_t", "dyld_kernel_process_info_t", "", "", "", 36, 36, 64, 64, 8, 0, false },
+};
+inline constexpr Layout layout_229 { false, 0, 100, 100, fields_229 };
+inline constexpr std::array fields_230 {
+    Field { "Head", "header", "", "", "", "", "", 0, 0, 24, 0, 0, 0, false },
+    Field { "NDR", "ndr", "", "", "", "", "", 24, 24, 8, 0, 0, 0, false },
+    Field { "RetCode", "ret_code", "kern_return_t", "kern_return_t", "", "", "", 32, 32, 4, 1, 32, 0, false },
+    Field { "kcd_addr_begin", "data", "mach_vm_address_t", "mach_vm_address_t", "", "", "", 36, 36, 8, 1, 64, 0, false },
+    Field { "kcd_size", "data", "mach_vm_size_t", "mach_vm_size_t", "", "", "", 44, 44, 8, 1, 64, 0, false },
+};
+inline constexpr Layout layout_230 { false, 0, 52, 52, fields_230 };
 inline constexpr std::array routines {
     Routine { 3200, 3300, "mach_port_names", &layout_0, &layout_1 },
     Routine { 3201, 3301, "mach_port_type", &layout_2, &layout_3 },
@@ -2013,9 +2071,20 @@ inline constexpr std::array routines {
     Routine { 225, 325, "host_set_atm_diagnostic_flag", &layout_220, &layout_5 },
     Routine { 227, 327, "mach_memory_info", &layout_0, &layout_221 },
     Routine { 228, 328, "host_set_multiuser_config_flags", &layout_222, &layout_5 },
+    Routine { 3442, 3542, "task_generate_corpse", &layout_0, &layout_223 },
+    Routine { 3443, 3543, "task_map_corpse_info", &layout_224, &layout_225 },
+    Routine { 3444, 3544, "task_register_dyld_image_infos", &layout_226, &layout_5 },
+    Routine { 3445, 3545, "task_unregister_dyld_image_infos", &layout_226, &layout_5 },
+    Routine { 3446, 3546, "task_get_dyld_image_infos", &layout_0, &layout_226 },
+    Routine { 3447, 3547, "task_register_dyld_shared_cache_image_info", &layout_227, &layout_5 },
+    Routine { 3448, 3548, "task_register_dyld_set_dyld_state", &layout_228, &layout_5 },
+    Routine { 3449, 3549, "task_register_dyld_get_process_state", &layout_0, &layout_229 },
+    Routine { 3450, 3550, "task_map_corpse_info_64", &layout_224, &layout_230 },
+    Routine { 3830, 3930, "_kernelrpc_vm_purgable_control", &layout_115, &layout_116 },
+    Routine { 222, 322, "_kernelrpc_host_create_mach_voucher", &layout_214, &layout_211 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_0_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27 };
-inline constexpr std::array<std::uint16_t, 42> slots_0_1 { 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 0, 56, 57, 58, 59 };
+inline constexpr std::array<std::uint16_t, 51> slots_0_1 { 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 0, 56, 57, 58, 59 };
 inline constexpr std::array<std::uint16_t, 28> slots_0_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84 };
 inline constexpr std::array<std::uint16_t, 31> slots_0_3 { 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_0_4 { 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130 };
@@ -2037,7 +2106,7 @@ inline constexpr std::array family_0 {
     Subsystem { "notify", 64, 73, slots_0_9 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_1_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27 };
-inline constexpr std::array<std::uint16_t, 42> slots_1_1 { 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 0, 56, 57, 58, 59 };
+inline constexpr std::array<std::uint16_t, 51> slots_1_1 { 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 0, 56, 57, 58, 59 };
 inline constexpr std::array<std::uint16_t, 28> slots_1_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84 };
 inline constexpr std::array<std::uint16_t, 31> slots_1_3 { 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_1_4 { 174, 113, 175, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 176, 129, 130 };
@@ -2059,7 +2128,7 @@ inline constexpr std::array family_1 {
     Subsystem { "notify", 64, 73, slots_1_9 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_2_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 179, 26, 27, 180, 181, 182 };
-inline constexpr std::array<std::uint16_t, 42> slots_2_1 { 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 0, 56, 57, 58, 59, 183, 184 };
+inline constexpr std::array<std::uint16_t, 51> slots_2_1 { 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 0, 56, 57, 58, 59, 183, 184 };
 inline constexpr std::array<std::uint16_t, 28> slots_2_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84 };
 inline constexpr std::array<std::uint16_t, 31> slots_2_3 { 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_2_4 { 174, 113, 175, 115, 116, 117, 118, 119, 120, 121, 122, 0, 0, 125, 126, 127, 176, 129, 130, 185 };
@@ -2081,7 +2150,7 @@ inline constexpr std::array family_2 {
     Subsystem { "notify", 64, 73, slots_2_9 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_3_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 179, 26, 27, 180, 181, 182 };
-inline constexpr std::array<std::uint16_t, 42> slots_3_1 { 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 0, 56, 57, 58, 59, 183, 184 };
+inline constexpr std::array<std::uint16_t, 51> slots_3_1 { 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 0, 56, 57, 58, 59, 183, 184 };
 inline constexpr std::array<std::uint16_t, 28> slots_3_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84 };
 inline constexpr std::array<std::uint16_t, 31> slots_3_3 { 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_3_4 { 174, 113, 175, 115, 116, 117, 118, 119, 120, 121, 122, 0, 0, 125, 126, 127, 176, 129, 130, 185 };
@@ -2103,7 +2172,7 @@ inline constexpr std::array family_3 {
     Subsystem { "notify", 64, 73, slots_3_9 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_4_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 179, 26, 27, 180, 181, 182 };
-inline constexpr std::array<std::uint16_t, 42> slots_4_1 { 28, 29, 30, 31, 32, 189, 190, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184 };
+inline constexpr std::array<std::uint16_t, 51> slots_4_1 { 28, 29, 30, 31, 32, 189, 190, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184 };
 inline constexpr std::array<std::uint16_t, 28> slots_4_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84 };
 inline constexpr std::array<std::uint16_t, 31> slots_4_3 { 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 192, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_4_4 { 174, 113, 175, 115, 116, 117, 118, 119, 120, 121, 122, 0, 0, 125, 126, 127, 176, 129, 130, 185, 193 };
@@ -2125,7 +2194,7 @@ inline constexpr std::array family_4 {
     Subsystem { "notify", 64, 73, slots_4_9 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_5_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 179, 26, 27, 180, 181, 182 };
-inline constexpr std::array<std::uint16_t, 42> slots_5_1 { 28, 29, 30, 31, 32, 189, 190, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184 };
+inline constexpr std::array<std::uint16_t, 51> slots_5_1 { 28, 29, 30, 31, 32, 189, 190, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184 };
 inline constexpr std::array<std::uint16_t, 28> slots_5_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84 };
 inline constexpr std::array<std::uint16_t, 31> slots_5_3 { 85, 0, 0, 0, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 192, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_5_4 { 194, 113, 175, 115, 116, 117, 118, 119, 120, 121, 0, 0, 0, 125, 126, 127, 195, 129, 130, 185, 193, 0 };
@@ -2147,7 +2216,7 @@ inline constexpr std::array family_5 {
     Subsystem { "notify", 64, 73, slots_5_9 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_6_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 197, 10, 11, 12, 13, 14, 15, 16, 198, 199, 19, 20, 21, 22, 23, 24, 179, 26, 27, 180, 181, 182, 200, 201, 202, 203 };
-inline constexpr std::array<std::uint16_t, 42> slots_6_1 { 28, 29, 30, 31, 32, 204, 205, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184, 206, 207, 208, 209 };
+inline constexpr std::array<std::uint16_t, 51> slots_6_1 { 28, 29, 30, 31, 32, 204, 205, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184, 206, 207, 208, 209 };
 inline constexpr std::array<std::uint16_t, 28> slots_6_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84 };
 inline constexpr std::array<std::uint16_t, 31> slots_6_3 { 85, 0, 0, 0, 89, 210, 91, 92, 93, 94, 95, 96, 211, 98, 212, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_6_4 { 213, 113, 175, 115, 116, 117, 118, 119, 120, 121, 0, 0, 0, 125, 126, 127, 214, 129, 130, 185, 193, 0 };
@@ -2169,7 +2238,7 @@ inline constexpr std::array family_6 {
     Subsystem { "notify", 64, 73, slots_6_9 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_7_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 197, 10, 11, 12, 13, 14, 15, 16, 198, 199, 19, 20, 21, 22, 23, 24, 179, 26, 27, 180, 181, 182, 200, 201, 202, 203, 216 };
-inline constexpr std::array<std::uint16_t, 42> slots_7_1 { 28, 29, 30, 31, 32, 204, 205, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184, 206, 207, 208, 209, 217, 218, 219 };
+inline constexpr std::array<std::uint16_t, 51> slots_7_1 { 28, 29, 30, 31, 32, 204, 205, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184, 206, 207, 208, 209, 217, 218, 219 };
 inline constexpr std::array<std::uint16_t, 28> slots_7_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 220, 221, 78, 79, 80, 81, 82, 83, 222, 223, 224, 225 };
 inline constexpr std::array<std::uint16_t, 31> slots_7_3 { 85, 0, 0, 0, 89, 210, 91, 92, 93, 94, 95, 96, 211, 98, 212, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_7_4 { 213, 113, 175, 115, 116, 117, 118, 119, 120, 121, 0, 0, 0, 125, 126, 127, 214, 129, 130, 185, 193, 0, 226, 227, 228 };
@@ -2191,7 +2260,7 @@ inline constexpr std::array family_7 {
     Subsystem { "notify", 64, 73, slots_7_9 },
 };
 inline constexpr std::array<std::uint16_t, 36> slots_8_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 197, 10, 11, 12, 13, 14, 15, 16, 198, 199, 19, 20, 21, 22, 23, 24, 179, 26, 27, 180, 181, 182, 200, 201, 202, 203, 216 };
-inline constexpr std::array<std::uint16_t, 42> slots_8_1 { 28, 29, 30, 31, 32, 204, 205, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184, 206, 207, 208, 209, 217, 218, 219 };
+inline constexpr std::array<std::uint16_t, 51> slots_8_1 { 28, 29, 30, 31, 32, 204, 205, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184, 206, 207, 208, 209, 217, 218, 219 };
 inline constexpr std::array<std::uint16_t, 28> slots_8_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 229, 73, 74, 75, 220, 221, 78, 79, 80, 81, 82, 83, 222, 223, 224, 225 };
 inline constexpr std::array<std::uint16_t, 31> slots_8_3 { 85, 0, 0, 0, 89, 210, 91, 92, 93, 94, 95, 96, 211, 98, 212, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 111 };
 inline constexpr std::array<std::uint16_t, 31> slots_8_4 { 213, 113, 175, 115, 116, 117, 118, 119, 120, 121, 0, 0, 0, 125, 126, 127, 214, 129, 130, 185, 193, 0, 226, 227, 228, 230, 0, 231, 232, 0, 0 };
@@ -2212,6 +2281,28 @@ inline constexpr std::array family_8 {
     Subsystem { "exc", 2401, 2404, slots_8_8 },
     Subsystem { "notify", 64, 73, slots_8_9 },
 };
+inline constexpr std::array<std::uint16_t, 36> slots_9_0 { 1, 2, 3, 4, 5, 6, 7, 8, 9, 197, 10, 11, 12, 13, 14, 15, 16, 198, 199, 19, 20, 21, 22, 23, 24, 179, 26, 27, 180, 181, 182, 200, 201, 202, 203, 216 };
+inline constexpr std::array<std::uint16_t, 51> slots_9_1 { 28, 29, 30, 31, 32, 204, 205, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 191, 56, 57, 58, 59, 183, 184, 206, 207, 208, 209, 217, 218, 219, 233, 234, 235, 236, 237, 238, 239, 240, 241 };
+inline constexpr std::array<std::uint16_t, 28> slots_9_2 { 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 229, 73, 74, 75, 220, 221, 78, 79, 80, 81, 82, 83, 222, 223, 224, 225 };
+inline constexpr std::array<std::uint16_t, 31> slots_9_3 { 85, 0, 0, 0, 89, 210, 91, 92, 93, 94, 95, 96, 211, 98, 212, 100, 101, 102, 103, 104, 0, 105, 106, 107, 108, 109, 110, 0, 0, 0, 242 };
+inline constexpr std::array<std::uint16_t, 31> slots_9_4 { 213, 113, 175, 115, 116, 117, 118, 119, 120, 121, 0, 0, 0, 125, 126, 127, 214, 129, 130, 185, 193, 0, 243, 227, 228, 230, 0, 231, 232, 0, 0 };
+inline constexpr std::array<std::uint16_t, 26> slots_9_5 { 131, 132, 215, 186, 135, 136, 187, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 0, 178, 150, 151, 152, 153, 154, 155, 188 };
+inline constexpr std::array<std::uint16_t, 3> slots_9_6 { 156, 157, 158 };
+inline constexpr std::array<std::uint16_t, 7> slots_9_7 { 159, 160, 161, 162, 163, 164, 165 };
+inline constexpr std::array<std::uint16_t, 3> slots_9_8 { 166, 167, 168 };
+inline constexpr std::array<std::uint16_t, 9> slots_9_9 { 0, 169, 0, 0, 0, 170, 171, 172, 173 };
+inline constexpr std::array family_9 {
+    Subsystem { "mach_port", 3200, 3236, slots_9_0 },
+    Subsystem { "task", 3400, 3451, slots_9_1 },
+    Subsystem { "thread_act", 3600, 3628, slots_9_2 },
+    Subsystem { "vm_map", 3800, 3831, slots_9_3 },
+    Subsystem { "mach_host", 200, 231, slots_9_4 },
+    Subsystem { "host_priv", 400, 426, slots_9_5 },
+    Subsystem { "clock", 1000, 1003, slots_9_6 },
+    Subsystem { "semaphore", 617200, 617207, slots_9_7 },
+    Subsystem { "exc", 2401, 2404, slots_9_8 },
+    Subsystem { "notify", 64, 73, slots_9_9 },
+};
 inline constexpr std::array profiles {
     Profile { "darwin9.0.0d1", "xnu-792.24.17", family_0 },
     Profile { "darwin9.3.1", "xnu-1228.15.4", family_1 },
@@ -2227,5 +2318,6 @@ inline constexpr std::array profiles {
     Profile { "darwin14.0.0", "xnu-2422.115.4", family_6 },
     Profile { "darwin14.0.0-fine-priority", "xnu-2782.40.9", family_7 },
     Profile { "darwin15.0.0-qos-events", "xnu-3248.60.10", family_8 },
+    Profile { "darwin16.0.0-qos-events", "xnu-3789.1.32", family_9 },
 };
 } // namespace ilemu::xnu::mig::reference::data

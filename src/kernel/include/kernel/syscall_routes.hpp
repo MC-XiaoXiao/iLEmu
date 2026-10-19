@@ -106,7 +106,7 @@ struct Replacement {
 class Table {
 public:
     // Checked catalog capacities, not assertions about the entire Darwin ABI.
-    static constexpr std::size_t bsd_capacity = 512;
+    static constexpr std::size_t bsd_capacity = 576;
     static constexpr std::size_t mach_capacity = 128;
     void bind_new(const Entry& entry);
     void replace_entry(const Entry& expected, const Entry& replacement);

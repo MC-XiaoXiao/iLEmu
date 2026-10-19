@@ -17,6 +17,7 @@ enum class DarwinAddressLayout {
     ClassicArm,
     ExpandedArmSharedRegion,
     ArmSharedRegionAt512MiB,
+    ArmSharedRegionAt416MiB,
 };
 
 struct DarwinAddressBounds {
@@ -27,6 +28,8 @@ struct DarwinAddressBounds {
 
 constexpr DarwinAddressBounds darwin_address_bounds(DarwinAddressLayout layout)
 {
+    if (layout == DarwinAddressLayout::ArmSharedRegionAt416MiB)
+        return { 0x19000000U, 0x1a000000U, 0x40000000U };
     if (layout == DarwinAddressLayout::ArmSharedRegionAt512MiB)
         return { 0x1f000000U, 0x20000000U, 0x40000000U };
     if (layout == DarwinAddressLayout::ExpandedArmSharedRegion)

@@ -169,6 +169,23 @@ namespace {
         return abi;
     }();
 
+    // Darwin 16 retains the known QoS event and coalition wire contracts.
+    // Keep its identity separate so later ABI evidence can evolve this
+    // release without changing the Darwin 15 contract.
+    constexpr DarwinAbi darwin16_qos_events_abi = [] {
+        auto abi = darwin15_qos_events_abi;
+        abi.gettimeofday_abi =
+            DarwinGettimeofdayAbi::CopyoutTimevalAndAbsoluteTime;
+        abi.mach_voucher_abi = DarwinMachVoucherAbi::HostCreateWithDirectTraps;
+        abi.capabilities.getentropy = true;
+        abi.capabilities.user_lock_wait = true;
+        abi.capabilities.file_signature_end_offset = true;
+        abi.address_layout = DarwinAddressLayout::ArmSharedRegionAt416MiB;
+        abi.pthread_abi =
+            DarwinPthreadAbi::BsdThreadRegisterV1ExpandedTsdKeventWorkqueues;
+        return abi;
+    }();
+
     // Release identity and ABI values are independent. Entries sharing a
     // Darwin release retain the wire differences required by their callers.
     constexpr std::array configurations {
@@ -364,6 +381,11 @@ namespace {
             .darwin_release = "15.0.0",
             .abi = darwin15_qos_events_abi,
         },
+        DarwinConfigurationEntry {
+            .name = "darwin16.0.0-qos-events",
+            .darwin_release = "16.0.0",
+            .abi = darwin16_qos_events_abi,
+        },
     };
 
     const DarwinConfigurationEntry* find_configuration(std::string_view name)
@@ -416,6 +438,7 @@ namespace {
             // iOS 8's ARM kernels remain on the Darwin 14 ABI release.
             Rule { "12", "darwin14.0.0-fine-priority" },
             Rule { "13", "darwin15.0.0-qos-events" },
+            Rule { "14", "darwin16.0.0-qos-events" },
         };
         const auto branch = build.find_first_not_of("0123456789");
         const auto generation = build.substr(0, branch);

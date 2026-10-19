@@ -20,6 +20,13 @@ namespace ilemu {
 // Select the available kqueue syscall formats independently of pthread ABI.
 enum class DarwinKeventAbi : std::uint8_t { Legacy, QualityOfService };
 
+// Early ARM libSystem marshals gettimeofday from two return registers;
+// newer XNU copies a timeval and optional absolute-time sample to userspace.
+enum class DarwinGettimeofdayAbi : std::uint8_t {
+    RegisterTimeval,
+    CopyoutTimevalAndAbsoluteTime,
+};
+
 // libpthread moved thread creation and workqueue registration behind BSD
 // syscalls in Darwin 10. Keep that wire contract separate from the broader
 // kernel epoch: later Darwin releases revise the registration arguments and
@@ -37,6 +44,8 @@ enum class DarwinPthreadAbi : std::uint8_t {
     BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
     // Same TSD placement with encoded QoS classes and capability reporting.
     BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues,
+    // Split libpthread can register direct kevent workqueue callbacks.
+    BsdThreadRegisterV1ExpandedTsdKeventWorkqueues,
     BsdThreadRegisterV2,
 };
 
@@ -163,6 +172,7 @@ enum class DarwinCoalitionAbi : std::uint8_t {
 enum class DarwinMachVoucherAbi : std::uint8_t {
     Unsupported,
     HostCreateWithInlineRecipes,
+    HostCreateWithDirectTraps,
 };
 
 // Darwin 11 exposes the legacy stack_snapshot diagnostic syscall. Later
@@ -220,6 +230,11 @@ struct DarwinGuestCapabilities {
     // This is a version-sensitive capability; later and unknown profiles keep
     // the XNU behavior of leaving VM permissions unchanged.
     bool arm_cache_trap_grants_execute { };
+    // Darwin 16 exposes the bounded getentropy BSD syscall.
+    bool getentropy { };
+    // Darwin 16 adds the ulock_wait/ulock_wake synchronization pair.
+    bool user_lock_wait { };
+    bool file_signature_end_offset { };
 };
 
 // Older kernels compact descriptors backwards; expanded kernel descriptors
@@ -333,6 +348,9 @@ struct DarwinAbi {
         DarwinSysctlTransferAbi::LegacyKernelHandlers
     };
     DarwinKeventAbi kevent_abi { DarwinKeventAbi::Legacy };
+    DarwinGettimeofdayAbi gettimeofday_abi {
+        DarwinGettimeofdayAbi::RegisterTimeval
+    };
     DarwinPthreadAbi pthread_abi {
         DarwinPthreadAbi::LegacyMachThreads
     };
