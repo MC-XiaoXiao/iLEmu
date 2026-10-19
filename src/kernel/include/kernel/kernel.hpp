@@ -714,6 +714,13 @@ private:
     void dispatch_mach_task_trap(Cpu& cpu, std::uint32_t trap);
     void dispatch_mach_scheduler_trap(Cpu& cpu, std::uint32_t trap);
     void dispatch_mach_timer_trap(Cpu& cpu, std::uint32_t trap);
+    void dispatch_mach_voucher_trap(Cpu& cpu, std::uint32_t trap);
+    struct MachVoucherCreation {
+        std::uint32_t error;
+        std::uint32_t name;
+    };
+    [[nodiscard]] MachVoucherCreation create_mach_voucher(
+        std::uint32_t host_name, std::span<const std::byte> recipes);
 
     [[nodiscard]] bool dispatch_mach_port_kernel_rpc_trap(
         Cpu& cpu, std::uint32_t trap);

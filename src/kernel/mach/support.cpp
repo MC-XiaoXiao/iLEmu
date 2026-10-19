@@ -10,6 +10,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/ipc_tt.c
 
 #include "port/rights.hpp"
+#include "host/calendar_notifications.hpp"
 #include "task/suspension.hpp"
 #include "mach/bootstrap_mig_ids.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -1081,6 +1082,7 @@ namespace mach_support {
     {
         if (state.mach_ports_being_removed.contains(object))
             return;
+        host_mig::CalendarNotifications::port_destroyed_locked(state, object);
         // A port-destroyed notification may keep the object alive in transit.
         // Revoke cached receives even when there is no port-set membership.
         state.note_mach_queue_topology_change_locked(object);

@@ -35,8 +35,8 @@ bool CompatibilityKernel::dispatch_mach_voucher_message(
     const auto attribute_command = request.identifier == id(Routine::attr_command);
     if ((!content_only && !attribute_command &&
             request.identifier != id(Routine::extract_attr_recipe)) ||
-        shared_state_->darwin_abi.mach_voucher_abi !=
-            DarwinMachVoucherAbi::HostCreateWithInlineRecipes) {
+        shared_state_->darwin_abi.mach_voucher_abi ==
+            DarwinMachVoucherAbi::Unsupported) {
         return false;
     }
     auto& registers = cpu.registers();

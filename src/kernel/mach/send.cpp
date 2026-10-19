@@ -56,6 +56,7 @@
 #include "task/lifecycle.hpp"
 #include "thread/state_server.hpp"
 #include "thread/policy.hpp"
+#include "thread/info_server.hpp"
 #include "transport/copyin_cleanup.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/port_copyin.hpp"
@@ -305,6 +306,9 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
             : task_mig::Lifecycle::handles(message_id)
             ? task_mig::Lifecycle::dispatch_locked(*shared_state_, process_.pid,
                   remote_object, queued, task_suspended)
+            : thread_mig::Information::handles(message_id)
+            ? thread_mig::Information::dispatch_locked(*shared_state_, remote_object, queued,
+                  thread_statistics_query_)
             : thread_mig::State::handles(message_id)
             ? thread_mig::State::dispatch_locked(cpu, *shared_state_, process_,
                   remote_object, queued, thread_state_query_, thread_state_update_handler_)

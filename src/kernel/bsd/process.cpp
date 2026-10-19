@@ -19,6 +19,7 @@
 
 #include "kernel/darwin_abi.hpp"
 #include "../mach/task/suspension.hpp"
+#include "../mach/host/calendar_notifications.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
@@ -757,6 +758,10 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
                     VirtualClock::nanoseconds_per_second +
                 static_cast<std::uint64_t>(microseconds) * 1'000ULL;
             shared_state_->clock.set_wall_time(wall_time);
+            {
+                const std::lock_guard lock { shared_state_->mach_mutex };
+                host_mig::CalendarNotifications::clock_set_locked(*shared_state_);
+            }
             output_.write(
                 "[clock] settimeofday pid=" + std::to_string(process_.pid) +
                 " seconds=" + std::to_string(seconds) +

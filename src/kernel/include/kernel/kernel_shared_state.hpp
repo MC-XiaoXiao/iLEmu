@@ -1841,6 +1841,10 @@ struct KernelSharedState {
     std::multimap<std::uint64_t, ClockAlarm> clock_alarms;
     std::map<std::pair<std::uint32_t, std::uint32_t>, MachNotificationRequest>
         mach_notifications;
+    // host_request_notification owns one send-once token per calendar
+    // notification port until the clock changes or that port is destroyed.
+    // Keyed by global ipc_port object, not a task-local Mach name.
+    std::map<std::uint32_t, std::uint32_t> host_calendar_notifications;
     std::map<std::pair<std::uint32_t, std::uint32_t>,
         MachDeadNameNotificationRequest>
         mach_dead_name_notifications;

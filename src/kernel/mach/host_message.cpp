@@ -9,18 +9,17 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/host_info.h
 
 #include "kernel/kernel.hpp"
+#include "host/calendar_notifications.hpp"
 #include "kernel/darwin_abi.hpp"
-#include "kernel/kernel_mach_task_identity.hpp"
 #include "mach/mach_host_mig_ids.hpp"
 #include "mach/mig_wire_abi.hpp"
 #include "support.hpp"
 
 #include <array>
+#include <mutex>
 #include <span>
 
 namespace ilemu {
-
-using namespace mach_support;
 
 namespace {
 
@@ -44,7 +43,6 @@ bool CompatibilityKernel::dispatch_mach_host_message(
 {
     auto& registers = cpu.registers();
     const auto message_address = request.address;
-    const std::optional<std::uint32_t> bits { request.bits };
     const std::optional<std::uint32_t> remote_port { request.remote_port };
     const std::optional<std::uint32_t> local_port { request.local_port };
     const std::optional<std::uint32_t> message_id { request.identifier };
@@ -70,12 +68,45 @@ bool CompatibilityKernel::dispatch_mach_host_message(
                            : darwin::mach_message::receive_invalid_data;
     };
     if (*message_id == xnu::mig::mach_host::id(
+                           xnu::mig::mach_host::Routine::host_request_notification)) {
+        constexpr std::uint32_t request_size = 52U;
+        if (registers[2] != request_size ||
+            (request.bits & darwin::mig_wire::message_complex_bit) == 0U ||
+            !memory_.accessible(message_address, request_size,
+                MemoryPermission::Read)) {
+            write_result_reply(darwin::mig::bad_arguments);
+            return true;
+        }
+        const auto count = memory_.read32(message_address + 24U);
+        const auto name = memory_.read32(message_address + 28U);
+        const auto descriptor = memory_.read32(message_address + 36U);
+        const auto type = memory_.read32(message_address + 48U);
+        if (!count || !name || !descriptor || !type || *count != 1U ||
+            *descriptor != (darwin::mig_wire::disposition_make_send_once << 16U)) {
+            write_result_reply(darwin::mig::bad_arguments);
+            return true;
+        }
+        std::uint32_t result;
+        {
+            const std::lock_guard lock { shared_state_->mach_mutex };
+            const auto host = mach_support::resolve_name_with_right(
+                *shared_state_, process_.pid, *remote_port,
+                xnu::ipc::Right::Send);
+            result = host && *host == mach_task_identity::initial_host_self_name
+                         ? host_mig::CalendarNotifications::register_locked(
+                               *shared_state_, process_.pid, *name, *type)
+                         : darwin::mach::invalid_argument;
+        }
+        write_result_reply(result);
+        return true;
+    }
+    if (*message_id == xnu::mig::mach_host::id(
                            xnu::mig::mach_host::Routine::host_create_mach_voucher) &&
-        shared_state_->darwin_abi.mach_voucher_abi ==
-            DarwinMachVoucherAbi::HostCreateWithInlineRecipes) {
+        shared_state_->darwin_abi.mach_voucher_abi !=
+            DarwinMachVoucherAbi::Unsupported) {
         constexpr std::uint32_t recipe_count_offset = 32U;
         constexpr std::uint32_t recipe_data_offset = 36U;
-        constexpr std::uint32_t maximum_recipe_size = 4096U;
+        constexpr std::uint32_t maximum_recipe_size = 5120U;
         constexpr std::uint32_t port_reply_size = 40U;
         if (registers[2] < recipe_data_offset ||
             registers[3] < port_reply_size) {
@@ -94,56 +125,9 @@ bool CompatibilityKernel::dispatch_mach_host_message(
             registers[0] = darwin::mach_message::receive_invalid_data;
             return true;
         }
-        std::uint32_t voucher_name = 0;
-        auto result = darwin::mach::invalid_argument;
-        {
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto host_object = resolve_name_with_right(*shared_state_,
-                process_.pid, *remote_port, xnu::ipc::Right::Send);
-            if (host_object &&
-                *host_object == mach_task_identity::initial_host_self_name) {
-                MachVoucherState voucher;
-                result = voucher.create(*recipes,
-                    [&](std::uint32_t name) -> const MachVoucherState* {
-                        const auto object = resolve_name_with_right(*shared_state_,
-                            process_.pid, name, xnu::ipc::Right::Send);
-                        if (!object) return nullptr;
-                        const auto found = shared_state_->mach_vouchers.find(*object);
-                        return found == shared_state_->mach_vouchers.end()
-                            ? nullptr : &found->second;
-                    }, shared_state_->mach_vouchers,
-                    shared_state_->next_activity_id, process_.pid);
-                // XNU's all-default voucher is MACH_VOUCHER_NULL.
-                if (result == darwin::mach::success && !voucher.empty()) {
-                    std::uint32_t object = 0;
-                    for (const auto& [candidate, value] : shared_state_->mach_vouchers) {
-                        if (value == voucher) {
-                            object = candidate;
-                            break;
-                        }
-                    }
-                    const auto created = object == 0;
-                    if (created) {
-                        object = shared_state_->allocate_mach_object();
-                        if (shared_state_->mach_port_objects.create(object))
-                            shared_state_->mach_vouchers.emplace(object, std::move(voucher));
-                        else object = 0;
-                    }
-                    if (object) {
-                        voucher_name = shared_state_->mach_namespaces.copyout(
-                            process_.pid, object,
-                            xnu::ipc::type_mask(xnu::ipc::Right::Send)).value_or(0);
-                        if (!voucher_name && created) {
-                            shared_state_->mach_vouchers.erase(object);
-                            static_cast<void>(shared_state_->mach_port_objects.erase(object));
-                        }
-                    }
-                    if (!voucher_name) result = darwin::mach::resource_shortage;
-                }
-            }
-        }
-        if (result != darwin::mach::success) {
-            write_result_reply(result);
+        const auto creation = create_mach_voucher(*remote_port, *recipes);
+        if (creation.error != darwin::mach::success) {
+            write_result_reply(creation.error);
             return true;
         }
         const std::array<std::uint32_t, 10> reply {
@@ -155,7 +139,7 @@ bool CompatibilityKernel::dispatch_mach_host_message(
             0,
             *message_id + 100U,
             1,
-            voucher_name,
+            creation.name,
             0,
             darwin::mig_wire::port_descriptor_metadata(
                 darwin::mig_wire::disposition_move_send),

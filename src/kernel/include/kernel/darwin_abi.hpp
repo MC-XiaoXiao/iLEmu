@@ -159,6 +159,7 @@ namespace mach {
     inline constexpr std::uint32_t invalid_argument = 4;
     inline constexpr std::uint32_t failure = 5;
     inline constexpr std::uint32_t resource_shortage = 6;
+    inline constexpr std::uint32_t memory_error = 10;
     inline constexpr std::uint32_t name_exists = 13;
     inline constexpr std::uint32_t aborted = 14;
     inline constexpr std::uint32_t invalid_name = 15;

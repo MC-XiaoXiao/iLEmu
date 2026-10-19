@@ -33,6 +33,17 @@ void bind_mach_entries(Table& table, const DarwinAbi& abi)
     add(44, "task_name_for_pid", Handler::MachTask);
     add(45, "task_for_pid", Handler::MachTask);
     add(46, "pid_for_task", Handler::MachTask);
+    if (abi.mach_voucher_abi == DarwinMachVoucherAbi::HostCreateWithDirectTraps) {
+        add(43, "mach_generate_activity_id", Handler::MachVoucher,
+            Contract::CurrentDispatcher, Outcome::HandlerValidated,
+            "mach/traps/voucher.cpp");
+        add(70, "host_create_mach_voucher_trap", Handler::MachVoucher,
+            Contract::CurrentDispatcher, Outcome::HandlerValidated,
+            "mach/traps/voucher.cpp");
+        add(72, "mach_voucher_extract_attr_recipe_trap", Handler::MachVoucher,
+            Contract::CurrentDispatcher, Outcome::HandlerValidated,
+            "mach/traps/voucher.cpp");
+    }
     add(darwin::mach::scheduler::swtch_pri_trap, "swtch_pri", Handler::MachScheduler);
     add(darwin::mach::scheduler::swtch_trap, "swtch", Handler::MachScheduler);
     add(darwin::mach::scheduler::thread_switch_trap, "thread_switch", Handler::MachScheduler);

@@ -469,8 +469,10 @@ target_sources(ilemu_kernel PRIVATE
     mach/message.cpp
     mach/send.cpp
     mach/host_message.cpp
+    mach/host/calendar_notifications.cpp
     mach/host_special_port.cpp
     mach/voucher_message.cpp
+    mach/voucher_creation.cpp
     mach/voucher_state.cpp
     mach/port_message.cpp
     mach/task_vm_message.cpp
@@ -483,7 +485,8 @@ target_sources(ilemu_kernel PRIVATE
     mach/traps/semaphore.cpp
     mach/traps/task.cpp
     mach/traps/scheduler.cpp
-    mach/traps/timer.cpp)
+    mach/traps/timer.cpp
+    mach/traps/voucher.cpp)
 target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::kernel_mach_transport
     iLEmu::kernel_mach_port

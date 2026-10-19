@@ -72,6 +72,8 @@ std::string_view handler_name(Handler value)
         return "dispatch_mach_scheduler_trap";
     case Handler::MachTimer:
         return "dispatch_mach_timer_trap";
+    case Handler::MachVoucher:
+        return "dispatch_mach_voucher_trap";
     case Handler::MachMessage:
         return "dispatch_mach_message";
     case Handler::MachThreadSelf:

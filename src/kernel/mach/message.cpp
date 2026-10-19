@@ -55,6 +55,7 @@
 #include "task/special_ports.hpp"
 #include "task/lifecycle.hpp"
 #include "thread/policy.hpp"
+#include "thread/info_server.hpp"
 #include "transport/port_copyin.hpp"
 #include "transport/kernel_destination.hpp"
 #include "transport/user_header.hpp"
@@ -261,6 +262,17 @@ void CompatibilityKernel::dispatch_mach_message(
                                       task_mig::Enumeration::handles(*message_id) ||
                                       task_mig::SpecialPorts::handles(*message_id);
     const bool thread_policy_request = thread_mig::Policy::handles(*message_id);
+    const bool thread_information_request = thread_mig::Information::handles(*message_id);
+    if (thread_information_request && pending_mach_receives_.empty()) {
+        const std::lock_guard lock { shared_state_->mach_mutex };
+        const auto result = thread_mig::Information::try_synchronous_locked(memory_,
+            *shared_state_, process_, registers, *bits, *local_port,
+            receive_address.value_or(message_address), thread_statistics_query_);
+        if (result) {
+            registers[0] = *result;
+            return;
+        }
+    }
     const bool port_query_request = port_mig::Queries::handles(*message_id);
     const bool port_notification_request = port_mig::Notifications::handles(*message_id);
     const bool port_rights_request = port_mig::Rights::handles(*message_id);
@@ -398,7 +410,7 @@ void CompatibilityKernel::dispatch_mach_message(
         }
     }
     if (!separate_receive && !clock_service_request && !host_service_request && !host_information_request &&
-        !task_service_request && !vm_memory_request && !thread_policy_request && !port_query_request &&
+        !task_service_request && !vm_memory_request && !thread_policy_request && !thread_information_request && !port_query_request &&
         !port_notification_request && !port_lifecycle_request && !port_rights_request &&
         !port_mig::Guarded::handles(*message_id) && !port_attributes_request && !port_membership_request && !port_context_request && !task_information_request) {
         const auto is_bootstrap_port = [&] {

@@ -46,6 +46,7 @@ enum class Handler {
     MachTask,
     MachScheduler,
     MachTimer,
+    MachVoucher,
 
     MachMessage,
     MachThreadSelf,

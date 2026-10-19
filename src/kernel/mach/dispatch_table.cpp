@@ -53,6 +53,10 @@ MachDispatchTable::Adapter MachDispatchTable::adapter_for(syscall_routes::Handle
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t trap) {
             kernel.dispatch_mach_timer_trap(cpu, trap);
         };
+    case Handler::MachVoucher:
+        return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t trap) {
+            kernel.dispatch_mach_voucher_trap(cpu, trap);
+        };
     default:
         throw std::invalid_argument("Mach catalog handler has no executable adapter");
     }
