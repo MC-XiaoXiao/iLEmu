@@ -278,7 +278,9 @@ namespace {
                 std::filesystem::remove(temporary, error);
                 return false;
             }
-            std::array<std::byte, 1024U * 1024U> buffer { };
+            // Keep the copy buffer off small host-thread stacks, including
+            // when this fallback is inlined into ImmutableFileView::open.
+            std::vector<std::byte> buffer(1024U * 1024U);
             std::uint64_t offset = 0;
             copied = true;
             while (offset < generation.file_size) {
