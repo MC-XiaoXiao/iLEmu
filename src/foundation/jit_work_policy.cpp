@@ -13,6 +13,7 @@
 #include "foundation/jit_code_cache_governor.hpp"
 #include "foundation/host_memory.hpp"
 #include "foundation/jit_translation_profile.hpp"
+#include "jit_backend_capabilities.hpp"
 
 namespace ilemu {
 namespace {
@@ -119,6 +120,12 @@ std::size_t JitWorkPolicy::recommended_native_slab_bytes(
     std::uint64_t effective_memory_bytes, bool effective_memory_known,
     std::uint64_t available_memory_bytes, bool available_memory_known) noexcept
 {
+    // Executor-local emitters retain independent block indexes. Keep their
+    // per-runtime demand capacity bounded before it is split across slots.
+    if constexpr (!JitBackendCapabilities::shared_native_cache) {
+        constexpr std::size_t local_runtime_bytes = 8U * 1024U * 1024U;
+        return local_runtime_bytes;
+    }
     if (!effective_memory_known ||
         effective_memory_bytes < expanded_effective_memory_floor ||
         (available_memory_known &&
