@@ -248,9 +248,26 @@ std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread(
         if (iterator == threads_.end() || !iterator->second.queued)
             continue;
         if (!oldest ||
-            iterator->second.enqueue_sequence < oldest_enqueue_sequence) {
+            iterator->second.runnable_enqueue_sequence < oldest_enqueue_sequence) {
             oldest = thread;
-            oldest_enqueue_sequence = iterator->second.enqueue_sequence;
+            oldest_enqueue_sequence = iterator->second.runnable_enqueue_sequence;
+        }
+    }
+    return oldest;
+}
+
+std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread_except(
+    std::optional<XnuThreadId> excluded) const
+{
+    std::optional<XnuThreadId> oldest;
+    std::uint64_t oldest_enqueue_sequence =
+        std::numeric_limits<std::uint64_t>::max();
+    for (const auto& [thread, record] : threads_) {
+        if ((excluded && thread == *excluded) || !record.queued)
+            continue;
+        if (!oldest || record.runnable_enqueue_sequence < oldest_enqueue_sequence) {
+            oldest = thread;
+            oldest_enqueue_sequence = record.runnable_enqueue_sequence;
         }
     }
     return oldest;
@@ -1082,6 +1099,7 @@ void XnuScheduler::begin_runnable_generation(ThreadRecord& record)
     // queue age from a prior wake or prior slice. Priority-only reordering
     // does not call this helper and therefore retains the current generation.
     record.enqueued_at = { };
+    record.runnable_enqueue_sequence = 0U;
 }
 
 bool XnuScheduler::is_runnable_state(XnuThreadState state)

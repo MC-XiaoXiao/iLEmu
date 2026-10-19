@@ -79,6 +79,9 @@ private:
 
     static constexpr std::size_t preferred_process_burst_limit = 3U;
 
+    std::chrono::nanoseconds realtime_burst_period_;
+    std::optional<std::chrono::steady_clock::time_point>
+        realtime_burst_deadline_;
     std::chrono::nanoseconds interaction_lease_;
     std::chrono::steady_clock::time_point interaction_deadline_ { };
     std::uint64_t observed_interaction_generation_ { };

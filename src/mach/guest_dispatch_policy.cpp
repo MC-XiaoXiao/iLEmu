@@ -23,7 +23,8 @@ namespace {
 
 GuestDispatchPolicy::GuestDispatchPolicy(
     std::chrono::nanoseconds response_period)
-    : interaction_lease_ { response_period * 8 }
+    : realtime_burst_period_ { response_period }
+    , interaction_lease_ { response_period * 8 }
 {
     if (response_period <= std::chrono::nanoseconds::zero()) {
         throw std::invalid_argument { "response period must be positive" };
@@ -83,6 +84,36 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         result.reason = reason;
         return result;
     };
+    const auto realtime = [&](std::optional<XnuThreadId> thread,
+                              GuestDispatchReason reason) {
+        if (thread && observation.active_process == thread->process &&
+            (!observation.foreground_transition_process ||
+                observation.foreground_transition_process == thread->process)) {
+            // Preserve callback locality for the settled foreground owner.
+            realtime_burst_deadline_.reset();
+            return direct(thread, reason);
+        }
+        if (!realtime_burst_deadline_)
+            realtime_burst_deadline_ =
+                observation.now + realtime_burst_period_;
+        if (observation.now >= *realtime_burst_deadline_) {
+            // A stream of notifications can continuously renew its callback
+            // lease, including while another process must finish a foreground
+            // handoff. Bound that realtime dependency chain independently
+            // of those leases. An ordinary priority selection can pick the
+            // callback again while a lower-priority service worker is waiting;
+            // give the oldest other runnable continuation one bounded turn.
+            // Changing callback, receiver or process must not restart the burst.
+            realtime_burst_deadline_.reset();
+            const auto dependency = thread
+                ? scheduler.oldest_runnable_thread_except(*thread)
+                : std::nullopt;
+            return direct(dependency, dependency
+                ? GuestDispatchReason::RealtimeDependency
+                : GuestDispatchReason::Ordinary);
+        }
+        return direct(thread, reason);
+    };
     if (observation.debugger_thread) {
         return direct(observation.debugger_thread,
             GuestDispatchReason::Debugger);
@@ -118,13 +149,29 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
     }
     input_target_burst_ = 0U;
 
+    if (!observation.active_process) {
+        if (!realtime_burst_deadline_)
+            realtime_burst_deadline_ =
+                observation.now + realtime_burst_period_;
+        if (observation.now >= *realtime_burst_deadline_) {
+            // Native resume can wait for service workers after the display
+            // callback lease expires. Keep handoff fairness until firmware
+            // establishes foreground ownership, even without a realtime hint.
+            realtime_burst_deadline_.reset();
+            const auto dependency = scheduler.oldest_runnable_thread_except();
+            return direct(dependency, dependency
+                ? GuestDispatchReason::ForegroundTransition
+                : GuestDispatchReason::Ordinary);
+        }
+    }
+
     if (observation.realtime_work_pending &&
         observation.realtime_yielded_thread && observation.realtime_process) {
         if (const auto dependency =
                 scheduler.highest_priority_runnable_thread(
                     *observation.realtime_process,
                     observation.realtime_yielded_thread)) {
-            return direct(dependency,
+            return realtime(dependency,
                 GuestDispatchReason::RealtimeYieldDependency);
         }
     }
@@ -133,7 +180,7 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         observation.realtime_inflight_thread !=
             observation.realtime_yielded_thread &&
         runnable(scheduler, *observation.realtime_inflight_thread)) {
-        return direct(observation.realtime_inflight_thread,
+        return realtime(observation.realtime_inflight_thread,
             GuestDispatchReason::RealtimeInflight);
     }
 
@@ -142,7 +189,7 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         observation.realtime_receiver_thread !=
             observation.realtime_yielded_thread &&
         runnable(scheduler, *observation.realtime_receiver_thread)) {
-        return direct(observation.realtime_receiver_thread,
+        return realtime(observation.realtime_receiver_thread,
             GuestDispatchReason::RealtimeReceiver);
     }
 
@@ -150,7 +197,7 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         observation.realtime_callback_thread !=
             observation.realtime_yielded_thread &&
         runnable(scheduler, *observation.realtime_callback_thread)) {
-        return direct(observation.realtime_callback_thread,
+        return realtime(observation.realtime_callback_thread,
             GuestDispatchReason::RealtimeCallback);
     }
 
@@ -162,14 +209,14 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         if (callback_info && callback_info->state != XnuThreadState::Runnable) {
             if (observation.realtime_receiver_thread &&
                 runnable(scheduler, *observation.realtime_receiver_thread)) {
-                return direct(observation.realtime_receiver_thread,
+                return realtime(observation.realtime_receiver_thread,
                     GuestDispatchReason::RealtimeReceiver);
             }
             if (const auto dependency =
                     scheduler.highest_priority_runnable_thread(
                         *observation.realtime_process,
                         observation.realtime_callback_thread)) {
-                return direct(dependency,
+                return realtime(dependency,
                     GuestDispatchReason::RealtimeDependency);
             }
         }
@@ -184,11 +231,14 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
                     scheduler.highest_priority_runnable_thread(
                         *observation.realtime_process,
                         observation.realtime_inflight_thread)) {
-                return direct(dependency,
+                return realtime(dependency,
                     GuestDispatchReason::RealtimeDependency);
             }
         }
     }
+
+    if (observation.active_process)
+        realtime_burst_deadline_.reset();
 
     if (observation.foreground_transition_process) {
         auto decision = decide_interactive_process(scheduler,

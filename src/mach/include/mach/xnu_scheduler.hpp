@@ -305,6 +305,11 @@ public:
     [[nodiscard]] std::optional<XnuThreadId> oldest_runnable_thread(
         std::uint32_t process,
         std::optional<XnuThreadId> excluded = std::nullopt) const;
+    // A bounded foreground handoff can depend on a lower-priority worker in
+    // another task. Query FIFO runnable age without changing guest priority,
+    // quantum, queue membership or eligibility.
+    [[nodiscard]] std::optional<XnuThreadId> oldest_runnable_thread_except(
+        std::optional<XnuThreadId> excluded = std::nullopt) const;
     // Host role dispatch uses the process's own XNU ordering: highest
     // scheduled priority first, realtime deadline next, then FIFO age.
     [[nodiscard]] std::optional<XnuThreadId>
@@ -364,6 +369,7 @@ private:
         bool execution_pending { };
         std::int32_t queued_priority { };
         std::uint64_t enqueue_sequence { };
+        std::uint64_t runnable_enqueue_sequence { };
         std::chrono::steady_clock::time_point enqueued_at;
         std::uint64_t runnable_generation { };
         // A partially used quantum stays at the queue head. Preserve that

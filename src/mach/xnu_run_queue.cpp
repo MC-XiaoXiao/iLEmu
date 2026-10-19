@@ -30,6 +30,10 @@ void XnuScheduler::enqueue(ThreadRecord& record, QueuePosition position)
             : processor_set_run_queue_;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
     record.enqueue_sequence = next_enqueue_sequence_++;
+    // Priority aging can move a queued thread without executing it. Preserve
+    // its true runnable age until a new runnable generation begins.
+    if (record.runnable_enqueue_sequence == 0U)
+        record.runnable_enqueue_sequence = record.enqueue_sequence + 1U;
     if (record.info.realtime &&
         priority >= xnu::scheduler::realtime_queue_priority) {
         const auto realtime_key =
