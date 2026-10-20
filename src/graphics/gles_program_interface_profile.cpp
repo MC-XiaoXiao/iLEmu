@@ -676,6 +676,11 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
             fragment_tokens, result.color_varying, sampled, uncommented);
         result.framebuffer_fetch = result.fragment_operation !=
                                    GlesFragmentOperation::TextureEnvironment;
+        // An unrecognized destination expression still reads the framebuffer.
+        // Execute the complete shader instead of losing that input in the
+        // texture-environment adapter.
+        if (!result.framebuffer_fetch)
+            result.requires_glsl_execution = true;
     }
 
     auto texture_attributes = attributes;

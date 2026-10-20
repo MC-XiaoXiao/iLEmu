@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #include "egl_program_renderer.hpp"
+#include "egl_framebuffer_fetch.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_resources.hpp"
 
@@ -73,6 +74,7 @@ namespace {
         struct Program {
             GLuint object { };
             std::map<std::string, Uniform, std::less<>> uniforms;
+            GLint fetch_sampler { -1 }, fetch_inverse_size { -1 };
         };
         struct Target {
             GLuint framebuffer { }, color { }, depth { };
@@ -83,6 +85,7 @@ namespace {
             std::uint64_t last_used { };
             bool inverted_vertical { };
             bool native_argb_readback { };
+            EglFramebufferFetch fetch;
         };
         struct Texture {
             GLuint object { };
@@ -155,6 +158,22 @@ namespace {
                 name_ = renderer ? reinterpret_cast<const char*>(renderer)
                                  : "host GLES2";
                 const auto* gl_extensions = glGetString(GL_EXTENSIONS);
+                const auto extension_list = std::string { " " } +
+                    (gl_extensions
+                        ? reinterpret_cast<const char*>(gl_extensions) : "") +
+                    " ";
+                native_framebuffer_fetch_ = extension_list.find(
+                    " GL_EXT_shader_framebuffer_fetch ") != std::string::npos;
+                uint_indices_ = extension_list.find(
+                    " GL_OES_element_index_uint ") != std::string::npos;
+                GLint fragment_units {}, combined_units {};
+                glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &fragment_units);
+                glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &combined_units);
+                fetch_texture_unit_ =
+                    static_cast<GLint>(gles_abi::programmable_texture_unit_count);
+                if (fragment_units <= fetch_texture_unit_ ||
+                    combined_units <= fetch_texture_unit_)
+                    fetch_texture_unit_ = -1;
                 if (std::endian::native == std::endian::little &&
                     gl_extensions &&
                     (std::string { " " } +
@@ -185,7 +204,7 @@ namespace {
                     static_cast<void>(key);
                     glDeleteTextures(1, &texture.object);
                 }
-                for (const auto& [key, target] : targets_) {
+                for (auto& [key, target] : targets_) {
                     static_cast<void>(key);
                     destroy(target);
                 }
@@ -212,6 +231,16 @@ namespace {
                 return result;
             }
             erase_bound(name);
+            const auto fetch = EglFramebufferFetchSource::prepare(
+                fragment, native_framebuffer_fetch_);
+            if (!fetch.error.empty()) {
+                result.log = fetch.error;
+                return result;
+            }
+            if (!fetch.sampler.empty() && fetch_texture_unit_ < 0) {
+                result.log = "host has no spare framebuffer-fetch texture unit";
+                return result;
+            }
             const auto compile = [&](GLenum type, std::string_view source) {
                 const auto shader = glCreateShader(type);
                 const auto* bytes = source.data();
@@ -233,7 +262,7 @@ namespace {
                 return shader;
             };
             const auto vs = compile(GL_VERTEX_SHADER, vertex);
-            const auto fs = compile(GL_FRAGMENT_SHADER, fragment);
+            const auto fs = compile(GL_FRAGMENT_SHADER, fetch.fragment);
             if (!vs || !fs) {
                 if (vs)
                     glDeleteShader(vs);
@@ -262,6 +291,12 @@ namespace {
                     program.object, length, nullptr, result.log.data());
                 glDeleteProgram(program.object);
                 return result;
+            }
+            if (!fetch.sampler.empty()) {
+                program.fetch_sampler =
+                    glGetUniformLocation(program.object, fetch.sampler.c_str());
+                program.fetch_inverse_size = glGetUniformLocation(
+                    program.object, fetch.inverse_size.c_str());
             }
             GLint maximum { }, active { };
             glGetProgramiv(
@@ -299,6 +334,10 @@ namespace {
                     glGetUniformLocation(program.object, identifier.c_str());
                 auto key =
                     identifier.substr(0, static_cast<std::size_t>(length));
+                // Host-only uniforms must not change the guest program's
+                // reflection, locations or upload behavior.
+                if (key == fetch.sampler || key == fetch.inverse_size)
+                    continue;
                 result.active_uniforms.push_back(
                     { key, type, static_cast<std::uint32_t>(size) });
                 if (key.ends_with("[0]"))
@@ -546,7 +585,17 @@ namespace {
                     reinterpret_cast<const void*>(offset));
                 offset = (offset + bytes.size() + 3U) & ~std::size_t { 3U };
             }
-            if (draw.indices.empty()) {
+            if (program->second.fetch_sampler >= 0) {
+                glUniform1i(program->second.fetch_sampler, fetch_texture_unit_);
+                glUniform2f(program->second.fetch_inverse_size,
+                    1.0F / static_cast<float>(frame.width),
+                    1.0F / static_cast<float>(frame.height));
+                if (!target.fetch.draw(mode, draw.vertex_count, draw.indices,
+                        index_buffer_, static_cast<GLuint>(fetch_texture_unit_),
+                        frame.width, frame.height, state.scissor_enabled,
+                        state.scissor_box, uint_indices_))
+                    return false;
+            } else if (draw.indices.empty()) {
                 glDrawArrays(mode, 0, static_cast<GLsizei>(draw.vertex_count));
             } else {
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer_);
@@ -668,8 +717,9 @@ namespace {
             else
                 glDisable(capability);
         }
-        static void destroy(const Target& target)
+        static void destroy(Target& target)
         {
+            target.fetch.release();
             if (target.framebuffer)
                 glDeleteFramebuffers(1, &target.framebuffer);
             if (target.color)
@@ -775,6 +825,8 @@ namespace {
         GLuint attribute_buffer_ { };
         GLuint index_buffer_ { };
         GLenum texture_format_ { GL_RGBA };
+        bool native_framebuffer_fetch_ {}, uint_indices_ {};
+        GLint fetch_texture_unit_ { -1 };
         std::string name_;
         mutable std::mutex mutex_;
         std::map<std::uint32_t, Program> programs_;
