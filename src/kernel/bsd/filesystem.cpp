@@ -322,9 +322,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             // name.  Keep it while another hard link still names the inode.
             if (metadata && metadata->link_count <= 1U) {
                 shared_state_->hfs_metadata_overrides.erase(
-                    metadata->permanent_id);
+                    metadata->host_identity);
                 shared_state_->hfs_named_attribute_overrides.erase(
-                    metadata->permanent_id);
+                    metadata->host_identity);
             }
         }
         static_cast<void>(
@@ -611,15 +611,16 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 shared_state_->filesystem_mutex
             };
             auto& metadata_override =
-                shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+                shared_state_->hfs_metadata_overrides[metadata->host_identity];
+            metadata_override.observe(*metadata);
             metadata_override.mode =
-                0100000U |
-                (mode & ~process_.file_creation_mask & 07777U);
+                0100000U | (mode & ~process_.file_creation_mask & 07777U);
             metadata_override.owner = process_.effective_uid;
             metadata_override.group = process_.effective_gid;
             metadata_override.creation_time = timestamp;
             metadata_override.modification_time = timestamp;
             metadata_override.change_time = timestamp;
+            persist_hfs_metadata(*metadata, metadata_override);
         }
         if (created)
             directory_entries_cache_.clear();
@@ -789,7 +790,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 shared_state_->filesystem_mutex
             };
             auto& metadata_override =
-                shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+                shared_state_->hfs_metadata_overrides[metadata->host_identity];
+            metadata_override.observe(*metadata);
             metadata_override.mode =
                 0120000U | (0777U & ~process_.file_creation_mask);
             metadata_override.owner = process_.effective_uid;
@@ -797,6 +799,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             metadata_override.creation_time = timestamp;
             metadata_override.modification_time = timestamp;
             metadata_override.change_time = timestamp;
+            persist_hfs_metadata(*metadata, metadata_override);
         }
         output_.write("[vfs] symlink " + *link_path + " -> " + *target + "\n");
         bsd_success(cpu, 0);
@@ -882,15 +885,16 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 shared_state_->filesystem_mutex
             };
             auto& metadata_override =
-                shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+                shared_state_->hfs_metadata_overrides[metadata->host_identity];
+            metadata_override.observe(*metadata);
             metadata_override.mode =
-                0040000U |
-                (mode & ~process_.file_creation_mask & 07777U);
+                0040000U | (mode & ~process_.file_creation_mask & 07777U);
             metadata_override.owner = process_.effective_uid;
             metadata_override.group = process_.effective_gid;
             metadata_override.creation_time = timestamp;
             metadata_override.modification_time = timestamp;
             metadata_override.change_time = timestamp;
+            persist_hfs_metadata(*metadata, metadata_override);
         }
         shared_state_->guest_file_generation_registry->publish_subtree_create(
             host);
@@ -928,9 +932,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 }
                 if (metadata) {
                     shared_state_->hfs_metadata_overrides.erase(
-                        metadata->permanent_id);
+                        metadata->host_identity);
                     shared_state_->hfs_named_attribute_overrides.erase(
-                        metadata->permanent_id);
+                        metadata->host_identity);
                 }
             }
             shared_state_->guest_file_generation_registry
@@ -1664,7 +1668,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 shared_state_->filesystem_mutex
             };
             auto& destination =
-                shared_state_->hfs_metadata_overrides[existing->permanent_id];
+                shared_state_->hfs_metadata_overrides[existing->host_identity];
+            destination.observe(*existing);
             if (update.mode)
                 destination.mode = update.mode;
             if (update.owner)
@@ -1695,13 +1700,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                     [](std::byte value) { return value == std::byte { }; });
                 auto& finder_attribute =
                     shared_state_->hfs_named_attribute_overrides[existing
-                            ->permanent_id]["com.apple.FinderInfo"];
+                            ->host_identity]["com.apple.FinderInfo"];
                 finder_attribute =
                     empty ? std::nullopt
                           : std::optional { std::vector<std::byte> {
                                 update.finder_info->begin(),
                                 update.finder_info->end() } };
             }
+            persist_hfs_metadata(*existing, destination);
         }
         bsd_success(cpu, 0);
         return;
@@ -1732,6 +1738,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         const auto follow_symlink = (options & no_follow) == 0;
         std::filesystem::path host;
+        int host_descriptor = -1;
         if (descriptor_form) {
             auto descriptor = registers[0];
             if (const auto duplicate = duplicated_descriptors_.find(descriptor);
@@ -1744,6 +1751,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 return;
             }
             host = found->second;
+            if (const auto description =
+                    ensure_regular_file_open_description(descriptor))
+                host_descriptor = description->host_descriptor();
         } else {
             const auto path = memory_.read_c_string(registers[0]);
             if (!path) {
@@ -1752,14 +1762,16 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             }
             host = resolve_guest_path(cpu, *path, follow_symlink);
         }
-        const auto metadata = query_hfs_metadata(host, follow_symlink);
+        const auto metadata =
+            query_hfs_metadata(host, follow_symlink, false, host_descriptor);
         if (!metadata) {
             bsd_error(cpu, darwin::error::no_entry);
             return;
         }
 
         if (operation == 3U) { // listxattr/flistxattr
-            const auto names = query_hfs_named_attributes(host, follow_symlink);
+            const auto names = query_hfs_named_attributes(
+                host, follow_symlink, host_descriptor);
             std::vector<std::byte> packed;
             for (const auto& name : names) {
                 std::transform(name.begin(), name.end(),
@@ -1795,8 +1807,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
-        const auto existing =
-            query_hfs_named_attribute(host, follow_symlink, *name);
+        const auto existing = query_hfs_named_attribute(
+            host, follow_symlink, *name, host_descriptor);
 
         if (operation == 0U) { // getxattr/fgetxattr
             if (!existing) {
@@ -1900,7 +1912,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 }
                 auto& named_override =
                     shared_state_->hfs_named_attribute_overrides[metadata
-                            ->permanent_id][*name];
+                            ->host_identity][*name];
                 const auto empty_finder =
                     *name == finder_info_name &&
                     std::all_of(replacement.begin(), replacement.end(),
@@ -1909,7 +1921,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                     empty_finder ? std::nullopt : std::optional { replacement };
                 auto& metadata_override =
                     shared_state_
-                        ->hfs_metadata_overrides[metadata->permanent_id];
+                        ->hfs_metadata_overrides[metadata->host_identity];
+                metadata_override.observe(*metadata);
                 if (*name == finder_info_name) {
                     std::array<std::byte, 32> finder_info { };
                     std::copy(replacement.begin(), replacement.end(),
@@ -1926,6 +1939,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 metadata_override.change_time =
                     bsd_support::guest_filesystem_timestamp(
                         shared_state_->clock);
+                persist_hfs_metadata(*metadata, metadata_override);
             }
             bsd_success(cpu, 0);
             return;
@@ -1949,11 +1963,11 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             const std::lock_guard filesystem_lock {
                 shared_state_->filesystem_mutex
             };
-            shared_state_
-                ->hfs_named_attribute_overrides[metadata->permanent_id][*name] =
-                std::nullopt;
+            shared_state_->hfs_named_attribute_overrides[metadata
+                    ->host_identity][*name] = std::nullopt;
             auto& metadata_override =
-                shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+                shared_state_->hfs_metadata_overrides[metadata->host_identity];
+            metadata_override.observe(*metadata);
             if (*name == finder_info_name) {
                 metadata_override.finder_info = std::array<std::byte, 32> { };
             } else if (*name == resource_fork_name) {
@@ -1962,6 +1976,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             }
             metadata_override.change_time =
                 bsd_support::guest_filesystem_timestamp(shared_state_->clock);
+            persist_hfs_metadata(*metadata, metadata_override);
         }
         bsd_success(cpu, 0);
         return;

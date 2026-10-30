@@ -15,7 +15,7 @@ namespace {
         const auto original = metadata.query(source, false, false);
         const auto replaced = metadata.query(destination, false, false);
         if (original && replaced &&
-            original->permanent_id == replaced->permanent_id)
+            original->host_identity == replaced->host_identity)
             return; // POSIX same-inode rename is a no-op, including
                     // sidecars.
         result.directory = original && original->directory;
@@ -23,8 +23,8 @@ namespace {
         if (result.error)
             return;
         result.renamed = true;
-        if (replaced)
-            result.replaced_identity = replaced->permanent_id;
+        if (replaced && (replaced->directory || replaced->link_count <= 1U))
+            result.replaced_identity = replaced->host_identity;
         const auto source_resource =
             hfs::MetadataProvider::resource_sidecar(source);
         const auto destination_resource =

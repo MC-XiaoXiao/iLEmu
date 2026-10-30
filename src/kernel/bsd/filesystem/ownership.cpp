@@ -9,8 +9,8 @@
 
 #include "kernel/kernel.hpp"
 
-#include "kernel/darwin_abi.hpp"
 #include "guest_file_security.hpp"
+#include "kernel/darwin_abi.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -35,8 +35,8 @@ std::optional<std::string> CompatibilityKernel::read_guest_path_at(
 {
     const auto path = memory_.read_c_string(path_address);
     if (!path || path->empty()) {
-        bsd_error(cpu, path ? darwin::error::no_entry
-                            : bsd_support::bad_address);
+        bsd_error(
+            cpu, path ? darwin::error::no_entry : bsd_support::bad_address);
         return std::nullopt;
     }
     constexpr auto at_fdcwd = static_cast<std::uint32_t>(-2);
@@ -67,25 +67,25 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
     Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
-    const auto update_socket_permissions = [&](const std::string& path,
-                                               bool follow_symlink,
-                                               bool owner, std::uint32_t first,
-                                               std::uint32_t second = 0U) {
-        const auto node_path = resolve_guest_path(cpu, path, follow_symlink).generic_string();
-        std::lock_guard socket_lock { shared_state_->socket_mutex };
-        const auto node = shared_state_->unix_socket_nodes.find(node_path);
-        if (node == shared_state_->unix_socket_nodes.end())
-            return false;
-        const auto error = owner
-            ? node->second.change_owner(process_.effective_uid,
-                  process_.effective_gid, first, second)
-            : node->second.change_mode(process_.effective_uid, first);
-        if (error != 0U)
-            bsd_error(cpu, error);
-        else
-            bsd_success(cpu, 0);
-        return true;
-    };
+    const auto update_socket_permissions =
+        [&](const std::string& path, bool follow_symlink, bool owner,
+            std::uint32_t first, std::uint32_t second = 0U) {
+            const auto node_path =
+                resolve_guest_path(cpu, path, follow_symlink).generic_string();
+            std::lock_guard socket_lock { shared_state_->socket_mutex };
+            const auto node = shared_state_->unix_socket_nodes.find(node_path);
+            if (node == shared_state_->unix_socket_nodes.end())
+                return false;
+            const auto error =
+                owner ? node->second.change_owner(process_.effective_uid,
+                            process_.effective_gid, first, second)
+                      : node->second.change_mode(process_.effective_uid, first);
+            if (error != 0U)
+                bsd_error(cpu, error);
+            else
+                bsd_success(cpu, 0);
+            return true;
+        };
     const auto change_owner = [&](const hfs::Metadata& metadata,
                                   std::uint32_t requested_owner,
                                   std::uint32_t requested_group) {
@@ -107,13 +107,15 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             shared_state_->filesystem_mutex
         };
         auto& metadata_override =
-            shared_state_->hfs_metadata_overrides[metadata.permanent_id];
+            shared_state_->hfs_metadata_overrides[metadata.host_identity];
+        metadata_override.observe(metadata);
         if (requested_owner != unchanged_identity)
             metadata_override.owner = requested_owner;
         if (requested_group != unchanged_identity)
             metadata_override.group = requested_group;
         metadata_override.change_time =
             bsd_support::guest_filesystem_timestamp(shared_state_->clock);
+        persist_hfs_metadata(metadata, metadata_override);
         return true;
     };
     const auto change_mode = [&](const hfs::Metadata& metadata,
@@ -127,11 +129,13 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             shared_state_->filesystem_mutex
         };
         auto& metadata_override =
-            shared_state_->hfs_metadata_overrides[metadata.permanent_id];
+            shared_state_->hfs_metadata_overrides[metadata.host_identity];
+        metadata_override.observe(metadata);
         metadata_override.mode = (metadata.mode & ~permission_bits) |
                                  (requested_mode & permission_bits);
         metadata_override.change_time =
             bsd_support::guest_filesystem_timestamp(shared_state_->clock);
+        persist_hfs_metadata(metadata, metadata_override);
         return true;
     };
     switch (number) {
@@ -147,8 +151,8 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         if (!path)
             return true;
         const auto follow = (flags & at_symlink_nofollow) == 0;
-        if (update_socket_permissions(*path, follow, number == 468,
-                registers[2], registers[3]))
+        if (update_socket_permissions(
+                *path, follow, number == 468, registers[2], registers[3]))
             return true;
         const auto metadata =
             query_hfs_metadata(resolve_guest_path(cpu, *path, follow), follow);
@@ -156,9 +160,9 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             bsd_error(cpu, darwin::error::no_entry);
             return true;
         }
-        const auto changed = number == 467
-            ? change_mode(*metadata, registers[2])
-            : change_owner(*metadata, registers[2], registers[3]);
+        const auto changed =
+            number == 467 ? change_mode(*metadata, registers[2])
+                          : change_owner(*metadata, registers[2], registers[3]);
         if (changed)
             bsd_success(cpu, 0);
         return true;
@@ -196,7 +200,9 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             bsd_error(cpu, bsd_support::bad_file_descriptor);
             return true;
         }
-        const auto metadata = query_hfs_metadata(descriptor->second, true);
+        const auto description = ensure_regular_file_open_description(fd);
+        const auto metadata = query_hfs_metadata(descriptor->second, true,
+            false, description ? description->host_descriptor() : -1);
         if (!metadata) {
             bsd_error(cpu, darwin::error::no_entry);
             return true;
@@ -259,7 +265,8 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 shared_state_->filesystem_mutex
             };
             auto& metadata_override =
-                shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+                shared_state_->hfs_metadata_overrides[metadata->host_identity];
+            metadata_override.observe(*metadata);
             if (requested_mode != unchanged_identity) {
                 metadata_override.mode = (metadata->mode & ~permission_bits) |
                                          (requested_mode & permission_bits);
@@ -270,10 +277,11 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 metadata_override.group = requested_group;
             if (extended_security == remove_acl || requested_acl)
                 shared_state_->hfs_named_attribute_overrides[metadata
-                        ->permanent_id][bsd::file_security::attribute_name] =
+                        ->host_identity][bsd::file_security::attribute_name] =
                     requested_acl;
             metadata_override.change_time =
                 bsd_support::guest_filesystem_timestamp(shared_state_->clock);
+            persist_hfs_metadata(*metadata, metadata_override);
         }
         output_.write("[vfs] chmod_extended " + *path +
                       " uid=" + std::to_string(requested_owner) +
@@ -293,7 +301,9 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             bsd_error(cpu, bsd_support::bad_file_descriptor);
             return true;
         }
-        const auto metadata = query_hfs_metadata(descriptor->second, true);
+        const auto description = ensure_regular_file_open_description(fd);
+        const auto metadata = query_hfs_metadata(descriptor->second, true,
+            false, description ? description->host_descriptor() : -1);
         if (!metadata) {
             bsd_error(cpu, darwin::error::no_entry);
             return true;
@@ -341,7 +351,8 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 shared_state_->filesystem_mutex
             };
             auto& metadata_override =
-                shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+                shared_state_->hfs_metadata_overrides[metadata->host_identity];
+            metadata_override.observe(*metadata);
             if (requested_mode != unchanged_identity) {
                 metadata_override.mode = (metadata->mode & ~permission_bits) |
                                          (requested_mode & permission_bits);
@@ -352,10 +363,11 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 metadata_override.group = requested_group;
             if (extended_security != unchanged_identity)
                 shared_state_->hfs_named_attribute_overrides[metadata
-                        ->permanent_id][bsd::file_security::attribute_name] =
+                        ->host_identity][bsd::file_security::attribute_name] =
                     requested_acl;
             metadata_override.change_time =
                 bsd_support::guest_filesystem_timestamp(shared_state_->clock);
+            persist_hfs_metadata(*metadata, metadata_override);
         }
         output_.write("[vfs] fchmod_extended fd=" + std::to_string(fd) +
                       " uid=" + std::to_string(requested_owner) +
@@ -373,8 +385,8 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         }
         const bool follow_symlink =
             number != darwin::syscall::change_owner_no_follow;
-        if (update_socket_permissions(*path, follow_symlink, true,
-                registers[1], registers[2]))
+        if (update_socket_permissions(
+                *path, follow_symlink, true, registers[1], registers[2]))
             return true;
         const auto host = resolve_guest_path(cpu, *path, follow_symlink);
         std::error_code error;
@@ -387,17 +399,17 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         if (path->empty() || error || !std::filesystem::exists(status) ||
             !metadata) {
             bsd_error(cpu, bsd_support::darwin_filesystem_error(
-                error, darwin::error::no_entry));
+                               error, darwin::error::no_entry));
             return true;
         }
         const auto requested_owner = registers[1];
         const auto requested_group = registers[2];
         if (!change_owner(*metadata, requested_owner, requested_group))
             return true;
-        output_.write(std::string { follow_symlink ? "[vfs] chown "
-                                                  : "[vfs] lchown " } + *path +
-                      " uid=" + std::to_string(requested_owner) +
-                      " gid=" + std::to_string(requested_group) + "\n");
+        output_.write(
+            std::string { follow_symlink ? "[vfs] chown " : "[vfs] lchown " } +
+            *path + " uid=" + std::to_string(requested_owner) +
+            " gid=" + std::to_string(requested_group) + "\n");
         bsd_success(cpu, 0);
         return true;
     }
@@ -412,7 +424,9 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             bsd_error(cpu, bsd_support::bad_file_descriptor);
             return true;
         }
-        const auto metadata = query_hfs_metadata(descriptor->second, true);
+        const auto description = ensure_regular_file_open_description(fd);
+        const auto metadata = query_hfs_metadata(descriptor->second, true,
+            false, description ? description->host_descriptor() : -1);
         if (!metadata) {
             bsd_error(cpu, darwin::error::no_entry);
             return true;
@@ -447,10 +461,12 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             shared_state_->filesystem_mutex
         };
         auto& metadata_override =
-            shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+            shared_state_->hfs_metadata_overrides[metadata->host_identity];
+        metadata_override.observe(*metadata);
         metadata_override.flags = registers[1];
         metadata_override.change_time =
             bsd_support::guest_filesystem_timestamp(shared_state_->clock);
+        persist_hfs_metadata(*metadata, metadata_override);
         bsd_success(cpu, 0);
         return true;
     }
@@ -462,7 +478,9 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         }
         if (const auto descriptor = file_descriptors_.find(fd);
             descriptor != file_descriptors_.end()) {
-            const auto metadata = query_hfs_metadata(descriptor->second, true);
+            const auto description = ensure_regular_file_open_description(fd);
+            const auto metadata = query_hfs_metadata(descriptor->second, true,
+                false, description ? description->host_descriptor() : -1);
             if (!metadata) {
                 bsd_error(cpu, darwin::error::no_entry);
                 return true;
@@ -476,11 +494,13 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 shared_state_->filesystem_mutex
             };
             auto& metadata_override =
-                shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+                shared_state_->hfs_metadata_overrides[metadata->host_identity];
+            metadata_override.observe(*metadata);
             metadata_override.flags = registers[1];
             metadata_override.change_time =
                 bsd_support::guest_filesystem_timestamp(shared_state_->clock);
             bsd_success(cpu, 0);
+            persist_hfs_metadata(*metadata, metadata_override);
         } else if (fd > 2 && !virtual_descriptors_.contains(fd)) {
             bsd_error(cpu, bsd_support::bad_file_descriptor);
         } else {

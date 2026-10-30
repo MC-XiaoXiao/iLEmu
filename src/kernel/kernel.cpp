@@ -3307,32 +3307,8 @@ bool CompatibilityKernel::write_guest_stat(std::uint32_t address,
         }
     };
 
-    auto metadata = query_hfs_metadata(path, follow_symlink);
-    if (host_descriptor >= 0) {
-        struct stat status { };
-        if (::fstat(host_descriptor, &status) != 0)
-            return false;
-        struct stat path_status { };
-        const auto path_result = follow_symlink
-                                     ? ::stat(path.c_str(), &path_status)
-                                     : ::lstat(path.c_str(), &path_status);
-        if (path_result != 0 || path_status.st_dev != status.st_dev ||
-            path_status.st_ino != status.st_ino) {
-            hfs::Metadata open_file;
-            open_file.name = path.filename().string();
-            open_file.catalog_id = static_cast<std::uint32_t>(status.st_ino);
-            open_file.permanent_id = open_file.catalog_id;
-            open_file.mode = static_cast<std::uint32_t>(status.st_mode);
-            open_file.owner = static_cast<std::uint32_t>(status.st_uid);
-            open_file.group = static_cast<std::uint32_t>(status.st_gid);
-            open_file.link_count = static_cast<std::uint32_t>(status.st_nlink);
-            open_file.data_length = static_cast<std::uint64_t>(status.st_size);
-            open_file.data_allocation_size =
-                static_cast<std::uint64_t>(status.st_blocks) * 512U;
-            open_file.directory = S_ISDIR(status.st_mode);
-            metadata = std::move(open_file);
-        }
-    }
+    auto metadata =
+        query_hfs_metadata(path, follow_symlink, false, host_descriptor);
     if (!metadata)
         return false;
     put32(0, root_disk_device); // st_dev
@@ -3447,32 +3423,8 @@ bool CompatibilityKernel::write_guest_stat64(std::uint32_t address,
         put32(offset + 4U, static_cast<std::uint32_t>(timestamp.nanoseconds));
     };
 
-    auto metadata = query_hfs_metadata(path, follow_symlink);
-    if (host_descriptor >= 0) {
-        struct stat status { };
-        if (::fstat(host_descriptor, &status) != 0)
-            return false;
-        struct stat path_status { };
-        const auto path_result = follow_symlink
-                                     ? ::stat(path.c_str(), &path_status)
-                                     : ::lstat(path.c_str(), &path_status);
-        if (path_result != 0 || path_status.st_dev != status.st_dev ||
-            path_status.st_ino != status.st_ino) {
-            hfs::Metadata open_file;
-            open_file.name = path.filename().string();
-            open_file.catalog_id = static_cast<std::uint32_t>(status.st_ino);
-            open_file.permanent_id = open_file.catalog_id;
-            open_file.mode = static_cast<std::uint32_t>(status.st_mode);
-            open_file.owner = static_cast<std::uint32_t>(status.st_uid);
-            open_file.group = static_cast<std::uint32_t>(status.st_gid);
-            open_file.link_count = static_cast<std::uint32_t>(status.st_nlink);
-            open_file.data_length = static_cast<std::uint64_t>(status.st_size);
-            open_file.data_allocation_size =
-                static_cast<std::uint64_t>(status.st_blocks) * 512U;
-            open_file.directory = S_ISDIR(status.st_mode);
-            metadata = std::move(open_file);
-        }
-    }
+    auto metadata =
+        query_hfs_metadata(path, follow_symlink, false, host_descriptor);
     if (!metadata)
         return false;
 
@@ -3626,15 +3578,15 @@ std::filesystem::path CompatibilityKernel::resolve_guest_path(
 
 std::optional<hfs::Metadata> CompatibilityKernel::query_hfs_metadata(
     const std::filesystem::path& path, bool follow_symlink,
-    bool include_directory_entry_count) const
+    bool include_directory_entry_count, int host_descriptor) const
 {
     auto metadata = hfs_metadata_.query(
-        path, follow_symlink, include_directory_entry_count);
+        path, follow_symlink, include_directory_entry_count, host_descriptor);
     if (!metadata)
         return std::nullopt;
     const std::lock_guard filesystem_lock { shared_state_->filesystem_mutex };
     if (const auto override =
-            shared_state_->hfs_metadata_overrides.find(metadata->permanent_id);
+            shared_state_->hfs_metadata_overrides.find(metadata->host_identity);
         override != shared_state_->hfs_metadata_overrides.end()) {
         hfs::MetadataProvider::apply_override(*metadata, override->second);
     }
@@ -3644,9 +3596,10 @@ std::optional<hfs::Metadata> CompatibilityKernel::query_hfs_metadata(
 std::optional<std::vector<std::byte>>
 CompatibilityKernel::query_hfs_named_attribute(
     const std::filesystem::path& path, bool follow_symlink,
-    std::string_view name) const
+    std::string_view name, int host_descriptor) const
 {
-    const auto metadata = hfs_metadata_.query(path, follow_symlink);
+    const auto metadata =
+        hfs_metadata_.query(path, follow_symlink, false, host_descriptor);
     if (!metadata)
         return std::nullopt;
     {
@@ -3655,7 +3608,7 @@ CompatibilityKernel::query_hfs_named_attribute(
         };
         if (const auto inode =
                 shared_state_->hfs_named_attribute_overrides.find(
-                    metadata->permanent_id);
+                    metadata->host_identity);
             inode != shared_state_->hfs_named_attribute_overrides.end()) {
             if (const auto attribute = inode->second.find(std::string { name });
                 attribute != inode->second.end()) {
@@ -3663,17 +3616,21 @@ CompatibilityKernel::query_hfs_named_attribute(
             }
         }
     }
-    return hfs_metadata_.named_attribute(path, name, follow_symlink);
+    return hfs_metadata_.named_attribute(
+        path, name, follow_symlink, host_descriptor);
 }
 
 std::vector<std::string> CompatibilityKernel::query_hfs_named_attributes(
-    const std::filesystem::path& path, bool follow_symlink) const
+    const std::filesystem::path& path, bool follow_symlink,
+    int host_descriptor) const
 {
-    const auto metadata = hfs_metadata_.query(path, follow_symlink);
+    const auto metadata =
+        hfs_metadata_.query(path, follow_symlink, false, host_descriptor);
     if (!metadata)
         return { };
     std::set<std::string> names;
-    for (auto& name : hfs_metadata_.named_attributes(path, follow_symlink)) {
+    for (auto& name :
+        hfs_metadata_.named_attributes(path, follow_symlink, host_descriptor)) {
         names.emplace(std::move(name));
     }
     {
@@ -3682,7 +3639,7 @@ std::vector<std::string> CompatibilityKernel::query_hfs_named_attributes(
         };
         if (const auto inode =
                 shared_state_->hfs_named_attribute_overrides.find(
-                    metadata->permanent_id);
+                    metadata->host_identity);
             inode != shared_state_->hfs_named_attribute_overrides.end()) {
             for (const auto& [name, value] : inode->second) {
                 if (value)

@@ -9,7 +9,9 @@
 #include "kernel/offline_serial_device.hpp"
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <limits>
+#include <sys/stat.h>
 
 namespace ilemu {
 const std::vector<CompatibilityKernel::DirectoryEntry>*
@@ -18,7 +20,29 @@ CompatibilityKernel::cached_directory_entries(
 {
     std::error_code directory_error;
     const auto cache_key = path.lexically_normal();
+    struct stat status { };
+    if (::stat(path.c_str(), &status) != 0) {
+        error = bsd_support::darwin_filesystem_error(
+            std::error_code { errno, std::generic_category() });
+        return nullptr;
+    }
+    const std::array<std::uint64_t, 6> generation {
+        static_cast<std::uint64_t>(status.st_dev),
+        static_cast<std::uint64_t>(status.st_ino),
+        static_cast<std::uint64_t>(status.st_mtim.tv_sec),
+        static_cast<std::uint64_t>(status.st_mtim.tv_nsec),
+        static_cast<std::uint64_t>(status.st_ctim.tv_sec),
+        static_cast<std::uint64_t>(status.st_ctim.tv_nsec),
+    };
     auto cached_entries = directory_entries_cache_.find(cache_key);
+    // Host notifications are only hints and can arrive late or overflow. Check
+    // the directory itself so external create/rename/unlink is visible on the
+    // next enumeration, including while the emulator is running.
+    if (cached_entries != directory_entries_cache_.end() &&
+        cached_entries->second.host_generation != generation) {
+        directory_entries_cache_.erase(cached_entries);
+        cached_entries = directory_entries_cache_.end();
+    }
     if (cached_entries == directory_entries_cache_.end()) {
         const auto current_metadata =
             hfs_metadata_.query_directory_entry(path, true);
@@ -99,18 +123,20 @@ CompatibilityKernel::cached_directory_entries(
             }
             add_virtual(
                 std::string { bsd::offline_serial_device::directory_name }, 2);
-            if (shared_state_->sensors && shared_state_->sensors->available(MotionSensor::MagneticField))
+            if (shared_state_->sensors &&
+                shared_state_->sensors->available(MotionSensor::MagneticField))
                 add_virtual(std::string { CompassDevice::path.substr(5) }, 2);
         }
         std::sort(entries.begin() + 2, entries.end(),
             [](const DirectoryEntry& lhs, const DirectoryEntry& rhs) {
                 return lhs.name < rhs.name;
             });
-        cached_entries =
-            directory_entries_cache_.emplace(cache_key, std::move(entries))
-                .first;
+        cached_entries = directory_entries_cache_
+                             .emplace(cache_key, CachedDirectory { generation,
+                                                     std::move(entries) })
+                             .first;
     }
-    return &cached_entries->second;
+    return &cached_entries->second.entries;
 }
 
 // Darwin getattrlistbulk(2), using the same directory position and catalog

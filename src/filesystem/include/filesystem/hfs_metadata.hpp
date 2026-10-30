@@ -106,12 +106,22 @@ struct AttributeRequest {
     std::uint32_t fork { };
 };
 
+using HostIdentity = std::array<std::uint64_t, 2>;
+
 struct Timestamp {
     std::int32_t seconds { };
     std::int32_t nanoseconds { };
+    friend bool operator==(const Timestamp&, const Timestamp&) = default;
 };
 
 struct Metadata {
+    // Host object identity is for caches only; it is never a guest CNID. An
+    // external atomic save may copy a CNID xattr onto a different host inode.
+    HostIdentity host_identity { };
+    std::filesystem::path host_path;
+    int host_descriptor { -1 }; // Borrowed for the duration of a VFS operation.
+    Timestamp host_modification_time;
+    Timestamp host_change_time;
     std::string name;
     std::uint32_t catalog_id { };
     std::uint32_t permanent_id { };
@@ -121,6 +131,7 @@ struct Metadata {
     std::uint32_t owner { };
     std::uint32_t group { };
     std::uint32_t flags { };
+    std::uint32_t data_protection_class { };
     std::uint32_t link_count { };
     std::uint32_t directory_entry_count { };
     std::uint64_t data_length { };
@@ -142,6 +153,22 @@ struct DirectoryEntryMetadata {
 };
 
 struct MetadataOverride {
+    // Virtual timestamps must not hide later host writes or external edits.
+    std::optional<Timestamp> observed_modification_time;
+    std::optional<Timestamp> observed_change_time;
+    void observe(const Metadata& metadata)
+    {
+        if (observed_modification_time &&
+            *observed_modification_time != metadata.host_modification_time) {
+            modification_time.reset();
+            access_time.reset();
+        }
+        if (observed_change_time &&
+            *observed_change_time != metadata.host_change_time)
+            change_time.reset();
+        observed_modification_time = metadata.host_modification_time;
+        observed_change_time = metadata.host_change_time;
+    }
     std::optional<std::uint32_t> mode;
     std::optional<std::uint32_t> owner;
     std::optional<std::uint32_t> group;
@@ -188,27 +215,37 @@ public:
 
     [[nodiscard]] std::optional<Metadata> query(
         const std::filesystem::path& path, bool follow_symlink,
-        bool include_directory_entry_count = true) const;
+        bool include_directory_entry_count = true,
+        int host_descriptor = -1) const;
     [[nodiscard]] std::optional<DirectoryEntryMetadata> query_directory_entry(
         const std::filesystem::path& path, bool follow_symlink) const;
     [[nodiscard]] static bool valid_request(const AttributeRequest& request);
     [[nodiscard]] static std::vector<std::byte> pack_attributes(
         const Metadata& metadata, const AttributeRequest& request,
-        std::string_view guest_path = {});
-    [[nodiscard]] static bool valid_bulk_request(const AttributeRequest& request);
+        std::string_view guest_path = { });
+    [[nodiscard]] static bool valid_bulk_request(
+        const AttributeRequest& request);
     [[nodiscard]] static std::vector<std::byte> pack_returned_attributes(
         const Metadata& metadata, const AttributeRequest& request,
-        std::string_view guest_path, bool pack_invalid, std::uint32_t error = 0);
+        std::string_view guest_path, bool pack_invalid,
+        std::uint32_t error = 0);
     [[nodiscard]] static std::vector<std::byte> pack_volume_attributes(
         const Metadata& root_metadata, const VolumeMetadata& volume,
         const AttributeRequest& request);
     [[nodiscard]] std::optional<std::vector<std::byte>> named_attribute(
         const std::filesystem::path& path, std::string_view name,
-        bool follow_symlink) const;
+        bool follow_symlink, int host_descriptor = -1) const;
     [[nodiscard]] std::vector<std::string> named_attributes(
-        const std::filesystem::path& path, bool follow_symlink) const;
+        const std::filesystem::path& path, bool follow_symlink,
+        int host_descriptor = -1) const;
     static void apply_override(
         Metadata& metadata, const MetadataOverride& override);
+    // Persist only guest attributes, never host ownership or permission bits.
+    [[nodiscard]] static bool persist_override(
+        const Metadata& metadata, MetadataOverride& update);
+    [[nodiscard]] static bool persist_named_attribute(const Metadata& metadata,
+        std::string_view name,
+        const std::optional<std::vector<std::byte>>& value);
     [[nodiscard]] static bool is_resource_sidecar(
         const std::filesystem::path& path);
     [[nodiscard]] static std::filesystem::path resource_sidecar(
@@ -217,7 +254,8 @@ public:
 private:
     std::filesystem::path root_;
     mutable std::mutex catalog_mutex_;
-    mutable std::unordered_map<std::uint32_t, std::filesystem::path> catalog_paths_;
+    mutable std::unordered_map<std::uint32_t, std::filesystem::path>
+        catalog_paths_;
 };
 
 } // namespace ilemu::hfs

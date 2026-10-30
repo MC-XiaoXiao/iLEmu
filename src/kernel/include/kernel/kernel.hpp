@@ -802,14 +802,20 @@ private:
     [[nodiscard]] bool dispatch_bsd_directory(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] std::optional<std::string> read_guest_path_at(
         Cpu& cpu, std::uint32_t directory_fd, std::uint32_t path_address);
+    // The caller holds shared_state_->filesystem_mutex.
+    void persist_hfs_metadata(
+        const hfs::Metadata& metadata, hfs::MetadataOverride& update);
     [[nodiscard]] std::optional<hfs::Metadata> query_hfs_metadata(
         const std::filesystem::path& path, bool follow_symlink,
-        bool include_directory_entry_count = true) const;
+        bool include_directory_entry_count = true,
+        int host_descriptor = -1) const;
     [[nodiscard]] std::optional<std::vector<std::byte>>
     query_hfs_named_attribute(const std::filesystem::path& path,
-        bool follow_symlink, std::string_view name) const;
+        bool follow_symlink, std::string_view name,
+        int host_descriptor = -1) const;
     [[nodiscard]] std::vector<std::string> query_hfs_named_attributes(
-        const std::filesystem::path& path, bool follow_symlink) const;
+        const std::filesystem::path& path, bool follow_symlink,
+        int host_descriptor = -1) const;
     [[nodiscard]] std::uint32_t file_descriptor_limit() const;
     [[nodiscard]] std::optional<std::uint32_t> allocate_file_descriptor() const;
     void copy_kqueue_descriptor_state(
@@ -1088,8 +1094,11 @@ private:
     std::map<std::uint32_t, std::pair<std::uint32_t, bool>>
         virtual_block_descriptors_;
     std::map<std::uint32_t, OpenFileOffset> file_offsets_;
-    std::map<std::filesystem::path, std::vector<DirectoryEntry>>
-        directory_entries_cache_;
+    struct CachedDirectory {
+        std::array<std::uint64_t, 6> host_generation;
+        std::vector<DirectoryEntry> entries;
+    };
+    std::map<std::filesystem::path, CachedDirectory> directory_entries_cache_;
     std::map<std::uint32_t, OpenFileStatusFlags> file_status_flags_;
     std::map<std::uint32_t, std::uint32_t> descriptor_flags_;
     std::map<std::uint32_t, DarwinFileGuard> descriptor_guards_;

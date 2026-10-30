@@ -84,6 +84,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
 
     const auto& registers = cpu.registers();
     std::filesystem::path host;
+    int host_descriptor = -1;
     std::string target;
     if (number == darwin::syscall::update_file_times) {
         const auto path = memory_.read_c_string(registers[0]);
@@ -126,9 +127,12 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
             return true;
         }
         host = descriptor->second;
+        if (const auto description = ensure_regular_file_open_description(fd))
+            host_descriptor = description->host_descriptor();
         target = "fd=" + std::to_string(fd);
     }
-    const auto metadata = query_hfs_metadata(host, true);
+    const auto metadata =
+        query_hfs_metadata(host, true, false, host_descriptor);
     if (!metadata) {
         bsd_error(cpu, darwin::error::no_entry);
         return true;
@@ -138,7 +142,9 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
         host_timeval(access_time),
         host_timeval(modification_time),
     };
-    if (::utimes(host.c_str(), host_times.data()) != 0) {
+    if ((host_descriptor >= 0
+                ? ::futimes(host_descriptor, host_times.data())
+                : ::utimes(host.c_str(), host_times.data())) != 0) {
         bsd_error(cpu, bsd_support::darwin_filesystem_error(
                            std::error_code { errno, std::generic_category() }));
         return true;
@@ -151,10 +157,13 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
             shared_state_->filesystem_mutex
         };
         auto& override =
-            shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+            shared_state_->hfs_metadata_overrides[metadata->host_identity];
+        override.observe(hfs_metadata_.query(host, true, false, host_descriptor)
+                .value_or(*metadata));
         override.access_time = access_time;
         override.modification_time = modification_time;
         override.change_time = change_time;
+        persist_hfs_metadata(*metadata, override);
     }
 
     output_.write("[vfs] " +

@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
 
+#include "filesystem/hfs_metadata.hpp"
 #include "foundation/host_resource_controller.hpp"
 #include <atomic>
 #include <cstdint>
@@ -16,7 +17,7 @@ struct HostFileRenameResult {
     std::error_code error;
     bool renamed { };
     bool directory { };
-    std::optional<std::uint32_t> replaced_identity;
+    std::optional<hfs::HostIdentity> replaced_identity;
 };
 class HostFileRenameRequest {
 public:

@@ -23,6 +23,42 @@
 
 namespace ilemu {
 
+void CompatibilityKernel::persist_hfs_metadata(
+    const hfs::Metadata& metadata, hfs::MetadataOverride& update)
+{
+    const auto relative = metadata.host_path.lexically_relative(rootfs_);
+    if (relative.empty() || *relative.begin() == "..")
+        return;
+    const auto guest =
+        (std::filesystem::path { "/" } / relative).generic_string();
+    if ((hfs_volumes_.for_guest_path(guest).mount_flags & 1U) != 0)
+        return; // Preserve the system partition's existing virtual overlay.
+    if (!hfs::MetadataProvider::persist_override(metadata, update)) {
+        if (metadata.object_type != 5U)
+            output_.write(
+                "[vfs] could not persist guest metadata: " + guest + "\n");
+        return;
+    }
+    if (const auto inode = shared_state_->hfs_named_attribute_overrides.find(
+            metadata.host_identity);
+        inode != shared_state_->hfs_named_attribute_overrides.end()) {
+        for (auto attribute = inode->second.begin();
+            attribute != inode->second.end();) {
+            if (hfs::MetadataProvider::persist_named_attribute(
+                    metadata, attribute->first, attribute->second))
+                attribute = inode->second.erase(attribute);
+            else
+                ++attribute;
+        }
+    }
+    if (const auto current = hfs_metadata_.query(
+            metadata.host_path, true, false, metadata.host_descriptor)) {
+        const auto change_time = update.change_time;
+        update.observe(*current);
+        update.change_time = change_time;
+    }
+}
+
 bool CompatibilityKernel::deliver_pending_file_sync(Cpu& cpu)
 {
     if (const auto pending = pending_file_syncs_.find(cpu.processor_id());
@@ -31,12 +67,13 @@ bool CompatibilityKernel::deliver_pending_file_sync(Cpu& cpu)
         if (!result)
             return false;
         if (*result != 0) {
-            bsd_error(cpu, bsd_support::darwin_filesystem_error(
-                std::error_code { *result, std::generic_category() }));
+            bsd_error(
+                cpu, bsd_support::darwin_filesystem_error(
+                         std::error_code { *result, std::generic_category() }));
         } else {
             bsd_success(cpu, 0);
-            output_.write("[vfs] fsync fd=" +
-                          std::to_string(pending->second.fd) + "\n");
+            output_.write(
+                "[vfs] fsync fd=" + std::to_string(pending->second.fd) + "\n");
         }
         pending_file_syncs_.erase(pending);
         process_.waiting_for_events = false;
@@ -78,8 +115,8 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_persistence(
         synchronizer = shared_state_->file_synchronizer;
     }
     auto request = synchronizer->synchronize(description->host_descriptor());
-    pending_file_syncs_.insert_or_assign(cpu.processor_id(),
-        PendingFileSync { fd, std::move(request) });
+    pending_file_syncs_.insert_or_assign(
+        cpu.processor_id(), PendingFileSync { fd, std::move(request) });
     process_.waiting_for_events = true;
     bsd_success(cpu, 0);
     cpu.halt(Dynarmic::HaltReason::UserDefined5);

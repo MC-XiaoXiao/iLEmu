@@ -37,8 +37,20 @@ namespace {
     constexpr std::uint32_t hfs_block_size = allocation_block_size;
 
     std::optional<std::vector<std::byte>> read_xattr(
-        const std::filesystem::path& path, std::string_view name, bool follow)
+        const std::filesystem::path& path, std::string_view name, bool follow,
+        int descriptor = -1)
     {
+        if (descriptor >= 0) {
+            const auto size = ::fgetxattr(
+                descriptor, std::string { name }.c_str(), nullptr, 0);
+            if (size < 0)
+                return std::nullopt;
+            std::vector<std::byte> result(static_cast<std::size_t>(size));
+            if (::fgetxattr(descriptor, std::string { name }.c_str(),
+                    result.data(), result.size()) != size)
+                return std::nullopt;
+            return result;
+        }
         const auto reader = follow ? ::getxattr : ::lgetxattr;
         const auto size =
             reader(path.c_str(), std::string { name }.c_str(), nullptr, 0);
@@ -53,9 +65,10 @@ namespace {
     }
 
     std::optional<std::uint32_t> numeric_xattr(
-        const std::filesystem::path& path, std::string_view name, bool follow)
+        const std::filesystem::path& path, std::string_view name, bool follow,
+        int descriptor = -1)
     {
-        const auto bytes = read_xattr(path, name, follow);
+        const auto bytes = read_xattr(path, name, follow, descriptor);
         if (!bytes || bytes->empty())
             return std::nullopt;
         const std::string_view text {
@@ -103,12 +116,12 @@ namespace {
 
     std::uint32_t catalog_id(const std::filesystem::path& root,
         const std::filesystem::path& path, const struct stat& status,
-        bool follow_symlink)
+        bool follow_symlink, int descriptor = -1)
     {
         if (path.lexically_normal() == root.lexically_normal())
             return hfs_root_catalog_id;
         if (const auto original = numeric_xattr(
-                path, "user.hfsfuse.record.cnid", follow_symlink))
+                path, "user.hfsfuse.record.cnid", follow_symlink, descriptor))
             return *original;
         if (status.st_nlink > 1)
             return path_catalog_id(root, path);
@@ -346,65 +359,77 @@ std::optional<DirectoryEntryMetadata> MetadataProvider::query_directory_entry(
     }
     using Type = std::filesystem::file_type;
     const auto type = S_ISDIR(status.st_mode)    ? Type::directory
-                      : S_ISREG(status.st_mode) ? Type::regular
-                      : S_ISLNK(status.st_mode) ? Type::symlink
-                      : S_ISBLK(status.st_mode) ? Type::block
-                      : S_ISCHR(status.st_mode) ? Type::character
+                      : S_ISREG(status.st_mode)  ? Type::regular
+                      : S_ISLNK(status.st_mode)  ? Type::symlink
+                      : S_ISBLK(status.st_mode)  ? Type::block
+                      : S_ISCHR(status.st_mode)  ? Type::character
                       : S_ISFIFO(status.st_mode) ? Type::fifo
                       : S_ISSOCK(status.st_mode) ? Type::socket
-                                                : Type::unknown;
+                                                 : Type::unknown;
     // Enumeration only needs identity and type. Full attribute queries may
-    // walk ancestors and read resource forks; none of that changes these fields.
+    // walk ancestors and read resource forks; none of that changes these
+    // fields.
     return DirectoryEntryMetadata {
-        catalog_id(root_, path, status, follow_symlink), type };
+        catalog_id(root_, path, status, follow_symlink), type
+    };
 }
 
 std::optional<Metadata> MetadataProvider::query(
     const std::filesystem::path& path, bool follow_symlink,
-    bool include_directory_entry_count) const
+    bool include_directory_entry_count, int host_descriptor) const
 {
     struct stat status { };
-    if ((follow_symlink ? ::stat(path.c_str(), &status)
-                        : ::lstat(path.c_str(), &status)) != 0) {
+    if ((host_descriptor >= 0 ? ::fstat(host_descriptor, &status)
+            : follow_symlink  ? ::stat(path.c_str(), &status)
+                              : ::lstat(path.c_str(), &status)) != 0) {
         return std::nullopt;
     }
     const auto is_root = path.lexically_normal() == root_.lexically_normal();
     Metadata result;
+    result.host_path = path;
+    result.host_descriptor = host_descriptor;
+    result.host_identity = { static_cast<std::uint64_t>(status.st_dev),
+        static_cast<std::uint64_t>(status.st_ino) };
     result.name = is_root ? "/" : path.filename().string();
     result.directory = S_ISDIR(status.st_mode);
     result.object_type = result.directory          ? 2U
                          : S_ISLNK(status.st_mode) ? 5U
                                                    : 1U;
-    result.mode =
-        numeric_xattr(path, "user.hfsfuse.record.file_mode", follow_symlink)
-            .value_or(static_cast<std::uint32_t>(status.st_mode));
-    if (const auto owner =
-            numeric_xattr(path, "user.hfsfuse.record.owner_id", follow_symlink))
+    result.mode = numeric_xattr(
+        path, "user.hfsfuse.record.file_mode", follow_symlink, host_descriptor)
+                      .value_or(static_cast<std::uint32_t>(status.st_mode));
+    if (const auto owner = numeric_xattr(path, "user.hfsfuse.record.owner_id",
+            follow_symlink, host_descriptor))
         result.owner = *owner;
     else
         result.owner =
             inherited_identity(root_, path, "user.hfsfuse.record.owner_id")
                 .value_or(0);
-    if (const auto group =
-            numeric_xattr(path, "user.hfsfuse.record.group_id", follow_symlink))
+    if (const auto group = numeric_xattr(path, "user.hfsfuse.record.group_id",
+            follow_symlink, host_descriptor))
         result.group = *group;
     else
         result.group =
             inherited_identity(root_, path, "user.hfsfuse.record.group_id")
                 .value_or(0);
-    result.flags =
-        numeric_xattr(path, "user.hfsfuse.record.bsd_flags", follow_symlink)
-            .value_or(0);
+    result.flags = numeric_xattr(
+        path, "user.hfsfuse.record.bsd_flags", follow_symlink, host_descriptor)
+                       .value_or(0);
+    result.data_protection_class = numeric_xattr(path,
+        "user.hfsfuse.record.protection_class", follow_symlink, host_descriptor)
+                                       .value_or(0);
     result.link_count = static_cast<std::uint32_t>(status.st_nlink);
     // Extracted HFS volumes preserve the guest catalog ID as an xattr. Use
     // that identity for ordinary vnodes; only true hard links need the host
     // inode to share one identity across multiple catalog names.
     const auto hardlinked_file = !result.directory && status.st_nlink > 1;
     result.permanent_id = hardlinked_file
-        ? inode_catalog_id(status)
-        : numeric_xattr(path, "user.hfsfuse.record.cnid", follow_symlink)
-              .value_or(inode_catalog_id(status));
-    result.catalog_id = catalog_id(root_, path, status, follow_symlink);
+                              ? inode_catalog_id(status)
+                              : numeric_xattr(path, "user.hfsfuse.record.cnid",
+                                    follow_symlink, host_descriptor)
+                                    .value_or(inode_catalog_id(status));
+    result.catalog_id =
+        catalog_id(root_, path, status, follow_symlink, host_descriptor);
     if (is_root) {
         result.parent_catalog_id = hfs_root_parent_id;
     } else {
@@ -431,8 +456,8 @@ std::optional<Metadata> MetadataProvider::query(
         result.resource_allocation_size =
             (result.resource_length + hfs_block_size - 1U) &
             ~(static_cast<std::uint64_t>(hfs_block_size) - 1U);
-    } else if (const auto fork = read_xattr(
-                   path, "user.com.apple.ResourceFork", follow_symlink)) {
+    } else if (const auto fork = read_xattr(path, "user.com.apple.ResourceFork",
+                   follow_symlink, host_descriptor)) {
         result.resource_length = fork->size();
         result.resource_allocation_size =
             (result.resource_length + hfs_block_size - 1U) &
@@ -447,16 +472,20 @@ std::optional<Metadata> MetadataProvider::query(
     result.access_time =
         Timestamp { static_cast<std::int32_t>(status.st_atim.tv_sec),
             static_cast<std::int32_t>(status.st_atim.tv_nsec) };
-    result.creation_time = parse_hfs_time(
-        read_xattr(path, "user.hfsfuse.record.date_created", follow_symlink)
-            .value_or(std::vector<std::byte> { }))
-                               .value_or(result.change_time);
-    result.backup_time = parse_hfs_time(
-        read_xattr(path, "user.hfsfuse.record.date_backedup", follow_symlink)
-            .value_or(std::vector<std::byte> { }))
-                             .value_or(Timestamp { });
-    if (const auto finder =
-            read_xattr(path, "user.com.apple.FinderInfo", follow_symlink)) {
+    result.host_modification_time = result.modification_time;
+    result.host_change_time = result.change_time;
+    result.creation_time =
+        parse_hfs_time(read_xattr(path, "user.hfsfuse.record.date_created",
+                           follow_symlink, host_descriptor)
+                           .value_or(std::vector<std::byte> { }))
+            .value_or(result.change_time);
+    result.backup_time =
+        parse_hfs_time(read_xattr(path, "user.hfsfuse.record.date_backedup",
+                           follow_symlink, host_descriptor)
+                           .value_or(std::vector<std::byte> { }))
+            .value_or(Timestamp { });
+    if (const auto finder = read_xattr(path, "user.com.apple.FinderInfo",
+            follow_symlink, host_descriptor)) {
         std::copy_n(finder->begin(),
             std::min(finder->size(), result.finder_info.size()),
             result.finder_info.begin());
@@ -507,7 +536,8 @@ std::vector<std::byte> MetadataProvider::pack_attributes(
                                ? (metadata.name.size() + 1U + 3U) & ~3U
                                : 0U;
     const auto path_size = (request.common & common_full_path) != 0
-                               ? padded_string_size(guest_path) : 0U;
+                               ? padded_string_size(guest_path)
+                               : 0U;
     std::vector<std::byte> result(fixed_size + name_size + path_size);
     write32(result, 0, static_cast<std::uint32_t>(result.size()));
     std::size_t cursor = 4;
@@ -630,8 +660,8 @@ std::vector<std::byte> MetadataProvider::pack_attributes(
             metadata.name.size() + 1U);
     }
     if (path_size != 0)
-        std::memcpy(result.data() + fixed_size + name_size,
-            guest_path.data(), guest_path.size());
+        std::memcpy(result.data() + fixed_size + name_size, guest_path.data(),
+            guest_path.size());
     return result;
 }
 
@@ -786,9 +816,9 @@ std::vector<std::byte> MetadataProvider::pack_volume_attributes(
         // Mirrors xnu hfs_attrlist.c for an HFSX, non-journal-active
         // volume.  HFS+ advertises journal capability even when inactive.
         constexpr std::uint32_t path_from_id = 0x00004000U;
-        constexpr std::array<std::uint32_t, 8> capabilities {
-            0x00000f0fU | path_from_id, 0x000003dfU, 0, 0,
-            0x00000fffU | path_from_id, 0x000003ffU, 0, 0 };
+        constexpr std::array<std::uint32_t, 8> capabilities { 0x00000f0fU |
+                                                                  path_from_id,
+            0x000003dfU, 0, 0, 0x00000fffU | path_from_id, 0x000003ffU, 0, 0 };
         for (const auto value : capabilities)
             word(value);
     }
@@ -822,12 +852,19 @@ void MetadataProvider::apply_override(
         metadata.flags = *override.flags;
     if (override.creation_time)
         metadata.creation_time = *override.creation_time;
-    if (override.modification_time) {
+    if (override.modification_time &&
+        (!override.observed_modification_time ||
+            *override.observed_modification_time ==
+                metadata.host_modification_time)) {
         metadata.modification_time = *override.modification_time;
     }
-    if (override.change_time)
+    if (override.change_time &&
+        (!override.observed_change_time ||
+            *override.observed_change_time == metadata.host_change_time))
         metadata.change_time = *override.change_time;
-    if (override.access_time)
+    if (override.access_time && (!override.observed_modification_time ||
+                                    *override.observed_modification_time ==
+                                        metadata.host_modification_time))
         metadata.access_time = *override.access_time;
     if (override.backup_time)
         metadata.backup_time = *override.backup_time;
@@ -843,7 +880,7 @@ void MetadataProvider::apply_override(
 
 std::optional<std::vector<std::byte>> MetadataProvider::named_attribute(
     const std::filesystem::path& path, std::string_view name,
-    bool follow_symlink) const
+    bool follow_symlink, int host_descriptor) const
 {
     if (name.empty() || name.size() > 127U)
         return std::nullopt;
@@ -867,7 +904,7 @@ std::optional<std::vector<std::byte>> MetadataProvider::named_attribute(
         }
     }
     const auto host_name = std::string { "user." } + std::string { name };
-    auto result = read_xattr(path, host_name, follow_symlink);
+    auto result = read_xattr(path, host_name, follow_symlink, host_descriptor);
     if (result && name == "com.apple.FinderInfo" &&
         std::all_of(result->begin(), result->end(),
             [](std::byte value) { return value == std::byte { }; })) {
@@ -879,15 +916,21 @@ std::optional<std::vector<std::byte>> MetadataProvider::named_attribute(
 }
 
 std::vector<std::string> MetadataProvider::named_attributes(
-    const std::filesystem::path& path, bool follow_symlink) const
+    const std::filesystem::path& path, bool follow_symlink,
+    int host_descriptor) const
 {
     std::set<std::string> names;
     const auto reader = follow_symlink ? ::listxattr : ::llistxattr;
-    const auto size = reader(path.c_str(), nullptr, 0);
+    const auto size =
+        (host_descriptor >= 0 ? ::flistxattr(host_descriptor, nullptr, 0)
+                              : reader(path.c_str(), nullptr, 0));
     if (size > 0) {
         std::vector<char> buffer(static_cast<std::size_t>(size));
         const auto received =
-            reader(path.c_str(), buffer.data(), buffer.size());
+            (host_descriptor >= 0
+                    ? ::flistxattr(
+                          host_descriptor, buffer.data(), buffer.size())
+                    : reader(path.c_str(), buffer.data(), buffer.size()));
         std::size_t cursor = 0;
         while (received > 0 && cursor < static_cast<std::size_t>(received)) {
             const std::string_view host_name { buffer.data() + cursor };
@@ -898,12 +941,14 @@ std::vector<std::string> MetadataProvider::named_attributes(
             const auto guest_name = host_name.substr(prefix.size());
             if (guest_name.starts_with("hfsfuse.record."))
                 continue;
-            if (named_attribute(path, guest_name, follow_symlink)) {
+            if (named_attribute(
+                    path, guest_name, follow_symlink, host_descriptor)) {
                 names.emplace(guest_name);
             }
         }
     }
-    if (named_attribute(path, "com.apple.ResourceFork", follow_symlink)) {
+    if (named_attribute(
+            path, "com.apple.ResourceFork", follow_symlink, host_descriptor)) {
         names.emplace("com.apple.ResourceFork");
     }
     return { names.begin(), names.end() };

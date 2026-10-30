@@ -1188,7 +1188,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 bsd_error(cpu, darwin::error::bad_file_descriptor);
                 return;
             }
-            const auto metadata = query_hfs_metadata(file->second, true, false);
+            const auto description = ensure_regular_file_open_description(fd);
+            const auto metadata = query_hfs_metadata(file->second, true, false,
+                description ? description->host_descriptor() : -1);
             if (!metadata) {
                 bsd_error(cpu, darwin::error::no_entry);
                 return;
@@ -1216,9 +1218,12 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 const std::lock_guard filesystem_lock {
                     shared_state_->filesystem_mutex
                 };
-                shared_state_->hfs_metadata_overrides[metadata->permanent_id]
-                    .data_protection_class =
+                auto& update =
+                    shared_state_
+                        ->hfs_metadata_overrides[metadata->host_identity];
+                update.data_protection_class =
                     requested == UINT32_MAX ? 0U : requested;
+                persist_hfs_metadata(*metadata, update);
                 bsd_success(cpu, 0);
                 return;
             }
@@ -1226,11 +1231,12 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 shared_state_->filesystem_mutex
             };
             const auto found = shared_state_->hfs_metadata_overrides.find(
-                metadata->permanent_id);
-            bsd_success(cpu,
-                found != shared_state_->hfs_metadata_overrides.end()
-                    ? found->second.data_protection_class.value_or(0U)
-                    : 0U);
+                metadata->host_identity);
+            bsd_success(
+                cpu, found != shared_state_->hfs_metadata_overrides.end()
+                         ? found->second.data_protection_class.value_or(
+                               metadata->data_protection_class)
+                         : metadata->data_protection_class);
             return;
         }
         case darwin::fcntl_command::set_read_ahead:

@@ -1968,10 +1968,10 @@ struct KernelSharedState {
     };
     // Hard links have distinct catalog IDs but share one HFS file record.
     // Metadata mutations therefore follow the permanent inode identity.
-    std::map<std::uint32_t, hfs::MetadataOverride> hfs_metadata_overrides;
+    std::map<hfs::HostIdentity, hfs::MetadataOverride> hfs_metadata_overrides;
     // A disengaged value is a guest-side removal tombstone hiding an
     // attribute preserved in the immutable extracted firmware tree.
-    std::map<std::uint32_t,
+    std::map<hfs::HostIdentity,
         std::map<std::string, std::optional<std::vector<std::byte>>>>
         hfs_named_attribute_overrides;
     // LaunchServices installs this global XNU VFS table through
