@@ -7,6 +7,7 @@
 #include "vulkan_gles_renderer.hpp"
 #include "vulkan_memory_allocator.hpp"
 #include "vulkan_present_timing.hpp"
+#include "vulkan_submission_fence.hpp"
 
 #include <algorithm>
 #include <array>
@@ -493,7 +494,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
         struct CommandSlot {
             VkCommandBuffer command { };
-            VkFence fence { };
+            std::shared_ptr<VulkanSubmissionFence> fence;
             VkSemaphore image_available { };
             std::array<VkDescriptorSet, maximum_batch_draws> descriptors { };
             Buffer staging;
@@ -665,6 +666,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkDeviceSize uniform_stride_ { };
         std::array<CommandSlot, command_ring_size> command_slots_;
         std::size_t command_slot_index_ { };
+        std::shared_ptr<VulkanSubmissionFence> last_submission_;
         bool command_recording_ { };
         bool render_pass_open_ { };
         std::optional<GlesRenderTargetKey> render_pass_target_;
@@ -1200,17 +1202,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             require_success(vkAllocateCommandBuffers(
                                 device_, &command_info, command_buffers.data()),
                 "vkAllocateCommandBuffers");
-            auto fence_info = make_vulkan_structure<VkFenceCreateInfo>(
-                VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
             auto semaphore_info = make_vulkan_structure<VkSemaphoreCreateInfo>(
                 VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
             for (std::size_t index = 0; index < command_slots_.size();
                 ++index) {
                 auto& slot = command_slots_[index];
                 slot.command = command_buffers[index];
-                require_success(
-                    vkCreateFence(device_, &fence_info, nullptr, &slot.fence),
-                    "vkCreateFence");
+                slot.fence =
+                    std::make_shared<VulkanSubmissionFence>(device_);
                 require_success(vkCreateSemaphore(device_, &semaphore_info,
                                     nullptr, &slot.image_available),
                     "vkCreateSemaphore(image available)");
@@ -1645,11 +1644,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     vkDestroySemaphore(device_, slot.image_available, nullptr);
                     slot.image_available = VK_NULL_HANDLE;
                 }
-                if (slot.fence != VK_NULL_HANDLE) {
-                    vkDestroyFence(device_, slot.fence, nullptr);
-                    slot.fence = VK_NULL_HANDLE;
-                }
+                slot.fence.reset();
             }
+            last_submission_.reset();
             if (command_pool_ != VK_NULL_HANDLE) {
                 vkDestroyCommandPool(device_, command_pool_, nullptr);
             }
@@ -2165,18 +2162,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         if (!slot.in_flight)
             return;
-        const auto measure_wait = performance_counters().enabled();
-        const auto wait_start = measure_wait
-                                    ? std::chrono::steady_clock::now()
-                                    : std::chrono::steady_clock::time_point { };
-        const auto wait_result = vkWaitForFences(
-            device_, 1, &slot.fence, VK_TRUE, fence_timeout_nanoseconds);
-        if (measure_wait) {
-            const auto elapsed = std::chrono::steady_clock::now() - wait_start;
-            performance_counters().record_fence_wait(static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
-                    .count()));
-        }
+        const auto wait_result = slot.fence->wait(fence_timeout_nanoseconds);
         require_success(wait_result, "vkWaitForFences");
         slot.in_flight = false;
     }
@@ -2210,8 +2196,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         require_success(
             vkEndCommandBuffer(submitted.command), "vkEndCommandBuffer");
         command_recording_ = false;
-        require_success(
-            vkResetFences(device_, 1, &submitted.fence), "vkResetFences");
+        VulkanSubmissionFence::prepare_for_submit(submitted.fence, device_);
         auto submit =
             make_vulkan_structure<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
         if (wait_semaphore != VK_NULL_HANDLE) {
@@ -2225,9 +2210,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             submit.signalSemaphoreCount = 1;
             submit.pSignalSemaphores = &signal_semaphore;
         }
-        require_success(vkQueueSubmit(queue_, 1, &submit, submitted.fence),
+        require_success(
+            vkQueueSubmit(queue_, 1, &submit, submitted.fence->handle()),
             "vkQueueSubmit");
         submitted.in_flight = true;
+        last_submission_ = submitted.fence;
         performance_counters().record_submit(reason);
         submitted.draw_count = 0;
         submitted.staging_bytes_used = 0;
@@ -2244,8 +2231,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         for (auto& slot : command_slots_) {
             if (slot.in_flight) {
-                static_cast<void>(vkWaitForFences(device_, 1, &slot.fence,
-                    VK_TRUE, fence_timeout_nanoseconds));
+                static_cast<void>(slot.fence->wait(fence_timeout_nanoseconds));
                 slot.in_flight = false;
             }
         }
@@ -2802,15 +2788,28 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     bool VulkanGlesRenderer::finish(GlesRenderTargetKey target)
     {
-        std::lock_guard lock { mutex_ };
+        std::unique_lock lock { mutex_ };
         last_failure_reason_.store(
             PerfFallbackReason::None, std::memory_order_relaxed);
         if (!targets_.contains(target))
             return true;
         try {
-            submit_commands(true, PerfSubmitReason::GlesSync);
+            submit_commands(false, PerfSubmitReason::GlesSync);
+            // All submissions use one serialized queue. Its last fence covers
+            // commands earlier in submission order, not an arbitrary observed
+            // completion maximum. The shared owner prevents slot reuse from
+            // resetting this exact boundary while the worker waits unlocked.
+            const auto completion = last_submission_;
+            lock.unlock();
+            if (completion)
+                require_success(completion->wait(fence_timeout_nanoseconds),
+                    "vkWaitForFences");
             return true;
         } catch (...) {
+            // Existing backend recovery remains serialized. It must not reset
+            // resources still referenced by accepted submissions.
+            if (!lock.owns_lock())
+                lock.lock();
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
             static_cast<void>(vkDeviceWaitIdle(device_));
