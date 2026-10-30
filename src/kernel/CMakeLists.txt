@@ -42,6 +42,7 @@ target_link_libraries(ilemu_syscall_routes PUBLIC iLEmu::device_state)
 add_library(ilemu_kernel STATIC
     kernel.cpp
     commpage.cpp
+    iokit_method_hle.cpp
     hid_event_system_hle.cpp
     hid_event_transaction.cpp
     hid_switch_query.cpp

@@ -54,6 +54,7 @@
 #include "kernel/darwin_pthread_runtime.hpp"
 #include "kernel/darwin_tty_abi.hpp"
 #include "kernel/hid_event_system_hle.hpp"
+#include "kernel/iokit_method_hle.hpp"
 #include "kernel/kernel_control.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "kernel/mach_arm_thread_abi.hpp"
@@ -1061,6 +1062,7 @@ private:
     };
     UserlandHleRegistry userland_hle_;
     HidEventSystemHle hid_event_system_hle_;
+    IOKitMethodHle iokit_method_hle_;
     SystemConfigurationHle system_configuration_hle_;
     DarwinNotifyStateHle darwin_notify_state_hle_;
     AudioToolboxHle audio_toolbox_hle_;

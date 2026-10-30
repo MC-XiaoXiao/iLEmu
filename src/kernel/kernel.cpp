@@ -204,6 +204,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , audio_service_ { std::make_shared<AudioService>(rootfs_) }
     , userland_hle_ { memory_, output_ }
     , hid_event_system_hle_ { userland_hle_ }
+    , iokit_method_hle_ { userland_hle_ }
     , system_configuration_hle_ { userland_hle_ }
     , darwin_notify_state_hle_ { userland_hle_ }
     , audio_toolbox_hle_ { userland_hle_ }
@@ -908,6 +909,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     });
     install_commpage();
     hid_event_system_hle_.reset(process_.pid);
+    iokit_method_hle_.reset();
     userland_hle_.reset_mappings();
     darwin_notify_state_hle_.reset();
     core_audio_hle_.reset();

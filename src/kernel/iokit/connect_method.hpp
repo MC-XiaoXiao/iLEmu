@@ -13,6 +13,7 @@
 #include "foundation/darwin_version.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/iokit_abi.hpp"
+#include "kernel/iokit_method_hle.hpp"
 #include "mach/mig_wire_abi.hpp"
 #include <algorithm>
 #include <array>
@@ -32,12 +33,23 @@ class ConnectMethodCodec {
     static constexpr std::uint32_t mig_reply_id_delta = 100;
 
 public:
+    // Output ordering and address width are independent MIG ABI properties.
+    struct Profile {
+        bool wide;
+        bool scalar_first;
+        static Profile fallback(DarwinVersion version)
+        {
+            return { version >= DarwinGeneration::Ios5,
+                version < DarwinGeneration::Ios4 };
+        }
+    };
     struct Request {
         struct OutOfLineStructure {
             std::uint64_t address { };
             std::uint64_t size { };
         };
 
+        Profile profile { };
         std::uint32_t selector { };
         std::array<std::uint64_t,
             iokit_abi::connect_method::maximum_scalar_count>
@@ -58,7 +70,7 @@ public:
 
     static std::optional<Request> read(AddressSpace& memory,
         std::uint32_t address, std::uint32_t send_size, DarwinVersion version,
-        std::uint32_t& error)
+        std::uint32_t& error, IOKitMethodHle::Call* native_call = nullptr)
     {
         using namespace iokit_abi::connect_method;
         error = darwin::mig::bad_arguments;
@@ -94,13 +106,8 @@ public:
                          << (index * 8U);
             return value;
         };
-        const auto wide = (version >= DarwinGeneration::Ios5);
-        const auto ool_size =
-            wide ? mach_vm64_ool_request_size : natural32_ool_request_size;
-        const auto tail_size =
-            wide ? mach_vm64_trailing_request_size : trailing_request_size;
         const auto minimum_size =
-            scalar_input_offset + inband_count_size + tail_size;
+            scalar_input_offset + inband_count_size + trailing_request_size;
         if ((word(darwin::mig_wire::header_bits_offset) &
                 darwin::mig_wire::message_complex_bit) != 0 ||
             send_size < minimum_size)
@@ -120,8 +127,15 @@ public:
             return std::nullopt;
         const auto tail =
             input_offset + aligned_inband_output_size(input_count);
-        if (send_size != tail + tail_size)
+        const auto tail_size = send_size - tail;
+        if (tail > send_size || (tail_size != trailing_request_size &&
+                tail_size != mach_vm64_trailing_request_size))
             return std::nullopt;
+        request.profile = Profile::fallback(version);
+        request.profile.wide = tail_size == mach_vm64_trailing_request_size;
+        const auto wide = request.profile.wide;
+        const auto ool_size = wide ? mach_vm64_ool_request_size
+                                  : natural32_ool_request_size;
         for (std::uint32_t index = 0; index < request.scalar_input_count;
             ++index) {
             const auto offset = scalar_input_offset + index * scalar_size;
@@ -148,7 +162,19 @@ public:
         const auto first_capacity = word(tail + ool_size);
         const auto second_capacity =
             word(tail + ool_size + sizeof(std::uint32_t));
-        const auto scalar_first = (version < DarwinGeneration::Ios4);
+        if (native_call && native_call->selector == request.selector) {
+            const auto scalar_first =
+                first_capacity == native_call->scalar_capacity &&
+                second_capacity == native_call->structure_capacity;
+            const auto structure_first =
+                second_capacity == native_call->scalar_capacity &&
+                first_capacity == native_call->structure_capacity;
+            if (scalar_first != structure_first)
+                native_call->scalar_first = scalar_first;
+            if (native_call->scalar_first)
+                request.profile.scalar_first = *native_call->scalar_first;
+        }
+        const auto scalar_first = request.profile.scalar_first;
         // MIG initializes server arrays to their fixed maxima and only lowers
         // their counts for smaller client capacities; these are not input
         // counts.
@@ -184,7 +210,7 @@ public:
     static std::uint32_t write_reply(AddressSpace& memory,
         std::uint32_t address, std::uint32_t local_port,
         std::uint32_t message_id, std::uint32_t receive_size,
-        const Result& result, DarwinVersion version,
+        const Result& result, Profile profile,
         std::uint64_t out_of_line_output_size)
     {
         if (result.return_code != iokit_abi::success)
@@ -201,9 +227,9 @@ public:
         std::uint32_t scalar_bytes_offset { };
         std::uint32_t inband_count_offset { };
         std::uint32_t inband_bytes_offset { };
-        const auto mach_vm64_ool = (version >= DarwinGeneration::Ios5);
+        const auto mach_vm64_ool = profile.wide;
         std::uint32_t ool_output_offset { };
-        if (version >= DarwinGeneration::Ios4) {
+        if (!profile.scalar_first) {
             inband_count_offset = return_code_offset + sizeof(std::uint32_t);
             inband_bytes_offset = inband_count_offset + sizeof(std::uint32_t);
             scalar_count_offset =
