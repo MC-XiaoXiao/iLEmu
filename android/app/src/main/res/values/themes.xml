@@ -1,16 +1,18 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+<resources>
     <style name="Theme.ILEmu" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Primary brand color. -->
-        <item name="colorPrimary">@color/purple_500</item>
-        <item name="colorPrimaryVariant">@color/purple_700</item>
-        <item name="colorOnPrimary">@color/white</item>
-        <!-- Secondary brand color. -->
-        <item name="colorSecondary">@color/teal_200</item>
-        <item name="colorSecondaryVariant">@color/teal_700</item>
-        <item name="colorOnSecondary">@color/black</item>
-        <!-- Status bar color. -->
-        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
-        <!-- Customize your theme here. -->
+        <item name="colorPrimary">#303030</item>
+        <item name="colorPrimaryVariant">#202020</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#555555</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorOnSurface">#242424</item>
+        <item name="colorOnSurfaceVariant">#707070</item>
+        <item name="colorOutlineVariant">#DDDDDD</item>
+        <item name="android:colorBackground">#F4F4F4</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F4F4F4</item>
+        <item name="android:navigationBarColor">#F4F4F4</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:fontFamily">sans</item>
     </style>
 </resources>

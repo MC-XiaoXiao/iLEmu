@@ -7,18 +7,17 @@ import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.documentfile.provider.DocumentFile
 import com.xxiao.ilemu.containers.*
-import com.xxiao.ilemu.databinding.ActivityContainerBinding
+import com.xxiao.ilemu.ui.ContainerEditor
 import com.xxiao.ilemu.firmware.*
 import java.util.concurrent.Executors
 
 class ContainerActivity : AppCompatActivity() {
-    private lateinit var binding: ActivityContainerBinding
+    private lateinit var binding: ContainerEditor
     private lateinit var repository: ContainerRepository
     private var original: Container? = null
     private var storageTree = ""
@@ -29,6 +28,7 @@ class ContainerActivity : AppCompatActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private var catalogGeneration = 0
     private var working = false
+    private var savedFirmwareBuild: String? = null
     private lateinit var operation: ContainerOperation
     private val jitSizes = listOf(8, 16, 32, 64, 128)
 
@@ -52,15 +52,9 @@ class ContainerActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppSettings(this).applyAppearance()
         super.onCreate(savedInstanceState)
-        binding = ActivityContainerBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-        ViewCompat.setOnApplyWindowInsetsListener(binding.form) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            val padding = (20 * resources.displayMetrics.density).toInt()
-            view.setPadding(padding + bars.left, padding + bars.top, padding + bars.right, padding + bars.bottom)
-            insets
-        }
+        binding = ContainerEditor(this, intent.hasExtra("id"))
         repository = ContainerRepository(this)
         operation = ViewModelProvider(this)[ContainerOperation::class.java]
         try {
@@ -70,19 +64,21 @@ class ContainerActivity : AppCompatActivity() {
         } catch (error: Exception) { binding.status.text = error.message; binding.save.isEnabled = false; return }
         storageTree = savedInstanceState?.getString("storage") ?: original?.storageTree ?: ""
         sourceUri = savedInstanceState?.getString("source")?.let(Uri::parse)
+        savedFirmwareBuild = savedInstanceState?.getString("releaseBuild")
         binding.device.adapter = adapter(models)
         binding.cores.adapter = adapter((1..8).toList())
         binding.jit.adapter = adapter(jitSizes)
         val entry = original
-        if (savedInstanceState == null) binding.name.setText(entry?.name ?: "")
+        binding.name.setText(savedInstanceState?.getString("name") ?: entry?.name ?: "")
         binding.device.setSelection(models.indexOfFirst { it.identifier == entry?.device }.coerceAtLeast(0))
-        binding.cores.setSelection((entry?.cores ?: 1) - 1)
-        binding.jit.setSelection(jitSizes.indexOf(entry?.jitCacheMiB ?: 16).coerceAtLeast(0))
-        binding.decryptionKey.setText(entry?.decryptionKey ?: "")
-        binding.headless.isChecked = entry?.headless ?: false
+        val defaults = AppSettings(this)
+        binding.cores.setSelection((entry?.cores ?: defaults.defaultCores) - 1)
+        binding.jit.setSelection(jitSizes.indexOf(entry?.jitCacheMiB ?: defaults.defaultJit).coerceAtLeast(0))
+        binding.decryptionKey.setText(savedInstanceState?.getString("key") ?: entry?.decryptionKey ?: "")
+        binding.headless.isChecked = savedInstanceState?.getBoolean("headless") ?: entry?.headless ?: false
         binding.device.isEnabled = entry?.ready != true && entry?.firmware == null
         if (entry != null) {
-            binding.title.text = "容器设置"
+            binding.title.text = "基本信息"
             binding.save.text = "保存设置"
             binding.source.text = "iOS ${entry.version} (${entry.build})" + if (entry.ready) " · 运行固件已就绪" else " · 等待导入运行固件"
         }
@@ -91,7 +87,7 @@ class ContainerActivity : AppCompatActivity() {
             binding.firmwareLabel.visibility = View.GONE
             binding.reload.visibility = View.GONE
         }
-        binding.importDirectory.isEnabled = entry?.ready != true
+        binding.importDirectory.visibility = if (entry?.ready == true) View.GONE else View.VISIBLE
         binding.device.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -99,20 +95,37 @@ class ContainerActivity : AppCompatActivity() {
             }
         }
         binding.reload.setOnClickListener { loadCatalog() }
+        binding.useOnline.setOnClickListener {
+            sourceUri = null; identity = null
+            binding.source.text = "在线固件下载后自动校验与解包。"
+            showSourceMode(); binding.status.text = ""
+        }
         binding.importDirectory.setOnClickListener { sourcePicker.launch(sourceUri) }
         binding.chooseStorage.setOnClickListener { storagePicker.launch(storageTree.takeIf { it.isNotEmpty() }?.let(Uri::parse)) }
         binding.privateStorage.setOnClickListener { storageTree = ""; showStorage() }
+        savedInstanceState?.let {
+            binding.cores.setSelection(it.getInt("cores", binding.cores.selectedItemPosition))
+            binding.jit.setSelection(it.getInt("jit", binding.jit.selectedItemPosition))
+            binding.device.setSelection(it.getInt("device", binding.device.selectedItemPosition))
+        }
         binding.save.setOnClickListener { save() }
         binding.cancel.setOnClickListener { finish() }
         showStorage()
+        showSourceMode()
         sourceUri?.let(::inspectSource)
+        onBackPressedDispatcher.addCallback(this) {
+            if (working) android.widget.Toast.makeText(this@ContainerActivity, "正在保存，请稍候", android.widget.Toast.LENGTH_SHORT).show()
+            else finish()
+        }
         operation.state.observe(this) { state ->
             working = state.working
             binding.save.isEnabled = !working
             binding.cancel.isEnabled = !working
             if (working) binding.status.text = "正在保存固件与容器，请稍候…"
             state.error?.let { binding.status.text = "保存失败：${it.message}" }
-            if (state.completed) finish()
+            if (state.completed) {
+                finish()
+            }
         }
     }
 
@@ -137,12 +150,24 @@ class ContainerActivity : AppCompatActivity() {
                 if (isDestroyed || generation != catalogGeneration) return@runOnUiThread
                 releases = result.getOrDefault(emptyList())
                 binding.firmware.adapter = if (releases.isEmpty()) adapter(listOf("暂无可校验的固件")) else adapter(releases)
+                savedFirmwareBuild?.let { build ->
+                    releases.indexOfFirst { it.build == build }.takeIf { it >= 0 }?.let(binding.firmware::setSelection)
+                    savedFirmwareBuild = null
+                }
                 if (result.isFailure && !working) binding.status.text = "获取固件失败：${result.exceptionOrNull()?.message}；仍可从目录导入。"
             }
         }
     }
+    private fun showSourceMode() {
+        val online = sourceUri == null && original?.ready != true && original?.firmware == null
+        binding.firmware.visibility = if (online) View.VISIBLE else View.GONE
+        binding.firmwareLabel.visibility = binding.firmware.visibility
+        binding.reload.visibility = binding.firmware.visibility
+        binding.useOnline.visibility = if (sourceUri != null && original?.ready != true) View.VISIBLE else View.GONE
+    }
     private fun inspectSource(uri: Uri) {
         identity = null
+        showSourceMode()
         binding.status.text = "读取固件 plist…"
         executor.execute {
             val result = runCatching { FirmwareImporter(this).identity(uri) }
@@ -194,9 +219,16 @@ class ContainerActivity : AppCompatActivity() {
             }, {
                 if (source == null && !entry.ready && entry.firmware != null) FirmwareDownloadService.start(app, entry.id)
             })
-        } catch (error: Exception) { working = false; binding.status.text = error.message }
+        } catch (error: Exception) { working = false; binding.save.isEnabled = true; binding.cancel.isEnabled = true; binding.status.text = error.message }
     }
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("name", binding.name.text.toString())
+        outState.putString("key", binding.decryptionKey.text.toString())
+        outState.putBoolean("headless", binding.headless.isChecked)
+        outState.putInt("cores", binding.cores.selectedItemPosition)
+        outState.putInt("jit", binding.jit.selectedItemPosition)
+        outState.putInt("device", binding.device.selectedItemPosition)
+        releases.getOrNull(binding.firmware.selectedItemPosition)?.let { outState.putString("releaseBuild", it.build) }
         outState.putString("storage", storageTree)
         sourceUri?.let { outState.putString("source", it.toString()) }
         super.onSaveInstanceState(outState)
