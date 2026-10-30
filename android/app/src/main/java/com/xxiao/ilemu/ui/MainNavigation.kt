@@ -48,7 +48,8 @@ internal class MainNavigation(activity: AppCompatActivity, addContainer: () -> U
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             // BottomNavigationView applies its own navigation-bar inset.
-            view.setPadding(bars.left, bars.top, bars.right, 0)
+            // AppBarLayout owns the top inset so its background extends behind the status bar.
+            view.setPadding(bars.left, 0, bars.right, 0)
             insets
         }
     }
@@ -56,6 +57,8 @@ internal class MainNavigation(activity: AppCompatActivity, addContainer: () -> U
         val view = activity.layoutInflater.inflate(R.layout.main_destination, root.findViewById<FrameLayout>(R.id.main_pages), false)
         view.findViewById<CollapsingToolbarLayout>(R.id.destination_title).apply {
             this.title = title
+            // Let Material animate the status-bar scrim together with the toolbar scrim.
+            statusBarScrim = contentScrim?.constantState?.newDrawable()
             id = View.NO_ID
         }
         view.findViewById<View>(R.id.destination_app_bar).id = appBarId

@@ -57,15 +57,15 @@ internal class AppSettingsContent(activity: AppCompatActivity, body: LinearLayou
         options("每执行器 JIT 缓存（MiB）", listOf(8,16,32,64,128), prefs.defaultJit) { prefs.defaultJit = it }
         val about = ui.section(body, "关于")
         about.addView(ui.heading("iLEmu ${BuildConfig.VERSION_NAME}"))
-        ui.preference(about, "诊断与主机日志", "查看 App 日志与诊断信息") { _ ->
-            onDiagnostics()
-        }
         ui.preference(about, activity.getString(R.string.github_repository), "MC-XiaoXiao/iLEmu") { _ ->
             try {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(activity.getString(R.string.github_repository_url))))
             } catch (_: ActivityNotFoundException) {
                 Toast.makeText(activity, "没有可用的浏览器", Toast.LENGTH_SHORT).show()
             }
+        }
+        ui.preference(about, "诊断与主机日志", "查看 App 日志与诊断信息") { _ ->
+            onDiagnostics()
         }
     }
 }

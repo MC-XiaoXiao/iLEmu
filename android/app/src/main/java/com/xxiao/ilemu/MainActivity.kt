@@ -7,6 +7,7 @@ import android.os.Looper
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import com.xxiao.ilemu.containers.ContainerRepository
 import com.xxiao.ilemu.ui.AppSettingsContent
@@ -33,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         AppSettings(this).applyAppearance()
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         launcher = SessionLauncher(this).also { it.restore(savedInstanceState) }
         repository = ContainerRepository(this)
