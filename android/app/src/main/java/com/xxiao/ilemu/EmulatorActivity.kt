@@ -1,21 +1,23 @@
 package com.xxiao.ilemu
 
+import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.color.MaterialColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.xxiao.ilemu.ui.ScreenUi
 import android.annotation.SuppressLint
-import android.app.AlertDialog
+import androidx.appcompat.app.AlertDialog
+import android.content.Context
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
-import androidx.appcompat.widget.AppCompatImageButton
-import android.content.res.ColorStateList
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -44,9 +46,23 @@ class EmulatorActivity : SDLActivity() {
         val log = SessionLogs.file(this, containerId).also { it.parentFile?.mkdirs() }
         return arguments.take(hostEnd).toTypedArray() + arrayOf("--output", log.path) + arguments.drop(hostEnd).toTypedArray()
     }
+    override fun attachBaseContext(newBase: Context) {
+        val nightMode = when (AppSettings(newBase).appearance) {
+            1 -> Configuration.UI_MODE_NIGHT_NO
+            2 -> Configuration.UI_MODE_NIGHT_YES
+            else -> null
+        }
+        val themed = nightMode?.let {
+            val configuration = Configuration(newBase.resources.configuration)
+            configuration.uiMode = (configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or it
+            newBase.createConfigurationContext(configuration)
+        } ?: newBase
+        super.attachBaseContext(themed)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (mBrokenLibraries) return
+        ScreenUi(this).systemBars(this)
         val booting = intent.getStringArrayExtra("arguments")?.firstOrNull() == "boot"
         if (booting) hostSensors = HostSensors(this).also { it.start() }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
@@ -64,24 +80,34 @@ class EmulatorActivity : SDLActivity() {
         val aspect = model?.let { it.width.toFloat() / it.height }?.takeIf { it.isFinite() && it > 0 } ?: (2f / 3f)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xff101010.toInt())
+            setBackgroundColor(MaterialColors.getColor(this@EmulatorActivity, com.google.android.material.R.attr.colorSurface, 0))
         }
-        val toolbar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
-        toolbar.addView(TextView(this).apply {
-            text = entry?.name ?: "iLEmu"
-            textSize = 18f; setTextColor(0xffe7e7e7.toInt()); maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }, LinearLayout.LayoutParams(0, -2, 1f))
         screenshots = SessionScreenshots(this, ::sendCommand)
-        toolbar.addView(toolbarIcon(R.drawable.ic_camera, "截图") {
-            screenshots?.capture { result ->
-                if (!isFinishing && !isDestroyed) Toast.makeText(this,
-                    result.getOrElse { "截图失败：${it.message}" }, Toast.LENGTH_LONG).show()
+        val toolbar = MaterialToolbar(this).apply {
+            title = entry?.name ?: "iLEmu"
+            listOf(R.drawable.ic_camera to "截图", R.drawable.ic_more to "更多操作", R.drawable.ic_close to "关闭模拟器").forEachIndexed { index, (icon, label) ->
+                menu.add(0, index, index, label).apply {
+                    this.icon = ContextCompat.getDrawable(this@EmulatorActivity, icon)?.mutate()?.apply {
+                        setTint(MaterialColors.getColor(this@EmulatorActivity, com.google.android.material.R.attr.colorOnSurfaceVariant, 0))
+                    }
+                    contentDescription = label
+                    tooltipText = label
+                    setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_IF_ROOM)
+                }
             }
-        })
-        toolbar.addView(toolbarIcon(R.drawable.ic_more, "更多操作", ::showMenu))
-        toolbar.addView(toolbarIcon(R.drawable.ic_close, "关闭模拟器", ::confirmStop))
-        root.addView(toolbar)
+            setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    0 -> screenshots?.capture { result ->
+                        if (!isFinishing && !isDestroyed) Toast.makeText(this@EmulatorActivity,
+                            result.getOrElse { "截图失败：${it.message}" }, Toast.LENGTH_LONG).show()
+                    }
+                    1 -> showMenu()
+                    2 -> confirmStop()
+                }
+                true
+            }
+        }
+        root.addView(toolbar, LinearLayout.LayoutParams(-1, resources.getDimensionPixelSize(com.google.android.material.R.dimen.m3_appbar_size_compact)))
         (mSurface.parent as ViewGroup).removeView(mSurface)
         frame = PhoneFrame(this, mSurface, aspect, controls, DeviceChassis.forDevice(device))
         root.addView(frame, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -94,20 +120,10 @@ class EmulatorActivity : SDLActivity() {
         }
         root.requestApplyInsets()
     }
-    private fun toolbarIcon(icon: Int, label: String, action: () -> Unit) = AppCompatImageButton(this).apply {
-        setImageResource(icon); imageTintList = ColorStateList.valueOf(0xffdddddd.toInt())
-        val value = android.util.TypedValue()
-        theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, value, true)
-        background = ContextCompat.getDrawable(this@EmulatorActivity, value.resourceId)
-        setPadding(dp(13), dp(13), dp(13), dp(13))
-        contentDescription = label; tooltipText = label
-        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
-        setOnClickListener { action() }
-    }
     private fun dp(value: Int) = (value * density).toInt()
     private fun sendCommand(command: String): Boolean = NativeBridge.command(File(filesDir, "control.fifo").path, command, command == "quit")
     private fun showMenu() {
-        AlertDialog.Builder(this).setTitle("容器操作")
+        MaterialAlertDialogBuilder(this).setTitle("容器操作")
             .setItems(arrayOf("唤醒并解锁", "切换响铃 / 静音", "查看运行日志", "运行配置", "关闭模拟器")) { _, which ->
                 when (which) {
                     0 -> if (!sendCommand("unlock")) Toast.makeText(this, "模拟器尚未就绪", Toast.LENGTH_SHORT).show()
@@ -115,9 +131,9 @@ class EmulatorActivity : SDLActivity() {
                     2 -> showLog()
                     3 -> {
                         val entry = containerId?.let { runCatching { ContainerRepository(this).get(it) }.getOrNull() }
-                        AlertDialog.Builder(this).setTitle("运行配置").setMessage(
-                            "${entry?.device ?: "诊断会话"}\nVulkan · 已激活 · 隔离网络\n" +
-                                (entry?.let { "${it.cores} 核 · JIT ${it.jitCacheMiB} MiB\n\n关闭后可在容器设置中修改。" } ?: "")
+                        MaterialAlertDialogBuilder(this).setTitle("运行配置").setMessage(
+                            "${entry?.device ?: "诊断会话"}\n" +
+                                (entry?.let { "iOS ${it.version} (${it.build})\n${it.cores} 核 · JIT ${it.jitCacheMiB} MiB\n\n关闭后可在容器设置中修改。" } ?: "")
                         ).setPositiveButton("关闭", null).show()
                     }
                     4 -> confirmStop()
@@ -125,18 +141,17 @@ class EmulatorActivity : SDLActivity() {
             }.setNegativeButton("返回画面", null).show()
     }
     private fun showRinger() {
-        AlertDialog.Builder(this).setTitle("响铃开关")
+        MaterialAlertDialogBuilder(this).setTitle("响铃开关")
             .setSingleChoiceItems(arrayOf("响铃", "静音"), if (controls.ringerSilent) 1 else 0) { dialog, which ->
                 if (!controls.setRinger(which == 1)) Toast.makeText(this, "模拟器尚未就绪", Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }.setNegativeButton("取消", null).show()
     }
     private fun showLog() {
-        val log = TextView(this).apply {
-            textSize = 11f; typeface = android.graphics.Typeface.MONOSPACE; setTextIsSelectable(true)
+        val log = ScreenUi(this).text("", ScreenUi.Type.CAPTION).apply { typeface = android.graphics.Typeface.MONOSPACE; setTextIsSelectable(true)
             setPadding(dp(16), dp(12), dp(16), dp(12)); text = SessionLogs.tail(SessionLogs.file(this@EmulatorActivity, containerId))
         }
-        val dialog = AlertDialog.Builder(this).setTitle("运行日志 · 最近 64 KiB")
+        val dialog = MaterialAlertDialogBuilder(this).setTitle("运行日志 · 最近 64 KiB")
             .setView(ScrollView(this).apply { addView(log) }).setPositiveButton("关闭", null).setNeutralButton("刷新", null).create()
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { log.text = SessionLogs.tail(SessionLogs.file(this, containerId)) } }
         dialog.show()
@@ -144,7 +159,7 @@ class EmulatorActivity : SDLActivity() {
     private fun confirmStop() {
         if (stopDialog?.isShowing == true) return
         frame?.releaseButtons()
-        stopDialog = AlertDialog.Builder(this).setTitle("关闭模拟器？").setMessage("结束当前运行并保存容器数据。")
+        stopDialog = MaterialAlertDialogBuilder(this).setTitle("关闭模拟器？").setMessage("结束当前运行并保存容器数据。")
             .setNegativeButton("继续运行", null).setPositiveButton("关闭") { _, _ -> sendCommand("quit") }.show()
     }
     override fun onPause() {

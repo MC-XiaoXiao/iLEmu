@@ -1,8 +1,9 @@
 package com.xxiao.ilemu
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import android.widget.ScrollView
-import android.widget.TextView
-import androidx.appcompat.app.AlertDialog
+import android.graphics.Typeface
+import com.xxiao.ilemu.ui.ScreenUi
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import java.io.RandomAccessFile
@@ -21,8 +22,12 @@ internal object DiagnosticsDialog {
                 }
             }.getOrElse { "$name: ${it.message}" }
         }.joinToString("\n\n").ifEmpty { activity.getString(R.string.no_log) }
-        val view = TextView(activity).apply { setTextIsSelectable(true); setPadding(24, 16, 24, 16); this.text = text }
-        AlertDialog.Builder(activity).setTitle("诊断与运行日志")
+        val ui = ScreenUi(activity)
+        val view = ui.text(text, ScreenUi.Type.CAPTION).apply {
+            typeface = Typeface.MONOSPACE; setTextIsSelectable(true)
+            setPadding(ui.dp(24), ui.dp(16), ui.dp(24), ui.dp(16))
+        }
+        MaterialAlertDialogBuilder(activity).setTitle("诊断与运行日志")
             .setView(ScrollView(activity).apply { addView(view) })
             .setPositiveButton("关闭", null).setNeutralButton("检查 CPU") { _, _ -> smoke() }.show()
     }

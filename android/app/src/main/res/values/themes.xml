@@ -1,18 +1,8 @@
 <resources>
-    <style name="Theme.ILEmu" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">#303030</item>
-        <item name="colorPrimaryVariant">#202020</item>
-        <item name="colorOnPrimary">#FFFFFF</item>
-        <item name="colorSecondary">#555555</item>
-        <item name="colorSurface">#FFFFFF</item>
-        <item name="colorOnSurface">#242424</item>
-        <item name="colorOnSurfaceVariant">#707070</item>
-        <item name="colorOutlineVariant">#DDDDDD</item>
-        <item name="android:colorBackground">#F4F4F4</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#F4F4F4</item>
-        <item name="android:navigationBarColor">#F4F4F4</item>
-        <item name="android:windowLightNavigationBar">true</item>
-        <item name="android:fontFamily">sans</item>
+    <style name="Theme.ILEmu" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="materialCardViewStyle">@style/Widget.Material3.CardView.Filled</item>
+        <item name="textInputStyle">@style/Widget.Material3.TextInputLayout.OutlinedBox</item>
+        <item name="ilemuDropdownStyle">@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu</item>
+        <item name="ilemuIconButtonStyle">@style/Widget.Material3.Button.IconButton</item>
     </style>
 </resources>

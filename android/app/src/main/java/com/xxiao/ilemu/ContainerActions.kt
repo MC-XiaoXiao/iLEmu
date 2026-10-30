@@ -1,8 +1,8 @@
 package com.xxiao.ilemu
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import android.content.Intent
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.xxiao.ilemu.containers.*
 import com.xxiao.ilemu.firmware.FirmwareDownloadService
@@ -27,7 +27,7 @@ internal class ContainerActions(private val activity: AppCompatActivity, private
             !current.ready && busy -> FirmwareDownloadService.pause(activity)
             !current.ready -> FirmwareDownloadService.start(activity, current.id)
             !busy -> start(current)
-            NativeBridge.ownsRunningSession(current.id) -> AlertDialog.Builder(activity).setTitle("关闭“${current.name}”？")
+            NativeBridge.ownsRunningSession(current.id) -> MaterialAlertDialogBuilder(activity).setTitle("关闭“${current.name}”？")
                 .setMessage("结束当前运行并保存容器数据。")
                 .setNegativeButton("继续运行", null).setPositiveButton("关闭") { _, _ ->
                     NativeBridge.command(File(activity.filesDir, "control.fifo").path, "quit", true)
@@ -44,7 +44,7 @@ internal class ContainerActions(private val activity: AppCompatActivity, private
     }
     fun delete(entry: Container) = attempt {
         check(!ContainerTasks.isBusy(entry.id)) { "请等待当前操作完成" }
-        AlertDialog.Builder(activity).setTitle("删除“${entry.name}”？")
+        MaterialAlertDialogBuilder(activity).setTitle("删除“${entry.name}”？")
             .setMessage(if (entry.legacy) "移除列表项，保留原有固件目录。" else "此容器的固件、下载文件和数据将被删除。")
             .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ -> attempt {
                 ContainerTasks.run(entry.id, { ContainerStorage(activity).delete(entry); repository.removeOwned(entry.id) }, { error -> activity.runOnUiThread {

@@ -38,7 +38,7 @@ class MainActivity : AppCompatActivity() {
         actions.addView(ui.button("＋  添加容器", true) { startActivity(Intent(this, ContainerActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
         actions.addView(ui.button("App 设置") { startActivity(Intent(this, SettingsActivity::class.java)) }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = ui.dp(10) })
         body.addView(actions)
-        count = ui.text("", 13, true)
+        count = ui.text("", ScreenUi.Type.BODY, true)
         body.addView(count, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(24); bottomMargin = ui.dp(12) })
         message = ui.notice(body)
         cards = ui.column(); body.addView(cards)
@@ -48,7 +48,8 @@ class MainActivity : AppCompatActivity() {
     private fun render() {
         runCatching {
             val entries = repository.list()
-            count.text = "${entries.size} 个容器"
+            val total = "${entries.size} 个容器"
+            if (count.text.toString() != total) count.text = total
             if (items.keys.toList() == entries.map { it.id } && cards.childCount > 0) {
                 entries.forEach { items[it.id]?.update(it, repository) }
                 return
