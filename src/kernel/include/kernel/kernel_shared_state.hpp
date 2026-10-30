@@ -33,6 +33,7 @@
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/compass_device.hpp"
 #include "kernel/kevent_timer.hpp"
+#include "kernel/display_console.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "kernel/bsd_dispatch_table.hpp"
 #include "kernel/mach_dispatch_table.hpp"
@@ -1860,6 +1861,7 @@ struct KernelSharedState {
         mach_task_identity::initial_io_registry_options_name
     };
     std::map<std::uint32_t, IOKitConnection> iokit_connections;
+    DisplayConsole display_console;
     std::map<std::uint32_t, IOKitInterestNotification>
         iokit_interest_notifications;
     // Keyed by the global IOUserClient connection object. The notification

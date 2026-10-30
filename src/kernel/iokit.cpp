@@ -602,6 +602,10 @@ namespace {
         if (!external)
             kernel_iokit::BacklightControl::publish(service);
         shared_state.iokit_services.emplace(port, std::move(service));
+        if (!external) {
+            shared_state.display_console.acquire(shared_state.clock.now());
+            shared_state.note_kernel_event_transition();
+        }
         return port;
     }
 
@@ -2277,6 +2281,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             shared_state.iokit_connections.emplace(connection_object,
                 KernelSharedState::IOKitConnection {
                     remote_object, process.pid, connect_type });
+            kernel_iokit::display::open_connection_locked(
+                shared_state, connection_object, connect_type);
             connection_name = copyout_send_locked(
                 shared_state, process.pid, connection_object);
         }
@@ -2332,6 +2338,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                         process.pid,
                         connection_type_for_kind(
                             profile, requested_connect_type) });
+                kernel_iokit::display::open_connection_locked(
+                    shared_state, connection_object, requested_connect_type);
                 connection_name = copyout_send_locked(
                     shared_state, process.pid, connection_object);
             }

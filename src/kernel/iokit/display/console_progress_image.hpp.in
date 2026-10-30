@@ -1,0 +1,11 @@
+// Generated from the unchanged XNU alpha-gear resource; see console.cpp.
+#pragma once
+inline constexpr unsigned char console_progress_image[] = {
+    @CONSOLE_PROGRESS_BYTES@
+};
+inline constexpr unsigned char console_progress_native_1x[] = {
+    @CONSOLE_PROGRESS_NATIVE_1X_BYTES@
+};
+inline constexpr unsigned char console_progress_native_2x[] = {
+    @CONSOLE_PROGRESS_NATIVE_2X_BYTES@
+};

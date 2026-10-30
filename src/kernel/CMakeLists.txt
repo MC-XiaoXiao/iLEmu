@@ -52,6 +52,23 @@ add_library(ilemu_kernel STATIC
     vnode_watch.cpp
     kevent_timer.cpp
     network.cpp)
+set(CONSOLE_PROGRESS_ASSET
+    "${PROJECT_SOURCE_DIR}/external/xnu-console/GearImage.bin")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CONSOLE_PROGRESS_ASSET}")
+file(READ "${CONSOLE_PROGRESS_ASSET}" CONSOLE_PROGRESS_BYTES HEX)
+string(REGEX REPLACE "(..)" "0x\\1," CONSOLE_PROGRESS_BYTES "${CONSOLE_PROGRESS_BYTES}")
+foreach(scale 1 2)
+    set(asset "${PROJECT_SOURCE_DIR}/external/xnu-console/GearImageNative${scale}x.bin")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${asset}")
+    file(READ "${asset}" CONSOLE_PROGRESS_NATIVE_${scale}X_BYTES HEX)
+    string(REGEX REPLACE "(..)" "0x\\1," CONSOLE_PROGRESS_NATIVE_${scale}X_BYTES
+        "${CONSOLE_PROGRESS_NATIVE_${scale}X_BYTES}")
+endforeach()
+configure_file(iokit/display/console_progress_image.hpp.in
+    console_progress_image.hpp @ONLY)
+target_sources(ilemu_kernel PRIVATE iokit/display/console.cpp)
+target_include_directories(ilemu_kernel PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_library(iLEmu::kernel ALIAS ilemu_kernel)
 ilemu_configure_module(ilemu_kernel)
 

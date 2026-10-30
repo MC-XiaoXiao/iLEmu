@@ -284,6 +284,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             inject_wifi_driver_event(descriptor, event);
         });
     auto resolved = std::move(*configuration);
+    shared_state_->display_console.configure(resolved.version);
     shared_state_->darwin_kernel_identity = std::move(resolved.identity);
     configure_darwin_notify_state();
     shared_state_->device_product_type = device_model_.identity.product_type;
@@ -2724,6 +2725,8 @@ CompatibilityKernel::timer_deadline_snapshot() const
                 consider(shared_deadline,
                     next_clock_alarm_deadline_locked(*shared_state_));
                 consider(shared_deadline,
+                    shared_state_->display_console.next_deadline());
+                consider(shared_deadline,
                     kernel_iokit::display::next_vsync_deadline_locked(
                         *shared_state_));
                 consider(shared_deadline,
@@ -2800,6 +2803,24 @@ void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
     const auto next_service_deadline = next_timer_deadline();
     if (!next_service_deadline || *next_service_deadline > deadline)
         return;
+    std::optional<std::vector<std::uint32_t>> console_pixels;
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        console_pixels = shared_state_->display_console.take_frame(deadline,
+            shared_state_->display_geometry,
+            shared_state_->user_interface_geometry,
+            shared_state_->requested_display_power_state.value_or(1U) != 0U);
+        if (shared_state_->display_console.next_deadline())
+            shared_state_->note_kernel_event_transition();
+    }
+    if (console_pixels) {
+        // Console pixels have kernel ownership. Retire an exited client's
+        // scanout identity before presenting through the usual host boundary.
+        display_state_->clear(0xff000000U);
+        display_state_->replace_pixels(std::move(*console_pixels));
+        display_state_->set_powered_on(true);
+        display_state_->present();
+    }
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         // Non-primary runtimes are advanced through this service path by the

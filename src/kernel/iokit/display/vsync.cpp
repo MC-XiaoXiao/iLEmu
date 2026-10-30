@@ -662,9 +662,25 @@ void deliver_due_vsync_locked(KernelSharedState& state, std::uint64_t deadline)
     }
 }
 
+void open_connection_locked(KernelSharedState& state,
+    std::uint32_t connection_object, std::uint32_t requested_type)
+{
+    const auto connection = state.iokit_connections.find(connection_object);
+    if (requested_type != mobile_framebuffer_service_type ||
+        connection == state.iokit_connections.end() ||
+        connection->second.service_port != state.mobile_framebuffer_service)
+        return;
+    state.display_console.open(connection_object);
+    state.note_kernel_event_transition();
+}
+
 void close_connection_locked(
     KernelSharedState& state, std::uint32_t connection_object)
 {
+    const auto console_deadline = state.display_console.next_deadline();
+    state.display_console.close(connection_object, state.clock.now());
+    if (console_deadline != state.display_console.next_deadline())
+        state.note_kernel_event_transition();
     const auto registration = state.iokit_display_vsync.find(connection_object);
     remove_vsync_deadline_index_locked(state, connection_object);
     if (registration != state.iokit_display_vsync.end()) {
