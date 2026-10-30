@@ -730,6 +730,54 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
             result.filter.operation == GlesFilterProfile::Operation::None &&
             has_helper_functions(fragment_tokens)))
         result.requires_glsl_execution = true;
+    // The texture-environment adapter only consumes its declared sampler,
+    // coordinate and modulation contracts. A live uniform outside those
+    // contracts, or a computed intermediate color, must keep its GLSL math.
+    if (result.fragment_operation ==
+            GlesFragmentOperation::TextureEnvironment &&
+        result.filter.operation == GlesFilterProfile::Operation::None &&
+        !result.transparent_output) {
+        for (const auto& uniform : fragment_declarations) {
+            if (uniform.storage != "uniform" || uniform.type == "sampler2D" ||
+                uniform.type == "sampler2DRect" ||
+                std::count(fragment_tokens.begin(), fragment_tokens.end(),
+                    uniform.name) < 2)
+                continue;
+            const auto matrix_input =
+                std::any_of(result.matrix_texture_inputs.begin(),
+                    result.matrix_texture_inputs.end(), [&](const auto& input) {
+                        return input.valid() &&
+                               (input.fragment_matrix == uniform.name ||
+                                   input.color_uniform == uniform.name);
+                    });
+            const auto interpolation =
+                uniform.name == "function_arg" &&
+                (uncommented.find("mix (s1, s0, function_arg)") !=
+                        std::string::npos ||
+                    uncommented.find(
+                        "mix (" + std::string { result.color_varying } +
+                        ", s0, function_arg)") != std::string::npos);
+            if (!matrix_input && !interpolation)
+                result.requires_glsl_execution = true;
+        }
+        for (const auto& assignment : assignments) {
+            const auto begin = assignment.expression_begin;
+            const auto size = assignment.expression_end - begin;
+            const auto texture_sample =
+                size == 6U && (fragment_tokens[begin] == "texture2D" ||
+                                  fragment_tokens[begin] == "texture2DRect" ||
+                                  fragment_tokens[begin] == "texture2DProj");
+            const auto alpha_sample =
+                size == 6U && fragment_tokens[begin] == "vec4" &&
+                fragment_tokens[begin + 3U] == "." &&
+                fragment_tokens[begin + 4U] == "a" &&
+                std::any_of(result.alpha_sample_samplers.begin(),
+                    result.alpha_sample_samplers.end(),
+                    [](const auto& sampler) { return !sampler.empty(); });
+            if (!texture_sample && !alpha_sample)
+                result.requires_glsl_execution = true;
+        }
+    }
     return result;
 }
 
