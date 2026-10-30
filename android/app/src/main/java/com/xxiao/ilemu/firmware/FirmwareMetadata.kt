@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
 
-internal data class DeviceOption(val identifier: String, val name: String, val board: String) {
+internal data class DeviceOption(val identifier: String, val name: String, val board: String, val width: Int, val height: Int) {
     override fun toString() = "$name · $identifier"
 }
 internal data class FirmwareIdentity(val version: String, val build: String, val devices: List<String>) {
@@ -18,7 +18,7 @@ internal object FirmwareMetadata {
     private external fun deviceModels(): String
     fun models(): List<DeviceOption> {
         val list = JSONArray(deviceModels())
-        return List(list.length()) { list.getJSONObject(it).let { j -> DeviceOption(j.getString("identifier"), j.getString("name"), j.getString("board")) } }
+        return List(list.length()) { list.getJSONObject(it).let { j -> DeviceOption(j.getString("identifier"), j.getString("name"), j.getString("board"), j.getInt("width"), j.getInt("height")) } }
     }
     fun inspect(input: InputStream): FirmwareIdentity {
         return identity(document(input))

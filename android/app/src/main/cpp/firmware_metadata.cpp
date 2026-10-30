@@ -76,6 +76,8 @@ Java_com_xxiao_ilemu_firmware_FirmwareMetadata_deviceModels(JNIEnv* env, jobject
         plist_dict_set_item(entry, "identifier", plist_new_string(model.identity.product_type.data()));
         plist_dict_set_item(entry, "board", plist_new_string(model.identity.board_config.data()));
         plist_dict_set_item(entry, "name", plist_new_string(model.screen.graphics_services.marketing_name.data()));
+        plist_dict_set_item(entry, "width", plist_new_uint(model.screen.panel.width));
+        plist_dict_set_item(entry, "height", plist_new_uint(model.screen.panel.height));
         plist_array_append_item(list, entry);
     }
     return json(env, list);
