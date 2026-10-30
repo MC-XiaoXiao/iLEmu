@@ -4,9 +4,11 @@
 
 #include "foundation/address_space.hpp"
 #include "foundation/userland_hle.hpp"
+#include "graphics/surface_store.hpp"
 #include "guest_eagl_window.hpp"
 #include "kernel/opengles_hle.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -126,6 +128,67 @@ std::uint32_t OpenGlesHle::ensure_renderbuffer_storage(ContextState& context,
             framebuffer.color_texture = renderbuffer->second.color_texture;
     }
     return gles_abi::no_error;
+}
+
+void OpenGlesHle::complete_drawable_storage(UserlandHleCall& call,
+    ResourceIdentity context_id, ResourceIdentity renderbuffer_id,
+    std::uint32_t name, DisplayGeometry pixels,
+    std::optional<DisplayViewport> viewport, std::uint32_t window,
+    std::uint32_t surface, std::uint64_t publication)
+{
+    const auto retry = [this, context_id, renderbuffer_id, name, pixels,
+                           viewport, window, surface,
+                           publication](UserlandHleCall& resumed) {
+        complete_drawable_storage(resumed, context_id, renderbuffer_id, name,
+            pixels, viewport, window, surface, publication);
+    };
+    // Guest geometry/window queries can yield before this callback. Another
+    // thread may have submitted GL work or deleted/replaced either object.
+    enter_graphics_call(call, [this, context_id, renderbuffer_id, name, pixels,
+                                  viewport, window, surface, publication,
+                                  retry](UserlandHleCall& ready) {
+        if (program_flush_failed_) {
+            ready.set_return(0U);
+            return;
+        }
+        if (pending_program_target_) {
+            await_program_flush(ready, retry);
+            return;
+        }
+        const auto found =
+            std::ranges::find_if(contexts_, [&](const auto& entry) {
+                return entry.second.identity == context_id;
+            });
+        if (found == contexts_.end()) {
+            ready.set_return(0U);
+            return;
+        }
+        auto& context = found->second;
+        const auto buffer = context.renderbuffers.find(name);
+        const auto identifier = core_surface_identifier(ready, surface);
+        const auto backing =
+            identifier ? surface_store_->find(*identifier) : std::nullopt;
+        if (buffer == context.renderbuffers.end() ||
+            buffer->second.identity != renderbuffer_id ||
+            (publication &&
+                (!backing ||
+                    backing->provenance.publication_sequence != publication))) {
+            ready.set_return(0U);
+            return;
+        }
+        const auto attached =
+            surface != 0U &&
+            attach_eagl_window_surface(ready, context, name, window, surface);
+        const auto error =
+            attached ? gles_abi::no_error
+                     : ensure_renderbuffer_storage(context, name, pixels.width,
+                           pixels.height, gles_abi::bgra_apple);
+        if (error == gles_abi::no_error) {
+            buffer->second.display_oriented = true;
+            buffer->second.drawable_viewport = viewport;
+        }
+        ready.set_return(error == gles_abi::no_error ? 1U : 0U);
+    });
 }
 
 void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)

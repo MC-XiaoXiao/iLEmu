@@ -64,6 +64,10 @@ public:
 
 private:
     friend class OpenGlesDispatchHle;
+    // Retaining identity does not retain the guest object. A replacement with
+    // the same numeric name gets a different token; fork copies no observers.
+    struct ResourceLifetime { };
+    using ResourceIdentity = std::shared_ptr<const ResourceLifetime>;
     struct ThreadState {
         std::uint32_t display { };
         std::uint32_t draw_surface { };
@@ -81,6 +85,7 @@ private:
         bool dirty { };
     };
     struct ContextState {
+        ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
         std::uint32_t client_api { 1U };
         struct FramebufferState {
             std::uint32_t color_texture_target { };
@@ -90,6 +95,7 @@ private:
             std::uint32_t stencil_renderbuffer { };
         };
         struct RenderbufferState {
+            ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
             std::uint32_t width { };
             std::uint32_t height { };
             std::uint32_t internal_format { };
@@ -232,6 +238,14 @@ private:
         DisplayFrame frame;
     };
     [[nodiscard]] bool flush_program_draws(UserlandHleCall& call);
+    [[nodiscard]] bool program_draw_needs_flush(
+        const RenderTargetBinding& binding,
+        std::span<const std::uint32_t> textures) const;
+    void complete_drawable_storage(UserlandHleCall& call,
+        ResourceIdentity context, ResourceIdentity renderbuffer,
+        std::uint32_t name, DisplayGeometry pixels,
+        std::optional<DisplayViewport> viewport, std::uint32_t window,
+        std::uint32_t surface, std::uint64_t publication);
     void collect_program_draw_errors();
 
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
@@ -300,6 +314,7 @@ private:
         const UserlandHleRegistry::Handler& handler, std::uint32_t error);
     bool program_flush_failed_ { };
     void finish_async(UserlandHleCall& call, bool finish);
+    void make_current(UserlandHleCall& call);
     void read_pixels(UserlandHleCall& call);
     void write_read_pixels(UserlandHleCall& call, const DisplayFrame& frame,
         bool inverted, std::uint32_t alignment);

@@ -23,8 +23,8 @@ namespace {
         return static_cast<std::size_t>(pixels) * sizeof(std::uint32_t);
     }
 
-    // Only pre-effect entry boundaries can retry. Draw target/alias changes
-    // deeper inside a handler keep their existing path until separately split.
+    // These handlers flush before effects. Draw target/alias changes and
+    // MakeCurrent park at their validated preparation boundaries instead.
     bool flush_boundary(std::string_view symbol)
     {
         return symbol == "_glFinish" || symbol == "_glFlush" ||
@@ -181,7 +181,8 @@ void OpenGlesHle::fail_program_flush(UserlandHleCall& call,
 {
     set_gl_error(call, error);
     if (call.symbol() == "_glFinish" || call.symbol() == "_glFlush" ||
-        call.symbol() == "_glReadPixels")
+        call.symbol() == "_glReadPixels" || call.symbol() == "_glDrawArrays" ||
+        call.symbol() == "_glDrawElements")
         return;
     // Reuse the handler's EGL/GL failure ABI without resubmitting a readback.
     struct FailureScope {

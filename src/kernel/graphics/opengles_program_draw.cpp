@@ -145,6 +145,30 @@ bool OpenGlesHle::flush_program_draws(UserlandHleCall& call)
     return true;
 }
 
+bool OpenGlesHle::program_draw_needs_flush(const RenderTargetBinding& binding,
+    std::span<const std::uint32_t> textures) const
+{
+    if (!pending_program_target_)
+        return false;
+    const auto& pending = pending_program_target_->binding;
+    if (pending.key != binding.key)
+        return true;
+    for (const auto name : textures) {
+        if (name == 0U)
+            continue;
+        if (name == pending.framebuffer_texture)
+            return true;
+        const auto* texture = resources_.texture(name);
+        if (texture && pending.backing_identifier)
+            for (const auto& [level, image] : texture->levels) {
+                static_cast<void>(level);
+                if (image.surface_id == pending.backing_identifier)
+                    return true;
+            }
+    }
+    return false;
+}
+
 void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     const RenderTargetBinding& binding, DisplayFrame frame,
     const GlesProgramDraw& draw, std::uint32_t mode,
@@ -173,30 +197,6 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
             return;
         }
     }
-    const auto samples_pending = [&] {
-        if (!pending_program_target_)
-            return false;
-        const auto& pending = pending_program_target_->binding;
-        for (const auto name : draw.textures) {
-            if (name == 0U)
-                continue;
-            if (name == pending.framebuffer_texture)
-                return true;
-            const auto* texture = resources_.texture(name);
-            if (texture && pending.backing_identifier)
-                for (const auto& [level, image] : texture->levels) {
-                    static_cast<void>(level);
-                    if (image.surface_id == pending.backing_identifier)
-                        return true;
-                }
-        }
-        return false;
-    };
-    if (pending_program_target_ &&
-        (pending_program_target_->binding.key != binding.key ||
-            samples_pending()) &&
-        !flush_program_draws(call))
-        return;
     for (auto texture : draw.textures) {
         if (texture == 0U)
             continue;

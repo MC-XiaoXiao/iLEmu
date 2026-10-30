@@ -1248,8 +1248,12 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         program_draw->depth_clear = context->depth_clear;
         program_draw->depth_generation = context->depth_generation;
     }
-    if (!program_draw && !flush_program_draws(call))
+    if (!program_draw && pending_program_target_) {
+        await_program_flush(call, [this, indexed](UserlandHleCall& resumed) {
+            draw(resumed, indexed);
+        });
         return;
+    }
     const auto programmable =
         program_draw ? std::nullopt : programmable_draw_state(*context);
     if (context->current_program != 0U && !programmable && !program_draw) {
@@ -1343,6 +1347,16 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     const auto binding = resolve_render_target(call, *context);
     if (!binding) {
         set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    if (program_draw &&
+        program_draw_needs_flush(*binding, program_draw->textures)) {
+        // No draw has been submitted and no destination has been modified.
+        // Re-enter preparation after the previous target's core commit;
+        // temporary attributes, spans and context pointers stay on this stack.
+        await_program_flush(call, [this, indexed](UserlandHleCall& resumed) {
+            draw(resumed, indexed);
+        });
         return;
     }
     auto target = render_target(call, *binding);
@@ -1746,49 +1760,48 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                     display_ ? display_->geometry() : default_display_geometry);
             const auto drawable = call.argument(3);
             const auto renderbuffer_name = context->bound_renderbuffer;
+            const auto renderbuffer =
+                context->renderbuffers.find(renderbuffer_name);
+            if (renderbuffer == context->renderbuffers.end()) {
+                call.set_return(0U);
+                return;
+            }
             GuestDrawableGeometryReader::read(call, drawable,
-                [this, context, renderbuffer_name, geometry](
-                    UserlandHleCall& completed,
+                [this, context = context->identity,
+                    renderbuffer = renderbuffer->second.identity,
+                    renderbuffer_name, geometry](UserlandHleCall& completed,
                     std::optional<GuestDrawableGeometry> drawable_geometry) {
-                    const auto finish = [this, context, renderbuffer_name,
-                                            geometry, drawable_geometry](
-                                            UserlandHleCall& done,
+                    const auto pixels = drawable_geometry
+                                            ? drawable_geometry->pixels
+                                            : geometry;
+                    std::optional<DisplayViewport> viewport;
+                    if (drawable_geometry && display_) {
+                        const auto scale =
+                            shared_state_
+                                ? display_scale_factor(
+                                      shared_state_->display_geometry,
+                                      shared_state_->user_interface_geometry)
+                                : 1U;
+                        const auto bounds = drawable_geometry->bounds;
+                        viewport = fit_display_viewport(
+                            { bounds.width * scale, bounds.height * scale },
+                            display_->geometry());
+                    }
+                    const auto finish = [this, context, renderbuffer,
+                                            renderbuffer_name, pixels,
+                                            viewport](UserlandHleCall& done,
                                             std::uint32_t window,
                                             std::uint32_t surface) {
-                        const auto attached =
-                            surface != 0U &&
-                            attach_eagl_window_surface(done, *context,
-                                renderbuffer_name, window, surface);
-                        const auto pixels = drawable_geometry
-                                                ? drawable_geometry->pixels
-                                                : geometry;
-                        const auto error =
-                            attached ? gles_abi::no_error
-                                     : ensure_renderbuffer_storage(*context,
-                                           renderbuffer_name, pixels.width,
-                                           pixels.height, gles_abi::bgra_apple);
-                        if (error == gles_abi::no_error) {
-                            auto& renderbuffer =
-                                context->renderbuffers.at(renderbuffer_name);
-                            renderbuffer.display_oriented = true;
-                            renderbuffer.drawable_viewport.reset();
-                            if (drawable_geometry && display_) {
-                                const auto scale =
-                                    shared_state_
-                                        ? display_scale_factor(
-                                              shared_state_->display_geometry,
-                                              shared_state_
-                                                  ->user_interface_geometry)
-                                        : 1U;
-                                const auto bounds = drawable_geometry->bounds;
-                                renderbuffer.drawable_viewport =
-                                    fit_display_viewport(
-                                        { bounds.width * scale,
-                                            bounds.height * scale },
-                                        display_->geometry());
-                            }
-                        }
-                        done.set_return(error == gles_abi::no_error ? 1U : 0U);
+                        const auto identifier =
+                            core_surface_identifier(done, surface);
+                        const auto backing =
+                            identifier ? surface_store_->find(*identifier)
+                                       : std::nullopt;
+                        complete_drawable_storage(done, context, renderbuffer,
+                            renderbuffer_name, pixels, viewport, window,
+                            backing ? surface : 0U,
+                            backing ? backing->provenance.publication_sequence
+                                    : 0U);
                     };
                     const auto window = GuestEaglWindow::open(completed,
                         drawable_geometry ? drawable_geometry->native_window
@@ -1935,6 +1948,63 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             }
             call.set_return(error == gles_abi::no_error ? 1U : 0U);
         });
+}
+
+void OpenGlesHle::make_current(UserlandHleCall& call)
+{
+    if (!is_valid_display(call.argument(0))) {
+        egl_error_ = egl_bad_display;
+        call.set_return(egl_false);
+        return;
+    }
+    const auto draw = call.argument(1);
+    const auto read = call.argument(2);
+    const auto context = call.argument(3);
+    if ((context != 0 && !contexts_.contains(context)) ||
+        (draw != 0 && !surfaces_.contains(draw)) ||
+        (read != 0 && !surfaces_.contains(read))) {
+        egl_error_ = context != 0 && !contexts_.contains(context)
+                         ? egl_bad_context
+                         : egl_bad_surface;
+        call.set_return(egl_false);
+        return;
+    }
+    auto& current = thread(call);
+    if (current.draw_surface != 0 && current.draw_surface != draw) {
+        const auto previous = surfaces_.find(current.draw_surface);
+        if (!program_flush_failed_ && pending_program_target_ &&
+            previous != surfaces_.end() &&
+            !previous->second.backing_identifier) {
+            await_program_flush(call,
+                [this](UserlandHleCall& resumed) { make_current(resumed); });
+            return;
+        }
+        const auto committed =
+            previous != surfaces_.end() && previous->second.backing_identifier
+                ? renderer_->flush(render_target_key(current.draw_surface))
+                : flush_surface(call, current.draw_surface);
+        if (!committed) {
+            egl_error_ = egl_bad_surface;
+            call.set_return(egl_false);
+            return;
+        }
+    }
+    if (draw != 0 && current.draw_surface != draw &&
+        !reload_surface(call, draw)) {
+        egl_error_ = egl_bad_surface;
+        call.set_return(egl_false);
+        return;
+    }
+    current.display = context == 0 ? 0 : egl_default_display;
+    current.draw_surface = draw;
+    current.read_surface = read;
+    current.context = context;
+    if (context != 0 && draw != 0 && surfaces_.at(draw).backing_identifier) {
+        auto& profile = contexts_.at(context).guest_capabilities;
+        profile = open_gles_framebuffer_capabilities(profile);
+    }
+    egl_error_ = egl_success;
+    call.set_return(egl_true);
 }
 
 void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
@@ -2211,56 +2281,8 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
         egl_error_ = egl_success;
         call.set_return(egl_true);
     });
-    add("_eglMakeCurrent", [this](UserlandHleCall& call) {
-        if (!is_valid_display(call.argument(0))) {
-            egl_error_ = egl_bad_display;
-            call.set_return(egl_false);
-            return;
-        }
-        const auto draw = call.argument(1);
-        const auto read = call.argument(2);
-        const auto context = call.argument(3);
-        if ((context != 0 && !contexts_.contains(context)) ||
-            (draw != 0 && !surfaces_.contains(draw)) ||
-            (read != 0 && !surfaces_.contains(read))) {
-            egl_error_ = context != 0 && !contexts_.contains(context)
-                             ? egl_bad_context
-                             : egl_bad_surface;
-            call.set_return(egl_false);
-            return;
-        }
-        auto& current = thread(call);
-        if (current.draw_surface != 0 && current.draw_surface != draw) {
-            const auto previous = surfaces_.find(current.draw_surface);
-            const auto committed =
-                previous != surfaces_.end() &&
-                        previous->second.backing_identifier
-                    ? renderer_->flush(render_target_key(current.draw_surface))
-                    : flush_surface(call, current.draw_surface);
-            if (!committed) {
-                egl_error_ = egl_bad_surface;
-                call.set_return(egl_false);
-                return;
-            }
-        }
-        if (draw != 0 && current.draw_surface != draw &&
-            !reload_surface(call, draw)) {
-            egl_error_ = egl_bad_surface;
-            call.set_return(egl_false);
-            return;
-        }
-        current.display = context == 0 ? 0 : egl_default_display;
-        current.draw_surface = draw;
-        current.read_surface = read;
-        current.context = context;
-        if (context != 0 && draw != 0 &&
-            surfaces_.at(draw).backing_identifier) {
-            auto& profile = contexts_.at(context).guest_capabilities;
-            profile = open_gles_framebuffer_capabilities(profile);
-        }
-        egl_error_ = egl_success;
-        call.set_return(egl_true);
-    });
+    add("_eglMakeCurrent",
+        [this](UserlandHleCall& call) { make_current(call); });
     add("_eglGetCurrentContext", [this](UserlandHleCall& call) {
         call.set_return(thread(call).context);
     });
