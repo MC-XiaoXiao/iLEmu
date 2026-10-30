@@ -4,7 +4,28 @@
 
 cmake_minimum_required(VERSION 3.24)
 
-project(iLEmu VERSION 0.1.0 LANGUAGES C CXX)
+project(iLEmu VERSION 0.2.0 LANGUAGES C CXX)
+
+set(_ilemu_build_user "$ENV{USER}")
+if(_ilemu_build_user STREQUAL "")
+    set(_ilemu_build_user "$ENV{USERNAME}")
+endif()
+if(_ilemu_build_user STREQUAL "")
+    set(_ilemu_build_user "unknown")
+endif()
+set(ILEMU_BUILD_USER "${_ilemu_build_user}" CACHE STRING
+    "Builder recorded in the emulator and guest kernel version")
+set(ILEMU_BUILD_INFO_SOURCE "${PROJECT_BINARY_DIR}/generated/build_info.cpp")
+# Refresh only the metadata translation unit on each build. UTC timestamps
+# also honor SOURCE_DATE_EPOCH for reproducible builds.
+add_custom_target(ilemu_build_info
+    COMMAND "${CMAKE_COMMAND}"
+        "-DILEMU_BUILD_VERSION=${PROJECT_VERSION}"
+        "-DILEMU_BUILD_USER=${ILEMU_BUILD_USER}"
+        "-DILEMU_BUILD_INFO_SOURCE=${ILEMU_BUILD_INFO_SOURCE}"
+        -P "${PROJECT_SOURCE_DIR}/cmake/generate_build_info.cmake"
+    BYPRODUCTS "${ILEMU_BUILD_INFO_SOURCE}"
+    VERBATIM)
 
 if(ANDROID)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)

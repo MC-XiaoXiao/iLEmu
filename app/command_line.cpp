@@ -39,6 +39,7 @@
 #include <dynarmic/interface/A32/disassembler.h>
 
 #include "foundation/address_space.hpp"
+#include "foundation/build_info.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/device_model.hpp"
 #include "foundation/dyld_shared_cache.hpp"
@@ -72,6 +73,7 @@ constexpr std::size_t bytes_per_mebibyte = 1024U * 1024U;
 std::string usage()
 {
     return "Usage:\n"
+           "  ilemu --version [--output FILE]\n"
            "  ilemu profile [--device PROFILE] [--output FILE]\n"
            "  ilemu abi [--all] [--rootfs DIR] [--ios-build CODE] [--output FILE]\n"
            "  ilemu routes (--all | --rootfs DIR | --ios-build CODE) [--validate] [--output FILE]\n"
@@ -1145,6 +1147,14 @@ int ilemu::run_command_line(int argc, char** argv, SessionHost& host)
             return 0;
         }
         auto output = make_output(args);
+        if (command == "--version" || command == "version") {
+            const auto& build = BuildInfo::current();
+            std::ostringstream text;
+            text << "iLEmu " << build.version << "\nBuilt: " << build.timestamp
+                 << "\nBuilder: " << build.user << '\n';
+            output->write(text.str());
+            return 0;
+        }
         const auto perf_summary = flag(args, "--perf-summary");
         const auto jit_observer_only = flag(args, "--jit-observer-only");
         if (perf_summary && jit_observer_only) {

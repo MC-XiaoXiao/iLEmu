@@ -15,6 +15,7 @@ endif()
 target_link_libraries(ilemu_foundation_memory PRIVATE OpenSSL::Crypto)
 
 add_library(ilemu_foundation STATIC
+    "${ILEMU_BUILD_INFO_SOURCE}"
     address_space.cpp
     address_space_exclusive.cpp
     address_space_instructions.cpp
@@ -69,6 +70,7 @@ add_library(ilemu_foundation STATIC
     userland_hle_guard.cpp
     virtual_clock.cpp)
 add_library(iLEmu::foundation ALIAS ilemu_foundation)
+add_dependencies(ilemu_foundation ilemu_build_info)
 ilemu_configure_module(ilemu_foundation)
 target_compile_definitions(ilemu_foundation PRIVATE
     ILEMU_DYNARMIC_BUILD_FINGERPRINT=${ILEMU_DYNARMIC_BUILD_FINGERPRINT})
