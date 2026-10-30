@@ -124,28 +124,19 @@ class EmulatorActivity : SDLActivity() {
     private fun sendCommand(command: String): Boolean = NativeBridge.command(File(filesDir, "control.fifo").path, command, command == "quit")
     private fun showMenu() {
         MaterialAlertDialogBuilder(this).setTitle("容器操作")
-            .setItems(arrayOf("唤醒并解锁", "切换响铃 / 静音", "查看运行日志", "运行配置", "关闭模拟器")) { _, which ->
+            .setItems(arrayOf("查看运行日志", "运行配置", "关闭模拟器")) { _, which ->
                 when (which) {
-                    0 -> if (!sendCommand("unlock")) Toast.makeText(this, "模拟器尚未就绪", Toast.LENGTH_SHORT).show()
-                    1 -> showRinger()
-                    2 -> showLog()
-                    3 -> {
+                    0 -> showLog()
+                    1 -> {
                         val entry = containerId?.let { runCatching { ContainerRepository(this).get(it) }.getOrNull() }
                         MaterialAlertDialogBuilder(this).setTitle("运行配置").setMessage(
                             "${entry?.device ?: "诊断会话"}\n" +
                                 (entry?.let { "iOS ${it.version} (${it.build})\n${it.cores} 核 · JIT ${it.jitCacheMiB} MiB\n\n关闭后可在容器设置中修改。" } ?: "")
                         ).setPositiveButton("关闭", null).show()
                     }
-                    4 -> confirmStop()
+                    2 -> confirmStop()
                 }
             }.setNegativeButton("返回画面", null).show()
-    }
-    private fun showRinger() {
-        MaterialAlertDialogBuilder(this).setTitle("响铃开关")
-            .setSingleChoiceItems(arrayOf("响铃", "静音"), if (controls.ringerSilent) 1 else 0) { dialog, which ->
-                if (!controls.setRinger(which == 1)) Toast.makeText(this, "模拟器尚未就绪", Toast.LENGTH_SHORT).show()
-                dialog.dismiss()
-            }.setNegativeButton("取消", null).show()
     }
     private fun showLog() {
         val log = ScreenUi(this).text("", ScreenUi.Type.CAPTION).apply { typeface = android.graphics.Typeface.MONOSPACE; setTextIsSelectable(true)
