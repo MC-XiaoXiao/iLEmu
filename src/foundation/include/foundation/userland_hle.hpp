@@ -77,6 +77,12 @@ public:
     [[nodiscard]] bool image_loaded(std::string_view image_suffix) const;
     [[nodiscard]] bool image_loaded_beneath(std::string_view directory) const;
     void set_return(std::uint32_t value);
+    // Publish a core-owned continuation. The handler must return immediately;
+    // no guest return/PC update occurs until the readiness predicate succeeds.
+    // Neither closure may retain this call or its temporary Cpu reference.
+    void suspend_until(std::function<bool()> ready, Continuation completion,
+        std::uint64_t completion_sequence = 0);
+
     // Continue at another registered guest entry while preserving the caller's
     // link register. This supports compatibility adapters that finish through
     // the firmware's own implementation instead of duplicating it on the host.
@@ -109,8 +115,8 @@ public:
     // entirely in the guest. The handler must first verify the complete
     // implementation and its ABI (including volatile condition flags). Only
     // relocatable frame/IP prologues are supported; failure leaves it intact.
-    [[nodiscard]] bool guard_unsigned_argument(std::size_t index,
-        std::uint32_t minimum, std::uint32_t maximum);
+    [[nodiscard]] bool guard_unsigned_argument(
+        std::size_t index, std::uint32_t minimum, std::uint32_t maximum);
     // Stop intercepting this entry in the current process and execute the
     // original guest implementation from its first instruction.
     void resume_original();
@@ -132,9 +138,8 @@ private:
     UserlandHleCall(UserlandHleRegistry& registry, Cpu& cpu,
         AddressSpace& memory, Output& output, std::uint32_t process_id,
         std::string_view symbol, std::uint8_t prefix_arguments = 0U);
-    [[nodiscard]] std::optional<std::uint32_t> callable_entry(
-        std::uint16_t id, std::string_view symbol,
-        std::uint8_t prefix_arguments);
+    [[nodiscard]] std::optional<std::uint32_t> callable_entry(std::uint16_t id,
+        std::string_view symbol, std::uint8_t prefix_arguments);
 
     UserlandHleRegistry& registry_;
     Cpu& cpu_;
@@ -147,7 +152,13 @@ private:
     bool resume_original_ { };
     bool resume_original_persistently_ { };
     std::optional<std::uint32_t> tail_call_address_;
+    std::uint32_t entry_address_ { };
+    std::uint16_t registration_id_ { };
     Continuation original_continuation_;
+    std::function<bool()> pending_ready_;
+    Continuation pending_completion_;
+    std::uint64_t pending_sequence_ { };
+    std::optional<std::array<std::uint32_t, 16>> saved_arguments_;
 };
 
 class UserlandHleRegistry {
@@ -165,9 +176,10 @@ public:
     void register_function(std::string image_suffix, std::string symbol,
         Handler handler, SymbolLookup lookup = SymbolLookup::Image,
         EntryPatch patch = EntryPatch::Memory);
-    void register_prefix(
-        std::string image_suffix, std::string symbol_prefix, Handler handler,
-        SymbolLookup lookup = SymbolLookup::Image,
+    void register_call_gate(std::string image_suffix,
+        std::function<void(UserlandHleCall&, Handler)> gate);
+    void register_prefix(std::string image_suffix, std::string symbol_prefix,
+        Handler handler, SymbolLookup lookup = SymbolLookup::Image,
         EntryPatch patch = EntryPatch::Memory);
     // Resolve a defined guest function for call_guest_function without patching
     // its entry point. This is for adapters that compose existing firmware
@@ -267,6 +279,19 @@ public:
     [[nodiscard]] bool bind_thread_callback(
         std::size_t processor, Handler completion);
     void unbind_thread_callback(std::size_t processor);
+
+    [[nodiscard]] bool pending_call(std::size_t processor) const;
+    [[nodiscard]] bool pending_call_ready(std::size_t processor) const;
+    [[nodiscard]] std::optional<std::uint64_t> pending_call_sequence(
+        std::size_t processor) const;
+    [[nodiscard]] bool complete_pending_call(
+        Cpu& cpu, std::uint32_t process_id);
+    void cancel_pending_call(std::size_t processor);
+    void cancel_pending_calls();
+    void set_process_incarnation(std::uint64_t incarnation)
+    {
+        process_incarnation_ = incarnation;
+    }
 
     void reset_mappings();
     void inherit_mappings(const UserlandHleRegistry& parent);
@@ -434,6 +459,27 @@ private:
     [[nodiscard]] bool deliver_deferred_guest_function(
         Cpu& cpu, std::uint32_t process_id, std::uint32_t svc_immediate);
 
+    struct PendingHostCall {
+        std::uint32_t process_id;
+        std::uint64_t incarnation, mapping_generation, thread_generation;
+        std::array<std::uint32_t, 16> registers, arguments;
+        std::uint32_t cpsr;
+        std::string symbol;
+        std::uint8_t prefix_arguments;
+        std::uint32_t entry_address;
+        std::uint16_t registration_id;
+        std::uint64_t sequence;
+        std::function<bool()> ready;
+        Handler completion;
+    };
+    void park_call(UserlandHleCall& call);
+    bool finish_call(UserlandHleCall& call);
+    std::map<std::string, std::function<void(UserlandHleCall&, Handler)>>
+        call_gates_;
+    std::map<std::size_t, PendingHostCall> pending_host_calls_;
+    std::map<std::size_t, std::uint64_t> host_call_thread_generations_;
+    std::uint64_t process_incarnation_ { }, mapping_generation_ { 1 };
+
     struct PendingContinuation {
         std::uint32_t return_address { };
         UserlandHleCall::Continuation handler;
@@ -470,7 +516,8 @@ private:
     ArmArchitectureVersion shared_hle_plan_architecture_ { };
     std::uint64_t shared_hle_plan_registration_generation_ { };
     std::map<std::uint32_t, InstalledCall> installed_calls_;
-    std::map<std::tuple<std::uint16_t, std::string, std::uint8_t>, std::uint32_t>
+    std::map<std::tuple<std::uint16_t, std::string, std::uint8_t>,
+        std::uint32_t>
         callable_aliases_;
     std::map<std::string, std::uint32_t, std::less<>> installed_symbols_;
     std::map<std::string, bool, std::less<>> installed_symbol_thumb_;

@@ -66,6 +66,7 @@ add_library(ilemu_foundation STATIC
     rootfs_path_resolver.cpp
     scene_coordinator.cpp
     sensor_input.cpp
+    userland_hle_pending.cpp
     userland_hle.cpp
     userland_hle_guard.cpp
     virtual_clock.cpp)
