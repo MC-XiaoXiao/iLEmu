@@ -103,8 +103,7 @@ void record_bootstrap_registration_locked(
 
 // A complete Home Down/Up pair wakes a sleeping lock screen before touch.
 [[nodiscard]] EnqueueResult enqueue_system_button(KernelSharedState& state,
-    const SystemButtonInput& input, std::uint64_t* input_sequence = nullptr,
-    bool begins_display_lock_transaction = false);
+    const SystemButtonInput& input, std::uint64_t* input_sequence = nullptr);
 
 // Marks the first subsequent SpringBoard touch gesture as lock-screen unlock
 // input. Its service lookups are not foreground launch intents.

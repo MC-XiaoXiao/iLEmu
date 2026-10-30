@@ -1085,15 +1085,6 @@ struct KernelSharedState {
         Home,
         Lock,
     };
-    enum class HostDisplayIntent {
-        GuestControlled,
-        // A physical Lock is held, but the guest has not yet asked the panel to
-        // turn off. Keep the panel visible so SpringBoard can present its
-        // native power-down controller for a long press.
-        LockPending,
-        LockedOff,
-        WakePending,
-    };
     enum class ApplicationLaunchOrigin {
         Spawn,
         EventServiceLookup,
@@ -1775,25 +1766,6 @@ struct KernelSharedState {
     std::atomic_bool application_fullscreen_surface_suppression_active {
         false
     };
-    // A physical Lock is only a pending host transaction until the firmware's
-    // IOKit power request arrives. Once a wake begins, the trailing panel-off
-    // request from the preceding Lock must not turn the newly woken display
-    // black. Keep the power transaction separate from the guest-visible Home
-    // and Lock events.
-    HostDisplayIntent host_display_intent {
-        HostDisplayIntent::GuestControlled
-    };
-    // Each Lock Down starts one asynchronous SpringBoard panel-off request.
-    // Keep all unresolved generations: under load an older request can arrive
-    // several seconds after a later wake/lock cycle has already begun.
-    std::deque<std::uint64_t> host_display_pending_lock_power_off_sequences;
-    std::uint64_t host_display_current_lock_down_sequence { };
-    std::uint64_t host_display_wake_after_lock_sequence { };
-    bool host_display_wake_power_on_acknowledged { };
-    // Physical Home and Sleep/Wake own the hardware power domain. They may
-    // reveal the retained lock scene before SpringBoard catches up, but never
-    // change the identity of the event delivered to the guest.
-    bool host_display_hardware_wake_pending { };
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
         application_scene_context_owners;
     std::map<std::uint32_t, ApplicationTouchTransform>

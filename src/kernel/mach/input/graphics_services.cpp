@@ -1635,18 +1635,13 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
 }
 
 EnqueueResult enqueue_system_button(KernelSharedState& state,
-    const SystemButtonInput& input, std::uint64_t* input_sequence,
-    bool begins_display_lock_transaction)
+    const SystemButtonInput& input, std::uint64_t* input_sequence)
 {
     const auto input_kind = system_button_input_kind(input.button);
     std::lock_guard lock { state.mach_mutex };
     const auto sequence = state.allocate_physical_input_sequence_locked();
     if (input_sequence)
         *input_sequence = sequence;
-    if (begins_display_lock_transaction) {
-        state.host_display_current_lock_down_sequence = sequence;
-        state.host_display_pending_lock_power_off_sequences.push_back(sequence);
-    }
     const auto service = state.bootstrap_service_objects.find(
         std::string { system_event_service });
     const auto destination =

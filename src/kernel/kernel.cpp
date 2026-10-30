@@ -619,7 +619,6 @@ void CompatibilityKernel::enqueue_system_button_impl(
     performance_counters().discard_pending_vsync_callbacks();
     bool wake_button_pressed_while_display_asleep = false;
     bool wake_only_system_button = false;
-    bool begins_display_lock_transaction = false;
     if (input.phase == SystemButtonPhase::Down &&
         (input.button == SystemButton::Home ||
             input.button == SystemButton::Lock)) {
@@ -629,28 +628,6 @@ void CompatibilityKernel::enqueue_system_button_impl(
         if (display_asleep && !force_home_transition) {
             wake_button_pressed_while_display_asleep = true;
             wake_only_system_button = true;
-            shared_state_->host_display_intent =
-                KernelSharedState::HostDisplayIntent::WakePending;
-            shared_state_->host_display_wake_after_lock_sequence =
-                shared_state_->host_display_current_lock_down_sequence;
-            shared_state_->host_display_wake_power_on_acknowledged = false;
-            // Both physical Home and Sleep/Wake illuminate the panel before
-            // SpringBoard has finished rebuilding the lock scene. Preserve the
-            // original guest-visible event; only the host panel transition is
-            // synthesized here.
-            shared_state_->host_display_hardware_wake_pending = true;
-            shared_state_->requested_display_power_state = 1U;
-        } else if (input.button == SystemButton::Lock &&
-                   !force_home_transition) {
-            // Publish a pending Lock transaction before the GSEvent becomes
-            // visible. Do not force the panel off here: SpringBoard owns the
-            // long-press timer and its native SBPowerDownController must remain
-            // visible until the guest asks IOKit to power down.
-            shared_state_->host_display_intent =
-                KernelSharedState::HostDisplayIntent::LockPending;
-            shared_state_->host_display_wake_power_on_acknowledged = false;
-            shared_state_->host_display_hardware_wake_pending = false;
-            begins_display_lock_transaction = true;
         } else if (!force_home_transition &&
                    input.button == SystemButton::Home &&
                    (shared_state_->springboard_unlock_touch_pending ||
@@ -666,8 +643,8 @@ void CompatibilityKernel::enqueue_system_button_impl(
     }
     std::uint64_t system_input_sequence = 0;
     const auto result =
-        graphics_services_input::enqueue_system_button(*shared_state_, input,
-            &system_input_sequence, begins_display_lock_transaction);
+        graphics_services_input::enqueue_system_button(
+            *shared_state_, input, &system_input_sequence);
     wake_graphics_input_receivers();
     const auto enqueued_at = std::chrono::steady_clock::now();
     // A sleeping Home or Sleep/Wake button is a wake request for SpringBoard,
