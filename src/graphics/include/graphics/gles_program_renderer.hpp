@@ -8,6 +8,8 @@
 #include "graphics/gles_renderer.hpp"
 
 #include <array>
+#include <atomic>
+#include <functional>
 #include <map>
 #include <memory>
 #include <span>
@@ -79,6 +81,41 @@ public:
     [[nodiscard]] virtual std::string_view name() const = 0;
 };
 
+// A retained host-owned result is also a queue credit: completed readbacks
+// remain accounted until the core consumes or cancels their observer.
+struct GlesWorkResult {
+    enum class Status { Pending, Completed, Failed };
+    std::atomic<Status> status { Status::Pending };
+    std::uint64_t sequence { };
+    DisplayFrame frame;
+    std::function<void()> release_credit;
+    ~GlesWorkResult()
+    {
+        if (release_credit)
+            release_credit();
+    }
+    [[nodiscard]] bool ready() const
+    {
+        return status.load(std::memory_order_acquire) != Status::Pending;
+    }
+    [[nodiscard]] bool succeeded() const
+    {
+        return status.load(std::memory_order_acquire) == Status::Completed;
+    }
+};
+
+// Same FIFO as programmable draws. Returns null on temporary capacity pressure;
+// no driver call or wait takes place during admission. Functions own host data.
+[[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
+    std::size_t result_bytes, std::function<bool(DisplayFrame&)> execute);
+[[nodiscard]] bool gles_host_work_capacity(std::size_t result_bytes);
+[[nodiscard]] std::uint64_t gles_completion_generation();
+void set_gles_completion_wake(std::function<void()> wake);
+// Only a session's idle wait uses this, never a graphics call continuation.
+void wait_gles_host_activity(
+    std::uint64_t observed, std::chrono::nanoseconds timeout);
+void shutdown_gles_program_worker();
+
 // Core-facing command publisher. The executor above remains a host-only API;
 // factory creation, all executor calls and destruction run on one shared render
 // thread. No guest state or callbacks may cross this boundary.
@@ -102,13 +139,18 @@ public:
     [[nodiscard]] std::uint64_t enqueue_draw(const DisplayFrame& frame,
         GlesRenderTargetKey target, const GlesProgramDraw& program,
         std::uint32_t mode, const GlesRasterState& state, std::size_t issuer);
-    // Only wait through this issuer's last draw. Other ready errors may also
-    // be returned, tagged with their original issuing processor.
-    [[nodiscard]] std::vector<std::size_t> collect_errors(
-        std::optional<std::size_t> wait_issuer = std::nullopt);
+    // Consume ready execution errors only. Guest-facing dependencies use the
+    // retained readiness level and the kernel continuation, never future wait.
+    [[nodiscard]] std::vector<std::size_t> collect_errors();
     // Guest thread-slot reuse must not inherit a retired issuer's errors.
     // Accepted commands still execute; only their now-absent observer retires.
     void retire_issuer(std::size_t issuer);
+    [[nodiscard]] std::uint64_t issuer_boundary(std::size_t issuer) const;
+    [[nodiscard]] bool issuer_ready(
+        std::size_t issuer, std::uint64_t through = ~std::uint64_t { 0 }) const;
+    [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_readback(
+        GlesRenderTargetKey target, std::size_t result_bytes,
+        std::shared_ptr<GlesRenderer> invalidate_renderer = { });
     [[nodiscard]] bool readback(
         DisplayFrame& frame, GlesRenderTargetKey target);
     [[nodiscard]] std::string_view name() const;

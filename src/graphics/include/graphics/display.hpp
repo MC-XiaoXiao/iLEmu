@@ -107,6 +107,9 @@ public:
     // boundary. Returns false when a newer process already owns the scanout.
     bool clear_if_owner(std::uint32_t owner_process_id);
 
+    // Capture a stable host source without invoking a CPU materializer. Native
+    // surfaces retain the existing content lease until the caller reads them.
+    [[nodiscard]] DisplayFrame capture_frame() const;
     [[nodiscard]] DisplayFrame snapshot() const;
     [[nodiscard]] std::uint64_t presented_frames() const;
     [[nodiscard]] std::uint64_t content_revision() const;

@@ -21,12 +21,34 @@ namespace {
     constexpr std::size_t command_limit = 64;
     constexpr std::size_t payload_limit = 64U * 1024U * 1024U;
 
+    std::atomic_uint64_t completion_generation { 1 };
+    std::mutex wake_mutex;
+    std::condition_variable host_activity;
+    std::function<void()> completion_wake;
+    void notify_completion()
+    {
+        // Serialize the generation transition with idle wait's predicate and
+        // atomic unlock-and-wait. No queue or backend lock is held here.
+        std::lock_guard lock { wake_mutex };
+        completion_generation.fetch_add(1, std::memory_order_release);
+        host_activity.notify_all();
+        // Only host wake primitives are allowed here, never kernel callbacks.
+        if (completion_wake)
+            completion_wake();
+    }
+    struct Credits {
+        std::mutex mutex;
+        std::condition_variable capacity;
+        std::size_t count { }, bytes { }, results { }, result_bytes { };
+    };
+
     struct Backend {
         std::unique_ptr<GlesProgramRenderer> renderer;
     };
 
     // One host-wide FIFO also orders different processes' EGL contexts. The
-    // worker never acquires kernel, guest memory, SurfaceStore or Vulkan locks.
+    // worker never acquires kernel, guest memory or SurfaceStore locks. Host
+    // backend locks are taken only after releasing the command queue lock.
     class ProgramExecutor {
     public:
         ProgramExecutor()
@@ -36,11 +58,11 @@ namespace {
         ~ProgramExecutor()
         {
             {
-                std::lock_guard lock { mutex_ };
+                std::lock_guard lock { credits_->mutex };
                 stopping_ = true;
             }
             available_.notify_all();
-            capacity_.notify_all();
+            credits_->capacity.notify_all();
             thread_.join();
         }
 
@@ -54,18 +76,21 @@ namespace {
             auto task = std::make_shared<std::packaged_task<Result()>>(
                 std::move(function));
             auto result = task->get_future();
-            std::unique_lock lock { mutex_ };
-            capacity_.wait(lock, [&] {
-                return stopping_ || (count_ < command_limit &&
-                                        bytes <= payload_limit - bytes_);
+            std::unique_lock lock { credits_->mutex };
+            credits_->capacity.wait(lock, [&] {
+                return stopping_ ||
+                       (credits_->count < command_limit &&
+                           bytes <= payload_limit - credits_->bytes);
             });
             if (stopping_)
                 throw std::runtime_error { "GLES render worker stopped" };
+            if (next_sequence_ == 0)
+                throw std::overflow_error { "GLES sequence space exhausted" };
             const auto sequence = next_sequence_;
             commands_.push_back({ sequence, bytes, [task] { (*task)(); } });
             ++next_sequence_;
-            ++count_;
-            bytes_ += bytes;
+            ++credits_->count;
+            credits_->bytes += bytes;
             lock.unlock();
             available_.notify_one();
             return std::pair { sequence, std::move(result) };
@@ -74,6 +99,68 @@ namespace {
         template <typename F> auto call(F function, std::size_t bytes = 0)
         {
             return submit(bytes, std::move(function)).second.get();
+        }
+
+        bool capacity(std::size_t bytes)
+        {
+            std::lock_guard lock { credits_->mutex };
+            return !stopping_ && credits_->count < command_limit &&
+                   bytes <= payload_limit - credits_->result_bytes &&
+                   credits_->results < command_limit;
+        }
+        std::shared_ptr<GlesWorkResult> submit_host(
+            std::size_t bytes, std::function<bool(DisplayFrame&)> execute)
+        {
+            if (bytes > payload_limit)
+                throw std::length_error { "GLES result exceeds 64 MiB" };
+            auto result = std::make_shared<GlesWorkResult>();
+            auto armed = std::make_shared<bool>(false);
+            result->release_credit = [credits = credits_, bytes, armed] {
+                if (!*armed)
+                    return;
+                {
+                    std::lock_guard credit_lock { credits->mutex };
+                    --credits->results;
+                    credits->result_bytes -= bytes;
+                }
+                credits->capacity.notify_all();
+                notify_completion();
+            };
+            std::unique_lock lock { credits_->mutex };
+            if (stopping_ || credits_->count >= command_limit ||
+                credits_->results >= command_limit ||
+                bytes > payload_limit - credits_->result_bytes)
+                return { };
+            if (next_sequence_ == 0)
+                throw std::overflow_error { "GLES sequence space exhausted" };
+            const auto sequence = next_sequence_;
+            commands_.push_back({ sequence, 0,
+                [result, bytes, execute = std::move(execute)] {
+                    bool success = false;
+                    try {
+                        success = execute(result->frame);
+                    } catch (...) {
+                    }
+                    if (result->frame.pixels.size() >
+                        bytes / sizeof(std::uint32_t)) {
+                        std::vector<std::uint32_t>().swap(result->frame.pixels);
+                        success = false;
+                    }
+                    result->status.store(success
+                                             ? GlesWorkResult::Status::Completed
+                                             : GlesWorkResult::Status::Failed,
+                        std::memory_order_release);
+                },
+                true });
+            result->sequence = sequence;
+            ++next_sequence_;
+            ++credits_->count;
+            ++credits_->results;
+            credits_->result_bytes += bytes;
+            *armed = true;
+            lock.unlock();
+            available_.notify_one();
+            return result;
         }
 
         // Only called on the render thread. Retention guarantees that even
@@ -94,13 +181,14 @@ namespace {
             std::uint64_t sequence;
             std::size_t bytes;
             std::function<void()> execute;
+            bool retained_credit { };
         };
         void run()
         {
             for (;;) {
                 Command command;
                 {
-                    std::unique_lock lock { mutex_ };
+                    std::unique_lock lock { credits_->mutex };
                     available_.wait(
                         lock, [&] { return stopping_ || !commands_.empty(); });
                     if (commands_.empty())
@@ -113,37 +201,34 @@ namespace {
                 command.execute();
                 command.execute = { };
                 {
-                    std::lock_guard lock { mutex_ };
+                    std::lock_guard lock { credits_->mutex };
                     completed_sequence_ = command.sequence;
-                    --count_;
-                    bytes_ -= command.bytes;
+                    --credits_->count;
+                    credits_->bytes -= command.bytes;
                 }
-                capacity_.notify_all();
+                credits_->capacity.notify_all();
+                notify_completion();
             }
             backends_.clear();
         }
 
-        std::mutex mutex_;
-        std::condition_variable available_, capacity_;
+        std::shared_ptr<Credits> credits_ { std::make_shared<Credits>() };
+        std::condition_variable available_;
         std::deque<Command> commands_;
-        std::size_t count_ { }, bytes_ { };
         std::uint64_t next_sequence_ { 1 }, completed_sequence_ { };
         bool stopping_ { };
         std::vector<std::shared_ptr<Backend>> backends_;
         std::thread thread_;
     };
 
+    std::mutex executor_mutex;
+    std::shared_ptr<ProgramExecutor> executor_instance;
     std::shared_ptr<ProgramExecutor> shared_executor()
     {
-        static std::mutex mutex;
-        static std::weak_ptr<ProgramExecutor> executor;
-        std::lock_guard lock { mutex };
-        auto result = executor.lock();
-        if (!result) {
-            result = std::make_shared<ProgramExecutor>();
-            executor = result;
-        }
-        return result;
+        std::lock_guard lock { executor_mutex };
+        if (!executor_instance)
+            executor_instance = std::make_shared<ProgramExecutor>();
+        return executor_instance;
     }
 
     struct DrawPacket {
@@ -250,6 +335,41 @@ namespace {
     }
 } // namespace
 
+std::uint64_t gles_completion_generation()
+{
+    return completion_generation.load(std::memory_order_acquire);
+}
+void set_gles_completion_wake(std::function<void()> wake)
+{
+    std::lock_guard lock { wake_mutex };
+    completion_wake = std::move(wake);
+}
+void wait_gles_host_activity(
+    std::uint64_t observed, std::chrono::nanoseconds timeout)
+{
+    std::unique_lock lock { wake_mutex };
+    host_activity.wait_for(lock, timeout,
+        [observed] { return gles_completion_generation() != observed; });
+}
+void shutdown_gles_program_worker()
+{
+    std::shared_ptr<ProgramExecutor> retiring;
+    {
+        std::lock_guard lock { executor_mutex };
+        retiring = std::move(executor_instance);
+    }
+    retiring.reset();
+}
+bool gles_host_work_capacity(std::size_t bytes)
+{
+    return shared_executor()->capacity(bytes);
+}
+std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
+    std::size_t bytes, std::function<bool(DisplayFrame&)> execute)
+{
+    return shared_executor()->submit_host(bytes, std::move(execute));
+}
+
 struct GlesProgramWorker::State {
     std::shared_ptr<ProgramExecutor> executor { shared_executor() };
     std::shared_ptr<Backend> backend { std::make_shared<Backend>() };
@@ -265,13 +385,12 @@ struct GlesProgramWorker::State {
     std::set<std::size_t> errors;
     std::map<std::size_t, std::uint64_t> epochs;
 
-    void reap(std::uint64_t through = 0)
+    void reap()
     {
         while (!pending.empty()) {
             auto& entry = pending.front();
-            if (entry.sequence > through &&
-                entry.result.wait_for(std::chrono::seconds { 0 }) !=
-                    std::future_status::ready)
+            if (entry.result.wait_for(std::chrono::seconds { 0 }) !=
+                std::future_status::ready)
                 break;
             bool success = false;
             try {
@@ -444,16 +563,9 @@ std::uint64_t GlesProgramWorker::enqueue_draw(const DisplayFrame& frame,
         throw;
     }
 }
-std::vector<std::size_t> GlesProgramWorker::collect_errors(
-    std::optional<std::size_t> wait_issuer)
+std::vector<std::size_t> GlesProgramWorker::collect_errors()
 {
-    std::uint64_t through = 0;
-    if (wait_issuer)
-        for (const auto& entry : state_->pending)
-            if (entry.issuer == *wait_issuer &&
-                entry.epoch == state_->epochs.at(entry.issuer))
-                through = entry.sequence;
-    state_->reap(through);
+    state_->reap();
     std::vector<std::size_t> errors(
         state_->errors.begin(), state_->errors.end());
     state_->errors.clear();
@@ -464,6 +576,39 @@ void GlesProgramWorker::retire_issuer(std::size_t issuer)
     if (auto epoch = state_->epochs.find(issuer); epoch != state_->epochs.end())
         ++epoch->second;
     state_->errors.erase(issuer);
+}
+std::uint64_t GlesProgramWorker::issuer_boundary(std::size_t issuer) const
+{
+    std::uint64_t boundary = 0;
+    for (const auto& entry : state_->pending)
+        if (entry.issuer == issuer && entry.epoch == state_->epochs.at(issuer))
+            boundary = entry.sequence;
+    return boundary;
+}
+bool GlesProgramWorker::issuer_ready(
+    std::size_t issuer, std::uint64_t through) const
+{
+    for (const auto& entry : state_->pending)
+        if (entry.issuer == issuer && entry.sequence <= through &&
+            entry.epoch == state_->epochs.at(issuer) &&
+            entry.result.wait_for(std::chrono::seconds { 0 }) !=
+                std::future_status::ready)
+            return false;
+    return true;
+}
+std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_readback(
+    GlesRenderTargetKey target, std::size_t bytes,
+    std::shared_ptr<GlesRenderer> invalidate_renderer)
+{
+    return state_->executor->submit_host(bytes,
+        [backend = state_->backend, target,
+            renderer = std::move(invalidate_renderer)](DisplayFrame& frame) {
+            if (!backend->renderer->readback(frame, target))
+                return false;
+            if (renderer)
+                renderer->invalidate(target);
+            return true;
+        });
 }
 bool GlesProgramWorker::readback(
     DisplayFrame& frame, GlesRenderTargetKey target)

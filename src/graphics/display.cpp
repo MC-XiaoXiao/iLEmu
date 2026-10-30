@@ -269,6 +269,25 @@ bool DisplayState::clear_if_owner(std::uint32_t owner_process_id)
     return true;
 }
 
+DisplayFrame DisplayState::capture_frame() const
+{
+    DisplayFrame frame;
+    {
+        std::lock_guard lock { mutex_ };
+        frame = DisplayFrame { geometry_.width, geometry_.height, sequence_,
+            powered_on_ && host_surface_ ? std::vector<std::uint32_t> { }
+                                         : visible_pixels(pixels_, powered_on_),
+            powered_on_ ? host_surface_ : nullptr, { },
+            content_owner_process_id_ };
+        frame.orientation = content_orientation_;
+    }
+    // Match present's lock order: never take a surface lease under DisplayState
+    // mutex. This lease prevents a scanout ring from recycling the source while
+    // an asynchronous reader is queued; no guest/reader callback is retained.
+    attach_presentation_leases(frame);
+    return frame;
+}
+
 DisplayFrame DisplayState::snapshot() const
 {
     std::function<std::vector<std::uint32_t>()> reader;

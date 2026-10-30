@@ -6,6 +6,7 @@
 // rendering implementations.
 
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_program_renderer.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -294,6 +295,7 @@ void release_gles_render_targets(std::span<const GlesRenderTargetKey> targets)
 
 void shutdown_gles_renderer()
 {
+    shutdown_gles_program_worker();
     auto& state = shared_renderer_state();
     std::lock_guard lock { state.mutex };
     if (state.renderer != nullptr)

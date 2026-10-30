@@ -41,6 +41,7 @@ public:
     [[nodiscard]] virtual std::uint64_t presented_frames() const = 0;
     // Returns false after the user closes the window.
     [[nodiscard]] virtual bool poll_events() = 0;
+    virtual void wake_event_wait() noexcept { }
     // Blocks on the host event queue until an event or the supplied deadline.
     // The caller remains responsible for processing Guest deadlines.
     [[nodiscard]] virtual bool wait_for_event(
