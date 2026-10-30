@@ -20,17 +20,16 @@ find_program(Vulkan_GLSLC_EXECUTABLE glslc
     HINTS "${CMAKE_ANDROID_NDK}/shader-tools/${ANDROID_HOST_TAG}"
     REQUIRED NO_CMAKE_FIND_ROOT_PATH)
 include("${ILEMU_REPOSITORY_ROOT}/android/cmake/dependencies.cmake")
+include("${ILEMU_REPOSITORY_ROOT}/android/cmake/firmware-tools.cmake")
 add_subdirectory("${ILEMU_REPOSITORY_ROOT}" "${CMAKE_BINARY_DIR}/core" EXCLUDE_FROM_ALL)
 # The pinned Boost headers still inherit std::unary_function. libc++ provides
 # this compatibility switch for C++17-and-later consumers of those headers.
 target_compile_definitions(dynarmic PUBLIC
     _LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION)
 
-add_library(ilemu SHARED android_main.cpp android_host.cpp android_sensors.cpp firmware_metadata.cpp)
+add_library(ilemu SHARED android_main.cpp android_host.cpp android_sensors.cpp firmware_metadata.cpp firmware_files.cpp)
 target_link_libraries(ilemu PRIVATE
     iLEmu::app_commands iLEmu::app_control iLEmu::app_sdl
     SDL2::SDL2 android log)
 target_link_libraries(ilemu PRIVATE iLEmu::foundation iLEmu::plist)
 target_compile_options(ilemu PRIVATE -Wall -Wextra -Wpedantic)
-
-include("${ILEMU_REPOSITORY_ROOT}/android/cmake/firmware-tools.cmake")

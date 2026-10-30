@@ -65,5 +65,4 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("com.liulishuo.okdownload:okdownload:1.0.7")
     implementation("com.liulishuo.okdownload:sqlite:1.0.7")
-    implementation("org.apache.commons:commons-compress:1.27.1")
 }

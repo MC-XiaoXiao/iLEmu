@@ -58,6 +58,7 @@ internal class FirmwareImporter(context: Context) {
         PosixFiles.delete(stage)
         try {
             populate(stage)
+            FirmwareFiles.prepare(stage.path)
             val identity = FirmwareMetadata.inspectRoot(stage)
             require(identity.accepts(container.device)) { "固件目标设备与容器不符" }
             require(File(stage, "usr/lib/dyld").isFile && File(stage, "System/Library/LaunchDaemons").isDirectory) { "目录不是完整可运行的固件" }
@@ -97,6 +98,9 @@ internal class FirmwareImporter(context: Context) {
             if (child.isDirectory) copy(child, file, depth + 1) else {
                 require(target.usableSpace > child.length() + 64L * 1024 * 1024) { "存储空间不足" }
                 context.contentResolver.openInputStream(child.uri)!!.use { input -> file.outputStream().use { input.copyTo(it) } }
+                // SAF cannot expose POSIX modes. Preserve the existing guest
+                // executable default; prepare() records it before host modes
+                // are reduced to owner read/write.
                 file.setExecutable(true, true)
             }
         }

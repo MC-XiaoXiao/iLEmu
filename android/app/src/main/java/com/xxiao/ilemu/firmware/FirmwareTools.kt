@@ -27,7 +27,7 @@ internal class FirmwareTools(context: Context, private val work: File, private v
         finally { process.destroyForcibly(); reader.join() }
     }
     fun extract(volume: File, target: File) {
-        val process = launch("firmware_hfstar", listOf("-e", "-t", "-s", "--rsrc-ext", ".ilemu-rsrc",
+        val process = launch("firmware_hfstar", listOf("-e", "-s", "--rsrc-ext", ".ilemu-rsrc",
             "--format", "pax", "--options", "xattrheader=LIBARCHIVE", volume.path, "-"))
         try {
             RootfsArchive.extract(object : java.io.FilterInputStream(process.inputStream) {
