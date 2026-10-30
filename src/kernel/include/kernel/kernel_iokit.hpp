@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include "kernel/iokit_method_hle.hpp"
 #include <optional>
 
 namespace ilemu {
@@ -35,6 +36,7 @@ struct IOKitMachCallSite {
     std::uint32_t message_address, std::uint32_t send_size,
     std::uint32_t receive_size, std::uint32_t remote_port,
     std::uint32_t local_port, IOKitMachCallSite call_site = { },
-    SurfaceStore* surfaces = nullptr);
+    SurfaceStore* surfaces = nullptr,
+    IOKitMethodHle::Call* native_call = nullptr);
 
 } // namespace ilemu

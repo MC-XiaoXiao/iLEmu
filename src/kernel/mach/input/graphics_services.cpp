@@ -2,25 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Inject guest GraphicsServices input and coordinate lock-screen
-// lifecycle callbacks.
+// Deliver hardware-button events and observe firmware GraphicsServices
+// lifecycle traffic.
 
 #include "kernel/graphics_services_input.hpp"
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <mutex>
 #include <utility>
 #include <vector>
 
-#include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/scene_coordinator.hpp"
 #include "foundation/userland_hle.hpp"
-#include "graphics/presentation_tracker.hpp"
 #include "kernel/graphics_services_input_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_iokit_display.hpp"
@@ -34,13 +31,6 @@ namespace {
 
     constexpr std::uint32_t copy_send_bits = 19;
     constexpr std::uint32_t graphics_event_message_id = 123;
-    constexpr std::uint32_t hand_event_type = 3001;
-
-    constexpr std::size_t record_location_offset = 8;
-    constexpr std::size_t record_window_location_offset = 16;
-    constexpr std::uint8_t path_index = 1;
-    constexpr std::uint8_t path_proximity_touching = 3;
-
     constexpr std::string_view springboard_image {
         "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
     };
@@ -56,12 +46,6 @@ namespace {
         }
     }
 
-    void write_float(
-        std::span<std::byte> bytes, std::size_t offset, float value)
-    {
-        write_word(bytes, offset, std::bit_cast<std::uint32_t>(value));
-    }
-
     std::uint32_t read_word(
         std::span<const std::byte> bytes, std::size_t offset)
     {
@@ -71,25 +55,6 @@ namespace {
                      << (byte * 8U);
         }
         return value;
-    }
-
-    std::uint32_t mouse_event_type(TouchPhase phase)
-    {
-        switch (phase) {
-        case TouchPhase::Down:
-            return 1;
-        case TouchPhase::Move:
-            return 6;
-        case TouchPhase::Up:
-        case TouchPhase::Cancel:
-            return 2;
-        }
-        return 2;
-    }
-
-    bool active(TouchPhase phase)
-    {
-        return phase == TouchPhase::Down || phase == TouchPhase::Move;
     }
 
     bool valid_unlock_trajectory(
@@ -131,17 +96,6 @@ namespace {
         return { 0x0cU, usage, input.phase == SystemButtonPhase::Down };
     }
 
-    std::uint64_t allocate_graphics_input_sequence_locked(
-        KernelSharedState& state)
-    {
-        auto sequence = state.next_graphics_input_sequence++;
-        if (sequence == 0U) {
-            sequence = 1U;
-            state.next_graphics_input_sequence = 2U;
-        }
-        return sequence;
-    }
-
     void clear_springboard_enqueued_gesture_locked(KernelSharedState& state)
     {
         state.springboard_enqueued_active_touch_begin_sequence = 0U;
@@ -152,89 +106,15 @@ namespace {
         state.springboard_pending_launch_touch_sequence = 0U;
     }
 
-    KernelSharedState::MachMessage make_touch_message(std::uint32_t destination,
-        std::uint64_t timestamp, const TouchInput& input,
-        KernelSharedState::GraphicsInputAbi abi, std::uint64_t input_sequence)
-    {
-        const auto& profile = GraphicsServicesInputAbi::for_abi(abi);
-        const auto hand_offset =
-            darwin::mig_wire::message_header_size + profile.event_record_size;
-        const auto path_offset = hand_offset + profile.hand_info_size;
-        const auto hand_message_size = path_offset + profile.path_info_size;
-        const auto hand_path_count_offset =
-            hand_offset + profile.hand_path_count_offset;
-        const auto path_pressure_offset = path_offset + 4;
-        const auto path_location_offset =
-            path_offset + profile.path_location_offset;
-
-        KernelSharedState::MachMessage message;
-        message.bytes.resize(hand_message_size, std::byte { 0 });
-        message.destination = destination;
-        message.sender_pid = 0;
-        message.graphics_input_sequence = input_sequence;
-        message.graphics_input_kind =
-            KernelSharedState::MachMessage::GraphicsInputKind::Touch;
-        message.graphics_touch_phase = input.phase;
-
-        write_word(message.bytes, darwin::mig_wire::header_bits_offset,
-            copy_send_bits);
-        write_word(message.bytes, darwin::mig_wire::header_size_offset,
-            static_cast<std::uint32_t>(hand_message_size));
-        write_word(message.bytes, darwin::mig_wire::header_remote_port_offset,
-            destination);
-        write_word(message.bytes, darwin::mig_wire::header_identifier_offset,
-            graphics_event_message_id);
-
-        const auto record = darwin::mig_wire::message_header_size;
-        write_word(message.bytes, record,
-            abi != KernelSharedState::GraphicsInputAbi::LegacyMouse
-                ? hand_event_type
-                : mouse_event_type(input.phase));
-        write_float(message.bytes, record + record_location_offset, input.x);
-        write_float(
-            message.bytes, record + record_location_offset + 4, input.y);
-        write_float(
-            message.bytes, record + record_window_location_offset, input.x);
-        write_float(
-            message.bytes, record + record_window_location_offset + 4, input.y);
-        write_word(message.bytes, record + profile.record_timestamp_offset,
-            static_cast<std::uint32_t>(timestamp));
-        write_word(message.bytes, record + profile.record_timestamp_offset + 4,
-            static_cast<std::uint32_t>(timestamp >> 32U));
-        write_word(message.bytes, record + profile.record_info_size_offset,
-            static_cast<std::uint32_t>(
-                profile.hand_info_size + profile.path_info_size));
-
-        write_word(message.bytes, hand_offset, profile.hand_type(input.phase));
-        message.bytes[hand_path_count_offset] = std::byte { 1 };
-        message.bytes[path_offset] = static_cast<std::byte>(path_index);
-        // The second path byte is ABI-defined: the early profile uses a stable
-        // identity, while later UIKit keyboard layouts consume the touch stage.
-        message.bytes[path_offset + 1] =
-            static_cast<std::byte>(profile.path_type(input.phase));
-        // Proximity is a contact-lifetime bit field. UIKit matches a terminal
-        // path by index, then retires that contact only when proximity is fully
-        // clear.
-        message.bytes[path_offset + 2] = static_cast<std::byte>(
-            active(input.phase) ? path_proximity_touching : 0U);
-        write_float(message.bytes, path_pressure_offset,
-            active(input.phase) ? 1.0F : 0.0F);
-        write_float(message.bytes, path_location_offset, input.x);
-        write_float(message.bytes, path_location_offset + 4, input.y);
-        return message;
-    }
-
     KernelSharedState::MachMessage make_simple_event_message(
         std::uint32_t destination, std::uint64_t timestamp,
         std::uint32_t event_type, std::uint64_t input_sequence,
         KernelSharedState::MachMessage::GraphicsInputKind input_kind,
-        KernelSharedState::GraphicsInputAbi abi,
-        std::span<const std::byte> event_info = { })
+        KernelSharedState::GraphicsInputAbi abi)
     {
         const auto& profile = GraphicsServicesInputAbi::for_abi(abi);
         const auto simple_event_message_size =
-            darwin::mig_wire::message_header_size + profile.event_record_size +
-            event_info.size();
+            darwin::mig_wire::message_header_size + profile.event_record_size;
         KernelSharedState::MachMessage message;
         message.bytes.resize(simple_event_message_size, std::byte { 0 });
         message.destination = destination;
@@ -256,12 +136,6 @@ namespace {
             static_cast<std::uint32_t>(timestamp));
         write_word(message.bytes, record + profile.record_timestamp_offset + 4,
             static_cast<std::uint32_t>(timestamp >> 32U));
-        write_word(message.bytes, record + profile.record_info_size_offset,
-            static_cast<std::uint32_t>(event_info.size()));
-        for (std::size_t index = 0; index < event_info.size(); ++index) {
-            message.bytes[record + profile.event_record_size + index] =
-                event_info[index];
-        }
         return message;
     }
 
@@ -293,16 +167,6 @@ namespace {
                    : KernelSharedState::GraphicsInputAbi::Darwin9_0;
     }
 
-    void queue_locked(KernelSharedState& state, std::uint32_t destination,
-        const TouchInput& input, std::uint64_t input_sequence)
-    {
-        const auto abi =
-            graphics_input_abi_for_object_locked(state, destination);
-        state.enqueue_mach_message_locked(
-            destination, make_touch_message(destination, state.clock.now(),
-                             input, abi, input_sequence));
-    }
-
     void queue_simple_event_locked(KernelSharedState& state,
         std::uint32_t destination, std::uint32_t event_type,
         std::uint64_t input_sequence,
@@ -310,42 +174,9 @@ namespace {
     {
         const auto abi =
             graphics_input_abi_for_object_locked(state, destination);
-        const auto& profile = GraphicsServicesInputAbi::for_abi(abi);
-        std::array<std::byte, sizeof(std::uint64_t)> idle_duration { };
-        const auto event_info_size =
-            event_type == profile.idle_duration_reset_event_type
-                ? std::min(profile.idle_duration_reset_info_size,
-                      idle_duration.size())
-                : 0U;
-        const auto event_info = std::span<const std::byte> {
-            idle_duration.data(), event_info_size };
         state.enqueue_mach_message_locked(destination,
             make_simple_event_message(destination, state.clock.now(),
-                event_type, input_sequence, input_kind, abi, event_info));
-    }
-
-    void queue_idle_duration_reset_locked(
-        KernelSharedState& state, std::uint64_t input_sequence)
-    {
-        const auto service = state.bootstrap_service_objects.find(
-            std::string { system_event_service });
-        const auto destination =
-            service == state.bootstrap_service_objects.end() ? 0U
-                                                             : service->second;
-        const auto abi = system_graphics_input_abi_locked(state, destination);
-        const auto event_type = GraphicsServicesInputAbi::for_abi(abi)
-                                    .idle_duration_reset_event_type;
-        constexpr auto input_kind =
-            KernelSharedState::MachMessage::GraphicsInputKind::OtherSystem;
-        if (service == state.bootstrap_service_objects.end()) {
-            state.pending_graphics_inputs.push_back(
-                KernelSharedState::PendingGraphicsInput {
-                    KernelSharedState::PendingGraphicsInput::Kind::SystemEvent,
-                    { }, event_type, input_sequence, input_kind });
-            return;
-        }
-        queue_simple_event_locked(
-            state, service->second, event_type, input_sequence, input_kind);
+                event_type, input_sequence, input_kind, abi));
     }
 
     bool object_owned_by_process_locked(const KernelSharedState& state,
@@ -443,222 +274,6 @@ namespace {
             return std::nullopt;
         state.application_event_objects_by_process[process_id] = *candidate;
         return *candidate;
-    }
-
-    std::optional<KernelSharedState::GraphicsTouchTransform>
-    application_touch_transform_locked(const KernelSharedState& state,
-        std::uint32_t process_id, SceneCoordinator* scenes)
-    {
-        if (scenes) {
-            const auto scene = scenes->client_scene(process_id);
-            if (scene && scene->input_transform) {
-                const auto& transform = *scene->input_transform;
-                return KernelSharedState::GraphicsTouchTransform { transform.xx,
-                    transform.xy, transform.yx, transform.yy, transform.tx,
-                    transform.ty };
-            }
-        }
-
-        std::optional<KernelSharedState::ApplicationTouchTransform> transform;
-        if (state.active_application_scene &&
-            state.active_application_scene->process_id == process_id &&
-            state.active_application_scene->touch_transform) {
-            transform = state.active_application_scene->touch_transform;
-        } else if (const auto cached =
-                       state.application_scene_transforms.find(process_id);
-            cached != state.application_scene_transforms.end()) {
-            transform = cached->second;
-        }
-        if (!transform) {
-            const auto process = state.processes.find(process_id);
-            if (process != state.processes.end() &&
-                process->second.application_display.kind !=
-                    ApplicationDisplayMode::Native) {
-                const auto& profile = process->second.application_display;
-                const auto viewport = application_display_viewport(
-                    profile, state.display_geometry);
-                if (viewport.width == 0U || viewport.height == 0U ||
-                    !profile.logical_geometry.valid())
-                    return std::nullopt;
-                const auto scale_x =
-                    static_cast<float>(profile.logical_geometry.width) /
-                    static_cast<float>(viewport.width);
-                const auto scale_y =
-                    static_cast<float>(profile.logical_geometry.height) /
-                    static_cast<float>(viewport.height);
-                return KernelSharedState::GraphicsTouchTransform {
-                    scale_x, 0.0F, 0.0F, scale_y,
-                    -static_cast<float>(viewport.x) * scale_x,
-                    -static_cast<float>(viewport.y) * scale_y };
-            }
-        }
-        if (!transform)
-            return std::nullopt;
-        return KernelSharedState::GraphicsTouchTransform { 1.0F, 0.0F, 0.0F,
-            1.0F, -transform->presentation_offset_x,
-            -transform->presentation_offset_y };
-    }
-
-    KernelSharedState::GraphicsTouchRoute springboard_touch_route(
-        std::uint32_t process_id = 0U)
-    {
-        return KernelSharedState::GraphicsTouchRoute { 0U, process_id,
-            std::nullopt, false };
-    }
-
-    std::optional<KernelSharedState::GraphicsTouchRoute>
-    application_touch_route_locked(KernelSharedState& state,
-        std::uint32_t process_id, SceneCoordinator* scenes)
-    {
-        const auto event_object =
-            application_event_object_for_process_locked(state, process_id);
-        if (!event_object)
-            return std::nullopt;
-        return KernelSharedState::GraphicsTouchRoute { *event_object,
-            process_id,
-            application_touch_transform_locked(state, process_id, scenes),
-            true };
-    }
-
-    bool application_fullscreen_publication_locked(
-        const KernelSharedState& state, std::uint32_t process_id,
-        std::uint64_t publication_sequence)
-    {
-        const auto publications =
-            state.application_fullscreen_surface_publications.find(process_id);
-        return publications !=
-                   state.application_fullscreen_surface_publications.end() &&
-               publications->second.contains(publication_sequence);
-    }
-
-    std::optional<KernelSharedState::GraphicsTouchRoute>
-    semantic_touch_route_locked(
-        KernelSharedState& state, SceneCoordinator* scenes);
-
-    std::optional<KernelSharedState::GraphicsTouchRoute>
-    presentation_touch_route_locked(KernelSharedState& state,
-        const PresentationHitTest& presentation, SceneCoordinator* scenes)
-    {
-        // A version adapter can establish a logical App scene even when an
-        // early compositor flattens all of its pixels into SpringBoard-owned
-        // surfaces. That semantic identity belongs to this exact completed
-        // frame, so consult it before physical provenance unless a newer
-        // firmware-classified system alert is above the App.
-        if (presentation.logical_client_scene &&
-            presentation.logical_client_scene->state ==
-                ClientSceneState::Active &&
-            !springboard_alert_owns_input_locked(state)) {
-            if (const auto route = application_touch_route_locked(state,
-                    presentation.logical_client_scene->client_process_id,
-                    scenes)) {
-                return route;
-            }
-        }
-
-        // Early firmware flattens an application's full-screen scene into a
-        // SpringBoard-owned presentation. In that mode the physical layer list
-        // can name SpringBoard even though the semantic application route is
-        // still the active foreground owner. Prefer that exact route before
-        // treating the compositor's owner as the touch target; system alerts
-        // and lock state have already been excluded by the checks above.
-        if (!springboard_alert_owns_input_locked(state)) {
-            if (const auto route = semantic_touch_route_locked(state, scenes))
-                return route;
-        }
-
-        for (const auto& layer : presentation.layers_front_to_back) {
-            const auto process_id =
-                layer.surface_provenance.producer_process_id;
-            if (process_is_springboard_locked(state, process_id))
-                return springboard_touch_route(process_id);
-
-            const auto process = state.processes.find(process_id);
-            if (process == state.processes.end() || process->second.exited)
-                continue;
-            if (!is_application_executable_path(
-                    process->second.executable_path))
-                return springboard_touch_route();
-
-            // SpringBoard's desktop can retain App-produced icon/snapshot
-            // assets. Only a publication already classified as a display-sized
-            // App scene is an input owner; otherwise continue to the layer
-            // beneath it.
-            if (!application_fullscreen_publication_locked(state, process_id,
-                    layer.surface_provenance.publication_sequence)) {
-                continue;
-            }
-            if (const auto route =
-                    application_touch_route_locked(state, process_id, scenes)) {
-                return route;
-            }
-            return springboard_touch_route();
-        }
-
-        if (process_is_springboard_locked(
-                state, presentation.submitting_process_id)) {
-            return springboard_touch_route(presentation.submitting_process_id);
-        }
-        if (const auto route = application_touch_route_locked(
-                state, presentation.submitting_process_id, scenes)) {
-            return route;
-        }
-        return std::nullopt;
-    }
-
-    std::optional<KernelSharedState::GraphicsTouchRoute>
-    semantic_touch_route_locked(
-        KernelSharedState& state, SceneCoordinator* scenes)
-    {
-        if (springboard_alert_owns_input_locked(state) ||
-            state.active_application_event_object == 0U ||
-            state.application_touch_suspended) {
-            return std::nullopt;
-        }
-        const auto port = state.mach_port_objects.lookup(
-            state.active_application_event_object);
-        if (!port)
-            return std::nullopt;
-        const auto process = state.processes.find(port->receive_owner);
-        if (process == state.processes.end() || process->second.exited ||
-            !is_application_executable_path(process->second.executable_path)) {
-            state.active_application_event_object = 0U;
-            state.application_touch_suspended = false;
-            return std::nullopt;
-        }
-        if (scenes) {
-            const auto scene = scenes->client_scene(port->receive_owner);
-            // Some early firmware flattens the App into a SpringBoard-owned
-            // presentation without publishing a ClientScene for the App. The
-            // active event port and foreground route above are still
-            // authoritative in that case. An explicitly published non-active
-            // scene remains a hard rejection so a stale route cannot cross a
-            // lifecycle boundary.
-            if (scene && scene->state != ClientSceneState::Active)
-                return std::nullopt;
-        }
-        state.application_event_objects_by_process[port->receive_owner] =
-            state.active_application_event_object;
-        return KernelSharedState::GraphicsTouchRoute {
-            state.active_application_event_object, port->receive_owner,
-            application_touch_transform_locked(
-                state, port->receive_owner, scenes),
-            true
-        };
-    }
-
-    TouchInput transform_touch(const TouchInput& input,
-        const std::optional<KernelSharedState::GraphicsTouchTransform>&
-            transform)
-    {
-        if (!transform)
-            return input;
-        const auto x =
-            transform->xx * input.x + transform->xy * input.y + transform->tx;
-        const auto y =
-            transform->yx * input.x + transform->yy * input.y + transform->ty;
-        if (!std::isfinite(x) || !std::isfinite(y))
-            return input;
-        return TouchInput { input.phase, x, y };
     }
 
     std::uint64_t allocate_application_launch_token_locked(
@@ -1930,18 +1545,11 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
     std::size_t flushed = 0;
     bool application_event_port = false;
     if (service_name == system_event_service) {
-        while (!state.pending_graphics_inputs.empty()) {
-            const auto& input = state.pending_graphics_inputs.front();
-            if (input.kind ==
-                KernelSharedState::PendingGraphicsInput::Kind::Touch) {
-                queue_locked(
-                    state, service->object, input.touch, input.input_sequence);
-            } else {
-                queue_simple_event_locked(state, service->object,
-                    input.system_event_type, input.input_sequence,
-                    input.input_kind);
-            }
-            state.pending_graphics_inputs.pop_front();
+        while (!state.pending_graphics_system_events.empty()) {
+            const auto& input = state.pending_graphics_system_events.front();
+            queue_simple_event_locked(state, service->object,
+                input.system_event_type, input.input_sequence, input.input_kind);
+            state.pending_graphics_system_events.pop_front();
             ++flushed;
         }
     } else if (const auto port =
@@ -2026,222 +1634,13 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
         service_name };
 }
 
-EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
-    SceneCoordinator* scenes, PresentationTracker* presentations,
-    bool* home_recovery_requested, std::uint64_t* input_sequence_output)
-{
-    if (home_recovery_requested)
-        *home_recovery_requested = false;
-    const TouchInput sanitized { input.phase,
-        std::isfinite(input.x) ? input.x : 0.0F,
-        std::isfinite(input.y) ? input.y : 0.0F };
-    const auto presentation =
-        presentations && sanitized.phase == TouchPhase::Down
-            ? presentations->hit_test(sanitized.x, sanitized.y)
-            : std::nullopt;
-    std::unique_lock lock { state.mach_mutex };
-    const auto input_sequence = allocate_graphics_input_sequence_locked(state);
-    if (input_sequence_output)
-        *input_sequence_output = input_sequence;
-
-    // Preserve host transition tracking, but let an open firmware HID system
-    // classify physical contacts before routing them to system gestures,
-    // accessibility services or an application window.
-    const auto native_input = state.native_hid_touch_events
-        ? state.hid_event_queue.enqueue({ sanitized, state.clock.now() })
-        : false;
-    if (native_input)
-        state.note_io_event_transition();
-
-    const auto terminal = sanitized.phase == TouchPhase::Up ||
-                          sanitized.phase == TouchPhase::Cancel;
-    if (sanitized.phase == TouchPhase::Down)
-        state.active_graphics_touch_route.reset();
-
-    auto route = sanitized.phase == TouchPhase::Down
-                     ? std::optional<KernelSharedState::GraphicsTouchRoute> { }
-                     : state.active_graphics_touch_route;
-    if (route && route->application &&
-        !object_owned_by_process_locked(
-            state, route->destination_object, route->process_id)) {
-        route.reset();
-        state.active_graphics_touch_route.reset();
-    }
-
-    const auto system_owns_transition =
-        state.springboard_unlock_touch_pending ||
-        state.springboard_unlock_touch_active ||
-        state.application_touch_suspended;
-    if (!route && !system_owns_transition && presentation) {
-        route = presentation_touch_route_locked(state, *presentation, scenes);
-    }
-    if (!route && !system_owns_transition)
-        route = semantic_touch_route_locked(state, scenes);
-    if (!route)
-        route = springboard_touch_route();
-
-    if (!terminal)
-        state.active_graphics_touch_route = route;
-
-    if (route->application) {
-        clear_springboard_enqueued_gesture_locked(state);
-        if (!native_input)
-            queue_locked(state, route->destination_object,
-                transform_touch(sanitized, route->transform), input_sequence);
-        // App-owned event ports do not pass the physical touch through
-        // SpringBoard. Preserve the firmware's separate idle-duration event so
-        // SpringBoard can run its native resetIdleDuration: path as it would
-        // for input consumed by the system event port.
-        queue_idle_duration_reset_locked(state, input_sequence);
-        if (terminal)
-            state.active_graphics_touch_route.reset();
-        return EnqueueResult::Queued;
-    }
-
-    const auto unlock_touch_input = state.springboard_unlock_touch_pending ||
-                                    state.springboard_unlock_touch_active;
-    auto completed_unlock_gesture = false;
-    if (sanitized.phase == TouchPhase::Down) {
-        // Retain the origin even before SpringBoard has classified the visible
-        // layer as its lock scene. The classification callback can race this
-        // already-enqueued Down event on another guest CPU.
-        state.springboard_unlock_touch_start_x = sanitized.x;
-        state.springboard_unlock_touch_start_y = sanitized.y;
-    }
-    if (state.springboard_unlock_touch_pending &&
-        sanitized.phase == TouchPhase::Down) {
-        state.springboard_unlock_touch_pending = false;
-        state.springboard_unlock_touch_active = true;
-        state.springboard_unlock_touch_begin_sequence = input_sequence;
-        state.springboard_unlock_touch_end_sequence = 0U;
-        state.springboard_unlock_touch_start_x = sanitized.x;
-        state.springboard_unlock_touch_start_y = sanitized.y;
-    } else if (state.springboard_unlock_touch_active &&
-               (sanitized.phase == TouchPhase::Up ||
-                   sanitized.phase == TouchPhase::Cancel)) {
-        state.springboard_unlock_touch_active = false;
-        state.springboard_unlock_touch_end_sequence = input_sequence;
-        state.springboard_unlock_touch_end_x = sanitized.x;
-        state.springboard_unlock_touch_end_y = sanitized.y;
-        // The iPhone OS 1.x lock control is a deliberate rightward slider. Do
-        // not turn a tap, failed drag, or cancelled gesture into a synthetic
-        // Home.
-        completed_unlock_gesture =
-            sanitized.phase == TouchPhase::Up &&
-            valid_unlock_trajectory(state.springboard_unlock_touch_start_x,
-                state.springboard_unlock_touch_start_y, sanitized.x,
-                sanitized.y);
-        state.springboard_unlock_touch_pending = !completed_unlock_gesture;
-    }
-    if (!unlock_touch_input) {
-        if (sanitized.phase == TouchPhase::Down) {
-            if (state.application_touch_suspended &&
-                state.application_suspension_reason ==
-                    KernelSharedState::ApplicationSuspensionReason::Home &&
-                state.suspended_application_scene_process_id) {
-                complete_home_transition_locked(state,
-                    *state.suspended_application_scene_process_id, scenes);
-            }
-            // A deliberate post-unlock gesture supersedes a held launch that
-            // still has not become foreground. The exact PID/token remains
-            // suppressed; a later lookup for it is background work, not the
-            // user's new selection.
-            if (state.held_application_launch &&
-                state.held_application_launch->unlock_up_sequence != 0U) {
-                const auto held = *state.held_application_launch;
-                const auto attempt =
-                    state.application_launch_attempts.find(held.process_id);
-                if (held.process_id != 0U &&
-                    attempt != state.application_launch_attempts.end() &&
-                    attempt->second.token == held.launch_token &&
-                    attempt->second.phase !=
-                        KernelSharedState::ApplicationLaunchPhase::Active) {
-                    attempt->second.phase =
-                        KernelSharedState::ApplicationLaunchPhase::Suspended;
-                    suppress_application_fullscreen_surfaces_locked(
-                        state, held.process_id);
-                    if (state.foreground_application_attempt_process_id ==
-                        held.process_id) {
-                        state.foreground_application_attempt_process_id.reset();
-                    }
-                }
-                state.held_application_launch.reset();
-            }
-            state.springboard_pending_launch_touch_sequence = input_sequence;
-            state.springboard_enqueued_active_touch_begin_sequence =
-                input_sequence;
-        } else if (sanitized.phase == TouchPhase::Up ||
-                   sanitized.phase == TouchPhase::Cancel) {
-            state.springboard_enqueued_last_touch_begin_sequence =
-                state.springboard_enqueued_active_touch_begin_sequence != 0U
-                    ? state.springboard_enqueued_active_touch_begin_sequence
-                    : input_sequence;
-            state.springboard_enqueued_last_touch_end_sequence = input_sequence;
-            state.springboard_enqueued_last_touch_end_x = sanitized.x;
-            state.springboard_enqueued_last_touch_end_y = sanitized.y;
-            state.springboard_enqueued_active_touch_begin_sequence = 0U;
-        }
-    }
-    auto unlock_completion = UnlockTransitionCompletion { };
-    if (completed_unlock_gesture) {
-        state.springboard_lock_screen_active = false;
-        // Keep the completed trajectory until the asynchronous SpringBoard lock
-        // classification observes it. SBAwayController can report the old
-        // active state after the slider's Up event;
-        // record_springboard_lock_state uses these exact sequence fields to
-        // reconcile that stale callback instead of arming the next desktop tap
-        // as another unlock gesture.
-        unlock_completion =
-            complete_unlock_transition_locked(state, input_sequence);
-    }
-    // Native HID owns the unlock and application-exit sequence. A second
-    // physical HOME after its swipe would act on the newly unlocked screen.
-    if (!native_input && unlock_completion.completes_interrupted_home_exit &&
-        home_recovery_requested) {
-        *home_recovery_requested = true;
-    }
-    const auto resume_process_id = unlock_completion.resume_process_id;
-    if (terminal)
-        state.active_graphics_touch_route.reset();
-    const auto service = state.bootstrap_service_objects.find(
-        std::string { system_event_service });
-    if (service == state.bootstrap_service_objects.end()) {
-        if (!native_input) {
-            state.pending_graphics_inputs.push_back(
-                KernelSharedState::PendingGraphicsInput {
-                    KernelSharedState::PendingGraphicsInput::Kind::Touch,
-                    sanitized,
-                    0, input_sequence,
-                    KernelSharedState::MachMessage::GraphicsInputKind::Touch });
-        }
-        queue_idle_duration_reset_locked(state, input_sequence);
-        lock.unlock();
-        if (resume_process_id) {
-            activate_resolved_application(state, *resume_process_id, scenes);
-        }
-        return native_input ? EnqueueResult::Queued : EnqueueResult::Deferred;
-    }
-    if (!native_input)
-        queue_locked(state, service->second, sanitized, input_sequence);
-    // Hardware input reaches SpringBoard through this event port. The device
-    // also emits its separate idle-duration event for the same input, which
-    // lets SpringBoard run resetIdleDuration: even when the touch is consumed
-    // by the desktop or by a SpringBoard launch control.
-    queue_idle_duration_reset_locked(state, input_sequence);
-    lock.unlock();
-    if (resume_process_id) {
-        activate_resolved_application(state, *resume_process_id, scenes);
-    }
-    return EnqueueResult::Queued;
-}
-
 EnqueueResult enqueue_system_button(KernelSharedState& state,
     const SystemButtonInput& input, std::uint64_t* input_sequence,
     bool begins_display_lock_transaction)
 {
     const auto input_kind = system_button_input_kind(input.button);
     std::lock_guard lock { state.mach_mutex };
-    const auto sequence = allocate_graphics_input_sequence_locked(state);
+    const auto sequence = state.allocate_physical_input_sequence_locked();
     if (input_sequence)
         *input_sequence = sequence;
     if (begins_display_lock_transaction) {
@@ -2263,9 +1662,8 @@ EnqueueResult enqueue_system_button(KernelSharedState& state,
             state.note_io_event_transition();
             return EnqueueResult::Queued;
         }
-        state.pending_graphics_inputs.push_back(
-            KernelSharedState::PendingGraphicsInput {
-                KernelSharedState::PendingGraphicsInput::Kind::SystemEvent, { },
+        state.pending_graphics_system_events.push_back(
+            KernelSharedState::PendingGraphicsSystemEvent {
                 event_type, sequence, input_kind });
         return EnqueueResult::Deferred;
     }
@@ -2290,7 +1688,7 @@ EnqueueResult enqueue_ringer_switch_change(
     KernelSharedState& state, bool active)
 {
     std::lock_guard lock { state.mach_mutex };
-    const auto input_sequence = allocate_graphics_input_sequence_locked(state);
+    const auto input_sequence = state.allocate_physical_input_sequence_locked();
     constexpr auto input_kind =
         KernelSharedState::MachMessage::GraphicsInputKind::OtherSystem;
     const auto service = state.bootstrap_service_objects.find(
@@ -2301,9 +1699,8 @@ EnqueueResult enqueue_ringer_switch_change(
         system_graphics_input_abi_locked(state, destination));
     const auto event_type = profile.ringer_switch_type(active);
     if (service == state.bootstrap_service_objects.end()) {
-        state.pending_graphics_inputs.push_back(
-            KernelSharedState::PendingGraphicsInput {
-                KernelSharedState::PendingGraphicsInput::Kind::SystemEvent, { },
+        state.pending_graphics_system_events.push_back(
+            KernelSharedState::PendingGraphicsSystemEvent {
                 event_type, input_sequence, input_kind });
         return EnqueueResult::Deferred;
     }
@@ -2319,7 +1716,7 @@ namespace {
         SceneCoordinator* scenes, std::uint64_t system_input_sequence)
     {
         if (system_input_sequence == 0U) {
-            system_input_sequence = allocate_graphics_input_sequence_locked(state);
+            system_input_sequence = state.allocate_physical_input_sequence_locked();
         }
         if (reason == KernelSharedState::ApplicationSuspensionReason::Lock) {
             state.springboard_lock_screen_active = true;
@@ -2969,10 +2366,6 @@ void release_application_process_locked(
     }
     release_application_fullscreen_suppression_locked(state, process_id);
     state.application_event_objects_by_process.erase(process_id);
-    if (state.active_graphics_touch_route &&
-        state.active_graphics_touch_route->process_id == process_id) {
-        state.active_graphics_touch_route.reset();
-    }
     state.application_launch_attempts.erase(process_id);
     state.application_fullscreen_surface_publications.erase(process_id);
     state.application_scene_transforms.erase(process_id);

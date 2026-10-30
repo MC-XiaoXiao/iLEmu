@@ -586,7 +586,6 @@ struct KernelSharedState {
     std::string framebuffer_service_class;
     ExternalFramebufferProfile external_framebuffer;
     AmbientLightSensorProfile ambient_light_sensor;
-    bool native_hid_touch_events { true };
     bool apple_key_store_available { };
     bool effaceable_storage_available { true };
     bool virtual_effaceable_storage_available { };
@@ -640,7 +639,6 @@ struct KernelSharedState {
     struct MachMessage {
         enum class GraphicsInputKind {
             None,
-            Touch,
             Home,
             Lock,
             OtherSystem,
@@ -681,7 +679,6 @@ struct KernelSharedState {
         std::uint32_t sender_gid { };
         std::uint64_t graphics_input_sequence { };
         GraphicsInputKind graphics_input_kind { GraphicsInputKind::None };
-        std::optional<TouchPhase> graphics_touch_phase;
         // Kernel-originated display notifications can share one Mach receive
         // port across successive or concurrent IOUserClient registrations. Keep
         // their host-only origin separate from the guest payload so coalescing
@@ -1060,13 +1057,7 @@ struct KernelSharedState {
         std::uint64_t sequence { };
         std::uint64_t deadline { };
     };
-    struct PendingGraphicsInput {
-        enum class Kind {
-            Touch,
-            SystemEvent,
-        };
-        Kind kind { Kind::Touch };
-        TouchInput touch;
+    struct PendingGraphicsSystemEvent {
         std::uint32_t system_event_type { };
         std::uint64_t input_sequence { };
         MachMessage::GraphicsInputKind input_kind {
@@ -1206,20 +1197,6 @@ struct KernelSharedState {
         std::uint32_t process_id { };
         std::uint32_t event_object { };
         std::optional<ApplicationTouchTransform> touch_transform;
-    };
-    struct GraphicsTouchTransform {
-        float xx { 1.0F };
-        float xy { };
-        float yx { };
-        float yy { 1.0F };
-        float tx { };
-        float ty { };
-    };
-    struct GraphicsTouchRoute {
-        std::uint32_t destination_object { };
-        std::uint32_t process_id { };
-        std::optional<GraphicsTouchTransform> transform;
-        bool application { };
     };
     enum class SpringBoardAlertPresentation {
         Pending,
@@ -1698,9 +1675,17 @@ struct KernelSharedState {
     };
     std::optional<std::uint32_t> suspended_application_scene_process_id;
     std::uint64_t next_graphics_input_sequence { 1 };
-    // A single-touch contact keeps one receiver and coordinate space from Down
-    // through its terminal event, even if presentation changes mid-gesture.
-    std::optional<GraphicsTouchRoute> active_graphics_touch_route;
+
+    [[nodiscard]] std::uint64_t allocate_physical_input_sequence_locked()
+    {
+        auto sequence = next_graphics_input_sequence++;
+        if (sequence == 0U) {
+            sequence = 1U;
+            next_graphics_input_sequence = 2U;
+        }
+        return sequence;
+    }
+
     std::uint64_t springboard_last_consumed_touch_sequence { };
     // Launch causality belongs to the gesture that selected an icon, not its
     // final Up delivery. Home cancels that gesture; Lock only holds it until a
@@ -1829,7 +1814,7 @@ struct KernelSharedState {
     std::uint64_t active_application_layer_sequence { };
     std::map<std::uint32_t, SpringBoardAlertLayer>
         active_springboard_alert_items;
-    std::deque<PendingGraphicsInput> pending_graphics_inputs;
+    std::deque<PendingGraphicsSystemEvent> pending_graphics_system_events;
     std::map<std::uint32_t, MachSemaphore> mach_semaphores;
     // POSIX named semaphores use file descriptors in Darwin userland while
     // sharing the same kernel semaphore primitive underneath.

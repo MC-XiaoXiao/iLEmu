@@ -40,6 +40,11 @@ namespace {
 
     constexpr auto create_digitizer = "_IOHIDEventCreateDigitizerEvent";
     constexpr auto create_keyboard = "_IOHIDEventCreateKeyboardEvent";
+    constexpr auto create_translation = "_IOHIDEventCreateTranslationEvent";
+    // Native dispatch consumes normalized contacts. The session callback
+    // consumes display coordinates and a translation child, then performs its
+    // own hit testing and GraphicsServices record construction.
+    enum class DigitizerReport { Normalized, DisplayWithTranslation };
     struct Arm32AccelerationEventAbi {
         static constexpr std::uint32_t type = 13U;
         static constexpr std::uint32_t first_axis = type << 16U;
@@ -55,7 +60,7 @@ namespace {
     void prepare_digitizer(UserlandHleCall& call,
         const HidEventQueue::Event& event, float width, float height,
         bool collection, bool collection_contact_changes,
-        DarwinVersion digitizer_abi)
+        DarwinVersion digitizer_abi, DigitizerReport report)
     {
         const auto& touch = std::get<TouchInput>(event.input);
         const auto active =
@@ -95,10 +100,14 @@ namespace {
         r[1] = static_cast<std::uint32_t>(event.timestamp);
         r[2] = static_cast<std::uint32_t>(event.timestamp >> 32U);
         r[3] = collection ? Profile::hand : Profile::finger;
+        const auto display_coordinates =
+            report == DigitizerReport::DisplayWithTranslation;
         const std::array<std::uint32_t, 12> arguments { 1U,
             collection ? 1U : event.identity, mask, 0U,
-            std::bit_cast<std::uint32_t>(touch.x / width),
-            std::bit_cast<std::uint32_t>(touch.y / height), 0U,
+            std::bit_cast<std::uint32_t>(
+                display_coordinates ? touch.x : touch.x / width),
+            std::bit_cast<std::uint32_t>(
+                display_coordinates ? touch.y : touch.y / height), 0U,
             std::bit_cast<std::uint32_t>(active ? 1.0F : 0.0F), 0U,
             active ? 1U : 0U, active ? 1U : 0U, Profile::display_integrated };
         static_cast<void>(call.memory().copy_in(
@@ -111,12 +120,14 @@ namespace {
         using Completion = std::function<void()>;
         NativeEventTransaction(HidEventQueue::Event event, std::uint32_t system,
             DisplayGeometry geometry, DarwinVersion digitizer_abi,
-            std::uint64_t sender_id, Completion completion)
+            std::uint64_t sender_id, std::array<float, 2> translation,
+            Completion completion)
             : event_ { event }
             , system_ { system }
             , geometry_ { geometry }
             , digitizer_abi_ { digitizer_abi }
             , sender_id_ { sender_id }
+            , translation_ { translation }
             , completion_ { std::move(completion) }
             , step_ { std::holds_alternative<TouchInput>(event.input)
                           ? Step::Hand
@@ -162,6 +173,9 @@ namespace {
             Finger,
             Append,
             ReleaseFinger,
+            Translation,
+            AppendTranslation,
+            ReleaseTranslation,
             SetSender,
             CreateSenderNumber,
             CopyService,
@@ -216,19 +230,37 @@ namespace {
                 break;
             }
             case Step::Hand:
+                if (!observer_ && !call.symbol_address(
+                        "__IOHIDEventSystemDispatchEvent"))
+                    report_ = DigitizerReport::DisplayWithTranslation;
+                [[fallthrough]];
             case Step::Finger:
                 prepare_digitizer(call, event_,
                     static_cast<float>(geometry_.width),
                     static_cast<float>(geometry_.height), step_ == Step::Hand,
-                    observer_.has_value(), digitizer_abi_);
+                    observer_.has_value(), digitizer_abi_, report_);
                 break;
+            case Step::Translation: {
+                r[13] -= 16U;
+                r[0] = 0U;
+                r[1] = static_cast<std::uint32_t>(event_.timestamp);
+                r[2] = static_cast<std::uint32_t>(event_.timestamp >> 32U);
+                r[3] = std::bit_cast<std::uint32_t>(translation_[0]);
+                const std::array<std::uint32_t, 3> arguments {
+                    std::bit_cast<std::uint32_t>(translation_[1]), 0U, 0U };
+                static_cast<void>(call.memory().copy_in(
+                    r[13], std::as_bytes(std::span { arguments })));
+                break;
+            }
             case Step::Append:
+            case Step::AppendTranslation:
                 r[0] = root_event_;
-                r[1] = finger_;
+                r[1] = child_event_;
                 r[2] = 0U;
                 break;
             case Step::ReleaseFinger:
-                r[0] = finger_;
+            case Step::ReleaseTranslation:
+                r[0] = child_event_;
                 break;
             case Step::SetSender:
                 // Darwin ARM32 packs the registry entry ID into r1/r2.
@@ -316,10 +348,6 @@ namespace {
                 }
                 step_ = Step::Dispatch;
                 symbol = "__IOHIDEventSystemDispatchEvent";
-                if (!call.symbol_address(symbol)) {
-                    step_ = Step::SessionCallback;
-                    symbol = "___IOHIDEventSystemEventCallback";
-                }
                 break;
             case Step::Hand:
                 root_event_ = call.argument(0);
@@ -331,15 +359,22 @@ namespace {
                 symbol = create_digitizer;
                 break;
             case Step::Finger:
-                finger_ = call.argument(0);
-                step_ = finger_ ? Step::Append : Step::ReleaseEvent;
-                symbol = finger_ ? "_IOHIDEventAppendEvent" : "_CFRelease";
+                child_event_ = call.argument(0);
+                step_ = child_event_ ? Step::Append : Step::ReleaseEvent;
+                symbol = child_event_ ? "_IOHIDEventAppendEvent" : "_CFRelease";
                 break;
             case Step::Append:
                 step_ = Step::ReleaseFinger;
                 symbol = "_CFRelease";
                 break;
             case Step::ReleaseFinger:
+                if (report_ == DigitizerReport::DisplayWithTranslation) {
+                    step_ = Step::Translation;
+                    symbol = create_translation;
+                    break;
+                }
+                [[fallthrough]];
+            case Step::ReleaseTranslation:
                 if (sender_id_ && call.symbol_address("_IOHIDEventSetSenderID")) {
                     step_ = Step::SetSender;
                     symbol = "_IOHIDEventSetSenderID";
@@ -358,6 +393,15 @@ namespace {
                     step_ = Step::Dispatch;
                     symbol = "__IOHIDEventSystemDispatchEvent";
                 }
+                break;
+            case Step::Translation:
+                child_event_ = call.argument(0);
+                step_ = child_event_ ? Step::AppendTranslation : Step::ReleaseEvent;
+                symbol = child_event_ ? "_IOHIDEventAppendEvent" : "_CFRelease";
+                break;
+            case Step::AppendTranslation:
+                step_ = Step::ReleaseTranslation;
+                symbol = "_CFRelease";
                 break;
             case Step::CreateSenderNumber:
                 sender_number_ = call.argument(0);
@@ -390,6 +434,12 @@ namespace {
                 completion_();
                 return;
             }
+            // All event kinds, including digitizers after service lookup,
+            // share the session callback on firmware without native dispatch.
+            if (step_ == Step::Dispatch && !call.symbol_address(symbol)) {
+                step_ = Step::SessionCallback;
+                symbol = "___IOHIDEventSystemEventCallback";
+            }
             const auto setup = [self = shared_from_this()](
                                    UserlandHleCall& next) {
                 self->setup(next);
@@ -413,11 +463,13 @@ namespace {
         DisplayGeometry geometry_;
         DarwinVersion digitizer_abi_;
         std::uint64_t sender_id_ { };
+        std::array<float, 2> translation_ { };
+        DigitizerReport report_ { DigitizerReport::Normalized };
         Completion completion_;
         Step step_;
         std::uint32_t acceleration_axis_ { };
         std::uint32_t root_event_ { };
-        std::uint32_t finger_ { };
+        std::uint32_t child_event_ { };
         std::uint32_t sender_number_ { };
         std::uint32_t service_ { };
     };
@@ -427,10 +479,12 @@ namespace {
 bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
     DisplayGeometry geometry, DarwinVersion digitizer_abi,
-    std::uint64_t sender_id, std::function<void()> completion)
+    std::uint64_t sender_id, std::array<float, 2> translation,
+    std::function<void()> completion)
 {
     return std::make_shared<NativeEventTransaction>(std::move(event),
-        consumer.system, geometry, digitizer_abi, sender_id, std::move(completion))
+        consumer.system, geometry, digitizer_abi, sender_id, translation,
+        std::move(completion))
         ->start(registry, consumer.processor);
 }
 

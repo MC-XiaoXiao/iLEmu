@@ -1102,7 +1102,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
     std::uint32_t message_id, std::uint32_t message_address,
     std::uint32_t send_size, std::uint32_t receive_size,
     std::uint32_t remote_port, std::uint32_t local_port,
-    IOKitMachCallSite call_site, SurfaceStore* surfaces)
+    IOKitMachCallSite call_site, SurfaceStore* surfaces,
+    IOKitMethodHle::Call* native_call)
 {
     std::uint32_t remote_object = 0;
     {
@@ -2367,7 +2368,9 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         static_cast<std::uint32_t>(iokit_abi::Message::ConnectMethod)) {
         std::uint32_t decode_error = 0;
         const auto request = ConnectMethodCodec::read(memory, message_address,
-            send_size, shared_state.darwin_version, decode_error);
+            send_size, shared_state.darwin_version, decode_error,
+            native_call && native_call->connection == remote_port
+                    ? native_call : nullptr);
         if (!request) {
             if (decode_error != darwin::mig::bad_arguments)
                 return decode_error;
@@ -2594,7 +2597,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         }
         return ConnectMethodCodec::write_reply(memory, message_address,
             local_port, message_id, receive_size, result,
-            shared_state.darwin_version, request->out_of_line_output.size);
+            request->profile, request->out_of_line_output.size);
     }
 
     if (message_id ==

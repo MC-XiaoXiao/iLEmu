@@ -555,7 +555,8 @@ void CompatibilityKernel::dispatch_mach_message(
                 *shared_state_, process_, *message_id, message_address,
                 registers[2], registers[3], *remote_port, *local_port,
                 IOKitMachCallSite { registers[15], registers[14], registers[7] },
-                surface_store_.get())) {
+                surface_store_.get(),
+                iokit_method_hle_.current(cpu.processor_id()))) {
             // A flattened UIKit client may establish its display timing after its
             // event route, with no LayerKit context to provide another callback.
             // The common readiness helper validates process identity, launch

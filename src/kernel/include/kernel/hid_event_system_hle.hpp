@@ -27,6 +27,8 @@ public:
     explicit HidEventSystemHle(UserlandHleRegistry& registry);
     void set_shared_state(std::shared_ptr<KernelSharedState> state);
     void reset(std::uint32_t process);
+    [[nodiscard]] bool enqueue_touch(const TouchInput& input,
+        std::uint64_t* input_sequence = nullptr);
     [[nodiscard]] bool is_event_consumer(
         std::uint32_t process, std::size_t processor) const;
     [[nodiscard]] std::optional<std::size_t> interactive_processor(
@@ -60,6 +62,7 @@ private:
     std::unordered_map<std::uint32_t, EventSystemClient> event_clients_;
     std::unordered_set<std::size_t> delivering_processors_;
     std::unordered_set<std::size_t> interactive_processors_;
+    std::optional<TouchInput> previous_contact_;
     HidAccelerometer accelerometer_;
 };
 

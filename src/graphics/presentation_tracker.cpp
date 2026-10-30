@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Track presented layers, geometry and hit-test information across
+// Track presented layers and geometry across
 // completed frames.
 
 #include "graphics/presentation_tracker.hpp"
@@ -60,50 +60,6 @@ std::optional<PresentationScene> PresentationTracker::latest_scene(
         });
     return found == scenes.end() ? std::nullopt
                                  : std::optional<PresentationScene> { *found };
-}
-
-std::optional<PresentationHitTest> PresentationTracker::hit_test(
-    float x, float y) const
-{
-    if (!std::isfinite(x) || !std::isfinite(y))
-        return std::nullopt;
-
-    std::lock_guard lock { mutex_ };
-    if (!latest_)
-        return std::nullopt;
-
-    PresentationHitTest result { latest_->sequence,
-        latest_->submitting_process_id, latest_->logical_client_scene, { } };
-    result.layers_front_to_back.reserve(latest_->layers.size());
-    for (auto layer = latest_->layers.rbegin(); layer != latest_->layers.rend();
-        ++layer) {
-        const auto process_id = layer->surface_provenance.producer_process_id;
-        const auto publication_sequence =
-            layer->surface_provenance.publication_sequence;
-        const auto& destination = layer->destination;
-        if (process_id == 0U || publication_sequence == 0U ||
-            !std::isfinite(destination.x) || !std::isfinite(destination.y) ||
-            !std::isfinite(destination.width) ||
-            !std::isfinite(destination.height) || destination.width <= 0.0F ||
-            destination.height <= 0.0F) {
-            continue;
-        }
-        if (const auto retired = retired_process_watermarks_.find(process_id);
-            retired != retired_process_watermarks_.end() &&
-            publication_sequence <= retired->second) {
-            continue;
-        }
-        const auto right = destination.x + destination.width;
-        const auto bottom = destination.y + destination.height;
-        if (!std::isfinite(right) || !std::isfinite(bottom) ||
-            x < destination.x || x >= right || y < destination.y ||
-            y >= bottom) {
-            continue;
-        }
-        result.layers_front_to_back.push_back(PresentationHit {
-            layer->order, layer->surface_id, layer->surface_provenance });
-    }
-    return result;
 }
 
 bool PresentationTracker::has_presented_frame() const

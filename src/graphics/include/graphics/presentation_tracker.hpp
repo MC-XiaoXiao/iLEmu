@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Track presented layers, geometry and hit-test information across
+// Track presented layers and geometry across
 // completed frames.
 
 #pragma once
@@ -65,25 +65,6 @@ struct PresentationScene {
     std::optional<PresentationTransform> screen_to_surface;
 };
 
-struct PresentationHit {
-    std::uint32_t order { };
-    std::uint32_t surface_id { };
-    SurfaceStore::Provenance surface_provenance;
-};
-
-// One immutable point query against a completed display transaction. Layers
-// are returned front-to-back so consumers can skip non-interactive assets
-// without racing a newer transaction between successive queries.
-struct PresentationHitTest {
-    std::uint64_t frame_sequence { };
-    std::uint32_t submitting_process_id { };
-    // Preserve the semantic client from the same immutable frame. Early
-    // compositors can flatten App pixels into system-owned physical surfaces,
-    // so provenance alone does not describe the interactive scene.
-    std::optional<ClientScene> logical_client_scene;
-    std::vector<PresentationHit> layers_front_to_back;
-};
-
 // Recording remains observational and never controls rendering. Consumers can
 // query the completed snapshot without coupling the common presentation model
 // to LayerKit, MobileFramebuffer, QuartzCore, IOSurface, or SDL.
@@ -96,8 +77,6 @@ public:
     [[nodiscard]] std::vector<PresentationScene> latest_scenes() const;
     [[nodiscard]] std::optional<PresentationScene> latest_scene(
         std::uint32_t producer_process_id) const;
-    [[nodiscard]] std::optional<PresentationHitTest> hit_test(
-        float x, float y) const;
     [[nodiscard]] bool has_presented_frame() const;
 
     // Ignore surfaces from this process incarnation at or below the publication

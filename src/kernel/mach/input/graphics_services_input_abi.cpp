@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Encode touch paths and button events using firmware input
-// capability profiles.
+// Discover firmware GraphicsServices layouts and encode hardware-button
+// events using native capability profiles.
 
 #include "kernel/graphics_services_input_abi.hpp"
 
@@ -20,15 +20,9 @@ namespace {
     .name = "darwin9.0",
     .event_record_size = 48,
     .record_timestamp_offset = 24,
-    .record_info_size_offset = 44,
     .hand_info_size = 20,
     .path_info_size = 16,
-    .hand_path_count_offset = 17,
-    .path_location_offset = 8,
-    .hand_phase_types = {1, 2, 6, 3},
-    .path_phase_types = {2, 2, 2, 2},
     .idle_duration_reset_event_type = 101,
-    .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -42,15 +36,9 @@ namespace {
     .name = "darwin9.3",
     .event_record_size = 48,
     .record_timestamp_offset = 24,
-    .record_info_size_offset = 44,
     .hand_info_size = 36,
     .path_info_size = 24,
-    .hand_path_count_offset = 33,
-    .path_location_offset = 12,
-    .hand_phase_types = {1, 2, 6, 3},
-    .path_phase_types = {1, 2, 5, 3},
     .idle_duration_reset_event_type = 101,
-    .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -64,15 +52,9 @@ constexpr GraphicsServicesInputAbi darwin9_4_abi{
     .name = "darwin9.4",
     .event_record_size = 52,
     .record_timestamp_offset = 28,
-    .record_info_size_offset = 48,
     .hand_info_size = 36,
     .path_info_size = 24,
-    .hand_path_count_offset = 33,
-    .path_location_offset = 12,
-    .hand_phase_types = {1, 2, 6, 3},
-    .path_phase_types = {1, 2, 5, 3},
     .idle_duration_reset_event_type = 101,
-    .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -91,22 +73,9 @@ constexpr GraphicsServicesInputAbi darwin11_0_abi{
     .name = "darwin11.0",
     .event_record_size = 52,
     .record_timestamp_offset = 28,
-    .record_info_size_offset = 48,
     .hand_info_size = 36,
     .path_info_size = 24,
-    // This UIKit ABI reads the count at GSEventRecord+0x56 (hand+34); the
-    // preceding hand byte is reserved in this ABI.  Keep the offset in the
-    // profile because earlier GraphicsServices layouts place the count at
-    // hand+33.
-    .hand_path_count_offset = 34,
-    .path_location_offset = 12,
-    // UIKit establishes the hand's window at type 1, completes remaining
-    // contacts at type 6, and cancels all contacts at type 8. These are
-    // GSEvent hand states; pathIdentity stays stable through the gesture.
-    .hand_phase_types = {1, 2, 6, 8},
-    .path_phase_types = {1, 1, 1, 1},
     .idle_duration_reset_event_type = 100,
-    .idle_duration_reset_info_size = 0,
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -424,16 +393,6 @@ constexpr GraphicsServicesInputAbi darwin11_0_abi{
     }
 
 } // namespace
-
-std::uint8_t GraphicsServicesInputAbi::hand_type(TouchPhase phase) const
-{
-    return hand_phase_types[static_cast<std::size_t>(phase)];
-}
-
-std::uint8_t GraphicsServicesInputAbi::path_type(TouchPhase phase) const
-{
-    return path_phase_types[static_cast<std::size_t>(phase)];
-}
 
 std::uint32_t GraphicsServicesInputAbi::system_button_type(
     const SystemButtonInput& input) const

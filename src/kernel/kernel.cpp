@@ -204,6 +204,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , audio_service_ { std::make_shared<AudioService>(rootfs_) }
     , userland_hle_ { memory_, output_ }
     , hid_event_system_hle_ { userland_hle_ }
+    , iokit_method_hle_ { userland_hle_ }
     , system_configuration_hle_ { userland_hle_ }
     , darwin_notify_state_hle_ { userland_hle_ }
     , audio_toolbox_hle_ { userland_hle_ }
@@ -305,8 +306,6 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->external_framebuffer =
         device_model_.screen.external_framebuffer;
     shared_state_->ambient_light_sensor = device_model_.ambient_light_sensor;
-    shared_state_->native_hid_touch_events =
-        device_model_.input.native_hid_touch_events;
     shared_state_->apple_key_store_available =
         device_model_.keybag.apple_key_store_available;
     shared_state_->effaceable_storage_available =
@@ -564,11 +563,9 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
 {
     const PerformanceLatencyScope latency { PerfLatencyKind::InputEnqueue };
     performance_counters().discard_pending_vsync_callbacks();
-    bool home_recovery_requested = false;
     std::uint64_t input_sequence = 0;
-    const auto result = graphics_services_input::enqueue_touch(*shared_state_,
-        input, scene_coordinator_.get(), presentation_tracker_.get(),
-        &home_recovery_requested, &input_sequence);
+    const auto queued =
+        hid_event_system_hle_.enqueue_touch(input, &input_sequence);
     wake_graphics_input_receivers();
     const auto enqueued_at = std::chrono::steady_clock::now();
     const auto phase = [phase = input.phase] {
@@ -585,22 +582,10 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
         return "unknown";
     }();
     performance_counters().record_diagnostic_input("touch", phase, input.x,
-        input.y, result == graphics_services_input::EnqueueResult::Queued,
-        input_sequence, enqueued_at);
+        input.y, queued, input_sequence, enqueued_at);
     output_.write("[input] touch phase=" + std::string { phase } + " x=" +
                   std::to_string(input.x) + " y=" + std::to_string(input.y) +
-                  (result == graphics_services_input::EnqueueResult::Queued
-                          ? " queued\n"
-                          : " deferred\n"));
-    if (home_recovery_requested) {
-        output_.line("[input] recovery=interrupted-lock-launch action=home");
-        enqueue_system_button_impl(
-            SystemButtonInput { SystemButton::Home, SystemButtonPhase::Down },
-            true);
-        enqueue_system_button_impl(
-            SystemButtonInput { SystemButton::Home, SystemButtonPhase::Up },
-            true);
-    }
+                  (queued ? " queued\n" : " ignored (no HID receiver)\n"));
 }
 
 void CompatibilityKernel::enqueue_system_button(const SystemButtonInput& input)
@@ -908,6 +893,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     });
     install_commpage();
     hid_event_system_hle_.reset(process_.pid);
+    iokit_method_hle_.reset();
     userland_hle_.reset_mappings();
     darwin_notify_state_hle_.reset();
     core_audio_hle_.reset();
