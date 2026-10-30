@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
 #include "foundation/output.hpp"
 #include "foundation/userland_hle.hpp"
 #include "graphics/surface_store.hpp"
@@ -10,6 +11,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
+#include <stdexcept>
 
 namespace ilemu {
 
@@ -96,13 +99,35 @@ bool OpenGlesHle::prepare_program_attributes(UserlandHleCall& call,
     return true;
 }
 
+void OpenGlesHle::retire_thread(std::size_t processor)
+{
+    if (program_renderer_)
+        program_renderer_->retire_issuer(processor);
+    threads_.erase(processor);
+}
+
+void OpenGlesHle::collect_program_draw_errors(
+    std::optional<std::size_t> wait_issuer)
+{
+    if (!program_renderer_)
+        return;
+    for (const auto issuer : program_renderer_->collect_errors(wait_issuer)) {
+        auto& error = threads_[issuer].gl_error;
+        if (error == gles_abi::no_error)
+            error = gles_abi::invalid_operation;
+    }
+}
+
 bool OpenGlesHle::flush_program_draws(UserlandHleCall& call)
 {
     if (!pending_program_target_)
         return true;
     auto& target = *pending_program_target_;
-    if (!program_renderer_ ||
-        !program_renderer_->readback(target.frame, target.binding.key)) {
+    const auto read =
+        program_renderer_ &&
+        program_renderer_->readback(target.frame, target.binding.key);
+    collect_program_draw_errors();
+    if (!read) {
         set_gl_error(call, gles_abi::invalid_operation);
         return false;
     }
@@ -123,7 +148,7 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     // Forked guest contexts inherit declarations, but never host EGL objects.
     if (!program_renderer_) {
         std::string error;
-        program_renderer_ = create_gles_program_renderer(&error);
+        program_renderer_ = GlesProgramWorker::create(&error);
         if (!program_renderer_) {
             call.output().marker(
                 "[gles] cannot restore GLSL executor: " + error);
@@ -200,8 +225,21 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
             return;
         }
     }
-    if (!resources_.materialize_surface_textures(*renderer_, draw.textures) ||
-        !program_renderer_->draw(frame, binding.key, draw, mode, state)) {
+    if (!resources_.materialize_surface_textures(*renderer_, draw.textures)) {
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    collect_program_draw_errors();
+    try {
+        static_cast<void>(program_renderer_->enqueue_draw(
+            frame, binding.key, draw, mode, state, call.cpu().processor_id()));
+    } catch (const std::bad_alloc&) {
+        set_gl_error(call, gles_abi::out_of_memory);
+        return;
+    } catch (const std::length_error&) {
+        set_gl_error(call, gles_abi::out_of_memory);
+        return;
+    } catch (const std::exception&) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }

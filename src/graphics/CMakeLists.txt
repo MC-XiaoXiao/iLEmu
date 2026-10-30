@@ -19,6 +19,7 @@ add_library(ilemu_graphics STATIC
     gles_filter_profile.cpp
     gles_program_state.cpp
     gles_program_renderer.cpp
+    gles_program_worker.cpp
     presentation_tracker.cpp
     surface_store.cpp)
 target_sources(ilemu_graphics PRIVATE touch_replay.cpp)
@@ -36,4 +37,4 @@ add_library(iLEmu::graphics ALIAS ilemu_graphics)
 ilemu_configure_module(ilemu_graphics)
 target_link_libraries(ilemu_graphics
     PUBLIC iLEmu::foundation
-    PRIVATE PNG::PNG)
+    PRIVATE PNG::PNG Threads::Threads)

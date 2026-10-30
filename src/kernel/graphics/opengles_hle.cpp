@@ -260,6 +260,9 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
 
 void OpenGlesHle::release_renderer_resources()
 {
+    // Drain and retire the EGL executor before target stores or the Vulkan
+    // owner are released. Published packets never depend on those stores.
+    program_renderer_.reset();
     if (renderer_owner_ != 0)
         renderer_->release_owner(renderer_owner_);
 }
@@ -2449,6 +2452,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             });
     };
     add("_glGetError", [this](UserlandHleCall& call) {
+        collect_program_draw_errors(call.cpu().processor_id());
         auto& current = thread(call);
         call.set_return(current.gl_error);
         current.gl_error = gl_no_error;

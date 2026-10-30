@@ -49,6 +49,7 @@ public:
     ~OpenGlesHle();
 
     void reset();
+    void retire_thread(std::size_t processor);
     void inherit_state(const OpenGlesHle& parent);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_guest_capabilities(OpenGlesGuestCapabilitySet profile);
@@ -229,6 +230,8 @@ private:
         DisplayFrame frame;
     };
     [[nodiscard]] bool flush_program_draws(UserlandHleCall& call);
+    void collect_program_draw_errors(
+        std::optional<std::size_t> wait_issuer = std::nullopt);
 
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
     [[nodiscard]] ContextState* current_context(UserlandHleCall& call);
@@ -313,7 +316,7 @@ private:
     std::uint32_t compatibility_display_process_id_ { };
     GlesResourceStore resources_;
     GlesProgramState programs_;
-    std::unique_ptr<GlesProgramRenderer> program_renderer_;
+    std::unique_ptr<GlesProgramWorker> program_renderer_;
     std::optional<GlesProgramRenderer::Limits> program_limits_;
     std::optional<PendingProgramTarget> pending_program_target_;
     std::uint32_t next_context_ { 0x00010001U };

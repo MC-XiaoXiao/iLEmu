@@ -28,7 +28,7 @@ bool OpenGlesHle::ensure_program_renderer(
     UserlandHleCall& call, std::string* error)
 {
     if (!program_renderer_) {
-        program_renderer_ = create_gles_program_renderer(error);
+        program_renderer_ = GlesProgramWorker::create(error);
         if (program_renderer_)
             call.output().marker("[gles] GLSL executor=" +
                                  std::string { program_renderer_->name() });

@@ -586,8 +586,8 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
                 context.current_program = 0U;
         }
         programs_.delete_program(name);
-        if (program_renderer_)
-            program_renderer_->erase(name);
+        if (program_renderer_ && !program_renderer_->erase(name))
+            set_gl_error(call, gles_abi::invalid_operation);
     });
     add("_glGetUniformLocation", [this](UserlandHleCall& call) {
         const auto name = call.string_argument(1, 256U);

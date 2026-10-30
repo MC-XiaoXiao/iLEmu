@@ -24,8 +24,8 @@ struct GlesProgramDraw {
         std::uint32_t size { }, type { }, stride { };
         bool normalized { };
         std::array<float, 4> value { };
-        // Buffer storage remains alive for the synchronous draw. Client arrays
-        // are copied from guest memory; host code never dereferences it.
+        // Preparation-only view. The command publisher snapshots buffer storage
+        // before returning; host code never dereferences guest memory.
         std::span<const std::byte> buffer;
         std::vector<std::byte> client;
     };
@@ -65,18 +65,58 @@ public:
     [[nodiscard]] virtual LinkResult link(std::uint32_t program,
         std::string_view vertex, std::string_view fragment,
         const std::map<std::string, std::uint32_t, std::less<>>& bindings) = 0;
-    virtual void erase(std::uint32_t program) = 0;
+    [[nodiscard]] virtual bool erase(std::uint32_t program) = 0;
     [[nodiscard]] virtual bool contains(std::uint32_t program) const = 0;
     [[nodiscard]] virtual std::optional<std::array<std::int32_t, 3>> precision(
         std::uint32_t shader_type, std::uint32_t precision_type) = 0;
     // An empty input frame continues the target's queued GPU contents.
-    [[nodiscard]] virtual bool draw(DisplayFrame& frame,
+    [[nodiscard]] virtual bool draw(const DisplayFrame& frame,
         GlesRenderTargetKey target, const GlesProgramDraw& program,
         std::uint32_t mode, const GlesRasterState& state) = 0;
     // Publish queued GPU contents at a guest-visible synchronization boundary.
     [[nodiscard]] virtual bool readback(
         DisplayFrame& frame, GlesRenderTargetKey target) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
+};
+
+// Core-facing command publisher. The executor above remains a host-only API;
+// factory creation, all executor calls and destruction run on one shared render
+// thread. No guest state or callbacks may cross this boundary.
+class GlesProgramWorker {
+public:
+    using Limits = GlesProgramRenderer::Limits;
+    using LinkResult = GlesProgramRenderer::LinkResult;
+    static std::unique_ptr<GlesProgramWorker> create(std::string* error);
+    ~GlesProgramWorker();
+
+    [[nodiscard]] std::optional<Limits> limits();
+    [[nodiscard]] LinkResult link(std::uint32_t program,
+        std::string_view vertex, std::string_view fragment,
+        const std::map<std::string, std::uint32_t, std::less<>>& bindings);
+    [[nodiscard]] bool erase(std::uint32_t program);
+    [[nodiscard]] bool contains(std::uint32_t program) const;
+    [[nodiscard]] std::optional<std::array<std::int32_t, 3>> precision(
+        std::uint32_t shader_type, std::uint32_t precision_type);
+    // Returns a nonzero accepted sequence, not driver success. Allocation or
+    // capacity-limit failure throws; accepted commands are never discarded.
+    [[nodiscard]] std::uint64_t enqueue_draw(const DisplayFrame& frame,
+        GlesRenderTargetKey target, const GlesProgramDraw& program,
+        std::uint32_t mode, const GlesRasterState& state, std::size_t issuer);
+    // Only wait through this issuer's last draw. Other ready errors may also
+    // be returned, tagged with their original issuing processor.
+    [[nodiscard]] std::vector<std::size_t> collect_errors(
+        std::optional<std::size_t> wait_issuer = std::nullopt);
+    // Guest thread-slot reuse must not inherit a retired issuer's errors.
+    // Accepted commands still execute; only their now-absent observer retires.
+    void retire_issuer(std::size_t issuer);
+    [[nodiscard]] bool readback(
+        DisplayFrame& frame, GlesRenderTargetKey target);
+    [[nodiscard]] std::string_view name() const;
+
+private:
+    struct State;
+    explicit GlesProgramWorker(std::unique_ptr<State> state);
+    std::unique_ptr<State> state_;
 };
 
 using GlesProgramRendererFactory = std::unique_ptr<GlesProgramRenderer> (*)(
