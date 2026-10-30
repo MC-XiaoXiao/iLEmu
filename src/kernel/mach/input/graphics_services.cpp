@@ -2044,14 +2044,21 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
     if (input_sequence_output)
         *input_sequence_output = input_sequence;
 
-    // Preserve host transition tracking, but let an open firmware HID system
-    // classify physical contacts before routing them to system gestures,
-    // accessibility services or an application window.
-    const auto native_input = state.native_hid_touch_events
+    // Give physical contacts to the firmware before selecting a legacy event
+    // port. Observers alone do not replace the primary input transport.
+    const auto hid_queued = state.native_hid_touch_events
         ? state.hid_event_queue.enqueue({ sanitized, state.clock.now() })
         : false;
-    if (native_input)
+    if (hid_queued) {
         state.note_io_event_transition();
+        const auto consumer = state.hid_event_queue.consumer();
+        if (consumer && consumer->digitizer_events) {
+            // The firmware's HID system owns hit testing, coordinate conversion,
+            // gesture capture and idle resets. Do not also choose a host-side
+            // GraphicsServices destination for the same physical contact.
+            return EnqueueResult::Queued;
+        }
+    }
 
     const auto terminal = sanitized.phase == TouchPhase::Up ||
                           sanitized.phase == TouchPhase::Cancel;
@@ -2085,9 +2092,8 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
 
     if (route->application) {
         clear_springboard_enqueued_gesture_locked(state);
-        if (!native_input)
-            queue_locked(state, route->destination_object,
-                transform_touch(sanitized, route->transform), input_sequence);
+        queue_locked(state, route->destination_object,
+            transform_touch(sanitized, route->transform), input_sequence);
         // App-owned event ports do not pass the physical touch through
         // SpringBoard. Preserve the firmware's separate idle-duration event so
         // SpringBoard can run its native resetIdleDuration: path as it would
@@ -2194,9 +2200,7 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
         unlock_completion =
             complete_unlock_transition_locked(state, input_sequence);
     }
-    // Native HID owns the unlock and application-exit sequence. A second
-    // physical HOME after its swipe would act on the newly unlocked screen.
-    if (!native_input && unlock_completion.completes_interrupted_home_exit &&
+    if (unlock_completion.completes_interrupted_home_exit &&
         home_recovery_requested) {
         *home_recovery_requested = true;
     }
@@ -2206,23 +2210,20 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
     const auto service = state.bootstrap_service_objects.find(
         std::string { system_event_service });
     if (service == state.bootstrap_service_objects.end()) {
-        if (!native_input) {
-            state.pending_graphics_inputs.push_back(
-                KernelSharedState::PendingGraphicsInput {
-                    KernelSharedState::PendingGraphicsInput::Kind::Touch,
-                    sanitized,
-                    0, input_sequence,
-                    KernelSharedState::MachMessage::GraphicsInputKind::Touch });
-        }
+        state.pending_graphics_inputs.push_back(
+            KernelSharedState::PendingGraphicsInput {
+                KernelSharedState::PendingGraphicsInput::Kind::Touch,
+                sanitized,
+                0, input_sequence,
+                KernelSharedState::MachMessage::GraphicsInputKind::Touch });
         queue_idle_duration_reset_locked(state, input_sequence);
         lock.unlock();
         if (resume_process_id) {
             activate_resolved_application(state, *resume_process_id, scenes);
         }
-        return native_input ? EnqueueResult::Queued : EnqueueResult::Deferred;
+        return EnqueueResult::Deferred;
     }
-    if (!native_input)
-        queue_locked(state, service->second, sanitized, input_sequence);
+    queue_locked(state, service->second, sanitized, input_sequence);
     // Hardware input reaches SpringBoard through this event port. The device
     // also emits its separate idle-duration event for the same input, which
     // lets SpringBoard run resetIdleDuration: even when the touch is consumed
