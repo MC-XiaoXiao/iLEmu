@@ -6,8 +6,11 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import com.xxiao.ilemu.containers.ContainerRepository
+import com.xxiao.ilemu.ui.AppSettingsContent
+import com.xxiao.ilemu.ui.MainNavigation
 import com.xxiao.ilemu.ui.ScreenUi
 import com.xxiao.ilemu.ui.ContainerCard
 import org.json.JSONArray
@@ -21,6 +24,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var message: TextView
     private lateinit var count: TextView
     private lateinit var ui: ScreenUi
+    private lateinit var navigation: MainNavigation
+    private var resumed = false
     private val items = linkedMapOf<String, ContainerCard>()
     private val handler = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
@@ -33,16 +38,26 @@ class MainActivity : AppCompatActivity() {
         repository = ContainerRepository(this)
         actions = ContainerActions(this, launcher)
         ui = ScreenUi(this)
-        val body = ui.screen(this, getString(R.string.app_name), "版本 ${BuildConfig.VERSION_NAME}", false)
-        val actions = ui.row()
-        actions.addView(ui.button("＋  添加容器", true) { startActivity(Intent(this, ContainerActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
-        actions.addView(ui.button("App 设置") { startActivity(Intent(this, SettingsActivity::class.java)) }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = ui.dp(10) })
-        body.addView(actions)
+        navigation = MainNavigation(this) { startActivity(Intent(this, ContainerActivity::class.java)) }
+        val body = navigation.libraryContent
+        AppSettingsContent(this, navigation.settingsContent) {
+            DiagnosticsDialog.show(this) { launcher.launch(SessionSettings.smokeArguments()) }
+        }
         count = ui.text("", ScreenUi.Type.BODY, true)
-        body.addView(count, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(24); bottomMargin = ui.dp(12) })
+        body.addView(count, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(16); bottomMargin = ui.dp(12) })
         message = ui.notice(body)
         cards = ui.column(); body.addView(cards)
         runCatching { repository.migrateLegacy() }.onFailure { message.text = "已有固件识别失败：${it.message}" }
+        val backToLibrary = object : OnBackPressedCallback(false) {
+            override fun handleOnBackPressed() { navigation.select(R.id.navigation_emulators) }
+        }
+        onBackPressedDispatcher.addCallback(this, backToLibrary)
+        navigation.onTabChanged = {
+            backToLibrary.isEnabled = !navigation.isLibraryVisible
+            handler.removeCallbacks(refresh)
+            if (resumed && navigation.isLibraryVisible) handler.post(refresh)
+        }
+        navigation.select(savedInstanceState?.getInt("mainTab") ?: R.id.navigation_emulators)
         if (savedInstanceState == null) handleDebugCommand(intent)
     }
     private fun render() {
@@ -57,8 +72,7 @@ class MainActivity : AppCompatActivity() {
             cards.removeAllViews(); items.clear()
             if (entries.isEmpty()) {
                 val empty = ui.card(cards)
-                ui.label(empty, "从一部 iPhone 开始", "添加容器，选择固件下载，或导入已准备的固件目录。每个容器拥有独立的数据与设置。")
-                empty.addView(ui.button("添加第一个容器", true) { startActivity(Intent(this, ContainerActivity::class.java)) })
+                ui.label(empty, "从一部 iPhone 开始", "点击右下角的加号，选择固件或导入已准备的固件目录。")
             }
             entries.forEach { entry ->
                 items[entry.id] = ContainerCard(ui, cards, actions).also { it.update(entry, repository) }
@@ -75,7 +89,7 @@ class MainActivity : AppCompatActivity() {
             }.onFailure { message.text = it.message }
         }
     }
-    override fun onResume() { super.onResume(); handler.post(refresh) }
-    override fun onPause() { handler.removeCallbacks(refresh); super.onPause() }
-    override fun onSaveInstanceState(outState: Bundle) { launcher.save(outState); super.onSaveInstanceState(outState) }
+    override fun onResume() { super.onResume(); resumed = true; if (navigation.isLibraryVisible) handler.post(refresh) }
+    override fun onPause() { resumed = false; handler.removeCallbacks(refresh); super.onPause() }
+    override fun onSaveInstanceState(outState: Bundle) { outState.putInt("mainTab", navigation.selectedTab); launcher.save(outState); super.onSaveInstanceState(outState) }
 }

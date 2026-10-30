@@ -1,0 +1,4 @@
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@+id/navigation_emulators" android:icon="@drawable/ic_devices" android:title="@string/navigation_emulators" />
+    <item android:id="@+id/navigation_settings" android:icon="@drawable/ic_settings" android:title="@string/navigation_settings" />
+</menu>

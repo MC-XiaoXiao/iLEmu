@@ -1,0 +1,6 @@
+<resources>
+    <item name="library_app_bar" type="id" />
+    <item name="library_scroll" type="id" />
+    <item name="settings_app_bar" type="id" />
+    <item name="settings_scroll" type="id" />
+</resources>

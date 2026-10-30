@@ -16,4 +16,9 @@
     <string name="audio_mute">静音</string>
     <string name="no_log">尚无运行日志。可先检查 CPU，再启动已准备的固件。</string>
     <string name="session_stopping">上一个会话尚未退出，请稍后重试。</string>
+    <string name="navigation_emulators">模拟器</string>
+    <string name="navigation_settings">设置</string>
+    <string name="add_container">添加容器</string>
+    <string name="github_repository">Github</string>
+    <string name="github_repository_url" translatable="false">https://github.com/MC-XiaoXiao/iLEmu</string>
 </resources>

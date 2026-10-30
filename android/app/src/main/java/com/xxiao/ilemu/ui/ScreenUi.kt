@@ -14,7 +14,6 @@ import androidx.core.view.WindowCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
-import com.google.android.material.divider.MaterialDivider
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
@@ -29,7 +28,6 @@ internal class ScreenUi(val context: Context) {
         SUBTITLE(MaterialR.style.TextAppearance_Material3_TitleMedium),
         SECTION(MaterialR.style.TextAppearance_Material3_TitleSmall),
         BODY(MaterialR.style.TextAppearance_Material3_BodyMedium),
-        LIST(MaterialR.style.TextAppearance_Material3_BodyLarge),
         CAPTION(MaterialR.style.TextAppearance_Material3_BodySmall)
     }
     fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
@@ -57,20 +55,20 @@ internal class ScreenUi(val context: Context) {
     }
     fun group(parent: LinearLayout) = column().also { parent.addView(it, LinearLayout.LayoutParams(-1, -2)) }
     fun section(parent: LinearLayout, label: String): LinearLayout {
-        if (parent.childCount > 0) parent.addView(MaterialDivider(context), LinearLayout.LayoutParams(-1, -2).apply {
-            topMargin = dp(24); bottomMargin = dp(16)
-        })
         parent.addView(text(label, Type.SECTION).apply {
             setTextColor(MaterialColors.getColor(context, MaterialR.attr.colorPrimary, ink))
-        }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        }, LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = if (parent.childCount == 0) 0 else dp(24)
+            bottomMargin = dp(16)
+        })
         return group(parent)
     }
     /** Material list item: headline, supporting text and the theme's standard state layer. */
     fun preference(parent: LinearLayout, title: String, summary: String, action: (MaterialTextView) -> Unit) {
         val supporting = text(summary, Type.BODY, true)
-        val content = column().apply { addView(text(title, Type.LIST)); addView(supporting) }
+        val content = column().apply { addView(text(title, Type.TITLE)); addView(supporting) }
         parent.addView(row().apply {
-            minimumHeight = dp(72)
+            minimumHeight = dp(88)
             setPadding(0, dp(8), 0, dp(8))
             val value = android.util.TypedValue()
             context.theme.resolveAttribute(android.R.attr.selectableItemBackground, value, true)
