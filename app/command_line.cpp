@@ -58,9 +58,12 @@
 #include "app/routes_command.hpp"
 #include "app/mig_command.hpp"
 #include "app/command_line.hpp"
+#include "app/firmware_command.hpp"
 #include "runtime/session_host.hpp"
 #include "foundation/host_memory.hpp"
 #include "host/resource_usage.hpp"
+#include "host/firmware_storage.hpp"
+#include "foundation/rootfs_path_resolver.hpp"
 #include "runtime/emulator_session.hpp"
 
 namespace {
@@ -84,6 +87,9 @@ std::string usage()
            "  ilemu catalog --rootfs DIR [--device PROFILE] [--manifest FILE] "
            "[--host-cache DIR] "
            "[--output FILE]\n"
+           "  ilemu firmware unpack|pack --rootfs DIR --archive TAR [--output FILE]\n"
+           "  ilemu firmware normalize|remove|stat --rootfs DIR [--output FILE]\n"
+           "  ilemu firmware copy --rootfs DIR --destination DIR [--output FILE]\n"
            "  ilemu firmware prepare --rootfs DIR [--device PROFILE] "
            "[--manifest FILE] [--host-cache DIR] [--prepare-force] "
            "[--prepare-file-blocks N] [--prepare-image-blocks N] "
@@ -1118,6 +1124,13 @@ void boot(const std::vector<std::string>& args,
     options.baseband_output = option(args, "--baseband-output");
     if (!options.ticks && options.windowed && !flag(args, "--verbose"))
         options.quiet_output = true;
+    // Recover only the writable guest data partition of legacy extractions.
+    // System firmware content and its host permissions remain untouched.
+    const auto data = RootfsPathResolver {options.rootfs}.resolve("/var");
+    if (std::filesystem::is_directory(std::filesystem::symlink_status(data))) {
+        FirmwareStorage::prepare(data);
+        output.line("[firmware] data partition host permissions prepared");
+    }
     EmulatorSession session { std::move(options), host, output };
     session.run();
 }
@@ -1204,14 +1217,13 @@ int ilemu::run_command_line(int argc, char** argv, SessionHost& host)
             } else if (command == "catalog") {
                 catalog(args, *output);
             } else if (command == "firmware") {
-                if (args.empty() || args.front() != "prepare") {
-                    throw std::runtime_error {
-                        "firmware requires the 'prepare' mode"
-                    };
+                if (!args.empty() && args.front() == "prepare") {
+                    firmware_prepare(
+                        std::vector<std::string> { args.begin() + 1, args.end() },
+                        *output);
+                } else {
+                    firmware_storage_command(args, *output);
                 }
-                firmware_prepare(
-                    std::vector<std::string> { args.begin() + 1, args.end() },
-                    *output);
             } else if (command == "disasm") {
                 disasm(args, *output);
             } else if (command == "smoke") {

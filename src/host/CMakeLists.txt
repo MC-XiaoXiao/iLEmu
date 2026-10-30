@@ -91,3 +91,17 @@ target_link_libraries(ilemu_host INTERFACE
     iLEmu::host_audio
     iLEmu::host_graphics
     iLEmu::host_system)
+
+# Firmware storage is host work and is shared by desktop commands and Android.
+if(ANDROID)
+    set(ILEMU_ARCHIVE_TARGET archive_static)
+else()
+    find_package(LibArchive REQUIRED)
+    set(ILEMU_ARCHIVE_TARGET LibArchive::LibArchive)
+endif()
+add_library(ilemu_host_firmware STATIC
+    filesystem/firmware_storage.cpp filesystem/firmware_archive.cpp)
+add_library(iLEmu::host_firmware ALIAS ilemu_host_firmware)
+ilemu_configure_module(ilemu_host_firmware)
+target_link_libraries(ilemu_host_firmware PUBLIC iLEmu::filesystem PRIVATE ${ILEMU_ARCHIVE_TARGET})
+target_link_libraries(ilemu_host INTERFACE iLEmu::host_firmware)
