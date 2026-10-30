@@ -905,6 +905,7 @@ std::uint32_t GlesResourceStore::import_surface_texture(AddressSpace& memory,
     decoded->host_surface = host_surface;
     decoded->host_generation =
         host_surface ? host_surface->cpu_generation() : 0;
+    decoded->argb_generation = decoded->host_generation;
     decoded->revision = allocate_texture_revision();
     decoded->render_target_inverted_vertical = render_target_inverted_vertical;
     texture->second.levels.insert_or_assign(0, std::move(*decoded));
@@ -969,6 +970,7 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
     decoded->host_surface = host_surface;
     decoded->host_generation =
         host_surface ? host_surface->cpu_generation() : 0;
+    decoded->argb_generation = decoded->host_generation;
     decoded->render_target_inverted_vertical = render_target_inverted_vertical;
     if (decoded->width == level->second.width &&
         decoded->height == level->second.height &&
@@ -1015,6 +1017,7 @@ std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
             return nullptr;
         level->second.host_generation =
             level->second.host_surface->cpu_generation();
+        level->second.argb_generation = level->second.host_generation;
     }
     // A texture's first row is its GL lower edge. Native host targets use a
     // top-left row origin, so ordinary framebuffer rendering reverses Y.
@@ -1039,6 +1042,7 @@ bool GlesResourceStore::commit_texture_render_target(std::uint32_t name,
     level->second.host_surface->replace_cpu(level->second.argb);
     level->second.host_generation =
         level->second.host_surface->cpu_generation();
+    level->second.argb_generation = level->second.host_generation;
     level->second.revision = allocate_texture_revision();
     return true;
 }
@@ -1059,15 +1063,22 @@ void GlesResourceStore::update_texture_render_target_generation(
 }
 
 bool GlesResourceStore::materialize_surface_textures(
-    HostGraphicsDevice& graphics)
+    HostGraphicsDevice& graphics, std::span<const std::uint32_t> textures)
 {
-    for (auto& [name, texture] : textures_) {
-        static_cast<void>(name);
-        for (auto& [index, level] : texture.levels) {
+    for (const auto name : textures) {
+        const auto found = textures_.find(name);
+        if (found == textures_.end())
+            continue;
+        for (auto& [index, level] : found->second.levels) {
             static_cast<void>(index);
-            if (!level.host_surface ||
-                level.argb.size() ==
-                    static_cast<std::size_t>(level.width) * level.height) {
+            if (!level.host_surface)
+                continue;
+            const auto generation =
+                std::max(level.host_surface->cpu_generation(),
+                    level.host_surface->gpu_generation());
+            if (level.argb.size() ==
+                    static_cast<std::size_t>(level.width) * level.height &&
+                level.argb_generation == generation) {
                 continue;
             }
             if (level.host_surface->gpu_generation() >
@@ -1090,6 +1101,7 @@ bool GlesResourceStore::materialize_surface_textures(
             }
             level.argb = frame.pixels;
             level.host_generation = mapping.generation();
+            level.argb_generation = mapping.generation();
             level.revision = allocate_texture_revision();
         }
     }

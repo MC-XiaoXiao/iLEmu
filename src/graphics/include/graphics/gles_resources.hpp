@@ -37,6 +37,8 @@ public:
         std::shared_ptr<HostSurface> host_surface;
         std::uint64_t host_generation { };
         bool render_target_inverted_vertical { };
+        // Generation represented by argb, independently of the native image.
+        std::uint64_t argb_generation { };
     };
     struct Texture {
         std::uint32_t name { };
@@ -96,7 +98,7 @@ public:
     // Explicit software-fallback boundary for textures whose newest pixels
     // live only in a HostSurface native image.
     [[nodiscard]] bool materialize_surface_textures(
-        HostGraphicsDevice& graphics);
+        HostGraphicsDevice& graphics, std::span<const std::uint32_t> textures);
 
     [[nodiscard]] std::uint32_t upload_buffer(AddressSpace& memory,
         std::uint32_t name, std::uint32_t size, std::uint32_t data,

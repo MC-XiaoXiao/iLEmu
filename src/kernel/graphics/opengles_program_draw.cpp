@@ -200,7 +200,7 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
             return;
         }
     }
-    if (!resources_.materialize_surface_textures(*renderer_) ||
+    if (!resources_.materialize_surface_textures(*renderer_, draw.textures) ||
         !program_renderer_->draw(frame, binding.key, draw, mode, state)) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
