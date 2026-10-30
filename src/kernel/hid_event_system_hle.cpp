@@ -246,8 +246,7 @@ bool HidEventSystemHle::prepare_pending_event(
         const auto queued =
             HidEventTransaction::enqueue(registry_, observed->observer,
                 std::move(observed->event), state_->user_interface_geometry,
-                state_->darwin_abi.hid_digitizer, digitizer_sender_id,
-                [this, processor] {
+                state_->darwin_version, digitizer_sender_id, [this, processor] {
                     delivering_processors_.erase(processor);
                     interactive_processors_.erase(processor);
                     if (state_)
@@ -274,8 +273,8 @@ bool HidEventSystemHle::prepare_pending_event(
     if (!std::holds_alternative<HidEventQueue::Acceleration>(event->input))
         interactive_processors_.insert(processor);
     const auto queued = HidEventTransaction::enqueue(registry_, *consumer,
-        *event, state_->user_interface_geometry,
-        state_->darwin_abi.hid_digitizer, digitizer_sender_id, [this, processor] {
+        *event, state_->user_interface_geometry, state_->darwin_version,
+        digitizer_sender_id, [this, processor] {
             delivering_processors_.erase(processor);
             interactive_processors_.erase(processor);
             if (state_)

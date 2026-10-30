@@ -28,7 +28,6 @@ namespace detail {
         std::span<const std::uint16_t> calls;
         std::span<const std::uint16_t> enosys;
         std::span<const std::uint16_t> firmware;
-        std::span<const std::uint32_t> gated;
     };
     inline constexpr std::array<std::uint16_t, 253> calls_9_0_0d1 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 18, 20, 23, 24, 25, 26,
@@ -54,46 +53,6 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 17> firmware_9_0_0d1 {
         126, 127, 169, 301, 302, 303, 304, 305, 306, 307, 308, 309, 312, 321, 338,
         339, 340,
-    };
-    // epoch gate bitmap (170 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_9_0_0d1 {
-        0x00680900U, 0xc0000140U, 0x49903099U, 0x208f7868U, 0x1077a006U, 0x0c0edd5dU, 0x0b200040U, 0x02600030U,
-        0x00000002U, 0x00000000U, 0x00000048U, 0x0ffe0001U, 0x00000000U, 0xfffff800U, 0xffffffffU, 0xffffffffU,
-    };
-    inline constexpr std::array<std::uint16_t, 330> calls_9_3_1 {
-        1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 18, 20, 23, 24, 25, 26,
-        27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 44, 46, 47, 48,
-        49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 65, 66, 69, 70, 72, 73,
-        74, 75, 78, 79, 80, 81, 82, 83, 85, 86, 89, 90, 92, 93, 95, 96, 97, 98, 100,
-        104, 105, 106, 111, 116, 117, 118, 120, 121, 122, 123, 124, 126, 127, 128,
-        131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 142, 147, 151, 152, 153,
-        154, 155, 157, 158, 159, 161, 165, 167, 169, 173, 176, 180, 181, 182, 183,
-        184, 185, 188, 189, 190, 191, 192, 194, 195, 196, 197, 199, 200, 201, 202,
-        203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 214, 215, 220, 221, 222,
-        223, 225, 226, 227, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240,
-        241, 242, 243, 244, 247, 248, 250, 251, 252, 253, 254, 255, 256, 258, 259,
-        260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274,
-        275, 276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289,
-        290, 291, 292, 293, 294, 295, 301, 302, 303, 304, 305, 306, 307, 308, 309,
-        310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 324, 325,
-        327, 328, 329, 330, 331, 332, 333, 334, 336, 337, 338, 339, 340, 341, 342,
-        343, 344, 345, 346, 347, 348, 349, 350, 351, 353, 354, 355, 356, 357, 358,
-        359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 380, 381, 382, 383, 384,
-        385, 386, 387, 388, 389, 390, 391, 392, 393, 394, 395, 396, 397, 398, 399,
-        400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414,
-        415, 416, 417, 418, 419, 420, 421, 422, 423, 424, 425, 426,
-    };
-    inline constexpr std::array<std::uint16_t, 2> enosys_9_3_1 {
-        299, 300,
-    };
-    // firmware stubs from 5A347
-    inline constexpr std::array<std::uint16_t, 2> firmware_9_3_1 {
-        148, 149,
-    };
-    // epoch gate bitmap (158 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_9_3_1 {
-        0x00680900U, 0xc0002140U, 0x49903099U, 0x208f78e8U, 0x1047a006U, 0x040ed95dU, 0x00200042U, 0x02400001U,
-        0x00000002U, 0x00000000U, 0x00008048U, 0x0fe00001U, 0x00000000U, 0xffffc000U, 0xffffffffU, 0xffffffffU,
     };
     inline constexpr std::array<std::uint16_t, 330> calls_9_4_1 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 17, 18, 20, 23, 24, 25, 26,
@@ -121,49 +80,9 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 2> enosys_9_4_1 {
         299, 300,
     };
-    // firmware stubs from 5G77
+    // firmware stubs from 5A347, 5G77
     inline constexpr std::array<std::uint16_t, 2> firmware_9_4_1 {
         148, 149,
-    };
-    // epoch gate bitmap (158 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_9_4_1 {
-        0x00680900U, 0xc0002140U, 0x49903099U, 0x208f78e8U, 0x1047a006U, 0x040ed95dU, 0x00200042U, 0x02400001U,
-        0x00000002U, 0x00000000U, 0x00008048U, 0x0fe00001U, 0x00000000U, 0xffffc000U, 0xffffffffU, 0xffffffffU,
-    };
-    inline constexpr std::array<std::uint16_t, 338> calls_10_0_0d3 {
-        1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
-        28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 44, 46, 47, 48, 49,
-        50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 65, 66, 73, 74, 75, 78, 79,
-        80, 81, 82, 83, 85, 86, 89, 90, 92, 93, 95, 96, 97, 98, 100, 104, 105, 106,
-        111, 116, 117, 118, 120, 121, 122, 123, 124, 126, 127, 128, 131, 132, 133,
-        134, 135, 136, 137, 138, 139, 140, 142, 147, 151, 152, 153, 154, 155, 157,
-        158, 159, 161, 165, 167, 169, 173, 176, 180, 181, 182, 183, 184, 185, 187,
-        188, 189, 190, 191, 192, 194, 195, 196, 197, 199, 200, 201, 202, 203, 204,
-        205, 206, 207, 208, 209, 210, 211, 212, 220, 221, 222, 223, 225, 226, 227,
-        228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242,
-        243, 244, 245, 247, 248, 250, 251, 252, 253, 254, 255, 256, 258, 259, 260,
-        261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275,
-        276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290,
-        291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 305,
-        306, 307, 308, 309, 310, 311, 313, 314, 315, 316, 317, 318, 319, 320, 322,
-        324, 325, 327, 328, 329, 330, 331, 332, 333, 334, 336, 337, 338, 339, 340,
-        341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 353, 354, 355, 356,
-        357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 370, 371,
-        372, 380, 381, 382, 383, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393,
-        394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408,
-        409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423,
-        424, 425, 426, 427, 428, 429,
-    };
-    inline constexpr std::array<std::uint16_t, 0> enosys_10_0_0d3 {
-    };
-    // firmware stubs from 7A341
-    inline constexpr std::array<std::uint16_t, 5> firmware_10_0_0d3 {
-        148, 149, 224, 312, 321,
-    };
-    // epoch gate bitmap (164 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_10_0_0d3 {
-        0x006a0900U, 0xc0002140U, 0x499031f9U, 0x208f78e8U, 0x1047a006U, 0x040edd5dU, 0x00e00042U, 0x02400000U,
-        0x00000002U, 0x00000000U, 0x00008048U, 0x0fe00001U, 0x00000000U, 0xffffc000U, 0xffffffffU, 0xffffffffU,
     };
     inline constexpr std::array<std::uint16_t, 338> calls_10_3_1 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
@@ -191,45 +110,9 @@ namespace detail {
     };
     inline constexpr std::array<std::uint16_t, 0> enosys_10_3_1 {
     };
-    inline constexpr std::array<std::uint16_t, 0> firmware_10_3_1 {
-    };
-    // epoch gate bitmap (0 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_10_3_1 {
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
-    };
-    inline constexpr std::array<std::uint16_t, 338> calls_10_4_0 {
-        1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
-        28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 44, 46, 47, 48, 49,
-        50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 65, 66, 73, 74, 75, 78, 79,
-        80, 81, 82, 83, 85, 86, 89, 90, 92, 93, 95, 96, 97, 98, 100, 104, 105, 106,
-        111, 116, 117, 118, 120, 121, 122, 123, 124, 126, 127, 128, 131, 132, 133,
-        134, 135, 136, 137, 138, 139, 140, 142, 147, 151, 152, 153, 154, 155, 157,
-        158, 159, 161, 165, 167, 169, 173, 176, 180, 181, 182, 183, 184, 185, 187,
-        188, 189, 190, 191, 192, 194, 195, 196, 197, 199, 200, 201, 202, 203, 204,
-        205, 206, 207, 208, 209, 210, 211, 212, 220, 221, 222, 223, 225, 226, 227,
-        228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242,
-        243, 244, 245, 247, 248, 250, 251, 252, 253, 254, 255, 256, 258, 259, 260,
-        261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275,
-        276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290,
-        291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 305,
-        306, 307, 308, 309, 310, 311, 313, 314, 315, 316, 317, 318, 319, 320, 322,
-        324, 325, 327, 328, 329, 330, 331, 332, 333, 334, 336, 337, 338, 339, 340,
-        341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 353, 354, 355, 356,
-        357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 370, 371,
-        372, 380, 381, 382, 383, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393,
-        394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408,
-        409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423,
-        424, 425, 426, 427, 428, 429,
-    };
-    inline constexpr std::array<std::uint16_t, 0> enosys_10_4_0 {
-    };
-    inline constexpr std::array<std::uint16_t, 0> firmware_10_4_0 {
-    };
-    // epoch gate bitmap (0 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_10_4_0 {
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
+    // firmware stubs from 7A341
+    inline constexpr std::array<std::uint16_t, 5> firmware_10_3_1 {
+        148, 149, 224, 312, 321,
     };
     inline constexpr std::array<std::uint16_t, 347> calls_11_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
@@ -261,11 +144,6 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 3> firmware_11_0_0 {
         148, 149, 373,
     };
-    // epoch gate bitmap (158 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_11_0_0 {
-        0x006a0900U, 0xc0002140U, 0x499031f9U, 0x208f78e8U, 0x1047a006U, 0x040ed95dU, 0x0ee00042U, 0x02400001U,
-        0x00000002U, 0x00000080U, 0x00008042U, 0x0fc00001U, 0x00000000U, 0xff200000U, 0xffffffffU, 0xffffffffU,
-    };
     inline constexpr std::array<std::uint16_t, 347> calls_13_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
         28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 46, 47, 48, 49, 50,
@@ -295,11 +173,6 @@ namespace detail {
     // firmware stubs from 10A403, 10A405
     inline constexpr std::array<std::uint16_t, 5> firmware_13_0_0 {
         148, 149, 440, 441, 442,
-    };
-    // epoch gate bitmap (147 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_13_0_0 {
-        0x006a0900U, 0xc0003140U, 0x499031f9U, 0x208f78e8U, 0x1047a006U, 0x040fd95dU, 0x0ee00042U, 0x02400001U,
-        0x00000002U, 0x00000080U, 0x00008042U, 0x0fc00019U, 0x00000000U, 0x20200000U, 0xffffff00U, 0xffffffffU,
     };
     inline constexpr std::array<std::uint16_t, 387> calls_14_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
@@ -335,11 +208,6 @@ namespace detail {
     inline constexpr std::array<std::uint16_t, 4> firmware_14_0_0 {
         148, 149, 435, 436,
     };
-    // epoch gate bitmap (100 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_14_0_0 {
-        0x00000000U, 0xc0003140U, 0x499031f9U, 0x208f78e8U, 0x1047a006U, 0x0403d95dU, 0x0effc042U, 0x02400001U,
-        0x00000002U, 0x00000080U, 0x00008042U, 0x0f800019U, 0x00000000U, 0x00200000U, 0x00000000U, 0xfff00000U,
-    };
     inline constexpr std::array<std::uint16_t, 391> calls_15_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
         28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 41, 42, 43, 46, 47, 48, 49, 50,
@@ -373,11 +241,6 @@ namespace detail {
     // firmware stubs from 13A344
     inline constexpr std::array<std::uint16_t, 4> firmware_15_0_0 {
         148, 149, 435, 436,
-    };
-    // epoch gate bitmap (87 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_15_0_0 {
-        0x00000000U, 0xc0003140U, 0x499031f9U, 0x208f78e8U, 0x1047a006U, 0x0401d95dU, 0x0effc042U, 0x02400001U,
-        0x00000002U, 0x00000080U, 0x00008042U, 0x0f800019U, 0x00000000U, 0x00200000U, 0x00000000U, 0x00000000U,
     };
     inline constexpr std::array<std::uint16_t, 400> calls_16_0_0 {
         1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 20, 23, 24, 25, 26, 27,
@@ -413,23 +276,15 @@ namespace detail {
     };
     inline constexpr std::array<std::uint16_t, 0> firmware_16_0_0 {
     };
-    // epoch gate bitmap (0 numbers): reference tags, next newer tag and firmware all lack them
-    inline constexpr std::array<std::uint32_t, 16> gated_16_0_0 {
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
-        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
-    };
-    inline constexpr std::array<Release, 11> releases { {
-        Release { "9.0.0d1", "xnu-792.24.17", calls_9_0_0d1, enosys_9_0_0d1, firmware_9_0_0d1, gated_9_0_0d1 },
-        Release { "9.3.1", "xnu-1228.15.4", calls_9_3_1, enosys_9_3_1, firmware_9_3_1, gated_9_3_1 },
-        Release { "9.4.1", "xnu-1228.15.4", calls_9_4_1, enosys_9_4_1, firmware_9_4_1, gated_9_4_1 },
-        Release { "10.0.0d3", "xnu-1456.1.26", calls_10_0_0d3, enosys_10_0_0d3, firmware_10_0_0d3, gated_10_0_0d3 },
-        Release { "10.3.1", "xnu-1504.3.12", calls_10_3_1, enosys_10_3_1, firmware_10_3_1, gated_10_3_1 },
-        Release { "10.4.0", "xnu-1504.3.12", calls_10_4_0, enosys_10_4_0, firmware_10_4_0, gated_10_4_0 },
-        Release { "11.0.0", "xnu-1699.22.73", calls_11_0_0, enosys_11_0_0, firmware_11_0_0, gated_11_0_0 },
-        Release { "13.0.0", "xnu-2050.48.11", calls_13_0_0, enosys_13_0_0, firmware_13_0_0, gated_13_0_0 },
-        Release { "14.0.0", "xnu-2422.115.4,xnu-2782.40.9", calls_14_0_0, enosys_14_0_0, firmware_14_0_0, gated_14_0_0 },
-        Release { "15.0.0", "xnu-3248.60.10", calls_15_0_0, enosys_15_0_0, firmware_15_0_0, gated_15_0_0 },
-        Release { "16.0.0", "xnu-3789.1.32", calls_16_0_0, enosys_16_0_0, firmware_16_0_0, gated_16_0_0 },
+    inline constexpr std::array<Release, 8> releases { {
+        Release { "9.0.0d1", "xnu-792.24.17", calls_9_0_0d1, enosys_9_0_0d1, firmware_9_0_0d1 },
+        Release { "9.4.1", "xnu-1228.15.4", calls_9_4_1, enosys_9_4_1, firmware_9_4_1 },
+        Release { "10.3.1", "xnu-1504.3.12", calls_10_3_1, enosys_10_3_1, firmware_10_3_1 },
+        Release { "11.0.0", "xnu-1699.22.73", calls_11_0_0, enosys_11_0_0, firmware_11_0_0 },
+        Release { "13.0.0", "xnu-2050.48.11", calls_13_0_0, enosys_13_0_0, firmware_13_0_0 },
+        Release { "14.0.0", "xnu-2422.115.4,xnu-2782.40.9", calls_14_0_0, enosys_14_0_0, firmware_14_0_0 },
+        Release { "15.0.0", "xnu-3248.60.10", calls_15_0_0, enosys_15_0_0, firmware_15_0_0 },
+        Release { "16.0.0", "xnu-3789.1.32", calls_16_0_0, enosys_16_0_0, firmware_16_0_0 },
     } };
 } // namespace detail
 
@@ -458,20 +313,6 @@ namespace detail {
     const auto slot = bsd_slot(darwin_release, number);
     return slot == BsdSlot::Call || slot == BsdSlot::Enosys ||
         slot == BsdSlot::FirmwareStub;
-}
-
-// True when the reference tag, the next newer tag and the release's firmware
-// libsystem all lack `number`: the kernel answers it with nosys().
-[[nodiscard]] constexpr bool bsd_slot_gated(
-    std::string_view darwin_release, std::uint32_t number)
-{
-    for (const auto& release : detail::releases) {
-        if (release.darwin_release != darwin_release)
-            continue;
-        return number / 32U < release.gated.size() &&
-            ((release.gated[number / 32U] >> (number % 32U)) & 1U) != 0U;
-    }
-    return false;
 }
 
 } // namespace ilemu::xnu_reference

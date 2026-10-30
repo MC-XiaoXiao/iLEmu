@@ -40,9 +40,10 @@ namespace {
     struct SpawnDescriptorProfile {
         bool port_actions;
 
-        static constexpr SpawnDescriptorProfile for_epoch(DarwinAbiEpoch epoch)
+        static constexpr SpawnDescriptorProfile for_version(
+            DarwinVersion version)
         {
-            return { epoch >= DarwinAbiEpoch::IphoneOs2 };
+            return { (version >= DarwinGeneration::IphoneOs2) };
         }
     };
 
@@ -224,7 +225,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
         arguments = read_string_vector(memory_, registers[3]);
         environment = read_string_vector(memory_, registers[4]);
         attributes = read_spawn_attributes(memory_, registers[2],
-            SpawnDescriptorProfile::for_epoch(shared_state_->darwin_abi.abi_epoch));
+            SpawnDescriptorProfile::for_version(shared_state_->darwin_version));
     }
     if (!path || !arguments || !environment || !attributes ||
         (pid_address == 0 && !attributes->setexec)) {

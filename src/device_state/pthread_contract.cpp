@@ -21,10 +21,6 @@ namespace {
         PthreadRegistrationLayout::Arm32RegisterV1, 0U,
         PthreadPriorityEncoding::QueueIndex, 3U, 0U, true, false,
     };
-    constexpr PthreadContract register_v1_tsd {
-        PthreadRegistrationLayout::Arm32RegisterV1, 0x48U,
-        PthreadPriorityEncoding::QueueIndex, 3U, 0U, true, false,
-    };
     constexpr PthreadContract register_v1_tsd_four_queues {
         PthreadRegistrationLayout::Arm32RegisterV1, 0x48U,
         PthreadPriorityEncoding::QueueIndex, 4U, 0U, true, false,
@@ -44,32 +40,29 @@ namespace {
         fine_priority_features | maintenance_feature | 0x01U | 0x40U,
         true, true,
     };
-    constexpr PthreadContract register_v2 {
-        PthreadRegistrationLayout::RegisterV2, 0U,
-        PthreadPriorityEncoding::QueueIndex, 0U, 0U, true, false,
-    };
 
 } // namespace
 
-const PthreadContract& resolve_pthread_contract(DarwinPthreadAbi abi)
+const PthreadContract& resolve_pthread_contract(DarwinVersion version)
 {
-    switch (abi) {
-    case DarwinPthreadAbi::LegacyMachThreads:
+    switch (version.generation()) {
+    case DarwinGeneration::Unknown:
+    case DarwinGeneration::IphoneOs1:
+    case DarwinGeneration::IphoneOs2:
         return legacy;
-    case DarwinPthreadAbi::BsdThreadRegisterV1:
+    case DarwinGeneration::IphoneOs3:
         return register_v1;
-    case DarwinPthreadAbi::BsdThreadRegisterV1TsdBase:
-        return register_v1_tsd;
-    case DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues:
+    case DarwinGeneration::Ios4:
+    case DarwinGeneration::Ios5:
+    case DarwinGeneration::Ios6:
         return register_v1_tsd_four_queues;
-    case DarwinPthreadAbi::BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues:
+    case DarwinGeneration::Ios7:
         return register_v1_expanded_tsd_four_queues;
-    case DarwinPthreadAbi::BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues:
+    case DarwinGeneration::Ios8:
+    case DarwinGeneration::Ios9:
         return register_v1_expanded_tsd_fine_priority;
-    case DarwinPthreadAbi::BsdThreadRegisterV1ExpandedTsdKeventWorkqueues:
+    case DarwinGeneration::Ios10:
         return register_v1_expanded_tsd_kevent;
-    case DarwinPthreadAbi::BsdThreadRegisterV2:
-        return register_v2;
     }
     throw std::invalid_argument { "Unsupported Darwin pthread ABI" };
 }

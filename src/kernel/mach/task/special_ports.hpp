@@ -94,8 +94,7 @@ public:
                     read_little_word(request.bytes, set ? 48U : 32U);
                 const auto target = state.task_port_pids.find(object);
                 if (target == state.task_port_pids.end() ||
-                    !supports(
-                        state.darwin_abi.task_special_ports, which, set)) {
+                    !supports(state.darwin_version, which, set)) {
                     error = darwin::mach::invalid_argument;
                 } else {
                     const auto process = state.processes.find(target->second);
@@ -163,7 +162,7 @@ private:
     {
         const auto target = state.task_port_pids.find(object);
         if (target == state.task_port_pids.end() ||
-            !supports(state.darwin_abi.task_special_ports, which, false))
+            !supports(state.darwin_version, which, false))
             return { 0U, darwin::mach::invalid_argument };
         const auto process = state.processes.find(target->second);
         if (process == state.processes.end() || process->second.exited)
@@ -182,30 +181,27 @@ private:
         return object != xnu::ipc::null_name && object != xnu::ipc::dead_name;
     }
 
-    static bool supports(
-        DarwinTaskSpecialPortsAbi abi, std::uint32_t which, bool set)
+    static bool supports(DarwinVersion version, std::uint32_t which, bool set)
     {
-        using Abi = DarwinTaskSpecialPortsAbi;
         switch (which) {
         case 1U:
         case 2U:
         case 4U:
             return true;
         case 3U:
-            return !set && abi != Abi::Ledger;
+            return !set && version >= DarwinGeneration::IphoneOs2;
         case 5U:
         case 6U:
-            return abi == Abi::Ledger || abi == Abi::SecurityLedger ||
-                   abi == Abi::SecurityLedgerAutomount;
+            return version < DarwinGeneration::Ios6;
         case 7U:
         case 9U:
-            return abi != Abi::Ledger;
+            return version >= DarwinGeneration::IphoneOs2;
         case 8U:
-            return abi == Abi::SecurityLedger ||
-                   abi == Abi::SecurityLedgerAutomount;
+            return version >= DarwinGeneration::IphoneOs2 &&
+                   version < DarwinGeneration::Ios6;
         case 10U:
-            return abi == Abi::SecurityLedgerAutomount ||
-                   abi == Abi::SecurityDebug;
+            return version == DarwinGeneration::IphoneOs2 ||
+                   version >= DarwinGeneration::Ios8;
         default:
             return false;
         }

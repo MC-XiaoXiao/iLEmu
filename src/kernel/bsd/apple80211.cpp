@@ -115,8 +115,8 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
         return;
     }
     const auto record_layout =
-        shared_state_->darwin_abi.apple80211_ioctl ==
-                DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord
+        (shared_state_->darwin_version >= DarwinGeneration::IphoneOs3 &&
+            shared_state_->darwin_version < DarwinGeneration::Ios7)
             ? wifi_driver::compact_network_record_layout
             : wifi_driver::aligned_network_record_layout;
     if (registers[1] == wifi_driver::set_request &&

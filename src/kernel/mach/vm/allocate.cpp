@@ -15,8 +15,8 @@ Allocation::Result Allocation::evaluate_locked(AddressSpace& memory,
     std::span<const std::byte> bytes)
 {
     const auto width = mach_vm_support::MachVmWireFormat::for_interface(
-        read_little_word(bytes, 20U) == 4800U,
-        state.darwin_abi.mach_vm_address).address_size();
+        read_little_word(bytes, 20U) == 4800U, state.darwin_version)
+                           .address_size();
     if (bytes.size() != 36U + 2U * width ||
         (read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit))
         return Result { darwin::mig::bad_arguments };
@@ -33,8 +33,8 @@ Allocation::Result Allocation::evaluate_locked(AddressSpace& memory,
     const auto size = read_address(32U + width);
     const auto flags = read_little_word(bytes, 32U + 2U * width);
     const auto allocation = allocate_guest_vm_region(memory,
-        darwin::mach::vm_allocation::Contract { state.darwin_abi.abi_epoch },
-        address, size, flags);
+        darwin::mach::vm_allocation::Contract { state.darwin_version }, address,
+        size, flags);
     Result result { allocation.result };
     result.address_words = width / 4U;
     result.words[3] = allocation.address;
@@ -57,7 +57,8 @@ std::optional<std::uint32_t> Allocation::try_synchronous_locked(
     std::uint32_t reply_name, std::uint32_t receive_address, std::uint32_t identifier)
 {
     const auto width = mach_vm_support::MachVmWireFormat::for_interface(
-        identifier == 4800U, state.darwin_abi.mach_vm_address).address_size();
+        identifier == 4800U, state.darwin_version)
+                           .address_size();
     const auto request_size = 36U + 2U * width;
     const auto reply_with_trailer = 44U + width;
     const auto destination = mach_ipc::validate_task_rpc_locked(memory, state,

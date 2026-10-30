@@ -151,7 +151,7 @@ void CompatibilityKernel::dispatch_mach_message(
     }
     if (wants_send) {
         bits = mach_transport::UserHeader::copyin_bits(
-            *bits, *local_port, shared_state_->darwin_abi.mach_message_header);
+            *bits, *local_port, shared_state_->darwin_version);
         if (!bits) {
             // ipc_kmsg_get copies the entire message before checking its
             // header. Preserve that error order without adding a second
@@ -1140,8 +1140,10 @@ void CompatibilityKernel::dispatch_mach_message(
                             circular = true;
                         return true;
                     };
-                    const auto reverse = shared_state_->darwin_abi.mach_descriptor_copyin ==
-                        DarwinMachDescriptorCopyinAbi::ReverseCompactDescriptors;
+                    const auto reverse = (shared_state_->darwin_version >=
+                                              DarwinGeneration::IphoneOs1 &&
+                                          shared_state_->darwin_version <
+                                              DarwinGeneration::IphoneOs3);
                     for (std::size_t index = 0; index < descriptors.size(); ++index) {
                         const auto& descriptor = descriptors[
                             reverse ? descriptors.size() - 1U - index : index];

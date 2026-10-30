@@ -438,20 +438,24 @@ bool CompatibilityKernel::receive_socket_message(
     const bool end_of_stream = !endpoint->second.local_read_open() ||
                                !endpoint->second.peer_write_open();
     SocketRightsControl control;
-    const auto received = LocalSocketReceive::read(queue.bytes, queue.ancillary,
-        queue.read_offset, receive_capacity, end_of_stream,
+    const auto received = LocalSocketReceive::read(
+        queue.bytes, queue.ancillary, queue.read_offset, receive_capacity,
+        end_of_stream,
         [&](std::span<const std::byte> bytes, std::size_t offset) {
             return target.copy_at(bytes, offset);
         },
         [&](const auto& transfers) {
-            return control.externalize(transfers, shared_state_->darwin_abi.abi_epoch,
-                control_address != 0, file_descriptor_limit(),
+            return control.externalize(
+                transfers, shared_state_->darwin_version, control_address != 0,
+                file_descriptor_limit(),
                 [&](std::uint32_t candidate) {
                     return !file_descriptors_.contains(candidate) &&
                            !virtual_descriptors_.contains(candidate) &&
                            !duplicated_descriptors_.contains(candidate);
                 },
-                [&](const auto& transfer) { return import_descriptor(transfer); });
+                [&](const auto& transfer) {
+                    return import_descriptor(transfer);
+                });
         });
     if (!received.ready)
         return false;
@@ -652,20 +656,24 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
         const bool end_of_stream = !endpoint->second.local_read_open() ||
                                    !endpoint->second.peer_write_open();
         SocketRightsControl control;
-        received = LocalSocketReceive::read(queue.bytes, queue.ancillary,
-            queue.read_offset, size, end_of_stream,
+        received = LocalSocketReceive::read(
+            queue.bytes, queue.ancillary, queue.read_offset, size,
+            end_of_stream,
             [&](std::span<const std::byte> bytes, std::size_t offset) {
                 return target.copy_at(bytes, offset);
             },
             [&](const auto& transfers) {
-                return control.externalize(transfers, shared_state_->darwin_abi.abi_epoch,
-                    false, file_descriptor_limit(),
+                return control.externalize(
+                    transfers, shared_state_->darwin_version, false,
+                    file_descriptor_limit(),
                     [&](std::uint32_t candidate) {
                         return !file_descriptors_.contains(candidate) &&
                                !virtual_descriptors_.contains(candidate) &&
                                !duplicated_descriptors_.contains(candidate);
                     },
-                    [&](const auto& transfer) { return import_descriptor(transfer); });
+                    [&](const auto& transfer) {
+                        return import_descriptor(transfer);
+                    });
             });
     }
     if (!received.ready)
@@ -752,8 +760,7 @@ bool CompatibilityKernel::complete_host_accept(Cpu& cpu,
     }
     const auto fd = install_host_socket(accepted.accepted_socket);
     if (!fd) {
-        if (shared_state_->darwin_abi.socket_accept_failure ==
-            DarwinSocketAcceptFailureAbi::Requeue) {
+        if (shared_state_->darwin_version < DarwinGeneration::Ios6) {
             host->second->restore_accept(std::move(accepted));
             shared_state_->note_io_event_transition();
         }
@@ -820,8 +827,7 @@ bool CompatibilityKernel::complete_unix_accept(Cpu& cpu,
         return false;
     const auto accepted_fd = allocate_file_descriptor();
     if (!accepted_fd) {
-        if (shared_state_->darwin_abi.socket_accept_failure ==
-            DarwinSocketAcceptFailureAbi::Discard) {
+        if (shared_state_->darwin_version >= DarwinGeneration::Ios6) {
             listener->second->pending_endpoints.pop_front();
             shared_state_->note_io_event_transition();
         }

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
 
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
 #include <cstdint>
 #include <optional>
 
@@ -15,15 +15,15 @@ namespace ilemu::mach_transport {
 class UserHeader {
 public:
     [[nodiscard]] static constexpr std::optional<std::uint32_t> copyin_bits(
-        std::uint32_t bits, std::uint32_t reply, DarwinMachMessageHeaderAbi abi)
+        std::uint32_t bits, std::uint32_t reply, DarwinVersion version)
     {
         constexpr std::uint32_t port_bytes_mask = 0x8000ffffU;
         constexpr std::uint32_t port_fields_mask = 0x801f1f1fU;
-        if (abi == DarwinMachMessageHeaderAbi::CheckedPortBytes &&
+        if ((version < DarwinGeneration::Ios7) &&
             (bits & ~port_bytes_mask) != 0U)
             return std::nullopt;
-        bits &= abi == DarwinMachMessageHeaderAbi::MaskedPortFields
-                    ? port_fields_mask : port_bytes_mask;
+        bits &= (version >= DarwinGeneration::Ios8) ? port_fields_mask
+                                                    : port_bytes_mask;
         const auto sends_right = [](std::uint32_t disposition) {
             return disposition >= 17U && disposition <= 21U;
         };

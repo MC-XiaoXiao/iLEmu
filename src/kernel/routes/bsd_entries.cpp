@@ -15,7 +15,7 @@
 #include "kernel/darwin_signal_context.hpp"
 #include <kernel/credential_groups.hpp>
 namespace ilemu::syscall_routes {
-void bind_bsd_entries(Table& table, const DarwinAbi& abi)
+void bind_bsd_entries(Table& table, DarwinVersion version)
 {
     const auto add = [&](std::uint32_t n, std::string_view operation,
                          Handler handler,
@@ -28,53 +28,54 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     };
     add(kernel_bsd::resource_monitor::ledger_route.identifier, "ledger",
         Handler::BsdLedgerInline, Contract::Ledger,
-        darwin_abi_route_supported(
-            kernel_bsd::resource_monitor::ledger_route, abi.abi_epoch));
+        darwin_version_route_supported(
+            kernel_bsd::resource_monitor::ledger_route, version));
     add(darwin::task_trace::inspect_syscall, "proc_trace_log",
         Handler::BsdProcess, Contract::TaskTraceInspection,
-        abi.task_trace_memory == DarwinTaskTraceMemoryAbi::ProcessInspection);
+        (version >= DarwinGeneration::Ios8));
     add(458, "coalition", Handler::BsdCoalition, Contract::ResourceCoalitions,
-        abi.coalition_abi != DarwinCoalitionAbi::Unsupported);
+        (version >= DarwinGeneration::Ios8));
     add(460, "necp_match_policy", Handler::BsdNetworkPolicy,
-        Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
+        Contract::LaterEpoch, (version >= DarwinGeneration::Ios7));
     // Distinct, additive syscall slots need no per-feature ABI selector.
     // The shared route policy handles reserved slots on older reference tables.
     add(500, "getentropy", Handler::BsdEntropy);
     add(515, "ulock_wait", Handler::BsdUlock);
     add(516, "ulock_wake", Handler::BsdUlock);
     add(461, "getattrlistbulk", Handler::BsdDirectoryAttributes,
-        Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
+        Contract::LaterEpoch, (version >= DarwinGeneration::Ios7));
     add(463, "openat", Handler::BsdFilesystem, Contract::LaterEpoch,
-        abi.abi_epoch == DarwinAbiEpoch::Later);
+        (version >= DarwinGeneration::Ios7));
     table.bind_new({ Domain::BsdSyscall, 464, 464, "openat_nocancel",
         Handler::BsdFilesystem, Contract::LaterEpoch,
         Cancellation::NoCancelEntry,
-        abi.abi_epoch == DarwinAbiEpoch::Later ? Outcome::HandlerValidated
-                                               : Outcome::BsdNosys,
+        (version >= DarwinGeneration::Ios7) ? Outcome::HandlerValidated
+                                            : Outcome::BsdNosys,
         "bsd/dispatch.cpp" });
     add(467, "fchmodat", Handler::BsdFilesystem, Contract::LaterEpoch,
-        abi.abi_epoch == DarwinAbiEpoch::Later);
+        (version >= DarwinGeneration::Ios7));
     add(468, "fchownat", Handler::BsdFilesystem, Contract::LaterEpoch,
-        abi.abi_epoch == DarwinAbiEpoch::Later);
+        (version >= DarwinGeneration::Ios7));
     add(441, "guarded_open_np", Handler::BsdGuardedFile);
     add(442, "guarded_close_np", Handler::BsdGuardedFile);
     add(443, "guarded_kqueue_np", Handler::BsdGuardedFile);
     add(484, "guarded_open_dprotected_np", Handler::BsdGuardedFile,
-        Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
+        Contract::LaterEpoch, (version >= DarwinGeneration::Ios7));
     add(485, "guarded_write_np", Handler::BsdGuardedFile, Contract::LaterEpoch,
-        abi.abi_epoch == DarwinAbiEpoch::Later);
+        (version >= DarwinGeneration::Ios7));
     add(486, "guarded_pwrite_np", Handler::BsdGuardedFile, Contract::LaterEpoch,
-        abi.abi_epoch == DarwinAbiEpoch::Later);
+        (version >= DarwinGeneration::Ios7));
     add(444, "change_fdguard_np", Handler::BsdGuardedFile,
         Contract::GuardedFdChange,
-        darwin_abi_route_supported(guarded_fd_change_route, abi.abi_epoch));
+        darwin_version_route_supported(guarded_fd_change_route, version));
     add(447, "connectx", Handler::BsdSocket, Contract::Connectx,
-        darwin_abi_route_supported(connectx_route, abi.abi_epoch));
+        darwin_version_route_supported(connectx_route, version));
     add(322, "iopolicysys", Handler::BsdIoPolicyInline, Contract::IoPolicy,
-        darwin_abi_route_supported(legacy_iopolicysys_route, abi.abi_epoch));
+        darwin_version_route_supported(legacy_iopolicysys_route, version));
     add(365, "stack_snapshot", Handler::BsdStackSnapshotInline,
         Contract::StackSnapshot,
-        abi.stack_snapshot_abi != DarwinStackSnapshotAbi::Unsupported);
+        (version >= DarwinGeneration::Ios4 &&
+            version < DarwinGeneration::Ios7));
     add(0, "syscall", Handler::BsdProcess);
     add(1, "exit", Handler::BsdProcess);
     add(2, "fork", Handler::BsdProcess);
@@ -167,7 +168,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Handler::BsdPosixSemaphore);
     add(darwin::syscall::posix_semaphore_post, "posix_semaphore_post",
         Handler::BsdPosixSemaphore);
-    bind_bsd_contract_entries(table, abi);
+    bind_bsd_contract_entries(table, version);
     add(darwin::syscall::alternate_signal_stack, "alternate_signal_stack",
         Handler::BsdSignal);
     add(111, "sigsuspend", Handler::BsdSignal);
@@ -175,8 +176,9 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(darwin::signal_context::syscall, "sigreturn", Handler::BsdSignal);
     add(330, "__sigwait", Handler::BsdSignal);
     table.bind_new({ Domain::BsdSyscall, 422, 422, "__sigwait_nocancel",
-        Handler::BsdSignal, Contract::CurrentDispatcher, Cancellation::NoCancelEntry,
-        abi.abi_epoch >= DarwinAbiEpoch::IphoneOs2 ? Outcome::HandlerValidated
+        Handler::BsdSignal, Contract::CurrentDispatcher,
+        Cancellation::NoCancelEntry,
+        (version >= DarwinGeneration::IphoneOs2) ? Outcome::HandlerValidated
                                                  : Outcome::BsdNosys,
         "bsd/signal/signal.cpp" });
     add(darwin::syscall::pthread_kill, "pthread_kill", Handler::BsdSignal);
@@ -189,9 +191,11 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(12, "chdir", Handler::BsdFilesystem);
     add(13, "fchdir", Handler::BsdFilesystem);
     add(348, "__pthread_chdir", Handler::BsdFilesystem,
-        Contract::CurrentDispatcher, abi.abi_epoch != DarwinAbiEpoch::IphoneOs1);
+        Contract::CurrentDispatcher,
+        (version != DarwinGeneration::IphoneOs1));
     add(349, "__pthread_fchdir", Handler::BsdFilesystem,
-        Contract::CurrentDispatcher, abi.abi_epoch != DarwinAbiEpoch::IphoneOs1);
+        Contract::CurrentDispatcher,
+        (version != DarwinGeneration::IphoneOs1));
     add(darwin::syscall::change_mode, "change_mode", Handler::BsdFilesystem);
     add(darwin::syscall::change_owner, "change_owner", Handler::BsdFilesystem);
     add(darwin::syscall::change_owner_no_follow, "change_owner_no_follow",
@@ -219,7 +223,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(128, "rename", Handler::BsdFilesystem);
     add(136, "mkdir", Handler::BsdFilesystem);
     add(475, "mkdirat", Handler::BsdFilesystem, Contract::LaterEpoch,
-        abi.abi_epoch == DarwinAbiEpoch::Later);
+        (version >= DarwinGeneration::Ios7));
     add(137, "rmdir", Handler::BsdFilesystem);
     add(darwin::syscall::update_file_times, "update_file_times",
         Handler::BsdFilesystem);
@@ -246,7 +250,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(342, "lstat64_extended", Handler::BsdFilesystem);
     add(343, "fstat64_extended", Handler::BsdFilesystem);
     add(470, "fstatat64", Handler::BsdFilesystem, Contract::LaterEpoch,
-        abi.abi_epoch == DarwinAbiEpoch::Later);
+        (version >= DarwinGeneration::Ios7));
     add(345, "statfs64", Handler::BsdFilesystem);
     add(346, "fstatfs64", Handler::BsdFilesystem);
     add(347, "getfsstat64", Handler::BsdFilesystem);
@@ -302,33 +306,31 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(294, "shared_region_check_np", Handler::BsdSharedRegion);
     add(295, "shared_region_map_np", Handler::BsdSharedRegion);
     add(297, "psynch_rw_longrdlock", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(298, "psynch_rw_yieldwrlock", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(301, "psynch_mutexwait", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(302, "psynch_mutexdrop", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(303, "psynch_cvbroad", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(304, "psynch_cvsignal", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(305, "psynch_cvwait", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(306, "psynch_rw_rdlock", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(307, "psynch_rw_wrlock", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(308, "psynch_rw_unlock", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(309, "psynch_rw_unlock2", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(312, "psynch_cvclrprepost", Handler::BsdPsynch, Contract::Psynch,
-        abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
+        (version >= DarwinGeneration::IphoneOs3));
     add(438, "shared_region_map_and_slide_np", Handler::BsdSharedRegion,
-        Contract::SharedRegionSlide,
-        abi.shared_region_abi ==
-            DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1);
+        Contract::SharedRegionSlide, (version >= DarwinGeneration::Ios5));
     add(darwin::syscall::aio_synchronize, "aio_synchronize", Handler::BsdAio);
     add(darwin::syscall::aio_return, "aio_return", Handler::BsdAio);
     add(darwin::syscall::aio_suspend, "aio_suspend", Handler::BsdAio);
@@ -352,7 +354,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(118, "getsockopt", Handler::BsdSocket);
     add(darwin::syscall::write_vector, "write_vector", Handler::BsdSocket);
     add(darwin::syscall::read_vector, "readv", Handler::BsdDescriptorMemory);
-    if (abi.abi_epoch != DarwinAbiEpoch::IphoneOs1 && abi.abi_epoch != DarwinAbiEpoch::Unknown) {
+    if (version >= DarwinGeneration::IphoneOs2) {
         table.bind_new({Domain::BsdSyscall, 411, darwin::syscall::read_vector,
             "readv_nocancel", Handler::BsdDescriptorMemory, Contract::CurrentDispatcher,
             Cancellation::NoCancelAlias, Outcome::HandlerValidated,

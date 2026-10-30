@@ -37,7 +37,7 @@ namespace {
     }
 
     std::size_t requested_trailer_size(
-        std::uint32_t options, DarwinMachVmAddressWidth context_width)
+        std::uint32_t options, DarwinVersion version)
     {
         using namespace darwin::mig_wire;
         const auto elements =
@@ -50,7 +50,7 @@ namespace {
             return trailer_sender_size;
         if (elements == 4U) { // MACH_RCV_TRAILER_CTX
             return trailer_audit_size +
-                (context_width == DarwinMachVmAddressWidth::Wide64 ? 8U : 4U);
+                   (version >= DarwinGeneration::Ios6 ? 8U : 4U);
         }
         return trailer_audit_size;
     }
@@ -93,17 +93,16 @@ bool apply_receive_pointer_fixups(const KernelSharedState::MachMessage& message,
 }
 
 std::size_t receive_buffer_size(std::size_t message_size,
-    std::uint32_t receive_options, DarwinMachVmAddressWidth context_width)
+    std::uint32_t receive_options, DarwinVersion version)
 {
     return ((message_size + 3U) & ~std::size_t { 3U }) +
-           requested_trailer_size(receive_options, context_width);
+           requested_trailer_size(receive_options, version);
 }
 
 std::optional<ReceivedMessage> prepare_received_message(
     const KernelSharedState::MachMessage& message,
     std::uint32_t destination_name, std::uint32_t receive_options,
-    std::uint32_t sequence_number, std::uint64_t context,
-    DarwinMachVmAddressWidth context_width)
+    std::uint32_t sequence_number, std::uint64_t context, DarwinVersion version)
 {
     if (message.bytes.size() < darwin::mig_wire::message_header_size) {
         return std::nullopt;
@@ -111,7 +110,7 @@ std::optional<ReceivedMessage> prepare_received_message(
 
     ReceivedMessage result;
     result.message_size = message.bytes.size();
-    result.trailer_size = requested_trailer_size(receive_options, context_width);
+    result.trailer_size = requested_trailer_size(receive_options, version);
     const auto aligned_size = (result.message_size + 3U) & ~std::size_t { 3U };
     result.bytes.reserve(aligned_size + result.trailer_size);
     result.bytes.insert(

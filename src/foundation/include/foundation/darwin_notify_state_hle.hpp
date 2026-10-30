@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "foundation/darwin_version.hpp"
+
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -22,13 +24,9 @@ class UserlandHleCall;
 class UserlandHleRegistry;
 
 // Some libnotify generations contact notifyd from image initializers, including
-// notifyd's own image initialization. Their bootstrap-aware abi supplies
+// notifyd's own image initialization. Their bootstrap-aware version supplies
 // process-local check tokens while the server is absent, then returns to the
 // firmware service once notifyd has checked in.
-enum class DarwinNotifyStateAbi : std::uint8_t {
-    NativeServerTokens,
-    BootstrapAwareServerTokens,
-};
 
 // Adapts host-backed device state to Darwin notify without replacing notifyd.
 class DarwinNotifyStateHle {
@@ -42,7 +40,7 @@ public:
     explicit DarwinNotifyStateHle(UserlandHleRegistry& registry);
     ~DarwinNotifyStateHle();
 
-    void set_abi(DarwinNotifyStateAbi abi);
+    void set_version(DarwinVersion version);
     void set_native_server_ready_query(NativeServerReadyQuery query);
     void set_native_server_provider_query(NativeServerProviderQuery query);
     void set_provider(std::string name, StateProvider provider);
@@ -78,9 +76,7 @@ private:
     std::map<std::uint32_t, std::string> token_names_;
     std::set<std::uint32_t> virtual_tokens_;
     std::uint32_t next_virtual_token_ { 0x4000'0000U };
-    DarwinNotifyStateAbi abi_ {
-        DarwinNotifyStateAbi::NativeServerTokens
-    };
+    DarwinVersion version_ { DarwinGeneration::Unknown };
     NativeServerReadyQuery native_server_ready_query_;
     NativeServerProviderQuery native_server_provider_query_;
     NotificationDispatcher dispatcher_;

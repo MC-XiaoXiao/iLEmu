@@ -10,7 +10,7 @@
 
 #include <cstdint>
 
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
 
 namespace ilemu::darwin::memorystatus {
 
@@ -31,12 +31,9 @@ struct ProcessState {
     std::uint64_t user_data { };
 };
 
-[[nodiscard]] constexpr ProcessState initial_state(
-    DarwinMemoryStatusPriorityAbi abi)
+[[nodiscard]] constexpr ProcessState initial_state(DarwinVersion version)
 {
-    return { abi == DarwinMemoryStatusPriorityAbi::PriorityBands ? default_band
-                                                                 : -100,
-        0 };
+    return { (version >= DarwinGeneration::Ios7) ? default_band : -100, 0 };
 }
 
 } // namespace ilemu::darwin::memorystatus

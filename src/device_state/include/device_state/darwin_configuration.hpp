@@ -2,8 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Resolve device and firmware evidence into a session's Darwin ABI
-// configuration.
+// Resolve firmware metadata into a session's Darwin configuration.
 
 #pragma once
 
@@ -13,47 +12,48 @@
 #include <string>
 #include <string_view>
 
-#include "device_state/darwin_abi.hpp"
 #include "device_state/darwin_build_version.hpp"
-#include "device_state/firmware_activation_profile.hpp"
-#include "foundation/device_input_profile.hpp"
 #include "device_state/darwin_kernel_identity.hpp"
+#include "device_state/firmware_activation.hpp"
+#include "foundation/darwin_version.hpp"
+#include "foundation/device_input_profile.hpp"
 
 namespace ilemu {
 
 struct DarwinConfigurationEntry {
     std::string_view name;
     std::string_view darwin_release;
-    DarwinAbi abi;
+    DarwinVersion version;
     DarwinBuildVersion minimum_build;
-    FirmwareActivationProfile activation_profile;
+    FirmwareActivation activation;
     UnlockInteraction unlock_interaction { UnlockInteraction::Slide };
 };
 
-enum class DarwinAbiSource {
+enum class FirmwareSource {
     Unresolved,
     CompiledDefault,
     FirmwareMetadata,
     Explicit,
 };
 
-struct DarwinKernelConfiguration {
+struct DarwinConfiguration {
     DarwinKernelIdentity identity;
-    FirmwareActivationProfile activation_profile;
+    FirmwareActivation activation;
     UnlockInteraction unlock_interaction { UnlockInteraction::Slide };
-    DarwinAbi abi;
-    std::string abi_name { "unresolved" };
-    DarwinAbiSource abi_source { DarwinAbiSource::Unresolved };
-    std::string abi_source_detail;
+    DarwinVersion version;
+    std::string version_name { "unresolved" };
+    FirmwareSource version_source { FirmwareSource::Unresolved };
+    std::string version_source_detail;
 };
 
 [[nodiscard]] std::span<const DarwinConfigurationEntry> darwin_configurations();
-[[nodiscard]] std::string_view darwin_abi_source_name(DarwinAbiSource source);
+[[nodiscard]] std::string_view darwin_version_source_name(
+    FirmwareSource source);
 
 // Resolve once per session and pass the immutable configuration to its
 // processes. An explicit iOS build overrides firmware metadata for both
 // the reported kernel identity and ABI selection.
-[[nodiscard]] DarwinKernelConfiguration resolve_darwin_configuration(
+[[nodiscard]] DarwinConfiguration resolve_darwin_configuration(
     const std::filesystem::path& rootfs,
     std::optional<std::string_view> ios_build = std::nullopt);
 

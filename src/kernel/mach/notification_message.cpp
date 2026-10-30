@@ -162,8 +162,7 @@ Notifications::Result Notifications::register_locked(KernelSharedState& state,
         return { darwin::mach::invalid_task };
     if (notify == xnu::ipc::dead_name)
         return { 20U }; // KERN_INVALID_CAPABILITY
-    const bool modern = state.darwin_abi.mach_port_requests ==
-                        DarwinMachPortRequestAbi::SendPossibleRequests;
+    const bool modern = (state.darwin_version >= DarwinGeneration::Ios4);
     const bool send_possible = kind == mach_notify_send_possible;
     const bool name_request = kind == mach_notify_dead_name || send_possible;
     if ((!name_request && kind != mach_notify_port_destroyed &&

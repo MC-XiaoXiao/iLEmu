@@ -61,11 +61,12 @@ MachDispatchTable::Adapter MachDispatchTable::adapter_for(syscall_routes::Handle
         throw std::invalid_argument("Mach catalog handler has no executable adapter");
     }
 }
-MachDispatchTable::MachDispatchTable(const DarwinAbi& abi, std::string_view abi_profile)
+MachDispatchTable::MachDispatchTable(
+    DarwinVersion version, std::string_view version_name)
 {
     using namespace syscall_routes;
-    const auto catalog = build(abi);
-    const MachRoutePolicy policy { abi_profile };
+    const auto catalog = build(version);
+    const MachRoutePolicy policy { version_name };
     for (std::uint32_t trap = 0; trap < bindings_.size(); ++trap) {
         const auto* entry = catalog.find(Domain::MachTrap, trap);
         const auto resolved = policy.resolve(entry, trap);

@@ -4,7 +4,7 @@
 
 #pragma once
 #include "kernel/darwin_abi.hpp"
-#include "network/darwin_abi_route.hpp"
+#include "network/darwin_version_route.hpp"
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -17,13 +17,17 @@ namespace ilemu {
 // the calling uthread. Ordinary thread mask access does not allocate or scan.
 class DarwinSignalState {
 public:
-    explicit DarwinSignalState(DarwinAbiEpoch epoch)
-        : retain_retired_(epoch >= DarwinAbiEpoch::IphoneOs3)
-        , wait_consumes_owner_(epoch >= DarwinAbiEpoch::IphoneOs2)
-        , wait_reports_interrupt_(epoch >= DarwinAbiEpoch::IphoneOs3)
-        , child_policy_(epoch >= DarwinAbiEpoch::IphoneOs3 ? ChildPolicy::ConsumeOnReap
-              : epoch >= DarwinAbiEpoch::IphoneOs2 ? ChildPolicy::KernelReap
-                                                 : ChildPolicy::Reparent) { }
+    explicit DarwinSignalState(DarwinVersion version)
+        : retain_retired_(version >= DarwinGeneration::IphoneOs3)
+        , wait_consumes_owner_(version >= DarwinGeneration::IphoneOs2)
+        , wait_reports_interrupt_(version >= DarwinGeneration::IphoneOs3)
+        , child_policy_((version >= DarwinGeneration::IphoneOs3)
+                            ? ChildPolicy::ConsumeOnReap
+                        : (version >= DarwinGeneration::IphoneOs2)
+                            ? ChildPolicy::KernelReap
+                            : ChildPolicy::Reparent)
+    {
+    }
     enum class Scope { Thread, Process };
     static constexpr std::uint32_t unmaskable =
         (1U << (darwin::signal::kill - 1U)) |

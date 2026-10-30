@@ -100,10 +100,10 @@ bool CompatibilityKernel::dispatch_mach_host_message(
         write_result_reply(result);
         return true;
     }
-    if (*message_id == xnu::mig::mach_host::id(
-                           xnu::mig::mach_host::Routine::host_create_mach_voucher) &&
-        shared_state_->darwin_abi.mach_voucher_abi !=
-            DarwinMachVoucherAbi::Unsupported) {
+    if (*message_id ==
+            xnu::mig::mach_host::id(
+                xnu::mig::mach_host::Routine::host_create_mach_voucher) &&
+        (shared_state_->darwin_version >= DarwinGeneration::Ios8)) {
         constexpr std::uint32_t recipe_count_offset = 32U;
         constexpr std::uint32_t recipe_data_offset = 36U;
         constexpr std::uint32_t maximum_recipe_size = 5120U;

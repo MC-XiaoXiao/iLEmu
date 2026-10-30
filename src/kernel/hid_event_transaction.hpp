@@ -14,17 +14,17 @@
 namespace ilemu {
 
 class UserlandHleRegistry;
-enum class DarwinHidDigitizerAbi : std::uint8_t;
+class DarwinVersion;
 
 class HidEventTransaction {
 public:
     [[nodiscard]] static bool enqueue(UserlandHleRegistry& registry,
         const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
-        DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+        DisplayGeometry geometry, DarwinVersion version,
         std::uint64_t sender_id, std::function<void()> completion);
     [[nodiscard]] static bool enqueue(UserlandHleRegistry& registry,
         const HidEventQueue::Observer& observer, HidEventQueue::Event event,
-        DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+        DisplayGeometry geometry, DarwinVersion version,
         std::uint64_t sender_id, std::function<void()> completion);
 };
 

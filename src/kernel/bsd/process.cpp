@@ -647,8 +647,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         return;
     case 116: { // gettimeofday
         const auto wall_time = shared_state_->clock.wall_time();
-        if (shared_state_->darwin_abi.gettimeofday_abi ==
-            DarwinGettimeofdayAbi::CopyoutTimevalAndAbsoluteTime) {
+        if (shared_state_->darwin_version >= DarwinGeneration::Ios10) {
             const auto write_pair = [&](std::uint32_t address,
                                         std::uint32_t first,
                                         std::uint32_t second) {
@@ -874,8 +873,8 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::semaphore_wait_signal: { // __semwait_signal
         std::optional<std::uint64_t> timeout_interval;
         if (registers[2] != 0) {
-            const bool wide_seconds = shared_state_->darwin_abi.semaphore_wait_abi ==
-                DarwinSemaphoreWaitAbi::InlineSeconds64;
+            const bool wide_seconds =
+                (shared_state_->darwin_version >= DarwinGeneration::Ios4);
             auto seconds = static_cast<std::uint64_t>(registers[4]);
             auto nanoseconds = registers[wide_seconds ? 6U : 5U];
             if (wide_seconds) {

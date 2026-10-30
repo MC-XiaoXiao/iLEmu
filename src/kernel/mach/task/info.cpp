@@ -16,8 +16,8 @@ namespace ilemu::task_mig {
 using namespace mach_support;
 using namespace darwin::mach::task_info;
 
-std::size_t Information::word_count(DarwinTaskInformationAbi abi,
-    std::uint32_t flavor, std::uint32_t capacity)
+std::size_t Information::word_count(
+    DarwinVersion version, std::uint32_t flavor, std::uint32_t capacity)
 {
     switch (flavor) {
     case absolute_time_flavor: return absolute_time_word_count;
@@ -28,14 +28,17 @@ std::size_t Information::word_count(DarwinTaskInformationAbi abi,
     case basic_32_flavor: return basic_32_word_count;
     case basic_64_flavor: return basic_64_word_count;
     case basic_32_peak_flavor:
-        return abi >= DarwinTaskInformationAbi::ResidentPeak ? basic_32_peak_word_count : 0U;
+        return (version >= DarwinGeneration::IphoneOs2)
+                   ? basic_32_peak_word_count
+                   : 0U;
     case mach_basic_flavor:
-        return abi >= DarwinTaskInformationAbi::UnifiedBasic ? mach_basic_word_count : 0U;
+        return (version >= DarwinGeneration::Ios6) ? mach_basic_word_count : 0U;
     case dyld_info_flavor:
-        if (abi < DarwinTaskInformationAbi::DyldAddressPair)
+        if (version < DarwinGeneration::IphoneOs3)
             return 0U;
-        return abi == DarwinTaskInformationAbi::DyldAddressPair || capacity == 4U
-            ? 4U : dyld_info_word_count;
+        return (version == DarwinGeneration::IphoneOs3) || capacity == 4U
+                   ? 4U
+                   : dyld_info_word_count;
     default: return 0U;
     }
 }
@@ -59,7 +62,7 @@ Information::Result Information::evaluate_locked(AddressSpace& memory,
         return Result { darwin::mach::invalid_argument };
     const auto flavor = read_little_word(bytes, 32U);
     const auto capacity = read_little_word(bytes, 36U);
-    const auto count = word_count(state.darwin_abi.task_information, flavor, capacity);
+    const auto count = word_count(state.darwin_version, flavor, capacity);
     if (count == 0U || capacity < count)
         return Result { darwin::mach::invalid_argument };
     Result result;
@@ -152,7 +155,8 @@ std::optional<std::uint32_t> Information::try_synchronous_locked(AddressSpace& m
     if (!memory.copy_out(registers[0], bytes) || read_little_word(bytes, 16U) != 0U)
         return std::nullopt;
     const auto capacity = read_little_word(bytes, 36U);
-    const auto count = word_count(state.darwin_abi.task_information, read_little_word(bytes, 32U), capacity);
+    const auto count = word_count(
+        state.darwin_version, read_little_word(bytes, 32U), capacity);
     const auto size = count != 0U && capacity >= count ? 48U + 4U * count : 44U;
     if (registers[3] < size ||
         !memory.accessible(receive_address, size, MemoryPermission::Write))

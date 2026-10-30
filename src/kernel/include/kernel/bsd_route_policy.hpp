@@ -14,7 +14,6 @@ struct BsdRouteResolution {
     BsdDisposition disposition;
     bool send_sigsys;
     bool trace_unknown;
-    bool reference_gated;
 
     [[nodiscard]] bool invokes_handler() const
     {
@@ -26,9 +25,9 @@ struct BsdRouteResolution {
 // no reference lookup or policy branch is added to the syscall hot path.
 class BsdRoutePolicy {
 public:
-    BsdRoutePolicy(const DarwinAbi& abi, std::string_view darwin_release)
-        : darwin_release_ { darwin_release },
-          send_sigsys_ { abi.capabilities.send_sigsys }
+    BsdRoutePolicy(DarwinVersion version, std::string_view darwin_release)
+        : darwin_release_ { darwin_release }
+        , send_sigsys_ { version.known() }
     {
     }
     [[nodiscard]] BsdRouteResolution resolve(

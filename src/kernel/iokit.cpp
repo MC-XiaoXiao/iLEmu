@@ -57,19 +57,14 @@ namespace {
     using ConnectMethodCodec = kernel_iokit::ConnectMethodCodec;
     using ConnectMethodResult = ConnectMethodCodec::Result;
 
-    constexpr std::uint32_t single_service_message_id(
-        DarwinIOKitMatchingRpcAbi abi)
+    constexpr std::uint32_t single_service_message_id(DarwinVersion version)
     {
-        switch (abi) {
-        case DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1:
-            return static_cast<std::uint32_t>(
-                iokit_abi::Message::ServiceGetMatchingService);
-        case DarwinIOKitMatchingRpcAbi::InlineSingleServiceAfterVariableOutput:
+        if (version >= DarwinGeneration::Ios6)
             return static_cast<std::uint32_t>(
                 iokit_abi::Message::ServiceGetMatchingServiceAfterVariableOutput);
-        case DarwinIOKitMatchingRpcAbi::PluralIteratorOnly:
-            return 0U;
-        }
+        if (version >= DarwinGeneration::Ios4)
+            return static_cast<std::uint32_t>(
+                iokit_abi::Message::ServiceGetMatchingService);
         return 0U;
     }
 
@@ -1394,8 +1389,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             memory, message_address, local_port, message_id, iterator_name);
     }
 
-    if (message_id != 0U && message_id == single_service_message_id(
-            shared_state.darwin_abi.iokit_matching_rpc)) {
+    if (message_id != 0U &&
+        message_id == single_service_message_id(shared_state.darwin_version)) {
         // Darwin 11's private singular routine carries the same serialized
         // matching dictionary as the public plural call but returns the first
         // service port directly. Reuse the registry matcher so every modeled
@@ -2163,8 +2158,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         constexpr std::uint64_t first_match = 1ULL << 4U;
         constexpr std::uint64_t active_state =
             registered | matched | first_publish | first_match;
-        const bool busy_accounting = shared_state.darwin_abi.io_service_state ==
-            DarwinIOServiceStateAbi::StateWithBusyAccounting;
+        const bool busy_accounting =
+            (shared_state.darwin_version >= DarwinGeneration::IphoneOs3);
         const std::uint32_t reply_size = busy_accounting ? 56U : 44U;
         if (receive_size < reply_size)
             return mach_rcv_invalid_data;
@@ -2372,7 +2367,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         static_cast<std::uint32_t>(iokit_abi::Message::ConnectMethod)) {
         std::uint32_t decode_error = 0;
         const auto request = ConnectMethodCodec::read(memory, message_address,
-            send_size, shared_state.darwin_abi.io_connect_method, decode_error);
+            send_size, shared_state.darwin_version, decode_error);
         if (!request) {
             if (decode_error != darwin::mig::bad_arguments)
                 return decode_error;
@@ -2599,8 +2594,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         }
         return ConnectMethodCodec::write_reply(memory, message_address,
             local_port, message_id, receive_size, result,
-            shared_state.darwin_abi.io_connect_method,
-            request->out_of_line_output.size);
+            shared_state.darwin_version, request->out_of_line_output.size);
     }
 
     if (message_id ==

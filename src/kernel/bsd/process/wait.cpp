@@ -26,7 +26,7 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
     request.wake_generation = generation;
     const bool information = request.information_selector.has_value();
     const bool observe = information && (request.options & 0x20U); // WNOWAIT
-    const auto contract = shared_state_->darwin_abi.child_wait;
+    const auto contract = shared_state_->darwin_version;
     const auto copy_information = [&](std::uint32_t pid, std::uint32_t code,
                                       std::uint32_t status) {
         darwin::signal_context::SignalInfo info { };
@@ -47,13 +47,14 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
         has_child = true;
         if (!record.exited) {
             if (information) {
-                const auto stop_mask = contract == DarwinChildWaitAbi::StopOption ? 8U : 0x7fU;
+                const auto stop_mask =
+                    (contract < DarwinGeneration::IphoneOs2) ? 8U : 0x7fU;
                 const auto event = record.child_wait_status.peek(record.signal_stopped,
                     (request.options & stop_mask) != 0, (request.options & 0x10U) != 0);
                 if (!event)
                     continue;
                 const bool continued = *event == ChildWaitStatus::Kind::Continue;
-                const bool identified = contract == DarwinChildWaitAbi::ChildIdentity;
+                const bool identified = (contract >= DarwinGeneration::Ios5);
                 const auto event_pid = continued ? record.child_wait_status.continuation_pid()
                     : identified ? pid : 0U;
                 const auto code = continued ? 6U : identified ? 5U : 0U;
@@ -84,7 +85,7 @@ bool CompatibilityKernel::try_wait(Cpu& cpu, PendingWait& request)
         const auto status = record.termination_signal != 0
                                 ? record.termination_signal & 0x7fU
                                 : (record.exit_status & 0xffU) << 8U;
-        const bool identified = contract == DarwinChildWaitAbi::ChildIdentity;
+        const bool identified = (contract >= DarwinGeneration::Ios5);
         const bool copied = information
             ? copy_information(identified ? pid : 0U,
                   identified ? (record.termination_signal != 0 ? 2U : 1U) : 0U,
@@ -136,8 +137,10 @@ void CompatibilityKernel::dispatch_wait(Cpu& cpu, bool information)
     const auto& registers = cpu.registers();
     auto target = static_cast<std::int32_t>(registers[information ? 1 : 0]);
     if (information) {
-        const auto option_mask = shared_state_->darwin_abi.child_wait ==
-                DarwinChildWaitAbi::StopOption ? 0x3fU : 0x7fU;
+        const auto option_mask =
+            (shared_state_->darwin_version < DarwinGeneration::IphoneOs2)
+                ? 0x3fU
+                : 0x7fU;
         if (registers[3] == 0 || (registers[3] & ~option_mask) != 0 ||
             ((registers[0] == 1U || registers[0] == 2U) && target < 0)) {
             bsd_error(cpu, darwin::error::invalid_argument);

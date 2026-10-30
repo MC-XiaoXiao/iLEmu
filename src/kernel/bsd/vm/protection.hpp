@@ -6,7 +6,7 @@
 
 #include "foundation/vm_map.hpp"
 #include "kernel/darwin_abi.hpp"
-#include "network/darwin_abi_route.hpp"
+#include "network/darwin_version_route.hpp"
 
 namespace ilemu::bsd_vm {
 
@@ -15,12 +15,15 @@ namespace ilemu::bsd_vm {
 // to BSD mmap/mprotect, not the underlying Mach protection operation.
 class Protection {
 public:
-    explicit constexpr Protection(DarwinAbiEpoch epoch) : epoch_(epoch) { }
+    explicit constexpr Protection(DarwinVersion version)
+        : version_(version)
+    {
+    }
 
     constexpr std::uint32_t normalized_bits(std::uint32_t protection) const
     {
         auto bits = protection & 7U;
-        if (epoch_ >= DarwinAbiEpoch::IphoneOs2 && (bits & 6U) != 0U)
+        if ((version_ >= DarwinGeneration::IphoneOs2) && (bits & 6U) != 0U)
             bits |= 1U;
         return bits;
     }
@@ -76,7 +79,7 @@ public:
     }
 
 private:
-    DarwinAbiEpoch epoch_;
+    DarwinVersion version_;
 };
 
 } // namespace ilemu::bsd_vm

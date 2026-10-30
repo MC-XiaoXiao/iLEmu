@@ -88,20 +88,22 @@ ProcessResourceUsage CompatibilityKernel::collect_resource_usage() const
 {
     const auto statistics = task_statistics_query_
         ? task_statistics_query_(process_.pid, true) : std::nullopt;
-    const auto peak = shared_state_->darwin_abi.resource_accounting ==
-            DarwinResourceAccounting::ResidentPeak
-        ? static_cast<std::uint32_t>(memory_.resident_page_statistics().maximum *
-              AddressSpace::page_size) : 0U;
+    const auto peak =
+        (shared_state_->darwin_version >= DarwinGeneration::IphoneOs3)
+            ? static_cast<std::uint32_t>(
+                  memory_.resident_page_statistics().maximum *
+                  AddressSpace::page_size)
+            : 0U;
     auto usage = ProcessResourceUsage::from_task(
         statistics.value_or(XnuTaskStatistics { }), peak);
     std::lock_guard lock { shared_state_->mach_mutex };
     usage.set_context_switches(
         shared_state_->processes.at(process_.pid).voluntary_context_switches,
-        statistics && shared_state_->darwin_abi.resource_accounting ==
-                DarwinResourceAccounting::ResidentPeak
-            ? std::optional { statistics->context_switches } : std::nullopt);
-    if (shared_state_->darwin_abi.resource_accounting ==
-            DarwinResourceAccounting::ResidentPeak)
+        statistics &&
+                (shared_state_->darwin_version >= DarwinGeneration::IphoneOs3)
+            ? std::optional { statistics->context_switches }
+            : std::nullopt);
+    if (shared_state_->darwin_version >= DarwinGeneration::IphoneOs3)
         usage.set_vm_events(task_vm_events_->snapshot());
     return usage;
 }

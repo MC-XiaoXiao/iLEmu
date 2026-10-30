@@ -27,11 +27,11 @@ public:
         auto& task = found->second;
         if (task.exited)
             return darwin::mach::failure;
-        const auto abi = state.darwin_abi.task_suspension;
+        const auto abi = state.darwin_version;
         const bool pid_call = hold == Hold::Pid;
-        const bool protected_pid = abi != DarwinTaskSuspensionAbi::SharedUserCount;
-        const bool token = hold == Hold::Legacy &&
-            abi == DarwinTaskSuspensionAbi::ResumePortTokens;
+        const bool protected_pid = (abi >= DarwinGeneration::Ios6);
+        const bool token =
+            hold == Hold::Legacy && (abi >= DarwinGeneration::Ios7);
         if (!resume) {
             if ((pid_call && protected_pid && task.pid_suspended) ||
                 task.task_user_stop_count == std::numeric_limits<std::uint32_t>::max())

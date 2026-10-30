@@ -28,7 +28,7 @@ std::optional<DarwinBuildVersion> DarwinBuildVersion::parse(
         !(suffix > 0 && suffix == revision.size() - 1 &&
             revision.back() >= 'a' && revision.back() <= 'z'))
         return std::nullopt;
-    return DarwinBuildVersion { generation, build[branch] };
+    return DarwinBuildVersion { generation };
 }
 
 } // namespace ilemu

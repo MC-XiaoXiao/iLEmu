@@ -58,8 +58,8 @@ bool KernelSharedState::handoff_mach_message_locked(
         if ((receive.options & darwin::mach_message::option_receive_large) !=
                 0 &&
             receive.receive_size <
-                mach_ipc::receive_buffer_size(message.bytes.size(),
-                    receive.options, darwin_abi.mach_port_context)) {
+                mach_ipc::receive_buffer_size(
+                    message.bytes.size(), receive.options, darwin_version)) {
             // LARGE reports size without consuming. Continue with the next
             // waiter before publishing this message to the port queue.
             mach_receive_waiters.complete(*selected, State::TooLarge);

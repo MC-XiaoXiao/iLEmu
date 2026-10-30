@@ -67,8 +67,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
     switch (number) {
     case 27: { // recvmsg
         GuestReceiveMessage message;
-        if (const auto error = message.import(memory_, registers[1], registers[2],
-                shared_state_->darwin_abi.abi_epoch, bsd_support::maximum_io)) {
+        if (const auto error =
+                message.import(memory_, registers[1], registers[2],
+                    shared_state_->darwin_version, bsd_support::maximum_io)) {
             bsd_error(cpu, error);
             return;
         }
@@ -183,8 +184,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::bad_file_descriptor);
                 return;
             }
-            if (shared_state_->darwin_abi.descriptor_passing ==
-                    DarwinDescriptorPassingAbi::SendableFileTypes &&
+            if ((shared_state_->darwin_version >=
+                    DarwinGeneration::IphoneOs3) &&
                 !transfer->sendable_file_type()) {
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return;
@@ -497,7 +498,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                          ? "inet-dgram"
                          : "inet6-dgram");
             const auto uid_sharing =
-                shared_state_->darwin_abi.abi_epoch >= DarwinAbiEpoch::IphoneOs2
+                (shared_state_->darwin_version >= DarwinGeneration::IphoneOs2)
                     ? bsd::SocketUidSharing::ExplicitOptIn
                     : bsd::SocketUidSharing::OwnerOnly;
             auto udp = shared_state_->virtual_udp_network->create(
@@ -693,9 +694,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         endpoints.second.peer_credentials.emplace(
             process_.effective_uid, process_.effective_gid);
         socket_pair_endpoints_[fd] = std::move(endpoints.first);
-        listener->pending_endpoints.push_back(
-            { std::move(endpoints.second),
-                listener->options->accepted_snapshot(shared_state_->darwin_abi.socket_accept_flags) });
+        listener->pending_endpoints.push_back({ std::move(endpoints.second),
+            listener->options->accepted_snapshot(
+                shared_state_->darwin_version) });
         shared_state_->note_io_event_transition();
         output_.write("[network] connected pair=" + std::to_string(pair) +
                       " listener-pid=" + std::to_string(listener->owner_pid) +
@@ -1124,9 +1125,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         if (value.empty()) {
             if (const auto descriptor = socket_options_.find(fd);
                 descriptor != socket_options_.end()) {
-                if (auto option =
-                        descriptor->second->get(registers[1], registers[2],
-                            shared_state_->darwin_abi.socket_linger)) {
+                if (auto option = descriptor->second->get(registers[1],
+                        registers[2], shared_state_->darwin_version)) {
                     value = std::move(*option);
                 }
             }

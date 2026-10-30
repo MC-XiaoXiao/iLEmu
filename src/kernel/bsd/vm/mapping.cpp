@@ -51,14 +51,14 @@ void CompatibilityKernel::complete_bsd_mapping(
         (static_cast<std::uint64_t>(mapping.arguments[6]) << 32U);
     const auto range = bsd_vm::MappingRange::from_request(address, size, offset,
         (flags & darwin::map_flag::fixed) != 0U);
-    const bsd_vm::MappingOptions options { shared_state_->darwin_abi.abi_epoch };
+    const bsd_vm::MappingOptions options { shared_state_->darwin_version };
     if (!range || !options.valid(flags, fd)) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return;
     }
     address = range->address;
     const auto mapped_size = range->size;
-    const bsd_vm::Protection contract { shared_state_->darwin_abi.abi_epoch };
+    const bsd_vm::Protection contract { shared_state_->darwin_version };
     const auto permissions = contract.permissions(protection);
     const auto shared = (flags & darwin::map_flag::shared) != 0;
     mapping.attributes.inheritance =

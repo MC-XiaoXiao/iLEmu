@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "foundation/darwin_version.hpp"
+
 #include <cstdint>
 
 namespace ilemu {
@@ -13,12 +15,6 @@ inline constexpr std::uint32_t initial_user_stack_size = 0x00100000U;
 
 // Keep the initial stack below the reserved shared-cache interval. These
 // addresses are a process ABI contract, independent of host memory layout.
-enum class DarwinAddressLayout {
-    ClassicArm,
-    ExpandedArmSharedRegion,
-    ArmSharedRegionAt512MiB,
-    ArmSharedRegionAt416MiB,
-};
 
 struct DarwinAddressBounds {
     std::uint32_t stack_top;
@@ -26,13 +22,13 @@ struct DarwinAddressBounds {
     std::uint32_t shared_region_end;
 };
 
-constexpr DarwinAddressBounds darwin_address_bounds(DarwinAddressLayout layout)
+constexpr DarwinAddressBounds darwin_address_bounds(DarwinVersion version)
 {
-    if (layout == DarwinAddressLayout::ArmSharedRegionAt416MiB)
+    if (version >= DarwinGeneration::Ios10)
         return { 0x19000000U, 0x1a000000U, 0x40000000U };
-    if (layout == DarwinAddressLayout::ArmSharedRegionAt512MiB)
+    if (version >= DarwinGeneration::Ios8)
         return { 0x1f000000U, 0x20000000U, 0x40000000U };
-    if (layout == DarwinAddressLayout::ExpandedArmSharedRegion)
+    if (version >= DarwinGeneration::Ios7)
         return { 0x27e00000U, 0x2c000000U, 0x40000000U };
     return { 0x30000000U, 0x30000000U, 0x40000000U };
 }

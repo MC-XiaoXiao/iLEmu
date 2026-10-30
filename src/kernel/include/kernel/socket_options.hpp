@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -46,7 +46,8 @@ public:
     // Protocol options, low-water marks and send/receive timeouts are not
     // copied by that operation. The ABI policy adds supported extended flags;
     // terminal state and pending errors always start fresh.
-    [[nodiscard]] std::shared_ptr<SocketOptions> accepted_snapshot(DarwinSocketAcceptFlagsAbi flags_abi) const
+    [[nodiscard]] std::shared_ptr<SocketOptions> accepted_snapshot(
+        DarwinVersion version) const
     {
         auto child = std::make_shared<SocketOptions>();
         std::lock_guard lock { mutex_ };
@@ -55,8 +56,9 @@ public:
             if (key.first == socket_level &&
                 (is_option_bit(key.second) || key.second == 0x1001 ||
                     key.second == 0x1002 || // buffer high-water marks
-                    (flags_abi == DarwinSocketAcceptFlagsAbi::ExtendedFlags &&
-                        (socket_flag_mask(key.second) != 0 || key.second == defunct_option))))
+                    ((version >= DarwinGeneration::Ios4) &&
+                        (socket_flag_mask(key.second) != 0 ||
+                            key.second == defunct_option))))
                 child->values_.emplace(key, value);
         }
         return child;
@@ -149,15 +151,15 @@ public:
         return std::nullopt;
     }
 
-    [[nodiscard]] std::optional<Value> get(
-        std::uint32_t level, std::uint32_t name,
-        DarwinSocketLingerAbi linger_abi = DarwinSocketLingerAbi::OptionMask) const
+    [[nodiscard]] std::optional<Value> get(std::uint32_t level,
+        std::uint32_t name,
+        DarwinVersion version = DarwinGeneration::Unknown) const
     {
         std::lock_guard lock { mutex_ };
         if (level == socket_level && is_linger(name)) {
             Value value(8);
-            const auto enabled = linger_abi == DarwinSocketLingerAbi::OptionMask
-                ? linger_ticks : 1U;
+            const auto enabled =
+                (version < DarwinGeneration::Ios7) ? linger_ticks : 1U;
             write_word(value, 0, linger_.enabled ? enabled : 0U);
             write_word(value, 4, static_cast<std::uint32_t>(
                 name == linger_seconds ? linger_.ticks / ticks_per_second

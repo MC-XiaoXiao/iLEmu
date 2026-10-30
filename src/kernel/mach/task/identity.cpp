@@ -184,8 +184,10 @@ bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
     ++state.mach_kernel_send_rights[child_task_object];
     for (const auto which : { 2U, 4U, 7U, 8U, 9U, 10U }) {
         // Debug control is not inherited. XNU 1228 slot 10 was automount.
-        if (which == 10U && state.darwin_abi.task_special_ports !=
-                DarwinTaskSpecialPortsAbi::SecurityLedgerAutomount) continue;
+        if (which == 10U &&
+            (state.darwin_version < DarwinGeneration::IphoneOs2 ||
+                state.darwin_version >= DarwinGeneration::IphoneOs3))
+            continue;
         auto object = special_port_locked(state, parent_task_object, which);
         if (object != xnu::ipc::null_name && object != xnu::ipc::dead_name) {
             if (state.mach_port_objects.contains(object))

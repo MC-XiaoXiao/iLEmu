@@ -4,9 +4,9 @@
 #include "catalog_internal.hpp"
 #include "device_state/pthread_contract.hpp"
 namespace ilemu::syscall_routes {
-void bind_pthread_entries(Table& table, const DarwinAbi& abi)
+void bind_pthread_entries(Table& table, DarwinVersion version)
 {
-    const auto& contract = resolve_pthread_contract(abi.pthread_abi);
+    const auto& contract = resolve_pthread_contract(version);
     const auto add = [&](std::uint32_t number, std::string_view name,
                          Contract required, bool supported) {
         table.bind_new({ Domain::BsdSyscall, number, number, name,

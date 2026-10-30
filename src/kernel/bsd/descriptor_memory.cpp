@@ -105,7 +105,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         if (number == darwin::syscall::read_vector) {
             std::uint64_t residual = 0;
             const auto error = GuestReadBuffer::import(memory_, registers[1],
-                registers[2], shared_state_->darwin_abi.abi_epoch, vectors, residual);
+                registers[2], shared_state_->darwin_version, vectors, residual);
             if (error) {
                 bsd_error(cpu, error);
                 return;
@@ -1176,7 +1176,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             return;
         case darwin::fcntl_command::set_status_flags:
             if (file_status_flags_.contains(fd)) {
-                const DarwinFileFlags flags { shared_state_->darwin_abi.file_open };
+                const DarwinFileFlags flags { shared_state_->darwin_version };
                 file_status_flags_[fd].replace(flags.mutable_status(), registers[2] + 1U);
             }
             bsd_success(cpu, 0);
@@ -1269,7 +1269,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             }
             return;
         case darwin::fcntl_command::add_file_signatures_return: {
-            if (!shared_state_->darwin_abi.capabilities.file_signature_end_offset) {
+            if (!(shared_state_->darwin_version >= DarwinGeneration::Ios10)) {
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return;
             }
@@ -1396,7 +1396,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bsd_success(cpu, 0);
             return;
         }
-        const bsd_vm::Protection contract { shared_state_->darwin_abi.abi_epoch };
+        const bsd_vm::Protection contract { shared_state_->darwin_version };
         const auto result = vm_mig::Protection::execute(memory_, cpu, address,
             size, true, false, contract.normalized_bits(protection));
         if (result != 0U) {
@@ -1567,7 +1567,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         }
         file_descriptors_[*fd] = backing;
         file_offsets_[*fd] = 0;
-        const DarwinFileFlags flags { shared_state_->darwin_abi.file_open };
+        const DarwinFileFlags flags { shared_state_->darwin_version };
         file_status_flags_[*fd] = flags.status(registers[1]);
         descriptor_flags_[*fd] = 1U; // shm_open always sets UF_EXCLOSE.
         static_cast<void>(ensure_regular_file_open_description(*fd));

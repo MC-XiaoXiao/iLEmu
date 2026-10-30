@@ -9,8 +9,8 @@
 
 #pragma once
 
-#include "device_state/darwin_abi.hpp"
 #include "foundation/address_space.hpp"
+#include "foundation/darwin_version.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "mach/mig_wire_abi.hpp"
@@ -57,8 +57,8 @@ public:
     };
 
     static std::optional<Request> read(AddressSpace& memory,
-        std::uint32_t address, std::uint32_t send_size,
-        DarwinIOConnectMethodAbi profile, std::uint32_t& error)
+        std::uint32_t address, std::uint32_t send_size, DarwinVersion version,
+        std::uint32_t& error)
     {
         using namespace iokit_abi::connect_method;
         error = darwin::mig::bad_arguments;
@@ -94,8 +94,7 @@ public:
                          << (index * 8U);
             return value;
         };
-        const auto wide =
-            profile == DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar;
+        const auto wide = (version >= DarwinGeneration::Ios5);
         const auto ool_size =
             wide ? mach_vm64_ool_request_size : natural32_ool_request_size;
         const auto tail_size =
@@ -149,9 +148,7 @@ public:
         const auto first_capacity = word(tail + ool_size);
         const auto second_capacity =
             word(tail + ool_size + sizeof(std::uint32_t));
-        const auto scalar_first =
-            profile ==
-            DarwinIOConnectMethodAbi::Natural32OolScalarThenStructure;
+        const auto scalar_first = (version < DarwinGeneration::Ios4);
         // MIG initializes server arrays to their fixed maxima and only lowers
         // their counts for smaller client capacities; these are not input
         // counts.
@@ -187,7 +184,7 @@ public:
     static std::uint32_t write_reply(AddressSpace& memory,
         std::uint32_t address, std::uint32_t local_port,
         std::uint32_t message_id, std::uint32_t receive_size,
-        const Result& result, DarwinIOConnectMethodAbi profile,
+        const Result& result, DarwinVersion version,
         std::uint64_t out_of_line_output_size)
     {
         if (result.return_code != iokit_abi::success)
@@ -204,11 +201,9 @@ public:
         std::uint32_t scalar_bytes_offset { };
         std::uint32_t inband_count_offset { };
         std::uint32_t inband_bytes_offset { };
-        const auto mach_vm64_ool =
-            profile == DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar;
+        const auto mach_vm64_ool = (version >= DarwinGeneration::Ios5);
         std::uint32_t ool_output_offset { };
-        if (profile !=
-            DarwinIOConnectMethodAbi::Natural32OolScalarThenStructure) {
+        if (version >= DarwinGeneration::Ios4) {
             inband_count_offset = return_code_offset + sizeof(std::uint32_t);
             inband_bytes_offset = inband_count_offset + sizeof(std::uint32_t);
             scalar_count_offset =

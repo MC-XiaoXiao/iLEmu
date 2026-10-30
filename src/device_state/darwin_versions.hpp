@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
 
-#include "device_state/darwin_kernel_configuration.hpp"
+#include "device_state/darwin_configuration.hpp"
 
 namespace ilemu {
 

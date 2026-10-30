@@ -511,10 +511,11 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         shared_state_->mach_port_objects.sequence_number(queued_port)
             .value_or(0);
     const auto context = shared_state_->mach_port_contexts.find(queued_port);
-    auto received = mach_ipc::prepare_received_message(
-        pending_message, queued_port, receive.options, sequence_number,
-        context != shared_state_->mach_port_contexts.end() ? context->second : 0U,
-        shared_state_->darwin_abi.mach_port_context);
+    auto received = mach_ipc::prepare_received_message(pending_message,
+        queued_port, receive.options, sequence_number,
+        context != shared_state_->mach_port_contexts.end() ? context->second
+                                                           : 0U,
+        shared_state_->darwin_version);
     if (!received) {
         if (!delivery)
             static_cast<void>(shared_state_->mach_port_objects.increment_sequence_number(queued_port));

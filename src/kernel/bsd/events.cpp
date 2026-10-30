@@ -1535,8 +1535,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         // probing the output mapping. These fixed leaves have no ANYBODY
         // exception; keep OID-handler authorization at its own call site.
         if (registers[4] != 0 && process_.effective_uid != 0 &&
-            shared_state_->darwin_abi.sysctl_transfer ==
-                DarwinSysctlTransferAbi::LegacyKernelHandlers &&
+            (shared_state_->darwin_version < DarwinGeneration::IphoneOs2) &&
             (*mib0 == darwin::sysctl::control_hardware ||
                 (*mib0 == darwin::sysctl::control_kernel &&
                     (*mib1 == darwin::sysctl::kernel_security_level ||
@@ -1555,10 +1554,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         }
         // Legacy __sysctl applies useracc to the entire offered buffer
         // before dispatch, even when the selected value needs fewer bytes.
-        if (shared_state_->darwin_abi.sysctl_transfer ==
-                DarwinSysctlTransferAbi::LegacyKernelHandlers &&
-            registers[2] != 0 && !memory_.accessible(registers[2], *old_size,
-                MemoryPermission::Write)) {
+        if ((shared_state_->darwin_version < DarwinGeneration::IphoneOs2) &&
+            registers[2] != 0 &&
+            !memory_.accessible(
+                registers[2], *old_size, MemoryPermission::Write)) {
             bsd_error(cpu, darwin::error::bad_address);
             return;
         }
@@ -1570,14 +1569,14 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 *mib0 == darwin::sysctl::control_kernel) &&
             darwin::sysctl::describe_object(*mib0, *mib1)) {
             bsd_error(cpu, *mib0 == darwin::sysctl::control_kernel &&
-                    shared_state_->darwin_abi.sysctl_transfer ==
-                        DarwinSysctlTransferAbi::LegacyKernelHandlers
-                ? darwin::error::not_directory : darwin::error::is_directory);
+                                   (shared_state_->darwin_version <
+                                       DarwinGeneration::IphoneOs2)
+                               ? darwin::error::not_directory
+                               : darwin::error::is_directory);
             return;
         }
-        darwin::sysctl::UserTransfer transfer {
-            memory_, registers[2], registers[3], *old_size,
-            shared_state_->darwin_abi.sysctl_transfer,
+        darwin::sysctl::UserTransfer transfer { memory_, registers[2],
+            registers[3], *old_size, shared_state_->darwin_version,
             *mib0 == darwin::sysctl::control_kernel };
         const bool writing = transfer.has_input(registers[4], registers[5]);
         const auto finish_transfer = [&](std::uint32_t result) {
@@ -2277,8 +2276,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                         darwin::resource::maximum_open_files);
                     break;
                 case 35:
-                    value = darwin_address_bounds(
-                        shared_state_->darwin_abi.address_layout).stack_top;
+                    value = darwin_address_bounds(shared_state_->darwin_version)
+                                .stack_top;
                     break; // KERN_USRSTACK32
                 case 40: // KERN_NETBOOT
                 case 66:

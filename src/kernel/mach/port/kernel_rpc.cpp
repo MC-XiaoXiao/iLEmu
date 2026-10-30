@@ -25,8 +25,8 @@ using namespace mach_support;
 bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
     Cpu& cpu, std::uint32_t trap)
 {
-    const bool guarded = shared_state_->darwin_abi.mach_kernel_rpc ==
-            DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps &&
+    const bool guarded =
+        (shared_state_->darwin_version >= DarwinGeneration::Ios7) &&
         (trap == 24U || trap == 25U || trap == 41U || trap == 42U);
     if (!guarded && trap != 16U && trap != 17U && trap != 18U && trap != 19U &&
         trap != 20U && trap != 21U && trap != 22U && trap != 23U) {

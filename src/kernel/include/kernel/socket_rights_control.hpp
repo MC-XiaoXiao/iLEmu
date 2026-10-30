@@ -3,11 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #pragma once
-#include <network/darwin_abi_route.hpp>
-#include <network/darwin_socket_abi.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <network/darwin_socket_abi.hpp>
+#include <network/darwin_version_route.hpp>
 #include <span>
 #include <vector>
 
@@ -16,18 +16,19 @@ namespace ilemu {
 // before uiomove; copying this wire data belongs to recvit, after payload.
 class SocketRightsControl {
 public:
-    static bool externalizes(DarwinAbiEpoch epoch, bool requested)
+    static bool externalizes(DarwinVersion version, bool requested)
     {
         // xnu-792 externalizes only with controlp; xnu-1228+ does so
         // even when the caller discards the ancillary output.
-        return requested || (epoch != DarwinAbiEpoch::IphoneOs1 &&
-                             epoch != DarwinAbiEpoch::Unknown);
+        return requested || ((version != DarwinGeneration::IphoneOs1) &&
+                                (version >= DarwinGeneration::IphoneOs1));
     }
     template <typename Transfers, typename Available, typename Import>
-    std::uint32_t externalize(const Transfers& transfers, DarwinAbiEpoch epoch,
-        bool requested, std::uint32_t limit, Available&& available, Import&& import)
+    std::uint32_t externalize(const Transfers& transfers, DarwinVersion version,
+        bool requested, std::uint32_t limit, Available&& available,
+        Import&& import)
     {
-        if (!externalizes(epoch, requested))
+        if (!externalizes(version, requested))
             return 0;
         // unp_externalize checks fdavail for the complete rights mbuf.
         // The caller's kernel mutex protects this check and all imports.

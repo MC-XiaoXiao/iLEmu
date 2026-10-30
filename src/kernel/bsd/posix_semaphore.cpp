@@ -87,7 +87,7 @@ void CompatibilityKernel::dispatch_bsd_posix_semaphore(
             }
         }
         virtual_descriptors_[*descriptor] = std::string { descriptor_kind };
-        const DarwinFileFlags file_flags { shared_state_->darwin_abi.file_open };
+        const DarwinFileFlags file_flags { shared_state_->darwin_version };
         file_status_flags_[*descriptor] = file_flags.status(flags);
         posix_semaphore_descriptors_[*descriptor] = object;
         output_.write("[posix-semaphore] open pid=" +

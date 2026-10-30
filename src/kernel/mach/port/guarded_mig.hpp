@@ -44,8 +44,7 @@ private:
         using namespace mach_support;
         // Guard operations and their status bits share the guarded IPC
         // contract.
-        if (state.darwin_abi.mach_port_status !=
-            DarwinMachPortStatusAbi::ImportanceAndGuards)
+        if (state.darwin_version < DarwinGeneration::Ios7)
             return { darwin::mig::bad_id };
         const auto bytes = std::span { request.bytes };
         const auto id = read_little_word(bytes, 20U);

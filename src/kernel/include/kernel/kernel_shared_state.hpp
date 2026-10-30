@@ -55,44 +55,44 @@
 #include <utility>
 #include <vector>
 
+#include "device_state/darwin_kernel_identity.hpp"
+#include "device_state/launchd_job_catalog.hpp"
+#include "device_state/pthread_contract.hpp"
+#include "filesystem/bsd_file_lock.hpp"
+#include "filesystem/hfs_metadata.hpp"
+#include "foundation/application_display.hpp"
 #include "foundation/arm_cpu_model.hpp"
 #include "foundation/code_signature.hpp"
+#include "foundation/darwin_version.hpp"
 #include "foundation/deadline_queue.hpp"
-#include "foundation/application_display.hpp"
-#include "kernel/baseband_device.hpp"
-#include "filesystem/bsd_file_lock.hpp"
-#include "graphics/core_animation_remote_abi.hpp"
-#include "device_state/darwin_kernel_identity.hpp"
-#include "device_state/darwin_abi.hpp"
-#include "device_state/pthread_contract.hpp"
-#include "network/darwin_network_abi.hpp"
-#include "kernel/darwin_psynch_runtime.hpp"
-#include "kernel/darwin_packet_filter_device.hpp"
-#include "kernel/darwin_resource_abi.hpp"
-#include "network/darwin_route_socket.hpp"
 #include "foundation/device_display_profile.hpp"
 #include "foundation/device_peripheral_profiles.hpp"
 #include "foundation/device_security_profile.hpp"
 #include "foundation/display_geometry.hpp"
 #include "foundation/file_page_cache.hpp"
-#include "filesystem/hfs_metadata.hpp"
+#include "foundation/sensor_input.hpp"
+#include "foundation/touch_input.hpp"
+#include "foundation/virtual_clock.hpp"
+#include "graphics/core_animation_remote_abi.hpp"
+#include "kernel/baseband_device.hpp"
+#include "kernel/darwin_memorystatus_abi.hpp"
+#include "kernel/darwin_packet_filter_device.hpp"
+#include "kernel/darwin_psynch_runtime.hpp"
+#include "kernel/darwin_resource_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
-#include "kernel/darwin_memorystatus_abi.hpp"
 #include "kernel/vnode_watch.hpp"
-#include "device_state/launchd_job_catalog.hpp"
 #include "mach/mach_namespace.hpp"
 #include "mach/mach_port_object.hpp"
 #include "mach/receive_queue_generation.hpp"
-#include "foundation/touch_input.hpp"
-#include "foundation/sensor_input.hpp"
-#include "foundation/virtual_clock.hpp"
+#include "mach/xnu_scheduler.hpp"
 #include "media/audio_output_gain.hpp"
-#include "network/virtual_network.hpp"
-#include "network/virtual_udp.hpp"
+#include "network/darwin_network_abi.hpp"
+#include "network/darwin_route_socket.hpp"
 #include "network/isolated_stream.hpp"
 #include "network/local_socket_credentials.hpp"
-#include "mach/xnu_scheduler.hpp"
+#include "network/virtual_network.hpp"
+#include "network/virtual_udp.hpp"
 
 namespace ilemu {
 
@@ -541,14 +541,15 @@ make_socket_pair_endpoints(std::uint32_t pair,
 }
 
 struct KernelSharedState {
-    explicit KernelSharedState(DarwinAbi abi = {},
-        std::string_view darwin_release = {}, std::string_view abi_profile = {})
-        : coalitions { abi.coalition_abi }
-        , darwin_abi { abi }
-        , pthread_contract { resolve_pthread_contract(abi.pthread_abi) }
-        , bsd_dispatch_table { abi, darwin_release }
-        , mach_dispatch_table { abi, abi_profile }
-        , mig_reference { abi_profile }
+    explicit KernelSharedState(DarwinVersion version = { },
+        std::string_view darwin_release = { },
+        std::string_view version_name = { })
+        : coalitions { version }
+        , darwin_version { version }
+        , pthread_contract { resolve_pthread_contract(version) }
+        , bsd_dispatch_table { version, darwin_release }
+        , mach_dispatch_table { version, version_name }
+        , mig_reference { version_name }
     {
     }
 
@@ -557,7 +558,7 @@ struct KernelSharedState {
     std::shared_ptr<SensorInput> sensors;
     CompassDevice compass;
     DarwinKernelIdentity darwin_kernel_identity;
-    DarwinAbi darwin_abi;
+    DarwinVersion darwin_version;
     // Shared by forked tasks and preserved across exec for this boot.
     const std::string boot_session_uuid { make_host_uuid() };
     // Resolved once at construction; fork shares it and exec preserves it.

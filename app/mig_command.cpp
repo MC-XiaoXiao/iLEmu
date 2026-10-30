@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <app/mig_command.hpp>
-#include <device_state/darwin_kernel_configuration.hpp>
+#include <device_state/darwin_configuration.hpp>
 #include <foundation/output.hpp>
 #include <iomanip>
 #include <mach/xnu_mig_reference.hpp>
@@ -98,7 +98,7 @@ void inspect_mig(const std::optional<std::filesystem::path>& rootfs,
     } else {
         const auto config = resolve_darwin_configuration(
             rootfs.value_or(std::filesystem::path { }), ios_build);
-        write_catalog(text, config.abi_name, validate_only);
+        write_catalog(text, config.version_name, validate_only);
     }
     output.write(text.str());
 }

@@ -30,18 +30,16 @@ namespace {
 
 } // namespace
 
-CallResult dispatch(
-    AddressSpace& memory, DarwinSandboxAbi abi, std::uint32_t operation,
-    std::uint32_t argument)
+CallResult dispatch(AddressSpace& memory, DarwinVersion version,
+    std::uint32_t operation, std::uint32_t argument)
 {
     const auto policy_update = operation == submit_policy_update;
     if (operation != check_operation && operation != initialize_named_profile &&
         operation != initialize_compiled_profile && !policy_update)
         return CallResult::Unsupported;
-    if (policy_update && abi != DarwinSandboxAbi::Wide64Arguments)
+    if (policy_update && (version < DarwinGeneration::Ios6))
         return CallResult::Unsupported;
-    const auto slot_size =
-        abi == DarwinSandboxAbi::Wide64Arguments ? 8U : 4U;
+    const auto slot_size = (version >= DarwinGeneration::Ios6) ? 8U : 4U;
     const auto slot_count = operation == initialize_named_profile ? 1U
         : operation == initialize_compiled_profile ? 2U
         : policy_update ? 3U : request_word_count;

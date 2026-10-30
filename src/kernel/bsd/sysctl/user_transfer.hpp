@@ -4,9 +4,9 @@
 
 #pragma once
 
-#include "device_state/darwin_abi.hpp"
 #include "foundation/address_space.hpp"
 #include "foundation/darwin_errno.hpp"
+#include "foundation/darwin_version.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -22,12 +22,14 @@ class UserTransfer {
 public:
     UserTransfer(AddressSpace& memory, std::uint32_t output,
         std::uint32_t length_address, std::uint32_t capacity,
-        DarwinSysctlTransferAbi abi, bool kernel_leaf)
-        : memory_(memory), output_(output), length_address_(length_address),
-          capacity_(capacity), abi_(abi),
-          legacy_leaf_(kernel_leaf &&
-              abi == DarwinSysctlTransferAbi::LegacyKernelHandlers),
-          required_(legacy_leaf_ ? capacity : 0)
+        DarwinVersion version, bool kernel_leaf)
+        : memory_(memory)
+        , output_(output)
+        , length_address_(length_address)
+        , capacity_(capacity)
+        , version_(version)
+        , legacy_leaf_(kernel_leaf && (version < DarwinGeneration::IphoneOs2))
+        , required_(legacy_leaf_ ? capacity : 0)
     {
     }
 
@@ -102,9 +104,9 @@ public:
 
     [[nodiscard]] std::uint32_t write_number64(std::uint64_t value)
     {
-        if (abi_ != DarwinSysctlTransferAbi::LegacyKernelHandlers &&
+        if ((version_ >= DarwinGeneration::IphoneOs2) &&
             capacity_ == sizeof(std::uint32_t) &&
-            (output_ != 0 || abi_ == DarwinSysctlTransferAbi::OidSizedQueries)) {
+            (output_ != 0 || (version_ == DarwinGeneration::IphoneOs2))) {
             const auto narrowed = static_cast<std::int32_t>(value);
             if (static_cast<std::uint64_t>(static_cast<std::int64_t>(narrowed))
                 != value)
@@ -146,8 +148,7 @@ public:
             return error::bad_address;
         // XNU 1228-4903 assign suulong's return value over ENOMEM. The
         // legacy wrapper preserves the handler error instead.
-        if (length_address_ != 0 &&
-            abi_ != DarwinSysctlTransferAbi::LegacyKernelHandlers)
+        if (length_address_ != 0 && (version_ >= DarwinGeneration::IphoneOs2))
             return 0;
         return result;
     }
@@ -163,7 +164,7 @@ private:
     std::uint32_t output_;
     std::uint32_t length_address_;
     std::uint32_t capacity_;
-    DarwinSysctlTransferAbi abi_;
+    DarwinVersion version_;
     bool legacy_leaf_;
     std::uint32_t required_;
 };

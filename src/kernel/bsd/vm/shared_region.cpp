@@ -700,7 +700,7 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
-    const auto bounds = darwin_address_bounds(shared_state_->darwin_abi.address_layout);
+    const auto bounds = darwin_address_bounds(shared_state_->darwin_version);
     if (number == 294) { // shared_region_check_np
         const auto start_address = first_mapped_shared_region_page(memory_, bounds);
         if (!start_address) {

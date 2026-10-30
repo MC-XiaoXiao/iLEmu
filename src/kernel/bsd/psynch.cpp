@@ -79,8 +79,7 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
     // The enabled XNU stubs neither inspect addresses nor touch queue state.
     // In particular, they cannot consume an unlock prepost or block a reader.
     if ((number == 299U || number == 300U) &&
-        shared_state_->darwin_abi.psynch_rw_conversion ==
-            DarwinPsynchRwConversionAbi::UnusedStubs) {
+        (shared_state_->darwin_version >= DarwinGeneration::Ios4)) {
         bsd_success(cpu, 0);
         return;
     }

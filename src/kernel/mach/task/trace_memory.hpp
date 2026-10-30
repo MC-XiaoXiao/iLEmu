@@ -34,13 +34,13 @@ public:
                 darwin::mig_wire::message_complex_bit)) {
             const auto count = read_little_word(request.bytes, 36U);
             if (count <= darwin::mach::task_info::maximum_input_words(
-                             state.darwin_abi.abi_epoch) &&
+                             state.darwin_version) &&
                 request.bytes.size() == 40U + count * 4U) {
                 error = darwin::mach::invalid_argument;
                 const auto task = state.task_port_pids.find(object);
-                if (task != state.task_port_pids.end() && task->second == caller &&
-                    state.darwin_abi.task_trace_memory !=
-                        DarwinTaskTraceMemoryAbi::Unsupported &&
+                if (task != state.task_port_pids.end() &&
+                    task->second == caller &&
+                    (state.darwin_version >= DarwinGeneration::Ios7) &&
                     read_little_word(request.bytes, 32U) ==
                         darwin::task_trace::information_flavor &&
                     count == darwin::task_trace::information_count) {

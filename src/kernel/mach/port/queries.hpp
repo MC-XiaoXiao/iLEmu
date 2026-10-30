@@ -157,9 +157,7 @@ private:
         std::uint32_t type = 0x80000000U; // MACH_PORT_TYPE_DNREQUEST
         // Native mach_port_type masks SPREQUEST bits for old CF callers;
         // mach_port_names exposes the complete request state since XNU1699.
-        if (enumerate &&
-            state.darwin_abi.mach_port_requests ==
-                DarwinMachPortRequestAbi::SendPossibleRequests &&
+        if (enumerate && (state.darwin_version >= DarwinGeneration::Ios4) &&
             request->second.send_possible) {
             type |= 0x40000000U;
             if (!request->second.armed)

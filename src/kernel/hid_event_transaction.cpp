@@ -6,8 +6,8 @@
 
 #include "hid_event_transaction.hpp"
 
-#include "device_state/darwin_abi.hpp"
 #include "foundation/cpu.hpp"
+#include "foundation/darwin_version.hpp"
 #include "foundation/userland_hle.hpp"
 
 #include <array>
@@ -55,7 +55,7 @@ namespace {
     void prepare_digitizer(UserlandHleCall& call,
         const HidEventQueue::Event& event, float width, float height,
         bool collection, bool collection_contact_changes,
-        DarwinHidDigitizerAbi digitizer_abi)
+        DarwinVersion digitizer_abi)
     {
         const auto& touch = std::get<TouchInput>(event.input);
         const auto active =
@@ -66,7 +66,8 @@ namespace {
         // changes. Darwin's primary dispatcher may instead require the
         // device-profiled child-only contract, so keep the roles independent.
         if (!collection || collection_contact_changes ||
-            digitizer_abi != DarwinHidDigitizerAbi::ChildContactChanges) {
+            (digitizer_abi < DarwinGeneration::Ios6 ||
+                digitizer_abi >= DarwinGeneration::Ios7)) {
             if (touch.phase != TouchPhase::Move)
                 mask |= Profile::range_changed | Profile::touch_changed;
             if (touch.phase == TouchPhase::Down)
@@ -75,8 +76,7 @@ namespace {
                 mask |= Profile::cancelled;
         }
         if (collection && event.contact_origin &&
-            digitizer_abi ==
-                DarwinHidDigitizerAbi::CollectionContactChangesWithEdgeOrigin) {
+            (digitizer_abi >= DarwinGeneration::Ios7)) {
             const auto& origin = *event.contact_origin;
             const bool horizontal_edge =
                 origin[0] < Profile::edge_extent ||
@@ -110,7 +110,7 @@ namespace {
     public:
         using Completion = std::function<void()>;
         NativeEventTransaction(HidEventQueue::Event event, std::uint32_t system,
-            DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+            DisplayGeometry geometry, DarwinVersion digitizer_abi,
             std::uint64_t sender_id, Completion completion)
             : event_ { event }
             , system_ { system }
@@ -128,7 +128,7 @@ namespace {
         }
         NativeEventTransaction(HidEventQueue::Event event,
             HidEventQueue::Observer observer, DisplayGeometry geometry,
-            DarwinHidDigitizerAbi digitizer_abi, std::uint64_t sender_id,
+            DarwinVersion digitizer_abi, std::uint64_t sender_id,
             Completion completion)
             : event_ { event }
             , observer_ { observer }
@@ -411,7 +411,7 @@ namespace {
         std::uint32_t system_ { };
         std::optional<HidEventQueue::Observer> observer_;
         DisplayGeometry geometry_;
-        DarwinHidDigitizerAbi digitizer_abi_;
+        DarwinVersion digitizer_abi_;
         std::uint64_t sender_id_ { };
         Completion completion_;
         Step step_;
@@ -426,7 +426,7 @@ namespace {
 
 bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
-    DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+    DisplayGeometry geometry, DarwinVersion digitizer_abi,
     std::uint64_t sender_id, std::function<void()> completion)
 {
     return std::make_shared<NativeEventTransaction>(std::move(event),
@@ -436,7 +436,7 @@ bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
 
 bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Observer& observer, HidEventQueue::Event event,
-    DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+    DisplayGeometry geometry, DarwinVersion digitizer_abi,
     std::uint64_t sender_id, std::function<void()> completion)
 {
     return std::make_shared<NativeEventTransaction>(std::move(event), observer,

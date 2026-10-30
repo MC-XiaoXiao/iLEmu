@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
+#include "network/darwin_version_route.hpp"
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -133,6 +134,6 @@ private:
 [[nodiscard]] std::string_view domain_name(Domain domain);
 [[nodiscard]] std::string_view outcome_name(Outcome outcome);
 // Migrated contracts only; unrelated unresolved selectors are untouched.
-[[nodiscard]] Table build_bsd_contracts(const DarwinAbi& abi);
-[[nodiscard]] Table build(const DarwinAbi& abi);
+[[nodiscard]] Table build_bsd_contracts(DarwinVersion version);
+[[nodiscard]] Table build(DarwinVersion version);
 } // namespace ilemu::syscall_routes

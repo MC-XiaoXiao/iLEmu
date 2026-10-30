@@ -15,8 +15,9 @@ Context::Result Context::evaluate_locked(KernelSharedState& state,
     std::uint32_t object, std::span<const std::byte> bytes)
 {
     const bool get = read_little_word(bytes, 20U) == get_identifier;
-    const auto width = mach_vm_support::MachVmWireFormat::for_interface(
-        true, state.darwin_abi.mach_port_context).address_size();
+    const auto width = mach_vm_support::MachVmWireFormat::for_port_context(
+        state.darwin_version)
+                           .address_size();
     if (bytes.size() != (get ? 36U : 36U + width) ||
         (read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit) != 0U)
         return Result { darwin::mig::bad_arguments };
@@ -75,8 +76,9 @@ std::optional<std::uint32_t> Context::try_synchronous_locked(
 {
     const auto identifier = memory.read32(registers[0] + 20U).value_or(0U);
     const bool get = identifier == get_identifier;
-    const auto width = mach_vm_support::MachVmWireFormat::for_interface(
-        true, state.darwin_abi.mach_port_context).address_size();
+    const auto width = mach_vm_support::MachVmWireFormat::for_port_context(
+        state.darwin_version)
+                           .address_size();
     const auto request_size = get ? 36U : 36U + width;
     const auto reply_capacity = get ? 44U + width : 44U;
     const auto destination = mach_ipc::validate_task_rpc_locked(memory, state,

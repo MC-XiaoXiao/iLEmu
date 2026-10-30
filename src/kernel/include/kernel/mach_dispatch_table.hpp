@@ -10,7 +10,8 @@ class Cpu;
 // Immutable per-session bindings; no reference lookup on the trap hot path.
 class MachDispatchTable {
 public:
-    explicit MachDispatchTable(const DarwinAbi& abi, std::string_view abi_profile = { });
+    explicit MachDispatchTable(
+        DarwinVersion version, std::string_view version_name = { });
     void dispatch(CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t trap) const;
 private:
     using Adapter = void (*)(CompatibilityKernel&, Cpu&, std::uint32_t);

@@ -13,32 +13,27 @@ BsdRouteResolution BsdRoutePolicy::resolve(
     const bool defined = reference == BsdSlot::Call ||
                          reference == BsdSlot::Enosys ||
                          reference == BsdSlot::FirmwareStub;
-    // Preserve audited collisions and pthread precedence over the conservative
-    // public-reference gate. These contracts contain firmware-specific ABI
-    // evidence that the neighboring desktop XNU tables cannot supersede.
-    const bool priority_contract = entry &&
-        (entry->handler == Handler::BsdPthread ||
-            entry->contract == Contract::SemaphoreValue ||
-            entry->contract == Contract::NamedSysctl ||
-            canonical == 299U || canonical == 300U);
+    // Public desktop reference tables describe fallback results. They cannot
+    // disable implemented iOS handlers, including additive calls on old guests.
     const bool candidate = entry && entry->outcome == Outcome::HandlerValidated;
-    const bool gated = candidate && !priority_contract &&
-        xnu_reference::bsd_slot_gated(darwin_release_, canonical);
-    const auto disposition = candidate && !gated
-        ? BsdDisposition::HandlerValidated
+    const auto disposition =
+        candidate ? BsdDisposition::HandlerValidated
         : (reference == BsdSlot::Nosys || reference == BsdSlot::Enosys)
             ? BsdDisposition::ErrnoStub
             : BsdDisposition::Deferred;
     return { canonical, reference, disposition, send_sigsys_ && !defined,
-        !entry || entry->outcome == Outcome::BsdUnknown, gated };
+        !entry || entry->outcome == Outcome::BsdUnknown };
 }
 
 std::string_view bsd_disposition_name(BsdDisposition disposition)
 {
     switch (disposition) {
-    case BsdDisposition::HandlerValidated: return "handler-validates";
-    case BsdDisposition::Deferred: return "deferred";
-    case BsdDisposition::ErrnoStub: return "errno-stub";
+    case BsdDisposition::HandlerValidated:
+        return "handler-validates";
+    case BsdDisposition::Deferred:
+        return "deferred";
+    case BsdDisposition::ErrnoStub:
+        return "errno-stub";
     }
     return "invalid";
 }
@@ -47,11 +42,16 @@ std::string_view bsd_reference_name(xnu_reference::BsdSlot slot)
 {
     using xnu_reference::BsdSlot;
     switch (slot) {
-    case BsdSlot::UnknownRelease: return "unknown-release";
-    case BsdSlot::Call: return "call";
-    case BsdSlot::Enosys: return "enosys";
-    case BsdSlot::FirmwareStub: return "firmware-stub";
-    case BsdSlot::Nosys: return "nosys";
+    case BsdSlot::UnknownRelease:
+        return "unknown-release";
+    case BsdSlot::Call:
+        return "call";
+    case BsdSlot::Enosys:
+        return "enosys";
+    case BsdSlot::FirmwareStub:
+        return "firmware-stub";
+    case BsdSlot::Nosys:
+        return "nosys";
     }
     return "invalid";
 }

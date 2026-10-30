@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
 
 namespace ilemu {
 
@@ -37,6 +37,7 @@ struct PthreadContract {
 
 // Resolve at configuration initialization, never in syscall/worker hot paths.
 // Invalid enum values are configuration errors, not a legacy ABI fallback.
-[[nodiscard]] const PthreadContract& resolve_pthread_contract(DarwinPthreadAbi abi);
+[[nodiscard]] const PthreadContract& resolve_pthread_contract(
+    DarwinVersion version);
 
 } // namespace ilemu

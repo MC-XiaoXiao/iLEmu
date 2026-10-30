@@ -3,12 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #pragma once
-#include <foundation/address_space.hpp>
-#include <kernel/darwin_abi.hpp>
-#include <network/darwin_abi_route.hpp>
-#include <network/darwin_socket_abi.hpp>
 #include <algorithm>
 #include <cstdint>
+#include <foundation/address_space.hpp>
+#include <kernel/darwin_abi.hpp>
+#include <network/darwin_socket_abi.hpp>
+#include <network/darwin_version_route.hpp>
 #include <span>
 #include <vector>
 
@@ -27,7 +27,7 @@ public:
         : address_(address), vectors_(vectors) {}
 
     static std::uint32_t import(AddressSpace& memory, std::uint32_t address,
-        std::uint32_t count, DarwinAbiEpoch epoch,
+        std::uint32_t count, DarwinVersion version,
         std::vector<GuestReadVector>& vectors, std::uint64_t& residual)
     {
         // sys_generic.c:readv; kern_subr.c:copyin_user_iovec_array.
@@ -51,7 +51,7 @@ public:
                 residual += *length;
         }
         // xnu-2422+ rejects residuals beyond a native ARM32 signed long.
-        if (epoch == DarwinAbiEpoch::Later && residual > 0x7fffffffULL)
+        if ((version >= DarwinGeneration::Ios7) && residual > 0x7fffffffULL)
             return 22;
         return 0;
     }

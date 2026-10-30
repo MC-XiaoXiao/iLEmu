@@ -3,8 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
 
+#include "network/darwin_version_route.hpp"
 #include <cstdint>
-#include "network/darwin_abi_route.hpp"
 
 namespace ilemu {
 class AddressSpace;
@@ -14,11 +14,9 @@ namespace kernel_bsd::resource_monitor {
 inline constexpr std::uint32_t syscall_number = 446;
 
 // Earlier supported syscall tables reserve slot 373 as nosys.
-inline constexpr DarwinAbiRoute ledger_route {
-    DarwinAbiDomain::BsdSyscall, 373U,
-    DarwinAbiCompatibility::VersionSensitive, DarwinAbiEpoch::Darwin13,
-    DarwinAbiEpoch::Later
-};
+inline constexpr DarwinAbiRoute ledger_route { DarwinAbiDomain::BsdSyscall,
+    373U, DarwinAbiCompatibility::VersionSensitive, DarwinGeneration::Ios6,
+    DarwinGeneration::Ios10 };
 
 // Report native missing-ledger errors until guest accounting is available.
 std::uint32_t query_ledger(AddressSpace& memory, KernelSharedState& state,

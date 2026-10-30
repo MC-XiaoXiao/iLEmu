@@ -6,8 +6,8 @@
 
 #pragma once
 
+#include "foundation/darwin_version.hpp"
 #include <cstdint>
-#include "device_state/darwin_abi.hpp"
 
 namespace ilemu {
 
@@ -23,9 +23,8 @@ enum class CallResult {
     NoMemory,
 };
 
-[[nodiscard]] CallResult dispatch(
-    AddressSpace& memory, DarwinSandboxAbi abi, std::uint32_t operation,
-    std::uint32_t argument);
+[[nodiscard]] CallResult dispatch(AddressSpace& memory, DarwinVersion version,
+    std::uint32_t operation, std::uint32_t argument);
 
 } // namespace bsd::sandbox
 } // namespace ilemu

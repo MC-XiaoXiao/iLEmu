@@ -68,8 +68,7 @@ bool CompatibilityKernel::complete_cpu_exception(
         // stack as overflow. Only a ready SA_ONSTACK disposition may catch
         // it; otherwise XNU forces an unmasked default SIGSEGV.
         const auto stack_top =
-            darwin_address_bounds(shared_state_->darwin_abi.address_layout)
-                .stack_top;
+            darwin_address_bounds(shared_state_->darwin_version).stack_top;
         if (exception.type == 1U && exception.codes[0] == 2U &&
             exception.codes[1] >= stack_top - initial_user_stack_size &&
             exception.codes[1] < stack_top) {

@@ -87,8 +87,9 @@ private:
         using namespace darwin::mach::xnu;
         const auto identifier = read_little_word(bytes, 20U);
         const auto wide_statistics = identifier == routine::host_statistics64;
-        if (wide_statistics && !host_statistics::Contract { state.darwin_abi.abi_epoch }
-                                    .supports_wide_statistics())
+        if (wide_statistics &&
+            !host_statistics::Contract { state.darwin_version }
+                .supports_wide_statistics())
             return Result { darwin::mig::bad_id };
         const auto page_size = identifier == routine::host_page_size;
         if (bytes.size() != (page_size ? 24U : 40U) ||

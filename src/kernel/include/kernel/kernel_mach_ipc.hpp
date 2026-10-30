@@ -39,7 +39,7 @@ struct ReceivedMessage {
 
 // Allocation-free counterpart used when assigning a message to a waiter.
 [[nodiscard]] std::size_t receive_buffer_size(std::size_t message_size,
-    std::uint32_t receive_options, DarwinMachVmAddressWidth context_width);
+    std::uint32_t receive_options, DarwinVersion version);
 
 // Converts a sender-form Mach header into receiver form and appends the
 // format-0 trailer requested through MACH_RCV_TRAILER_ELEMENTS.
@@ -47,6 +47,6 @@ struct ReceivedMessage {
     const KernelSharedState::MachMessage& message,
     std::uint32_t destination_name, std::uint32_t receive_options,
     std::uint32_t sequence_number = 0, std::uint64_t context = 0,
-    DarwinMachVmAddressWidth context_width = DarwinMachVmAddressWidth::Natural32);
+    DarwinVersion version = { });
 
 } // namespace ilemu::mach_ipc

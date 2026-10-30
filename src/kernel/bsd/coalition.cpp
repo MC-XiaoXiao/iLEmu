@@ -7,8 +7,8 @@
 
 #include "kernel/darwin_coalition_runtime.hpp"
 
-#include "device_state/darwin_abi.hpp"
 #include "foundation/darwin_errno.hpp"
+#include "foundation/darwin_version.hpp"
 #include "kernel/kernel.hpp"
 
 #include "support.hpp"
@@ -26,10 +26,8 @@ namespace {
 
 } // namespace
 
-DarwinCoalitionRuntime::DarwinCoalitionRuntime(DarwinCoalitionAbi abi)
-    : type_count_ {
-        abi == DarwinCoalitionAbi::ResourceAndJetsamCoalitions ? 2U : 1U
-    }
+DarwinCoalitionRuntime::DarwinCoalitionRuntime(DarwinVersion version)
+    : type_count_ { (version >= DarwinGeneration::Ios9) ? 2U : 1U }
     , next_identifier_ { type_count_ + 1U }
 {
     for (std::uint32_t type = 0; type < type_count_; ++type)

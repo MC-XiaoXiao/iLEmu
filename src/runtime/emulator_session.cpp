@@ -59,14 +59,13 @@
 #include <vector>
 
 #include "debug/gdb_rsp.hpp"
-#include "device_state/darwin_kernel_configuration.hpp"
+#include "device_state/darwin_configuration.hpp"
 #include "device_state/lockdown_state.hpp"
 #include "device_state/network_preferences.hpp"
 #include "foundation/address_space.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/deadline_queue.hpp"
 #include "foundation/device_model.hpp"
-#include "graphics/display.hpp"
 #include "foundation/executable_catalog.hpp"
 #include "foundation/firmware_prepare.hpp"
 #include "foundation/guest_execution_coordinator.hpp"
@@ -81,6 +80,7 @@
 #include "foundation/performance.hpp"
 #include "foundation/process_loader.hpp"
 #include "foundation/userland_hle.hpp"
+#include "graphics/display.hpp"
 #include "graphics/frame_file_presenter.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "graphics/touch_replay.hpp"
@@ -127,13 +127,13 @@ void EmulatorSession::run()
         throw std::invalid_argument { "boot requires a firmware rootfs" };
     const auto darwin_configuration = resolve_darwin_configuration(
         options.rootfs, options.ios_build);
-    if (darwin_configuration.abi_source == DarwinAbiSource::Unresolved) {
+    if (darwin_configuration.version_source == FirmwareSource::Unresolved) {
         throw std::runtime_error {
             "cannot select Darwin/ABI configuration: firmware iOS build is " +
-            (darwin_configuration.abi_source_detail.empty()
+            (darwin_configuration.version_source_detail.empty()
                     ? std::string { "missing" }
                     : "unsupported (" +
-                          darwin_configuration.abi_source_detail + ")") +
+                          darwin_configuration.version_source_detail + ")") +
             "; provide a supported iOS build code"
         };
     }
@@ -147,7 +147,7 @@ void EmulatorSession::run()
     auto device = options.device;
     device.input.system_gestures.unlock_interaction =
         darwin_configuration.unlock_interaction;
-    const auto& darwin_abi = darwin_configuration.abi;
+    const auto& darwin_version = darwin_configuration.version;
     SessionCatalog session_catalog { rootfs,
         arm_architecture_for_model(device.processor.model), catalog_manifest,
         output };
@@ -176,16 +176,11 @@ void EmulatorSession::run()
         " ui=" + std::to_string(device.screen.user_interface.width) + "x" +
         std::to_string(device.screen.user_interface.height));
     output.line(
-        "[abi-profile] kernel=" + darwin_configuration.identity.name +
-        " initial-apple-vector=" +
-        (darwin_abi.initial_apple_vector_abi ==
-                    DarwinInitialAppleVectorAbi::LegacyExecutablePath
-                ? "legacy-path"
-                : "keyed-path"));
-    output.line("[abi] contract=" + std::string { darwin_configuration.abi_name } +
-                " source=" + std::string { darwin_abi_source_name(
-                    darwin_configuration.abi_source) } +
-                " detail=" + darwin_configuration.abi_source_detail);
+        "[abi] contract=" + std::string { darwin_configuration.version_name } +
+        " source=" +
+        std::string {
+            darwin_version_source_name(darwin_configuration.version_source) } +
+        " detail=" + darwin_configuration.version_source_detail);
     const auto activation = options.activation;
     const std::string activation_value =
         activation == LockdownActivation::Activated     ? "activated"
@@ -206,7 +201,7 @@ void EmulatorSession::run()
             ? std::optional<bool> { }
             : std::optional<bool> { activation ==
                                     LockdownActivation::Activated };
-    darwin_configuration.activation_profile.apply(
+    darwin_configuration.activation.apply(
         device.identity, activation_override.value_or(false));
     const auto ticks_option = options.ticks;
     const auto bounded_execution = ticks_option.has_value();
@@ -492,7 +487,7 @@ void EmulatorSession::run()
     auto initial_memory = std::make_unique<AddressSpace>();
     initial_memory->set_parallel_access(guest_processor_count > 1);
     ProcessLoader loader { rootfs, *initial_memory, guest_architecture,
-        session_catalog.index(), darwin_abi.initial_apple_vector_abi, darwin_abi.address_layout };
+        session_catalog.index(), darwin_version };
     std::vector<std::string> initial_environment {
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root", "SHELL=/bin/sh"
     };
@@ -1418,8 +1413,10 @@ void EmulatorSession::run()
                                  xnu::scheduler::default_preemption_rate,
         guest_ticks_per_second / xnu::scheduler::scheduler_ticks_per_second,
         guest_processor_count, guest_ticks_per_second,
-        darwin_abi.thread_priority_floor == DarwinThreadPriorityFloor::Throttle
-            ? 4 : xnu::scheduler::minimum_priority };
+        (darwin_version >= DarwinGeneration::Ios4 &&
+            darwin_version < DarwinGeneration::Ios7)
+            ? 4
+            : xnu::scheduler::minimum_priority };
     GuestExecutionPolicy guest_execution_policy { std::chrono::nanoseconds {
         static_cast<std::int64_t>(
             iokit_abi::display_vsync::period_absolute_time) } };
@@ -1821,7 +1818,7 @@ void EmulatorSession::run()
                 catalog_maintenance.poll(*initial_runtime->kernel, true);
                 ProcessLoader validator { rootfs, *runtime_ptr->memory,
                     guest_architecture, session_catalog.index(),
-                    darwin_abi.initial_apple_vector_abi, darwin_abi.address_layout };
+                    darwin_version };
                 if (!validator.validate(path)) {
                     output.line(
                         "[process] exec rejected pid=" +
@@ -1880,7 +1877,7 @@ void EmulatorSession::run()
                     };
                     ProcessLoader loader { rootfs, *child_runtime->memory,
                         guest_architecture, session_catalog.index(),
-                        darwin_abi.initial_apple_vector_abi, darwin_abi.address_layout };
+                        darwin_version };
                     loaded =
                         loader.load(path, std::move(arguments), environment);
                 }
@@ -2073,8 +2070,8 @@ void EmulatorSession::run()
             });
         runtime.kernel->set_thread_policy_handler(
             [runtime_ptr, &runtime_index, &scheduler, guest_ticks_per_second,
-                timeshare_abi = darwin_abi.thread_timeshare](
-                std::uint32_t pid, std::uint32_t processor, std::uint32_t flavor,
+                timeshare_version = darwin_version](std::uint32_t pid,
+                std::uint32_t processor, std::uint32_t flavor,
                 std::span<const std::uint32_t> policy) {
                 using namespace darwin::mach::thread_policy;
                 const auto* target = runtime_index.find(pid);
@@ -2082,9 +2079,11 @@ void EmulatorSession::run()
                     return false;
                 const XnuThreadId thread { pid, processor };
                 if (flavor == extended_policy) {
-                    const auto timeshare = policy.empty() ||
-                        (timeshare_abi == DarwinThreadTimeshareAbi::CanonicalBoolean
-                                ? policy[0] == 1U : policy[0] != 0U);
+                    const auto timeshare =
+                        policy.empty() ||
+                        ((timeshare_version >= DarwinGeneration::Ios7)
+                                ? policy[0] == 1U
+                                : policy[0] != 0U);
                     return scheduler.set_timeshare(thread, timeshare);
                 }
                 if (flavor == time_constraint_policy &&
@@ -4061,7 +4060,7 @@ void EmulatorSession::run()
                     runtime.memory->clear();
                     ProcessLoader exec_loader { rootfs, *runtime.memory,
                         guest_architecture, session_catalog.index(),
-                        darwin_abi.initial_apple_vector_abi, darwin_abi.address_layout };
+                        darwin_version };
                     auto loaded = exec_loader.load(pending.path,
                         std::move(pending.arguments), pending.environment);
                     runtime.kernel->set_process_arguments(

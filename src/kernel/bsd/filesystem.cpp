@@ -356,7 +356,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
-        const DarwinFileFlags file_flags { shared_state_->darwin_abi.file_open };
+        const DarwinFileFlags file_flags { shared_state_->darwin_version };
         // The VFS exposes an unencrypted volume (F_GETPROTECTIONCLASS=0).
         // Raw reads therefore use the same bytes and descriptor lifecycle as
         // open; a requested creation class adds no encryption metadata.

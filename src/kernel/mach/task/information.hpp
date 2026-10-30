@@ -33,8 +33,8 @@ private:
         std::span<const std::uint32_t> payload() const
         { return std::span { words }.first(count); }
     };
-    static std::size_t word_count(DarwinTaskInformationAbi abi,
-        std::uint32_t flavor, std::uint32_t capacity);
+    static std::size_t word_count(
+        DarwinVersion version, std::uint32_t flavor, std::uint32_t capacity);
     static Result evaluate_locked(AddressSpace& memory, KernelSharedState& state,
         std::uint32_t caller, std::uint32_t object, std::span<const std::byte> bytes,
         const TaskMemoryStatisticsQuery& query,

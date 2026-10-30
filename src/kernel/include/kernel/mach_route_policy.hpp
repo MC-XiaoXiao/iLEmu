@@ -21,8 +21,10 @@ struct MachRouteResolution {
 // The profile selects a reference table, never an application/build exception.
 class MachRoutePolicy {
 public:
-    explicit MachRoutePolicy(std::string_view abi_profile)
-        : reference_ { xnu_reference::mach_table(abi_profile) } { }
+    explicit MachRoutePolicy(std::string_view version_name)
+        : reference_ { xnu_reference::mach_table(version_name) }
+    {
+    }
     [[nodiscard]] MachRouteResolution resolve(
         const Entry* entry, std::uint32_t number) const;
     [[nodiscard]] std::string_view source() const

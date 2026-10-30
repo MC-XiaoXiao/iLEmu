@@ -10,7 +10,7 @@ namespace ilemu {
 // Selected by the firmware version, independently of physical device identity
 // and kernel wire layouts. The board-specific identity string remains device
 // data.
-struct FirmwareActivationProfile {
+struct FirmwareActivation {
     enum class Identity { Retail, DevelopmentBoard };
     Identity identity { Identity::Retail };
 

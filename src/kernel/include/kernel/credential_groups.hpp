@@ -3,10 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #pragma once
-#include <network/darwin_abi_route.hpp>
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <network/darwin_version_route.hpp>
 #include <span>
 
 namespace ilemu {
@@ -30,12 +30,12 @@ public:
         if (size_ != 0U)
             std::copy_n(groups.begin() + 1, size_, supplementary_.begin());
     }
-    void change_effective(std::uint32_t old_gid, std::uint32_t new_gid,
-        DarwinAbiEpoch epoch)
+    void change_effective(
+        std::uint32_t old_gid, std::uint32_t new_gid, DarwinVersion version)
     {
         // xnu-792 replaces group 0. xnu-1228+ preserves a matching member
         // by swapping it with the old effective gid (kauth_cred_change_egid).
-        if (epoch == DarwinAbiEpoch::IphoneOs1)
+        if (version == DarwinGeneration::IphoneOs1)
             return;
         for (std::uint32_t i = 0; i < size_; ++i) {
             if (supplementary_[i] == new_gid) {

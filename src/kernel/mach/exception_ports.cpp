@@ -57,13 +57,12 @@ namespace {
     constexpr std::uint32_t mach_exception_codes = 0x80000000U;
 
     [[nodiscard]] std::uint32_t valid_exception_mask(
-        DarwinExceptionPortAbi abi) noexcept
+        DarwinVersion version) noexcept
     {
-        const auto count = abi == DarwinExceptionPortAbi::ThroughCorpseNotify
-                               ? std::size_t { 14 }
-                           : abi == DarwinExceptionPortAbi::ThroughGuard
-                               ? std::size_t { 13 }
-                               : std::size_t { 11 };
+        const auto count =
+            (version >= DarwinGeneration::Ios9)   ? std::size_t { 14 }
+            : (version == DarwinGeneration::Ios8) ? std::size_t { 13 }
+                                                  : std::size_t { 11 };
         return (1U << count) - 2U;
     }
 
@@ -180,8 +179,7 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_exception_ports_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    const auto valid_mask =
-        valid_exception_mask(shared_state_->darwin_abi.exception_port_abi);
+    const auto valid_mask = valid_exception_mask(shared_state_->darwin_version);
     const auto task_set_id =
         mig_message_id(xnu::mig::task::Routine::task_set_exception_ports);
     const auto task_get_id =

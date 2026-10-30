@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
 
 #include <cstdint>
 #include <map>
@@ -17,7 +17,7 @@ namespace ilemu {
 class DarwinCoalitionRuntime {
 public:
     explicit DarwinCoalitionRuntime(
-        DarwinCoalitionAbi abi = DarwinCoalitionAbi::ResourceCoalitions);
+        DarwinVersion version = DarwinGeneration::Ios8);
     struct CreateResult {
         std::uint32_t error { };
         std::uint64_t identifier { };

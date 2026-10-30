@@ -190,7 +190,7 @@ namespace {
 CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     std::filesystem::path rootfs, DeviceModel device,
     std::optional<bool> activated, LockdownCapabilities lockdown_capabilities,
-    std::optional<DarwinKernelConfiguration> configuration)
+    std::optional<DarwinConfiguration> configuration)
     : memory_ { memory }
     , output_ { output }
     , rootfs_ { std::move(rootfs) }
@@ -223,12 +223,13 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , shared_state_ { [&] {
         if (!configuration)
             configuration = resolve_darwin_configuration(rootfs_);
-        return std::make_shared<KernelSharedState>(configuration->abi,
-            configuration->identity.operating_system_release, configuration->abi_name);
+        return std::make_shared<KernelSharedState>(configuration->version,
+            configuration->identity.operating_system_release,
+            configuration->version_name);
     }() }
     , task_syscalls_ { std::make_shared<TaskSyscallCounters>() }
     , task_vm_events_ { std::make_shared<TaskVmEvents>() }
-    , signal_state_ { shared_state_->darwin_abi.abi_epoch }
+    , signal_state_ { shared_state_->darwin_version }
 {
     surface_store_->reserve_identifier(
         iokit_abi::mobile_framebuffer_default_surface_id);
@@ -298,8 +299,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->graphics_driver_bundle =
         device_model_.screen.resolve_driver_bundle(rootfs_);
     shared_state_->framebuffer_service_class =
-        resolved.abi.framebuffer_registry ==
-                DarwinFramebufferRegistryAbi::UnifiedClcdClass
+        (resolved.version >= DarwinGeneration::Ios7)
             ? "AppleCLCD"
             : std::string { device_model_.screen.framebuffer_service_class };
     shared_state_->external_framebuffer =
@@ -460,7 +460,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, 0U, { }, { },
             DisplayOrientation::Portrait, { }, 0U };
     shared_state_->processes[process_.pid].memory_status =
-        darwin::memorystatus::initial_state(shared_state_->darwin_abi.memory_status_priority);
+        darwin::memorystatus::initial_state(shared_state_->darwin_version);
     shared_state_->processes[process_.pid].syscall_counters = task_syscalls_;
     shared_state_->processes[process_.pid].vm_events = task_vm_events_;
     memory_.set_task_vm_events(task_vm_events_);
@@ -469,8 +469,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
 
 void CompatibilityKernel::configure_darwin_notify_state()
 {
-    darwin_notify_state_hle_.set_abi(
-        shared_state_->darwin_abi.notify_state_abi);
+    darwin_notify_state_hle_.set_version(shared_state_->darwin_version);
     darwin_notify_state_hle_.set_native_server_ready_query(
         [weak_state = std::weak_ptr<KernelSharedState> { shared_state_ }] {
             const auto state = weak_state.lock();
@@ -1260,8 +1259,8 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         if (const auto parent = shared_state_->processes.find(process_.parent_pid);
             parent != shared_state_->processes.end())
             record.parent_incarnation = parent->second.incarnation;
-        record.memory_status = darwin::memorystatus::initial_state(
-            shared_state_->darwin_abi.memory_status_priority);
+        record.memory_status =
+            darwin::memorystatus::initial_state(shared_state_->darwin_version);
         record.incarnation = shared_state_->next_process_incarnation++;
         if (record.incarnation == 0U)
             record.incarnation = shared_state_->next_process_incarnation++;
@@ -3114,8 +3113,8 @@ void CompatibilityKernel::inherit_process_state(
     child_record.in_vfork = false;
     child_record.has_executed = false;
     child_record.importance_donor = false;
-    child_record.memory_status = darwin::memorystatus::initial_state(
-        shared_state_->darwin_abi.memory_status_priority);
+    child_record.memory_status =
+        darwin::memorystatus::initial_state(shared_state_->darwin_version);
     child_record.exit_status = 0;
     child_record.termination_signal = 0;
     child_record.exited = false;
@@ -3236,11 +3235,8 @@ void CompatibilityKernel::dispatch_arm_fast_trap(Cpu& cpu)
             // a vm_protect/mprotect transition. Preserve that first-generation
             // ARM behavior by making an already-mapped invalidated range
             // executable; never create memory as a side effect of the trap.
-            const auto& capabilities =
-                shared_state_->darwin_abi.capabilities;
-            if (capabilities.arm_cache_trap_grants_execute &&
-                darwin_abi_route_supported(arm_cache_trap_execute_route,
-                    shared_state_->darwin_abi.abi_epoch)) {
+            if (darwin_version_route_supported(arm_cache_trap_execute_route,
+                    shared_state_->darwin_version)) {
                 static_cast<void>(
                     memory_.map(address, length, MemoryPermission::Execute));
             }

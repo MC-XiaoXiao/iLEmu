@@ -209,11 +209,11 @@ void BsdDispatchTable::io_policy(
 }
 
 BsdDispatchTable::BsdDispatchTable(
-    const DarwinAbi& abi, std::string_view darwin_release)
-    : default_sigsys_ { abi.capabilities.send_sigsys }
+    DarwinVersion version, std::string_view darwin_release)
+    : default_sigsys_ { version.known() }
 {
-    const auto table = syscall_routes::build(abi);
-    const syscall_routes::BsdRoutePolicy policy { abi, darwin_release };
+    const auto table = syscall_routes::build(version);
+    const syscall_routes::BsdRoutePolicy policy { version, darwin_release };
     for (std::uint32_t number = 0; number < bindings_.size(); ++number) {
         const auto* entry =
             table.find(syscall_routes::Domain::BsdSyscall, number);

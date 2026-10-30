@@ -19,7 +19,7 @@ public:
         std::uint32_t requested_count, bool wide)
     {
         using namespace darwin::mach::xnu;
-        const host_statistics::Contract contract { state.darwin_abi.abi_epoch };
+        const host_statistics::Contract contract { state.darwin_version };
         if (wide && flavor == host_statistics::vm64_flavor) {
             const auto count = contract.wide_vm_count(requested_count);
             if (count == 0U)

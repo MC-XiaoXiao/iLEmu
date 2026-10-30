@@ -32,10 +32,9 @@ bool CompatibilityKernel::dispatch_bsd_security(Cpu& cpu, std::uint32_t number)
 
     if (*policy == "Sandbox") {
         auto result = bsd::sandbox::dispatch(
-            memory_, shared_state_->darwin_abi.sandbox_abi,
-            registers[1], registers[2]);
+            memory_, shared_state_->darwin_version, registers[1], registers[2]);
         if (result == bsd::sandbox::CallResult::Unsupported &&
-            shared_state_->darwin_abi.sandbox_abi == DarwinSandboxAbi::Wide64Arguments &&
+            (shared_state_->darwin_version >= DarwinGeneration::Ios6) &&
             registers[1] >= 5U && registers[1] <= 7U) {
             const std::lock_guard lock { shared_state_->mach_mutex };
             if (!shared_state_->sandbox_extensions)

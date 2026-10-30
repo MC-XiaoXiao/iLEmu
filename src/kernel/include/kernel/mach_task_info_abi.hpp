@@ -9,24 +9,20 @@
 
 #pragma once
 
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
 #include <cstddef>
 #include <cstdint>
 
 namespace ilemu::darwin::mach::task_info {
 
 // mach_types.defs bounds the task_info_t variable input array.
-[[nodiscard]] constexpr std::uint32_t maximum_input_words(DarwinAbiEpoch epoch)
+[[nodiscard]] constexpr std::uint32_t maximum_input_words(DarwinVersion version)
 {
-    switch (epoch) {
-    case DarwinAbiEpoch::Later:
+    if (version >= DarwinGeneration::Ios7)
         return 52U;
-    case DarwinAbiEpoch::Darwin11:
-    case DarwinAbiEpoch::Darwin13:
+    if (version >= DarwinGeneration::Ios4)
         return 32U;
-    default:
-        return 10U;
-    }
+    return 10U;
 }
 
 // XNU osfmk/mach/task_info.h. Fields are natural_t words at the

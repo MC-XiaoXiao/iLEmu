@@ -25,8 +25,8 @@ bool CompatibilityKernel::dispatch_bsd_memorystatus(
     if (number != syscall_number)
         return false;
 
-    const auto priority_abi = shared_state_->darwin_abi.memory_status_priority;
-    if (priority_abi == DarwinMemoryStatusPriorityAbi::Unsupported)
+    const auto priority_abi = shared_state_->darwin_version;
+    if (priority_abi < DarwinGeneration::Ios6)
         return false;
 
     const auto& registers = cpu.registers();
@@ -63,7 +63,7 @@ bool CompatibilityKernel::dispatch_bsd_memorystatus(
                 return true;
             }
             auto priority = static_cast<std::int32_t>(*priority_word);
-            if (priority_abi == DarwinMemoryStatusPriorityAbi::PriorityBands) {
+            if (priority_abi >= DarwinGeneration::Ios7) {
                 if (priority == -1)
                     priority = default_band;
                 else if (priority == deferred_idle_priority)
@@ -110,10 +110,8 @@ bool CompatibilityKernel::dispatch_bsd_memorystatus(
             [priority_abi](const auto& left, const auto& right) {
                 const auto lhs = static_cast<std::int32_t>(left[1]);
                 const auto rhs = static_cast<std::int32_t>(right[1]);
-                return priority_abi ==
-                               DarwinMemoryStatusPriorityAbi::SignedPriority
-                           ? lhs > rhs
-                           : lhs < rhs;
+                return (priority_abi == DarwinGeneration::Ios6) ? lhs > rhs
+                                                                : lhs < rhs;
             });
         const auto required =
             static_cast<std::uint32_t>(entries.size()) * priority_entry_size;

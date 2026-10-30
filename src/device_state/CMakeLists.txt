@@ -3,10 +3,10 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 add_library(ilemu_device_state STATIC
-    darwin_abi_profiles.cpp
+    darwin_versions.cpp
     darwin_build_version.cpp
     darwin_firmware_identity.cpp
-    darwin_kernel_configuration.cpp
+    darwin_configuration.cpp
     darwin_kernel_identity.cpp
     graphics_services_capabilities.cpp
     launchd_job_catalog.cpp

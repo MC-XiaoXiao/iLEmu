@@ -12,7 +12,7 @@ class Cpu;
 class BsdDispatchTable {
 public:
     explicit BsdDispatchTable(
-        const DarwinAbi& abi, std::string_view darwin_release = { });
+        DarwinVersion version, std::string_view darwin_release = { });
     void dispatch(
         CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) const;
     [[nodiscard]] bool sends_sigsys(std::uint32_t number) const;

@@ -3,20 +3,24 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
 
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
 #include "kernel/darwin_abi.hpp"
 
 namespace ilemu {
 // Native FMASK/FCNTLFLAGS and VFS open1 descriptor inheritance.
 class DarwinFileFlags {
 public:
-    explicit constexpr DarwinFileFlags(DarwinFileOpenAbi abi) : abi_ { abi } {}
+    explicit constexpr DarwinFileFlags(DarwinVersion version)
+        : version_ { version }
+    {
+    }
 
     [[nodiscard]] constexpr std::uint32_t mutable_status() const
     {
         using namespace darwin::open_flag;
         return append | non_block | asynchronous | synchronize |
-            (abi_ == DarwinFileOpenAbi::Legacy ? 0U : data_synchronize);
+               ((version_ < DarwinGeneration::IphoneOs3) ? 0U
+                                                         : data_synchronize);
     }
 
     [[nodiscard]] constexpr std::uint32_t status(std::uint32_t flags, bool vnode = false) const
@@ -29,11 +33,13 @@ public:
 
     [[nodiscard]] constexpr std::uint32_t descriptor(std::uint32_t flags) const
     {
-        return abi_ == DarwinFileOpenAbi::CloseOnExec &&
-            (flags & darwin::open_flag::close_on_exec) != 0U ? 1U : 0U;
+        return (version_ >= DarwinGeneration::Ios4) &&
+                       (flags & darwin::open_flag::close_on_exec) != 0U
+                   ? 1U
+                   : 0U;
     }
 
 private:
-    DarwinFileOpenAbi abi_;
+    DarwinVersion version_;
 };
 } // namespace ilemu

@@ -11,7 +11,7 @@
 
 #pragma once
 
-#include "network/darwin_abi_route.hpp"
+#include "network/darwin_version_route.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -61,24 +61,29 @@ namespace host_statistics {
     // compression/page-class counters. Counts remain integer_t words.
     class Contract {
     public:
-        explicit constexpr Contract(DarwinAbiEpoch epoch) : epoch_(epoch) { }
+        explicit constexpr Contract(DarwinVersion version)
+            : version_(version)
+        {
+        }
         constexpr bool supports_wide_statistics() const
         {
-            return epoch_ >= DarwinAbiEpoch::IphoneOs3;
+            return (version_ >= DarwinGeneration::IphoneOs3);
         }
         constexpr bool supports_external_modifications() const
         {
-            return epoch_ >= DarwinAbiEpoch::Darwin11;
+            return (version_ >= DarwinGeneration::Ios4);
         }
         constexpr std::size_t wide_vm_count(std::uint32_t capacity) const
         {
             if (!supports_wide_statistics() || capacity < vm64_rev0_word_count)
                 return 0U;
-            return epoch_ == DarwinAbiEpoch::Later && capacity >= vm64_rev1_word_count
-                       ? vm64_rev1_word_count : vm64_rev0_word_count;
+            return (version_ >= DarwinGeneration::Ios7) &&
+                           capacity >= vm64_rev1_word_count
+                       ? vm64_rev1_word_count
+                       : vm64_rev0_word_count;
         }
     private:
-        DarwinAbiEpoch epoch_;
+        DarwinVersion version_;
     };
 } // namespace host_statistics
 

@@ -12,7 +12,7 @@
 #pragma once
 
 #include "foundation/address_space.hpp"
-#include "device_state/darwin_abi.hpp"
+#include "foundation/darwin_version.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -26,11 +26,16 @@ namespace ilemu::mach_vm_support {
 class MachVmWireFormat {
 public:
     [[nodiscard]] static constexpr MachVmWireFormat for_interface(
-        bool mach_vm, DarwinMachVmAddressWidth address_width)
+        bool mach_vm, DarwinVersion version)
     {
-        const auto wide =
-            mach_vm && address_width == DarwinMachVmAddressWidth::Wide64;
+        const auto wide = mach_vm && version >= DarwinGeneration::Ios5;
         return MachVmWireFormat { wide ? 8U : 4U };
+    }
+
+    [[nodiscard]] static constexpr MachVmWireFormat for_port_context(
+        DarwinVersion version)
+    {
+        return MachVmWireFormat { version >= DarwinGeneration::Ios6 ? 8U : 4U };
     }
 
     [[nodiscard]] constexpr std::uint32_t address_size() const { return size_; }

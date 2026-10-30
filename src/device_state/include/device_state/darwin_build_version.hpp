@@ -10,20 +10,10 @@
 
 namespace ilemu {
 
-// ABI boundaries use the numeric generation and, only within a generation,
-// the release train. Revision numbers and beta suffixes do not select an ABI.
+// Validate a complete build code but retain only its numeric major generation.
+// Release trains, revisions and beta suffixes never select compatibility.
 struct DarwinBuildVersion {
     std::uint32_t generation;
-    // Zero denotes a major-only boundary, e.g. { 10U } compares only 10.
-    char train { };
-
-    [[nodiscard]] constexpr bool at_least(DarwinBuildVersion minimum) const
-    {
-        if (generation != minimum.generation)
-            return generation > minimum.generation;
-        return minimum.train == 0 || train >= minimum.train;
-    }
-
     auto operator<=>(const DarwinBuildVersion&) const = default;
     [[nodiscard]] static std::optional<DarwinBuildVersion> parse(
         std::string_view build);

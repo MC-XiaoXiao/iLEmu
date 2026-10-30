@@ -109,14 +109,12 @@ namespace {
 
 ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
     ArmArchitectureVersion architecture, ExecutableCatalog* catalog,
-    DarwinInitialAppleVectorAbi initial_apple_vector_abi,
-    DarwinAddressLayout address_layout)
+    DarwinVersion version)
     : rootfs_ { std::move(rootfs) }
     , memory_ { memory }
     , architecture_ { architecture }
     , catalog_ { catalog }
-    , address_layout_ { address_layout }
-    , initial_apple_vector_abi_ { initial_apple_vector_abi }
+    , version_ { version }
 {
 }
 
@@ -215,7 +213,7 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
         const auto page_mask = AddressSpace::page_size - 1U;
         const auto slide = (main_end + page_mask) &
             ~static_cast<std::uint64_t>(page_mask);
-        const auto bounds = darwin_address_bounds(address_layout_);
+        const auto bounds = darwin_address_bounds(version_);
         const auto first_reserved = std::min<std::uint64_t>(
             bounds.stack_top - initial_user_stack_size,
             bounds.shared_region_base);
@@ -225,7 +223,7 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     }
     FileMappingBatchContext dynamic_linker_mapping_context;
     dynamic_linker.map_into(memory_, &dynamic_linker_mapping_context);
-    const auto stack_top = darwin_address_bounds(address_layout_).stack_top;
+    const auto stack_top = darwin_address_bounds(version_).stack_top;
     const auto stack_base = stack_top - initial_user_stack_size;
     if (!memory_.map(stack_base, initial_user_stack_size,
             MemoryPermission::Read | MemoryPermission::Write)) {
@@ -304,8 +302,7 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     }
     std::reverse(environment_pointers.begin(), environment_pointers.end());
     const auto apple_vector_executable_path =
-        initial_apple_vector_abi_ ==
-                DarwinInitialAppleVectorAbi::LegacyExecutablePath
+        (version_ >= DarwinGeneration::Ios4)
             ? mapped_executable
             : "executable_path=" + mapped_executable;
     const auto executable_path = push_string(apple_vector_executable_path);

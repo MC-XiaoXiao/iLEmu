@@ -36,8 +36,8 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         return false;
 
     auto& registers = cpu.registers();
-    const bool wide_table = shared_state_->darwin_abi.mach_kernel_rpc ==
-        DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps;
+    const bool wide_table =
+        (shared_state_->darwin_version >= DarwinGeneration::Ios7);
     if (wide_table && (trap == 11U || trap == 13U)) {
         // The wide-only trap table (xnu-2422+) removed vm_allocate and
         // vm_deallocate: those slots are kern_invalid, which answers
@@ -77,8 +77,9 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
             return true;
         }
 
-        const auto allocation = allocate_guest_vm_region(
-            memory_, darwin::mach::vm_allocation::Contract { shared_state_->darwin_abi.abi_epoch },
+        const auto allocation = allocate_guest_vm_region(memory_,
+            darwin::mach::vm_allocation::Contract {
+                shared_state_->darwin_version },
             *requested_address, size, flags);
         if (allocation.result == darwin::mach::success &&
             !(wide ? memory_.write64(address_pointer, allocation.address)

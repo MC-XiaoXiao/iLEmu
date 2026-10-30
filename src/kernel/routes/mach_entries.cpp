@@ -5,7 +5,7 @@
 #include "kernel/mach_clock_abi.hpp"
 #include "kernel/mach_scheduler_abi.hpp"
 namespace ilemu::syscall_routes {
-void bind_mach_entries(Table& table, const DarwinAbi& abi)
+void bind_mach_entries(Table& table, DarwinVersion version)
 {
     const auto add = [&](std::uint32_t n, std::string_view name,
                          Handler handler = Handler::MachInline,
@@ -33,7 +33,7 @@ void bind_mach_entries(Table& table, const DarwinAbi& abi)
     add(44, "task_name_for_pid", Handler::MachTask);
     add(45, "task_for_pid", Handler::MachTask);
     add(46, "pid_for_task", Handler::MachTask);
-    if (abi.mach_voucher_abi == DarwinMachVoucherAbi::HostCreateWithDirectTraps) {
+    if (version >= DarwinGeneration::Ios10) {
         add(43, "mach_generate_activity_id", Handler::MachVoucher,
             Contract::CurrentDispatcher, Outcome::HandlerValidated,
             "mach/traps/voucher.cpp");
@@ -54,10 +54,8 @@ void bind_mach_entries(Table& table, const DarwinAbi& abi)
     add(92, "mk_timer_destroy_trap", Handler::MachTimer);
     add(93, "mk_timer_arm_trap", Handler::MachTimer);
     add(94, "mk_timer_cancel_trap", Handler::MachTimer);
-    const bool direct =
-        abi.mach_kernel_rpc != DarwinMachKernelRpcAbi::LegacyMigOnly;
-    const bool wide =
-        abi.mach_kernel_rpc == DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps;
+    const bool direct = (version >= DarwinGeneration::Ios5);
+    const bool wide = (version >= DarwinGeneration::Ios7);
     const auto vm = [&](std::uint32_t n, std::string_view name) {
         // Wide table (xnu-2422+): 11/13 are kern_invalid (KERN_INVALID_ARGUMENT);
         // 15 is mach_vm_map, answered with the MIG fallback.

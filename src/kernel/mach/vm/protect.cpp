@@ -49,8 +49,8 @@ std::uint32_t Protection::evaluate_locked(AddressSpace& memory, Cpu& cpu,
     std::uint32_t object, std::span<const std::byte> bytes)
 {
     const auto width = mach_vm_support::MachVmWireFormat::for_interface(
-        read_little_word(bytes, 20U) == 4802U,
-        state.darwin_abi.mach_vm_address).address_size();
+        read_little_word(bytes, 20U) == 4802U, state.darwin_version)
+                           .address_size();
     if (bytes.size() != 40U + 2U * width ||
         (read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit))
         return darwin::mig::bad_arguments;
@@ -83,7 +83,8 @@ std::optional<std::uint32_t> Protection::try_synchronous_locked(AddressSpace& me
     std::uint32_t reply_name, std::uint32_t receive_address, std::uint32_t identifier)
 {
     const auto width = mach_vm_support::MachVmWireFormat::for_interface(
-        identifier == 4802U, state.darwin_abi.mach_vm_address).address_size();
+        identifier == 4802U, state.darwin_version)
+                           .address_size();
     const auto request_size = 40U + 2U * width;
     constexpr auto reply_with_trailer = 44U;
     const auto destination = mach_ipc::validate_task_rpc_locked(memory, state,

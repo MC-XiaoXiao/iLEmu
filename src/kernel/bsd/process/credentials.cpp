@@ -138,7 +138,7 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
             process_.gid = requested_real;
         if (requested_effective != unchanged) {
             process_.groups.change_effective(old_effective, requested_effective,
-                shared_state_->darwin_abi.abi_epoch);
+                shared_state_->darwin_version);
             process_.effective_gid = requested_effective;
         }
         if (const auto record = shared_state_->processes.find(process_.pid);
@@ -237,8 +237,8 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
     if (number == darwin::syscall::set_group_id) {
         process_.gid = requested_group;
     }
-    process_.groups.change_effective(process_.effective_gid, requested_group,
-        shared_state_->darwin_abi.abi_epoch);
+    process_.groups.change_effective(
+        process_.effective_gid, requested_group, shared_state_->darwin_version);
     process_.effective_gid = requested_group;
     if (const auto record = shared_state_->processes.find(process_.pid);
         record != shared_state_->processes.end()) {

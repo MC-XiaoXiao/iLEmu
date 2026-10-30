@@ -35,11 +35,11 @@ public:
         const bool resume = resume_token || identifier == id(Routine::task_resume);
         auto result = darwin::mig::bad_arguments;
         if ((suspend_token || resume_token) &&
-            state.darwin_abi.task_suspension !=
-                DarwinTaskSuspensionAbi::ResumePortTokens) {
+            (state.darwin_version < DarwinGeneration::Ios7)) {
             result = darwin::mig::bad_id;
         } else if (request.bytes.size() == 24U &&
-            (read_little_word(request.bytes, 0U) & darwin::mig_wire::message_complex_bit) == 0U) {
+                   (read_little_word(request.bytes, 0U) &
+                       darwin::mig_wire::message_complex_bit) == 0U) {
             if (identifier == id(Routine::task_terminate)) {
                 // Public task ports name BSD-backed processes. XNU rejects
                 // those before task_terminate_internal; this is not BSD exit.

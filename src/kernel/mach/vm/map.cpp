@@ -82,7 +82,7 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
 
     auto& registers = cpu.registers();
     const auto wire = MachVmWireFormat::for_interface(
-        is_mach_vm, shared_state_->darwin_abi.mach_vm_address);
+        is_mach_vm, shared_state_->darwin_version);
     const auto width_delta = wire.address_size() - 4U;
     const auto address_reply_size = reply_size + width_delta;
     const auto required_request_size =

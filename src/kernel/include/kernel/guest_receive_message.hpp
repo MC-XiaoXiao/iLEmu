@@ -13,7 +13,7 @@ class GuestReceiveMessage {
     using Header = std::array<std::uint32_t, darwin::socket::arm32_message::size / 4>;
 public:
     std::uint32_t import(AddressSpace& memory, std::uint32_t address,
-        std::uint32_t flags, DarwinAbiEpoch epoch, std::size_t maximum_io)
+        std::uint32_t flags, DarwinVersion version, std::size_t maximum_io)
     {
         using namespace darwin::socket;
         const TaskVmEvents::Scope user_access { memory.task_vm_events() };
@@ -30,7 +30,8 @@ public:
             return 40; // EMSGSIZE, unlike readv
         field(arm32_message::flags_offset) = flags;
         if (const auto error = GuestReadBuffer::import(memory,
-                field(arm32_message::iov_offset), count, epoch, vectors_, capacity_))
+                field(arm32_message::iov_offset), count, version, vectors_,
+                capacity_))
             return error;
         // Retain the existing receive transport bound. The imported iovec
         // lengths and pointers themselves are never rewritten in guest memory.

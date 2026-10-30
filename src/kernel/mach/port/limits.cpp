@@ -14,8 +14,8 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     std::uint32_t object, std::span<const std::byte> bytes)
 {
     const bool get = read_little_word(bytes, 20U) == id(Routine::mach_port_get_attributes);
-    const auto maximum_count = state.darwin_abi.mach_port_attribute_array ==
-        DarwinMachPortAttributeArray::ExtendedStatus17 ? 17U : 10U;
+    const auto maximum_count =
+        (state.darwin_version >= DarwinGeneration::Ios7) ? 17U : 10U;
     const auto count = read_little_word(bytes, 40U);
     if ((read_little_word(bytes, 0U) & darwin::mig_wire::message_complex_bit) != 0U ||
         bytes.size() < 44U || (get ? bytes.size() != 44U :
@@ -32,10 +32,10 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     const auto name = read_little_word(bytes, 32U);
     const auto flavor = read_little_word(bytes, 36U);
     const auto value = read_little_word(bytes, 44U);
-    const bool receiver_flags = state.darwin_abi.mach_port_status ==
-        DarwinMachPortStatusAbi::ImportanceAndGuards;
-    const bool temporary_owner = state.darwin_abi.mach_port_ownership ==
-        DarwinMachPortOwnershipAbi::TemporaryReceiver;
+    const bool receiver_flags =
+        (state.darwin_version >= DarwinGeneration::Ios7);
+    const bool temporary_owner =
+        (state.darwin_version >= DarwinGeneration::Ios6);
     if (get ? flavor < 1U || flavor > 3U :
         flavor != 1U && flavor != 3U && !(flavor == 4U && temporary_owner))
         return { darwin::mach::invalid_argument };
@@ -123,12 +123,18 @@ std::optional<Attributes::SynchronousReply> Attributes::try_synchronous_locked(
         return std::nullopt;
     const auto identifier = memory.read32(registers[0] + 20U).value_or(0U);
     const auto flavor = memory.read32(registers[0] + 36U).value_or(0U);
-    const auto capacity = identifier == id(Routine::mach_port_get_attributes)
-        ? (flavor == 2U ? 88U : flavor == 3U ?
-            48U + 4U * std::min(memory.read32(registers[0] + 40U).value_or(0U),
-                state.darwin_abi.mach_port_attribute_array ==
-                    DarwinMachPortAttributeArray::ExtendedStatus17 ? 17U : 10U) : 52U)
-        : 44U;
+    const auto capacity =
+        identifier == id(Routine::mach_port_get_attributes)
+            ? (flavor == 2U ? 88U
+                  : flavor == 3U
+                      ? 48U + 4U * std::min(memory.read32(registers[0] + 40U)
+                                                .value_or(0U),
+                                       (state.darwin_version >=
+                                           DarwinGeneration::Ios7)
+                                           ? 17U
+                                           : 10U)
+                      : 52U)
+            : 44U;
     const auto destination = mach_ipc::validate_task_rpc_locked(memory, state,
         process, registers, bits, reply_name, size, capacity);
     if (!destination)
