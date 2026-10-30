@@ -2,6 +2,17 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+// Keep package and native versions tied to the CMake project declaration.
+val emulatorVersion = requireNotNull(
+    Regex("""(?m)^project\(iLEmu\s+VERSION\s+(\d+)\.(\d+)\.(\d+)\s""")
+        .find(providers.fileContents(layout.projectDirectory.file("../../CMakeLists.txt")).asText.get())
+) { "CMake must declare an iLEmu major.minor.patch version" }
+    .groupValues.drop(1).map(String::toInt)
+require(emulatorVersion[1] in 0..999 && emulatorVersion[2] in 0..999)
+val emulatorVersionCode = emulatorVersion[0].toLong() * 1_000_000 +
+    emulatorVersion[1] * 1_000 + emulatorVersion[2]
+require(emulatorVersionCode in 1..2_100_000_000)
+
 android {
     namespace = "com.xxiao.ilemu"
     compileSdk { version = release(37) }
@@ -11,8 +22,8 @@ android {
         applicationId = "com.xxiao.ilemu"
         minSdk = 28
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = emulatorVersionCode.toInt()
+        versionName = emulatorVersion.joinToString(".")
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             cmake {
