@@ -2686,18 +2686,27 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
                 0, nullptr, 1, &host_barrier, 0, nullptr);
             submit_commands(true, PerfSubmitReason::CpuReadback);
-            std::vector<std::uint32_t> pixels(damage_pixels);
-            download(surface.download, pixels.data(),
-                static_cast<std::size_t>(damage_bytes), surface.kind);
-            for (std::uint32_t row = 0; row < damage.height; ++row) {
-                std::copy_n(pixels.begin() +
-                                static_cast<std::size_t>(row) * damage.width,
-                    damage.width,
-                    frame.pixels.begin() +
-                        static_cast<std::size_t>(
-                            static_cast<std::uint32_t>(damage.y) + row) *
-                            frame.width +
-                        static_cast<std::uint32_t>(damage.x));
+            if (damage.x == 0 && damage.width == frame.width) {
+                // Full rows have the same packed layout in the download
+                // buffer and CPU frame; no intermediate pixel copy is needed.
+                download(surface.download,
+                    frame.pixels.data() +
+                        static_cast<std::size_t>(damage.y) * frame.width,
+                    static_cast<std::size_t>(damage_bytes), surface.kind);
+            } else {
+                std::vector<std::uint32_t> pixels(damage_pixels);
+                download(surface.download, pixels.data(),
+                    static_cast<std::size_t>(damage_bytes), surface.kind);
+                for (std::uint32_t row = 0; row < damage.height; ++row) {
+                    std::copy_n(pixels.begin() + static_cast<std::size_t>(row) *
+                                                     damage.width,
+                        damage.width,
+                        frame.pixels.begin() +
+                            static_cast<std::size_t>(
+                                static_cast<std::uint32_t>(damage.y) + row) *
+                                frame.width +
+                            static_cast<std::uint32_t>(damage.x));
+                }
             }
             surface.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             surface.dirty.reset();
