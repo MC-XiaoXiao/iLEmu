@@ -4,19 +4,9 @@
 
 #pragma once
 
-#include <cstdint>
 #include <string_view>
 
 namespace ilemu {
-
-// Some legacy activation flows deliberately identify an offline handset as a
-// development board.  Keep that identity decision in the device capability
-// model; it must not be inferred from a product name or applied to every
-// activated retail device.
-enum class ActivationHardwareModelPolicy : std::uint8_t {
-    Retail,
-    DevelopmentBoard,
-};
 
 struct DeviceIdentity {
     std::string_view product_type;
@@ -29,19 +19,12 @@ struct DeviceIdentity {
     // an explicit override without duplicating the normal retail identity.
     std::string_view hardware_model_override;
     // Model used by the explicit activated simulator model. This is a
-    // capability of the emulated device, not a firmware-version switch.
+    // board-specific identity; the firmware activation profile decides its use.
     std::string_view activation_hardware_model;
     // Retail configuration identifier exposed by the platform device tree.
     // This is distinct from product_type (for example, iPhone1,1) and the
     // hardware board configuration (for example, M68AP).
     std::string_view model_number;
-    // Whether the explicit activated model exposes activation_hardware_model
-    // through CTL_HW/HW_MODEL. Retail models keep their normal hardware
-    // identity even when activation is synthesized by the host.
-    ActivationHardwareModelPolicy activation_hardware_model_policy {
-        ActivationHardwareModelPolicy::Retail
-    };
-
     [[nodiscard]] constexpr std::string_view hardware_model() const noexcept
     {
         return hardware_model_override.empty() ? board_config

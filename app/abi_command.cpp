@@ -86,9 +86,6 @@ namespace {
                 { "natural32-arguments", "wide64-arguments" }) << '\n'
          << "mach-port-context: " << choice(abi.mach_port_context,
                 { "natural32", "wide64" }) << '\n'
-         << "activation-hardware-model: " << choice(
-                abi.activation_hardware_model_policy,
-                { "retail", "development-board" }) << '\n'
          << "mach-vm-address: " << choice(abi.mach_vm_address,
                 { "natural32", "wide64" }) << '\n'
          << "stack-snapshot: " << choice(abi.stack_snapshot_abi,
@@ -188,6 +185,8 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
     text << "abi: " << configuration.abi_name << '\n'
          << "source: " << darwin_abi_source_name(configuration.abi_source)
          << '\n' << "source-detail: " << configuration.abi_source_detail << '\n'
+         << "activation-hardware-model: "
+         << configuration.activation_profile.name() << '\n'
          << "kernel: " << identity.name << '\n'
          << "os-type: " << identity.operating_system_type << '\n'
          << "os-release: " << identity.operating_system_release << '\n'

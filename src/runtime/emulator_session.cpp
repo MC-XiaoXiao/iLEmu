@@ -206,20 +206,8 @@ void EmulatorSession::run()
             ? std::optional<bool> { }
             : std::optional<bool> { activation ==
                                     LockdownActivation::Activated };
-    const auto activation_hardware_model_policy =
-        darwin_abi.abi_epoch != DarwinAbiEpoch::Unknown
-            ? darwin_abi.activation_hardware_model_policy
-            : device.identity.activation_hardware_model_policy;
-    if (activation_override && activation_override &&
-        activation_hardware_model_policy ==
-            ActivationHardwareModelPolicy::DevelopmentBoard) {
-        // The stock daemon has a firmware-supported development-board escape
-        // hatch for a device without a baseband/activation record. Selecting it
-        // only for the explicit activated simulator profile leaves preserve
-        // mode as the authentic retail contract.
-        device.identity.hardware_model_override =
-            device.identity.activation_hardware_model;
-    }
+    darwin_configuration.activation_profile.apply(
+        device.identity, activation_override.value_or(false));
     const auto ticks_option = options.ticks;
     const auto bounded_execution = ticks_option.has_value();
     const auto device_time_policy =

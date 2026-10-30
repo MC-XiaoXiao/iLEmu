@@ -15,6 +15,7 @@
 
 #include "device_state/darwin_abi.hpp"
 #include "device_state/darwin_build_version.hpp"
+#include "device_state/firmware_activation_profile.hpp"
 #include "foundation/device_input_profile.hpp"
 #include "device_state/darwin_kernel_identity.hpp"
 
@@ -25,6 +26,7 @@ struct DarwinConfigurationEntry {
     std::string_view darwin_release;
     DarwinAbi abi;
     DarwinBuildVersion minimum_build;
+    FirmwareActivationProfile activation_profile;
     UnlockInteraction unlock_interaction { UnlockInteraction::Slide };
 };
 
@@ -37,6 +39,7 @@ enum class DarwinAbiSource {
 
 struct DarwinKernelConfiguration {
     DarwinKernelIdentity identity;
+    FirmwareActivationProfile activation_profile;
     UnlockInteraction unlock_interaction { UnlockInteraction::Slide };
     DarwinAbi abi;
     std::string abi_name { "unresolved" };

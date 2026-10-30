@@ -13,7 +13,6 @@
 #include "foundation/darwin_notify_state_hle.hpp"
 #include "foundation/darwin_process_start_abi.hpp"
 #include "foundation/darwin_address_layout.hpp"
-#include "foundation/device_identity.hpp"
 
 namespace ilemu {
 
@@ -414,12 +413,6 @@ struct DarwinAbi {
     };
     DarwinHidDigitizerAbi hid_digitizer {
         DarwinHidDigitizerAbi::CollectionContactChanges
-    };
-    // Firmware route databases can require a retail or development-board
-    // identity for offline activation. Keep this contract independent of
-    // product names and application paths.
-    ActivationHardwareModelPolicy activation_hardware_model_policy {
-        ActivationHardwareModelPolicy::Retail
     };
     DarwinAddressLayout address_layout { DarwinAddressLayout::ClassicArm };
     DarwinIOServiceStateAbi io_service_state {

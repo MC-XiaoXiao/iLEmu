@@ -51,7 +51,12 @@ def capture(binary, repo):
             if current is None or key in current:
                 raise ValueError('missing profile or duplicate field: ' + line)
             current[key] = {'true': True, 'false': False}.get(value, value)
-    paths = ['src/device_state/include/device_state/darwin_abi.hpp', 'src/device_state/darwin_kernel_configuration.cpp', 'app/abi_command.cpp']
+    paths = ['src/device_state/include/device_state/darwin_abi.hpp',
+             'src/device_state/darwin_abi_profiles.cpp',
+             'src/device_state/darwin_build_version.cpp',
+             'src/device_state/include/device_state/darwin_build_version.hpp',
+             'src/device_state/include/device_state/firmware_activation_profile.hpp',
+             'src/device_state/darwin_kernel_configuration.cpp', 'app/abi_command.cpp']
     return {'schema': 1, 'kind': 'implementation-observation-not-normative', 'source_fields': fields, 'profiles': profiles,
             'provenance': {'head': subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(),
                            'source_sha256': {p: hashlib.sha256((repo/p).read_bytes()).hexdigest() for p in paths},

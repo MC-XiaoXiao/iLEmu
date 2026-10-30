@@ -58,6 +58,7 @@ DarwinKernelConfiguration resolve_darwin_configuration(
     }
     if (selected != nullptr) {
         configuration.abi = selected->abi;
+        configuration.activation_profile = selected->activation_profile;
         configuration.identity =
             DarwinKernelIdentity { selected->darwin_release,
                 build.empty() ? "1A543a" : std::string_view { build } };

@@ -18,8 +18,6 @@ namespace {
         abi.abi_epoch = DarwinAbiEpoch::IphoneOs1;
         abi.mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ReverseCompactDescriptors;
-        abi.activation_hardware_model_policy =
-            ActivationHardwareModelPolicy::DevelopmentBoard;
         abi.capabilities.send_sigsys = true;
         abi.capabilities.arm_cache_trap_grants_execute = true;
         return abi;
@@ -37,10 +35,11 @@ namespace {
         return abi;
     }();
 
-    constexpr DarwinAbi iphoneos_2_2 = iphoneos_2;
-
+    // Only incompatible wire revisions retain train boundaries: syscall slots
+    // 299/300 change shared-region -> psynch; IOKit output ordering and the
+    // pthread TSD layout also change within a major userland generation.
     constexpr DarwinAbi iphoneos_3 = [] {
-        auto abi = iphoneos_2_2;
+        auto abi = iphoneos_2;
         abi.abi_epoch = DarwinAbiEpoch::IphoneOs3;
         abi.mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors;
@@ -108,19 +107,13 @@ namespace {
         abi.shared_region_abi =
             DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1;
         abi.mach_kernel_rpc = DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1;
-        abi.activation_hardware_model_policy =
-            ActivationHardwareModelPolicy::Retail;
-        return abi;
-    }();
-
-    constexpr DarwinAbi ios_5_1 = [] {
-        auto abi = ios_5;
+        // install_commpage already retains the legacy address as an alias.
         abi.arm_commpage = DarwinArmCommpageAbi::HighAddress;
         return abi;
     }();
 
     constexpr DarwinAbi ios_6 = [] {
-        auto abi = ios_5_1;
+        auto abi = ios_5;
         abi.abi_epoch = DarwinAbiEpoch::Darwin13;
         abi.task_suspension = DarwinTaskSuspensionAbi::ProtectedPidHold;
         abi.task_information = DarwinTaskInformationAbi::UnifiedBasic;
@@ -204,28 +197,38 @@ namespace {
         return abi;
     }();
 
+    constexpr FirmwareActivationProfile development_activation {
+        FirmwareActivationProfile::Identity::DevelopmentBoard
+    };
+    constexpr FirmwareActivationProfile retail_activation { };
+
     constexpr std::array configurations {
+        DarwinConfigurationEntry { "iphoneos-1", "9.0.0d1", iphoneos_1, { 1U },
+            development_activation },
         DarwinConfigurationEntry {
-            "iphoneos-1", "9.0.0d1", iphoneos_1, { 1U, 'A' } },
+            "iphoneos-2", "9.4.1", iphoneos_2, { 5U }, development_activation },
+        DarwinConfigurationEntry { "iphoneos-3", "10.0.0d3", iphoneos_3, { 7U },
+            development_activation },
+        DarwinConfigurationEntry { "iphoneos-3.1", "10.3.1", iphoneos_3_1,
+            { 7U, 'B' }, development_activation },
         DarwinConfigurationEntry {
-            "iphoneos-2", "9.3.1", iphoneos_2, { 5U, 'A' } },
+            "ios-4", "10.3.1", ios_4, { 8U }, development_activation },
         DarwinConfigurationEntry {
-            "iphoneos-2.2", "9.4.1", iphoneos_2_2, { 5U, 'G' } },
+            "ios-4.2", "10.4.0", ios_4_2, { 8U, 'C' }, development_activation },
         DarwinConfigurationEntry {
-            "iphoneos-3", "10.0.0d3", iphoneos_3, { 7U, 'A' } },
+            "ios-4.3", "11.0.0", ios_4_3, { 8U, 'F' }, development_activation },
         DarwinConfigurationEntry {
-            "iphoneos-3.1", "10.3.1", iphoneos_3_1, { 7U, 'B' } },
-        DarwinConfigurationEntry { "ios-4", "10.3.1", ios_4, { 8U, 'A' } },
-        DarwinConfigurationEntry { "ios-4.2", "10.4.0", ios_4_2, { 8U, 'C' } },
-        DarwinConfigurationEntry { "ios-4.3", "11.0.0", ios_4_3, { 8U, 'F' } },
-        DarwinConfigurationEntry { "ios-5", "11.0.0", ios_5, { 9U, 'A' } },
-        DarwinConfigurationEntry { "ios-5.1", "11.0.0", ios_5_1, { 9U, 'B' } },
-        DarwinConfigurationEntry { "ios-6", "13.0.0", ios_6, { 10U, 'A' } },
-        DarwinConfigurationEntry { "ios-7", "14.0.0", ios_7, { 11U, 'A' } },
-        DarwinConfigurationEntry { "ios-8", "14.0.0", ios_8, { 12U, 'A' } },
-        DarwinConfigurationEntry { "ios-9", "15.0.0", ios_9, { 13U, 'A' } },
-        DarwinConfigurationEntry { "ios-10", "16.0.0", ios_10, { 14U, 'A' },
-            UnlockInteraction::PressHome },
+            "ios-5", "11.0.0", ios_5, { 9U }, retail_activation },
+        DarwinConfigurationEntry {
+            "ios-6", "13.0.0", ios_6, { 10U }, retail_activation },
+        DarwinConfigurationEntry {
+            "ios-7", "14.0.0", ios_7, { 11U }, retail_activation },
+        DarwinConfigurationEntry {
+            "ios-8", "14.0.0", ios_8, { 12U }, retail_activation },
+        DarwinConfigurationEntry {
+            "ios-9", "15.0.0", ios_9, { 13U }, retail_activation },
+        DarwinConfigurationEntry { "ios-10", "16.0.0", ios_10, { 14U },
+            retail_activation, UnlockInteraction::PressHome },
     };
 
     static_assert([] {
@@ -249,12 +252,12 @@ const DarwinConfigurationEntry* darwin_configuration_for_build(
 {
     // Later, unaudited major generations must not silently acquire the newest
     // known ABI. Within the supported range, inherit the last version boundary.
-    if (build < configurations.front().minimum_build ||
+    if (!build.at_least(configurations.front().minimum_build) ||
         build.generation > configurations.back().minimum_build.generation)
         return nullptr;
     const DarwinConfigurationEntry* selected = nullptr;
     for (const auto& entry : configurations) {
-        if (build < entry.minimum_build)
+        if (!build.at_least(entry.minimum_build))
             break;
         selected = &entry;
     }

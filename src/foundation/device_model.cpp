@@ -20,8 +20,6 @@ namespace {
                 .board_config = "M68AP",
                 .activation_hardware_model = "M68DEV",
                 .model_number = "MA712LL",
-                .activation_hardware_model_policy =
-                    ActivationHardwareModelPolicy::DevelopmentBoard,
             },
             .processor = {
                 .soc = "Samsung S5L8900 (APL0098)",
@@ -175,8 +173,6 @@ namespace {
                 .board_config = "N94AP",
                 .activation_hardware_model = "N94DEV",
                 .model_number = "MD235",
-                .activation_hardware_model_policy =
-                    ActivationHardwareModelPolicy::Retail,
             },
             .processor = {
                 .soc = "Apple A5 (S5L8940)",
@@ -221,8 +217,6 @@ namespace {
                 .board_config = "N41AP",
                 .activation_hardware_model = "N41DEV",
                 .model_number = "MD634",
-                .activation_hardware_model_policy =
-                    ActivationHardwareModelPolicy::Retail,
             },
             .processor = {
                 .soc = "Apple A6 (S5L8950)",
@@ -340,8 +334,6 @@ namespace {
                 .board_config = "K48AP",
                 .activation_hardware_model = "K48DEV",
                 .model_number = "MB292LL",
-                .activation_hardware_model_policy =
-                    ActivationHardwareModelPolicy::Retail,
             },
             .processor = {
                 .soc = "Apple A4 (S5L8930)",
@@ -384,8 +376,6 @@ namespace {
                 .board_config = "K93AP",
                 .activation_hardware_model = "K93DEV",
                 .model_number = "MC770",
-                .activation_hardware_model_policy =
-                    ActivationHardwareModelPolicy::Retail,
             },
             .processor = {
                 .soc = "Apple A5 (S5L8940)",
