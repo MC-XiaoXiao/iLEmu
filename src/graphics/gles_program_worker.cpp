@@ -40,6 +40,16 @@ namespace {
         std::mutex mutex;
         std::condition_variable capacity;
         std::size_t count { }, bytes { }, results { }, result_bytes { };
+        std::size_t preparations { }, preparation_bytes { };
+    };
+
+    struct PayloadCredit {
+        std::function<void()> release;
+        ~PayloadCredit()
+        {
+            if (release)
+                release();
+        }
     };
 
     struct Backend {
@@ -109,17 +119,50 @@ namespace {
             return submit(bytes, std::move(function)).second.get();
         }
 
-        bool capacity(std::size_t bytes)
+        bool capacity(std::size_t bytes, std::size_t command_bytes = 0)
         {
             std::lock_guard lock { credits_->mutex };
             return !stopping_ && credits_->count < command_limit &&
                    bytes <= payload_limit - credits_->result_bytes &&
+                   command_bytes <= payload_limit - credits_->bytes &&
                    credits_->results < command_limit;
         }
-        std::shared_ptr<GlesWorkResult> submit_host(
-            std::size_t bytes, std::function<bool(DisplayFrame&)> execute)
+        bool preparation_capacity(std::size_t bytes)
+        {
+            std::lock_guard lock { credits_->mutex };
+            return !stopping_ && credits_->preparations < command_limit &&
+                   bytes <= payload_limit - credits_->preparation_bytes;
+        }
+        std::shared_ptr<PayloadCredit> reserve_preparation(std::size_t bytes)
         {
             if (bytes > payload_limit)
+                throw std::length_error { "GLES preparation exceeds 64 MiB" };
+            auto credit = std::make_shared<PayloadCredit>();
+            auto armed = std::make_shared<bool>(false);
+            credit->release = [credits = credits_, bytes, armed] {
+                if (!*armed)
+                    return;
+                {
+                    std::lock_guard lock { credits->mutex };
+                    --credits->preparations;
+                    credits->preparation_bytes -= bytes;
+                }
+                notify_completion();
+            };
+            std::lock_guard lock { credits_->mutex };
+            if (stopping_ || credits_->preparations >= command_limit ||
+                bytes > payload_limit - credits_->preparation_bytes)
+                return { };
+            ++credits_->preparations;
+            credits_->preparation_bytes += bytes;
+            *armed = true;
+            return credit;
+        }
+        std::shared_ptr<GlesWorkResult> submit_host(std::size_t bytes,
+            std::function<bool(DisplayFrame&)> execute,
+            std::size_t command_bytes = 0)
+        {
+            if (bytes > payload_limit || command_bytes > payload_limit)
                 throw std::length_error { "GLES result exceeds 64 MiB" };
             auto result = std::make_shared<GlesWorkResult>();
             auto armed = std::make_shared<bool>(false);
@@ -137,12 +180,13 @@ namespace {
             std::unique_lock lock { credits_->mutex };
             if (stopping_ || credits_->count >= command_limit ||
                 credits_->results >= command_limit ||
+                command_bytes > payload_limit - credits_->bytes ||
                 bytes > payload_limit - credits_->result_bytes)
                 return { };
             if (next_sequence_ == 0)
                 throw std::overflow_error { "GLES sequence space exhausted" };
             const auto sequence = next_sequence_;
-            commands_.push_back({ sequence, 0,
+            commands_.push_back({ sequence, command_bytes,
                 [result, bytes, execute = std::move(execute)] {
                     bool success = false;
                     try {
@@ -158,11 +202,11 @@ namespace {
                                              ? GlesWorkResult::Status::Completed
                                              : GlesWorkResult::Status::Failed,
                         std::memory_order_release);
-                },
-                true });
+                } });
             result->sequence = sequence;
             ++next_sequence_;
             ++credits_->count;
+            credits_->bytes += command_bytes;
             ++credits_->results;
             credits_->result_bytes += bytes;
             *armed = true;
@@ -197,7 +241,6 @@ namespace {
             std::uint64_t sequence;
             std::size_t bytes;
             std::function<void()> execute;
-            bool retained_credit { };
         };
         void run()
         {
@@ -305,6 +348,7 @@ namespace {
     }
 
     struct DrawPacket {
+        std::shared_ptr<PayloadCredit> credit;
         DisplayFrame frame;
         GlesRenderTargetKey target;
         GlesProgramDraw draw;
@@ -360,9 +404,11 @@ namespace {
 
     std::shared_ptr<const DrawPacket> snapshot(const DisplayFrame& frame,
         GlesRenderTargetKey target, const GlesProgramDraw& draw,
-        std::uint32_t mode, const GlesRasterState& raster)
+        std::uint32_t mode, const GlesRasterState& raster,
+        std::shared_ptr<PayloadCredit> credit)
     {
         auto packet = std::make_shared<DrawPacket>();
+        packet->credit = std::move(credit);
         // Do not copy DisplayFrame readers, native surfaces or presentation
         // leases: EGL consumes only dimensions and the already materialized CPU
         // pixels. Keep all guest/presentation callbacks on their original side.
@@ -442,11 +488,24 @@ bool gles_host_work_capacity(std::size_t bytes)
 {
     return shared_executor()->capacity(bytes);
 }
+bool gles_draw_preparation_capacity(std::size_t bytes)
+{
+    return shared_executor()->preparation_capacity(bytes);
+}
 std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
     std::size_t bytes, std::function<bool(DisplayFrame&)> execute)
 {
     return shared_executor()->submit_host(bytes, std::move(execute));
 }
+
+class GlesProgramWorker::PreparedDraw {
+    friend class GlesProgramWorker;
+    std::weak_ptr<Backend> backend;
+    std::shared_ptr<const DrawPacket> packet;
+    std::size_t bytes { }, issuer { };
+    std::uint64_t epoch { };
+    std::shared_ptr<GlesWorkResult> accepted;
+};
 
 struct GlesProgramWorker::State {
     std::shared_ptr<ProgramExecutor> executor { shared_executor() };
@@ -458,7 +517,7 @@ struct GlesProgramWorker::State {
         std::uint64_t sequence;
         std::size_t issuer;
         std::uint64_t epoch;
-        std::future<bool> result;
+        std::shared_ptr<GlesWorkResult> result;
     };
     std::deque<Pending> pending;
     std::set<std::size_t> errors;
@@ -468,14 +527,9 @@ struct GlesProgramWorker::State {
     {
         while (!pending.empty()) {
             auto& entry = pending.front();
-            if (entry.result.wait_for(std::chrono::seconds { 0 }) !=
-                std::future_status::ready)
+            if (!entry.result->ready())
                 break;
-            bool success = false;
-            try {
-                success = entry.result.get();
-            } catch (...) {
-            }
+            const auto success = entry.result->succeeded();
             if (!success && entry.epoch == epochs.at(entry.issuer))
                 errors.insert(entry.issuer);
             pending.pop_front();
@@ -628,27 +682,70 @@ bool GlesProgramWorker::contains(std::uint32_t program) const
 {
     return state_->linked.contains(program);
 }
-std::uint64_t GlesProgramWorker::enqueue_draw(const DisplayFrame& frame,
+std::shared_ptr<GlesProgramWorker::PreparedDraw>
+GlesProgramWorker::prepare_draw(const DisplayFrame& frame,
     GlesRenderTargetKey target, const GlesProgramDraw& draw, std::uint32_t mode,
-    const GlesRasterState& raster, std::size_t issuer)
+    const GlesRasterState& raster, std::size_t issuer, std::size_t& bytes)
 {
     if (!draw.state)
         throw std::invalid_argument { "GLES draw has no uniform state" };
+    bytes = payload_bytes(frame, draw, raster);
+    auto credit = state_->executor->reserve_preparation(bytes);
+    if (!credit)
+        return { };
+    auto prepared = std::make_shared<PreparedDraw>();
+    prepared->backend = state_->backend;
+    prepared->issuer = issuer;
+    prepared->epoch = state_->epochs[issuer];
+    prepared->bytes = bytes;
+    prepared->packet =
+        snapshot(frame, target, draw, mode, raster, std::move(credit));
+    return prepared;
+}
+
+bool GlesProgramWorker::draw_capacity(
+    const std::shared_ptr<PreparedDraw>& draw) const
+{
+    if (draw->accepted)
+        return true;
+    const auto epoch = state_->epochs.find(draw->issuer);
+    // A stale request must be serviced as a failure, not wait for capacity
+    // forever. Admission performs the same identity/epoch check before enqueue.
+    if (draw->backend.lock() != state_->backend ||
+        epoch == state_->epochs.end() || epoch->second != draw->epoch)
+        return true;
+    return state_->executor->capacity(0, draw->bytes);
+}
+
+std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_draw(
+    const std::shared_ptr<PreparedDraw>& draw)
+{
+    if (draw->accepted)
+        return draw->accepted;
+    const auto epoch = state_->epochs.find(draw->issuer);
+    if (draw->backend.lock() != state_->backend ||
+        epoch == state_->epochs.end() || epoch->second != draw->epoch)
+        throw std::invalid_argument { "stale GLES prepared draw" };
     state_->reap();
-    const auto epoch = state_->epochs[issuer];
-    const auto bytes = payload_bytes(frame, draw, raster);
-    auto packet = snapshot(frame, target, draw, mode, raster);
-    // Allocate the result record before publication so no accepted draw can
-    // lose its error/result association if producer allocation fails.
+    // Allocate observer storage before publication, including the null-capacity
+    // case. Nothing after successful admission allocates or can lose the job.
     state_->pending.emplace_back();
     try {
-        auto [sequence, result] = state_->executor->submit(
-            bytes, [backend = state_->backend, packet = std::move(packet)] {
+        auto result = state_->executor->submit_host(
+            0,
+            [backend = state_->backend, packet = draw->packet](DisplayFrame&) {
                 return backend->renderer->draw(packet->frame, packet->target,
                     packet->draw, packet->mode, packet->raster);
-            });
-        state_->pending.back() = { sequence, issuer, epoch, std::move(result) };
-        return sequence;
+            },
+            draw->bytes);
+        if (!result) {
+            state_->pending.pop_back();
+            return { };
+        }
+        state_->pending.back() = { result->sequence, draw->issuer, draw->epoch,
+            result };
+        draw->accepted = result;
+        return result;
     } catch (...) {
         state_->pending.pop_back();
         throw;
@@ -681,9 +778,7 @@ bool GlesProgramWorker::issuer_ready(
 {
     for (const auto& entry : state_->pending)
         if (entry.issuer == issuer && entry.sequence <= through &&
-            entry.epoch == state_->epochs.at(issuer) &&
-            entry.result.wait_for(std::chrono::seconds { 0 }) !=
-                std::future_status::ready)
+            entry.epoch == state_->epochs.at(issuer) && !entry.result->ready())
             return false;
     return true;
 }

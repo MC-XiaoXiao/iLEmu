@@ -68,8 +68,17 @@ bool OpenGlesHle::binding_live(const RenderTargetBinding& binding) const
     return true;
 }
 
-void OpenGlesHle::service_cancelled_completions()
+void OpenGlesHle::service_graphics_completions(bool process_live)
 {
+    // Poll every producer at the serial core boundary, including processes
+    // with no ready guest observer. Ready draws must not pin the global result
+    // budget merely because their producer has stopped making GL calls.
+    if (program_renderer_) {
+        if (process_live)
+            collect_program_draw_errors();
+        else
+            static_cast<void>(program_renderer_->collect_errors());
+    }
     if (sync_lease_ && sync_lease_->cancelled && sync_lease_->ready()) {
         // Retire canceled host payloads on the core even if the owning guest
         // has exited and no subsequent GL call will consume their credit.
@@ -94,7 +103,7 @@ void OpenGlesHle::cancel_pending_work()
 void OpenGlesHle::enter_graphics_call(
     UserlandHleCall& call, UserlandHleRegistry::Handler handler)
 {
-    service_cancelled_completions();
+    service_graphics_completions();
     if (sync_lease_ && !sync_lease_->consumed) {
         // Only calls touching this process's graphics stores depend on this
         // lease. Other guest threads, devices and processes keep executing.

@@ -116,6 +116,7 @@ template <typename Value> struct GlesValueResult {
 [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
     std::size_t result_bytes, std::function<bool(DisplayFrame&)> execute);
 [[nodiscard]] bool gles_host_work_capacity(std::size_t result_bytes);
+[[nodiscard]] bool gles_draw_preparation_capacity(std::size_t payload_bytes);
 [[nodiscard]] std::uint64_t gles_completion_generation();
 void set_gles_completion_wake(std::function<void()> wake);
 // Only a session's idle wait uses this, never a graphics call continuation.
@@ -163,11 +164,20 @@ public:
     [[nodiscard]] bool drain() noexcept;
     ~GlesProgramWorker();
     [[nodiscard]] bool contains(std::uint32_t program) const;
-    // Returns a nonzero accepted sequence, not driver success. Allocation or
-    // capacity-limit failure throws; accepted commands are never discarded.
-    [[nodiscard]] std::uint64_t enqueue_draw(const DisplayFrame& frame,
-        GlesRenderTargetKey target, const GlesProgramDraw& program,
-        std::uint32_t mode, const GlesRasterState& state, std::size_t issuer);
+    class PreparedDraw;
+    // Freeze once before a capacity wait. No driver or guest reference is
+    // retained; the backend control block and issuer epoch identify admission.
+    [[nodiscard]] std::shared_ptr<PreparedDraw> prepare_draw(
+        const DisplayFrame& frame, GlesRenderTargetKey target,
+        const GlesProgramDraw& program, std::uint32_t mode,
+        const GlesRasterState& state, std::size_t issuer,
+        std::size_t& payload_bytes);
+    [[nodiscard]] bool draw_capacity(
+        const std::shared_ptr<PreparedDraw>& draw) const;
+    // Null means retry admission; an accepted prepared draw always returns its
+    // same ticket on repeated observation, never publishes a second command.
+    [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_draw(
+        const std::shared_ptr<PreparedDraw>& draw);
     // Consume ready execution errors only. Guest-facing dependencies use the
     // retained readiness level and the kernel continuation, never future wait.
     [[nodiscard]] std::vector<std::size_t> collect_errors();

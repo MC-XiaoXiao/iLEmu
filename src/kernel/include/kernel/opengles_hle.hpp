@@ -53,7 +53,7 @@ public:
 
     void reset();
     void retire_thread(std::size_t processor);
-    void service_cancelled_completions();
+    void service_graphics_completions(bool process_live = true);
     void cancel_pending_work();
     void inherit_state(const OpenGlesHle& parent);
     void set_display(std::shared_ptr<DisplayState> display);
@@ -308,7 +308,10 @@ private:
     void execute_program_draw(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayFrame frame,
         const GlesProgramDraw& draw, std::uint32_t mode,
-        const GlesRasterState& state);
+        const GlesRasterState& state, bool indexed);
+    void submit_program_draw(UserlandHleCall& call,
+        const RenderTargetBinding& binding, DisplayGeometry dimensions,
+        std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared);
     void enter_graphics_call(
         UserlandHleCall& call, UserlandHleRegistry::Handler handler);
     void await_program_flush(

@@ -1460,8 +1460,8 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         }
     }
     if (program_draw) {
-        execute_program_draw(
-            call, *binding, std::move(*target), *program_draw, mode, state);
+        execute_program_draw(call, *binding, std::move(*target), *program_draw,
+            mode, state, indexed);
         return;
     }
     const auto target_key = binding->key;

@@ -172,7 +172,7 @@ bool OpenGlesHle::program_draw_needs_flush(const RenderTargetBinding& binding,
 void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     const RenderTargetBinding& binding, DisplayFrame frame,
     const GlesProgramDraw& draw, std::uint32_t mode,
-    const GlesRasterState& state)
+    const GlesRasterState& state, bool indexed)
 {
     // Host initialization/restoration was completed before draw preparation.
     if (!program_renderer_ || !program_renderer_->initialized() ||
@@ -218,9 +218,11 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
         return;
     }
     collect_program_draw_errors();
+    std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared;
+    std::size_t bytes = 0;
     try {
-        static_cast<void>(program_renderer_->enqueue_draw(
-            frame, binding.key, draw, mode, state, call.cpu().processor_id()));
+        prepared = program_renderer_->prepare_draw(frame, binding.key, draw,
+            mode, state, call.cpu().processor_id(), bytes);
     } catch (const std::bad_alloc&) {
         set_gl_error(call, gles_abi::out_of_memory);
         return;
@@ -231,12 +233,66 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
-    performance_counters().record_draw();
-    if (!pending_program_target_) {
-        frame.pixels.clear();
-        pending_program_target_ =
-            PendingProgramTarget { binding, std::move(frame) };
+    if (!prepared) {
+        // No immutable payload or command was accepted. Release temporary
+        // attribute views/frame data on return; preparation may safely restart
+        // from frozen scalar ABI after credit becomes available.
+        const auto lease = program_wait(call);
+        call.suspend_until(
+            [bytes] { return gles_draw_preparation_capacity(bytes); },
+            [this, lease, indexed](UserlandHleCall& resumed) {
+                lease->consume();
+                this->draw(resumed, indexed);
+            });
+        return;
     }
+    submit_program_draw(
+        call, binding, { frame.width, frame.height }, std::move(prepared));
+}
+
+void OpenGlesHle::submit_program_draw(UserlandHleCall& call,
+    const RenderTargetBinding& binding, DisplayGeometry dimensions,
+    std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared)
+{
+    const auto release_admission = [&] {
+        if (sync_lease_ && !sync_lease_->consumed &&
+            sync_lease_->owner == call.cpu().processor_id())
+            sync_lease_->consume();
+    };
+    if (!program_renderer_ || !binding_live(binding)) {
+        release_admission();
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    std::shared_ptr<GlesWorkResult> result;
+    try {
+        result = program_renderer_->enqueue_draw(prepared);
+    } catch (const std::bad_alloc&) {
+        release_admission();
+        set_gl_error(call, gles_abi::out_of_memory);
+        return;
+    } catch (const std::exception&) {
+        release_admission();
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    if (!result) {
+        static_cast<void>(program_wait(call));
+        call.suspend_until(
+            [this, prepared] {
+                return !program_renderer_ ||
+                       program_renderer_->draw_capacity(prepared);
+            },
+            [this, binding, dimensions, prepared](UserlandHleCall& resumed) {
+                submit_program_draw(resumed, binding, dimensions, prepared);
+            });
+        return;
+    }
+    performance_counters().record_draw();
+    if (!pending_program_target_)
+        pending_program_target_ = PendingProgramTarget { binding,
+            DisplayFrame { dimensions.width, dimensions.height, 0, { } } };
+    release_admission();
 }
 
 } // namespace ilemu
