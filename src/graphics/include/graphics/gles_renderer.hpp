@@ -45,6 +45,7 @@ using GlesRenderTargetKey = HostSurfaceKey;
 class GlesRenderer : public HostGraphicsDevice {
 public:
     struct ReadbackStamp {
+        // Zero renderer means no native pixels were materialized.
         std::uint64_t renderer { }, target { }, revision { };
     };
     virtual ~GlesRenderer() = default;
@@ -92,6 +93,12 @@ public:
         GlesRenderTargetKey, const ReadbackStamp&)
     {
     }
+    // Backends with partial readback serialize CPU-baseline capture with their
+    // dirty-state capture. No surface mapping may stay locked over GPU work.
+    [[nodiscard]] virtual bool capture_readback(HostSurface& surface,
+        HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
+        PerfCpuMapReason reason,
+        std::optional<HostRectangle>* readback_damage);
     // Marks a CPU-side clear or another writer as authoritative for the target.
     virtual void invalidate(GlesRenderTargetKey target) = 0;
     // Releases a lifecycle batch behind one backend synchronization boundary.

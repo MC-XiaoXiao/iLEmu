@@ -8,6 +8,7 @@
 #include "kernel/opengles_hle.hpp"
 #include "opengles_dispatch_hle.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -287,9 +288,16 @@ void OpenGlesHle::read_pixels(UserlandHleCall& call)
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
+    const auto surface =
+        binding->host_surface ? binding->host_surface : frame->host_surface;
     std::size_t bytes;
     try {
         bytes = frame_bytes(frame->width, frame->height);
+        if (surface) {
+            const auto descriptor = surface->descriptor();
+            bytes = std::max(bytes,
+                frame_bytes(descriptor.width, descriptor.height));
+        }
     } catch (...) {
         set_gl_error(call, gles_abi::out_of_memory);
         return;
@@ -297,8 +305,6 @@ void OpenGlesHle::read_pixels(UserlandHleCall& call)
     // Guest/reader callbacks never cross; retain the host content lease
     // separately from the plain CPU dimensions/pixels input.
     DisplayFrame snapshot { frame->width, frame->height, 0, { } };
-    const auto surface =
-        binding->host_surface ? binding->host_surface : frame->host_surface;
     if (!surface)
         snapshot.pixels = std::move(frame->pixels);
     auto result = enqueue_gles_host_work(bytes,

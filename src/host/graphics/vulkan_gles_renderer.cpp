@@ -6,6 +6,7 @@
 
 #include "vulkan_gles_renderer.hpp"
 #include "vulkan_memory_allocator.hpp"
+#include "vulkan_image_allocation.hpp"
 #include "vulkan_present_timing.hpp"
 #include "vulkan_submission_fence.hpp"
 
@@ -346,6 +347,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target,
             std::optional<HostRectangle>* readback_damage,
             ReadbackStamp* stamp) override;
+        bool capture_readback(HostSurface& surface,
+            HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
+            PerfCpuMapReason reason,
+            std::optional<HostRectangle>* readback_damage) override;
         void acknowledge_readback(GlesRenderTargetKey target,
             const ReadbackStamp& stamp) override;
         void invalidate(GlesRenderTargetKey target) override;
@@ -386,6 +391,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         [[nodiscard]] bool refresh_presentation_surface() override;
 
     private:
+        void acknowledge_target_readback(GlesRenderTargetKey target,
+            const ReadbackStamp& stamp, bool cache_committed);
+        bool synchronize_impl(DisplayFrame& frame, GlesRenderTargetKey target,
+            std::optional<HostRectangle>* readback_damage, ReadbackStamp* stamp,
+            HostSurface* source, HostSurface::CpuSnapshot* snapshot,
+            PerfCpuMapReason reason);
         bool draw_batch(DisplayFrame& frame, GlesRenderTargetKey target,
             std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
             const GlesRasterState& state);
@@ -407,6 +418,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         };
 
         struct Image {
+            std::shared_ptr<VulkanImageAllocation> allocation_owner;
             VmaAllocator allocator { };
             VmaAllocation allocation { };
             VkDevice device { };
@@ -429,6 +441,28 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             void reset() noexcept;
         };
 
+        struct ReadbackTransfer {
+            Buffer download;
+            std::shared_ptr<VulkanImageAllocation> source;
+            std::shared_ptr<VulkanSubmissionFence> completion;
+            VkDeviceSize bytes { };
+            VkDeviceSize source_bytes { };
+        };
+
+        // Only complete, unobserved transfers are retired. Failed/unsubmitted
+        // transfers stay quarantined until renderer shutdown reconciles GPU use.
+        void collect_readbacks()
+        {
+            std::erase_if(readbacks_, [this](const auto& transfer) {
+                if (transfer.use_count() != 1 || !transfer->completion ||
+                    transfer->completion->status() != VK_SUCCESS)
+                    return false;
+                readback_bytes_ -= transfer->bytes;
+                readback_source_bytes_ -= transfer->source_bytes;
+                return true;
+            });
+        }
+
         struct TextureKey {
             std::uint64_t owner { };
             HostSurfaceKey surface { };
@@ -443,7 +477,6 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             Image image;
             Image render_target_snapshot;
             Image stencil;
-            Buffer download;
             VkFramebuffer framebuffer { };
             VkFramebuffer stencil_framebuffer { };
             VkImageLayout layout { VK_IMAGE_LAYOUT_UNDEFINED };
@@ -455,6 +488,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::uint64_t cpu_generation { };
             PerfSurfaceKind kind { PerfSurfaceKind::GlesRenderTarget };
             bool valid { };
+            bool direct_read_since_cache { };
             std::optional<HostRectangle> dirty;
         };
 
@@ -651,6 +685,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         };
         std::uint64_t next_target_incarnation_ { 1 };
         std::map<GlesRenderTargetKey, Target> targets_;
+        std::vector<std::shared_ptr<ReadbackTransfer>> readbacks_;
+        VkDeviceSize readback_bytes_ { };
+        VkDeviceSize readback_source_bytes_ { };
         std::multimap<std::pair<std::uint32_t, std::uint32_t>, PooledTarget>
             target_pool_;
         VkDeviceSize target_pool_bytes_ { };
@@ -724,7 +761,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     }
 
     VulkanGlesRenderer::Image::Image(Image&& other) noexcept
-        : allocator { std::exchange(other.allocator, nullptr) }
+        : allocation_owner { std::move(other.allocation_owner) }
+        , allocator { std::exchange(other.allocator, nullptr) }
         , allocation { std::exchange(other.allocation, nullptr) }
         , device { std::exchange(other.device, VK_NULL_HANDLE) }
         , image { std::exchange(other.image, VK_NULL_HANDLE) }
@@ -744,6 +782,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         if (this == &other)
             return *this;
         reset();
+        allocation_owner = std::move(other.allocation_owner);
         allocator = std::exchange(other.allocator, nullptr);
         allocation = std::exchange(other.allocation, nullptr);
         device = std::exchange(other.device, VK_NULL_HANDLE);
@@ -762,12 +801,18 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     void VulkanGlesRenderer::Image::reset() noexcept
     {
-        if (sampler != VK_NULL_HANDLE)
-            vkDestroySampler(device, sampler, nullptr);
-        if (view != VK_NULL_HANDLE)
-            vkDestroyImageView(device, view, nullptr);
-        if (allocator != nullptr)
-            vmaDestroyImage(allocator, image, allocation);
+        if (allocation_owner) {
+            allocation_owner.reset();
+        } else {
+            // Partial construction still owns raw handles until the shared
+            // allocation owner is successfully installed at create_image end.
+            if (sampler != VK_NULL_HANDLE)
+                vkDestroySampler(device, sampler, nullptr);
+            if (view != VK_NULL_HANDLE)
+                vkDestroyImageView(device, view, nullptr);
+            if (allocator != nullptr)
+                vmaDestroyImage(allocator, image, allocation);
+        }
         allocator = nullptr;
         allocation = nullptr;
         device = VK_NULL_HANDLE;
@@ -1555,6 +1600,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         if (device_ != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device_);
+            readbacks_.clear();
+            readback_bytes_ = 0;
+            readback_source_bytes_ = 0;
             destroy_presentation_swapchain();
             if (pipeline_cache_ != VK_NULL_HANDLE &&
                 !pipeline_cache_path_.empty()) {
@@ -1826,6 +1874,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                 &result.sampler),
                 "vkCreateSampler");
         }
+        result.allocation_owner = std::make_shared<VulkanImageAllocation>(
+            result.allocator, result.allocation, result.device, result.image,
+            result.view, result.sampler);
         return result;
     }
 
@@ -1926,6 +1977,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             pooled->cpu_generation = 0;
             pooled->kind = PerfSurfaceKind::GlesRenderTarget;
             pooled->valid = false;
+            pooled->direct_read_since_cache = false;
             pooled->dirty.reset();
             const auto [reused, inserted] =
                 targets_.emplace(key, std::move(*pooled));
@@ -2047,9 +2099,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             render_images > maximum - target.stencil.allocation_size
                 ? maximum
                 : render_images + target.stencil.allocation_size;
-        return images > maximum - target.download.size
-                   ? maximum
-                   : images + target.download.size;
+        return images;
     }
 
     std::uint64_t VulkanGlesRenderer::resource_bytes() const noexcept
@@ -2067,6 +2117,23 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         for (const auto& [key, target] : targets_) {
             static_cast<void>(key);
             add(target_allocation_size(target));
+        }
+        for (auto transfer = readbacks_.begin(); transfer != readbacks_.end();
+            ++transfer) {
+            add((*transfer)->download.size);
+            const auto& source = (*transfer)->source;
+            const auto active = std::ranges::any_of(targets_,
+                [&source](const auto& entry) {
+                    return entry.second.image.allocation_owner == source;
+                });
+            const auto pooled = std::ranges::any_of(target_pool_,
+                [&source](const auto& entry) {
+                    return entry.second.target.image.allocation_owner == source;
+                });
+            const auto counted = std::any_of(readbacks_.begin(), transfer,
+                [&source](const auto& prior) { return prior->source == source; });
+            if (!active && !pooled && !counted)
+                add((*transfer)->source_bytes);
         }
         for (const auto& slot : command_slots_) {
             add(slot.staging.size);
@@ -2143,6 +2210,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     void VulkanGlesRenderer::begin_commands()
     {
+        collect_readbacks();
         if (command_recording_)
             return;
         auto& slot = command_slot();
@@ -2621,16 +2689,44 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         GlesRenderTargetKey target,
         std::optional<HostRectangle>* readback_damage, ReadbackStamp* stamp)
     {
+        return synchronize_impl(frame, target, readback_damage, stamp,
+            nullptr, nullptr, PerfCpuMapReason::GpuReadback);
+    }
+
+    bool VulkanGlesRenderer::capture_readback(HostSurface& surface,
+        HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
+        PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
+    {
+        return synchronize_impl(snapshot.frame, surface.key(), readback_damage,
+            &stamp, &surface, &snapshot, reason);
+    }
+
+    bool VulkanGlesRenderer::synchronize_impl(DisplayFrame& frame,
+        GlesRenderTargetKey target,
+        std::optional<HostRectangle>* readback_damage, ReadbackStamp* stamp,
+        HostSurface* source, HostSurface::CpuSnapshot* snapshot,
+        PerfCpuMapReason reason)
+    {
         if (stamp)
             *stamp = { };
         if (readback_damage != nullptr)
             readback_damage->reset();
-        std::lock_guard lock { mutex_ };
+        std::unique_lock lock { mutex_ };
+        // Match the native dirty baseline to the CPU pixels atomically with
+        // respect to other native readback acknowledgements. The established
+        // order is renderer -> short surface lock; neither spans a GPU wait.
+        if (source)
+            *snapshot = source->snapshot_cpu(reason);
+        collect_readbacks();
         last_failure_reason_.store(
             PerfFallbackReason::None, std::memory_order_relaxed);
         const auto found = targets_.find(target);
+        const auto stale_cpu_cache = snapshot &&
+            (snapshot->cpu_generation < snapshot->gpu_generation ||
+                (found != targets_.end() &&
+                    found->second.direct_read_since_cache));
         if (found == targets_.end() || !found->second.valid ||
-            !found->second.dirty) {
+            (!found->second.dirty && !stale_cpu_cache)) {
             return true;
         }
         auto& surface = found->second;
@@ -2643,16 +2739,52 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             return false;
         }
 
+        const ReadbackStamp captured {
+            renderer_incarnation_, surface.incarnation, surface.revision
+        };
+        std::shared_ptr<ReadbackTransfer> transfer;
         try {
-            const auto damage = *surface.dirty;
+            // A direct-frame consumer may have acknowledged native damage
+            // without refreshing this HostSurface cache. If its generations
+            // still lag and dirty is empty, materialize the complete image.
+            const auto full_damage = HostRectangle {
+                0, 0, surface.image.width, surface.image.height };
+            const auto damage = snapshot && surface.direct_read_since_cache
+                                    ? full_damage
+                                    : surface.dirty.value_or(full_damage);
             if (readback_damage != nullptr)
                 *readback_damage = damage;
             const auto damage_pixels =
                 static_cast<std::size_t>(damage.width) * damage.height;
             const auto damage_bytes = static_cast<VkDeviceSize>(damage_pixels) *
                                       sizeof(std::uint32_t);
-            ensure_buffer(surface.download, damage_bytes,
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            constexpr VkDeviceSize readback_budget = 64U * mebibyte;
+            constexpr VkDeviceSize source_budget = 128U * mebibyte;
+            constexpr std::size_t maximum_readbacks = 64;
+            const auto capacity = std::max<VkDeviceSize>(damage_bytes, 4096U);
+            const auto source_bytes = surface.image.allocation_size;
+            if (readbacks_.size() >= maximum_readbacks ||
+                capacity > readback_budget ||
+                readback_bytes_ > readback_budget - capacity ||
+                source_bytes > source_budget ||
+                readback_source_bytes_ > source_budget - source_bytes) {
+                last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                    std::memory_order_relaxed);
+                return false;
+            }
+            transfer = std::make_shared<ReadbackTransfer>();
+            transfer->download = create_buffer(capacity,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            transfer->source = surface.image.allocation_owner;
+            transfer->bytes = capacity;
+            transfer->source_bytes = source_bytes;
+            // Register ownership before recording any GPU use. Cancellation or
+            // a failed wait cannot free a GPU-visible buffer/image prematurely.
+            readbacks_.push_back(transfer);
+            readback_bytes_ += capacity;
+            readback_source_bytes_ += source_bytes;
             begin_commands();
             end_render_pass();
             auto& commands = command_slot();
@@ -2691,7 +2823,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             copy.imageOffset = { damage.x, damage.y, 0 };
             copy.imageExtent = { damage.width, damage.height, 1 };
             vkCmdCopyImageToBuffer(commands.command, surface.image.image,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, surface.download.buffer,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, transfer->download.buffer,
                 1, &copy);
             auto host_barrier = make_vulkan_structure<VkBufferMemoryBarrier>(
                 VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER);
@@ -2699,23 +2831,29 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
             host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            host_barrier.buffer = surface.download.buffer;
+            host_barrier.buffer = transfer->download.buffer;
             host_barrier.size = VK_WHOLE_SIZE;
             vkCmdPipelineBarrier(commands.command,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
                 0, nullptr, 1, &host_barrier, 0, nullptr);
-            submit_commands(true, PerfSubmitReason::CpuReadback);
+            surface.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            const auto kind = surface.kind;
+            submit_commands(false, PerfSubmitReason::CpuReadback);
+            transfer->completion = last_submission_;
+            lock.unlock();
+            require_success(transfer->completion->wait(fence_timeout_nanoseconds),
+                "vkWaitForFences(readback)");
             if (damage.x == 0 && damage.width == frame.width) {
                 // Full rows have the same packed layout in the download
                 // buffer and CPU frame; no intermediate pixel copy is needed.
-                download(surface.download,
+                download(transfer->download,
                     frame.pixels.data() +
                         static_cast<std::size_t>(damage.y) * frame.width,
-                    static_cast<std::size_t>(damage_bytes), surface.kind);
+                    static_cast<std::size_t>(damage_bytes), kind);
             } else {
                 std::vector<std::uint32_t> pixels(damage_pixels);
-                download(surface.download, pixels.data(),
-                    static_cast<std::size_t>(damage_bytes), surface.kind);
+                download(transfer->download, pixels.data(),
+                    static_cast<std::size_t>(damage_bytes), kind);
                 for (std::uint32_t row = 0; row < damage.height; ++row) {
                     std::copy_n(pixels.begin() + static_cast<std::size_t>(row) *
                                                      damage.width,
@@ -2727,24 +2865,32 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                             static_cast<std::uint32_t>(damage.x));
                 }
             }
-            surface.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             if (stamp)
-                *stamp = { renderer_incarnation_, surface.incarnation,
-                    surface.revision };
+                *stamp = captured;
             else
-                surface.dirty.reset();
+                acknowledge_target_readback(target, captured, false);
             return true;
         } catch (...) {
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
+            // After submission, the transfer registry owns actual resources
+            // until the exact fence signals. Do not wait on the renderer lock,
+            // reset later commands, or touch a Target that may now be reused.
+            if (!lock.owns_lock())
+                return false;
             vkDeviceWaitIdle(device_);
             discard_commands();
             for (auto& [key, texture] : texture_cache_) {
                 static_cast<void>(key);
                 texture.revision = 0;
             }
-            surface.valid = false;
-            surface.dirty.reset();
+            const auto current = targets_.find(target);
+            if (current != targets_.end() &&
+                current->second.incarnation == captured.target &&
+                current->second.revision == captured.revision) {
+                current->second.valid = false;
+                current->second.dirty.reset();
+            }
             return false;
         }
     }
@@ -2752,14 +2898,23 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     void VulkanGlesRenderer::acknowledge_readback(
         GlesRenderTargetKey target, const ReadbackStamp& stamp)
     {
+        acknowledge_target_readback(target, stamp, true);
+    }
+
+    void VulkanGlesRenderer::acknowledge_target_readback(
+        GlesRenderTargetKey target, const ReadbackStamp& stamp,
+        bool cache_committed)
+    {
         if (stamp.renderer != renderer_incarnation_)
             return;
         std::lock_guard lock { mutex_ };
         const auto found = targets_.find(target);
         if (found != targets_.end() &&
             found->second.incarnation == stamp.target &&
-            found->second.revision == stamp.revision)
+            found->second.revision == stamp.revision) {
             found->second.dirty.reset();
+            found->second.direct_read_since_cache = !cache_committed;
+        }
     }
 
     bool VulkanGlesRenderer::flush(GlesRenderTargetKey target)
@@ -3240,8 +3395,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         // rectangle. Keep their conservative damage so a later CPU map can
         // still refresh the shadow; a full upload makes the CPU frame
         // authoritative.
-        if (full_upload)
+        if (full_upload) {
             target.dirty.reset();
+            target.direct_read_since_cache = false;
+        }
         return target;
     }
 

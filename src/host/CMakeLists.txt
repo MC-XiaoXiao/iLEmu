@@ -70,6 +70,7 @@ if(ILEMU_ENABLE_VULKAN AND Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
         graphics/vulkan_gles_renderer.cpp
         graphics/vulkan_present_timing.cpp
         graphics/vulkan_submission_fence.cpp
+        graphics/vulkan_image_allocation.cpp
         graphics/vulkan_memory_allocator.cpp)
     add_dependencies(ilemu_host_graphics ilemu_vulkan_shaders)
     target_include_directories(ilemu_host_graphics PRIVATE

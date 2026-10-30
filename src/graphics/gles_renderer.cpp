@@ -161,6 +161,14 @@ std::unique_ptr<CommandEncoder> GlesRenderer::create_command_encoder()
     return make_cpu_command_encoder();
 }
 
+bool GlesRenderer::capture_readback(HostSurface& surface,
+    HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
+    PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
+{
+    snapshot = surface.snapshot_cpu(reason);
+    return synchronize(snapshot.frame, surface.key(), readback_damage, &stamp);
+}
+
 bool GlesRenderer::read_surface(HostSurface& surface, DisplayFrame& output,
     PerfCpuMapReason reason, bool* cache_committed,
     std::optional<HostRectangle>* readback_damage)
@@ -169,17 +177,26 @@ bool GlesRenderer::read_surface(HostSurface& surface, DisplayFrame& output,
         *cache_committed = false;
     if (readback_damage)
         readback_damage->reset();
-    auto snapshot = surface.snapshot_cpu(reason);
-    ReadbackStamp stamp;
-    if (!synchronize(snapshot.frame, surface.key(), readback_damage, &stamp))
-        return false;
-    const auto committed = surface.commit_cpu_readback(snapshot);
-    if (committed)
-        acknowledge_readback(surface.key(), stamp);
-    if (cache_committed)
-        *cache_committed = committed;
-    output = std::move(snapshot.frame);
-    return true;
+    // A second reader may publish its cache after our snapshot but before our
+    // native check. If that check copies no pixels, our stale CPU snapshot is
+    // not a captured GPU result. Retry instead of returning it as successful.
+    constexpr unsigned maximum_cache_attempts = 3;
+    for (unsigned attempt = 0; attempt < maximum_cache_attempts; ++attempt) {
+        HostSurface::CpuSnapshot snapshot { };
+        ReadbackStamp stamp;
+        if (!capture_readback(surface, snapshot, stamp, reason, readback_damage))
+            return false;
+        const auto committed = surface.commit_cpu_readback(snapshot);
+        if (!committed && stamp.renderer == 0)
+            continue;
+        if (committed)
+            acknowledge_readback(surface.key(), stamp);
+        if (cache_committed)
+            *cache_committed = committed;
+        output = std::move(snapshot.frame);
+        return true;
+    }
+    return false;
 }
 
 bool GlesRenderer::map_cpu(HostSurface& surface, bool read,

@@ -38,6 +38,11 @@ void VulkanSubmissionFence::prepare_for_submit(
     }
 }
 
+VkResult VulkanSubmissionFence::status() const
+{
+    return vkGetFenceStatus(device_, fence_);
+}
+
 VkResult VulkanSubmissionFence::wait(std::uint64_t timeout) const
 {
     const auto measure = performance_counters().enabled();

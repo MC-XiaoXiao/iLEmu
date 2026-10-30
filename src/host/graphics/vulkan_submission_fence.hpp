@@ -22,6 +22,7 @@ public:
     static void prepare_for_submit(
         std::shared_ptr<VulkanSubmissionFence>& fence, VkDevice device);
     [[nodiscard]] VkFence handle() const { return fence_; }
+    [[nodiscard]] VkResult status() const;
     [[nodiscard]] VkResult wait(std::uint64_t timeout) const;
 
 private:
