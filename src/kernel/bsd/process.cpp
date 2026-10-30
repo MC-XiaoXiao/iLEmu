@@ -179,6 +179,7 @@ void CompatibilityKernel::exit_process(
 {
     if (process_.exited)
         return;
+    opengles_hle_.cancel_pending_work();
     userland_hle_.cancel_pending_calls();
     const auto usage = collect_resource_usage();
     note_timer_deadline_transition();

@@ -43,6 +43,7 @@ namespace {
     };
 
     struct Backend {
+        std::atomic_bool retiring { false };
         std::unique_ptr<GlesProgramRenderer> renderer;
     };
 
@@ -73,8 +74,15 @@ namespace {
                 throw std::length_error {
                     "GLES command payload exceeds 64 MiB"
                 };
+            // future's shared state can outlive execution. Empty its callable
+            // on the worker so ready boolean results do not retain deep draw
+            // snapshots or Backend references after command-credit release.
             auto task = std::make_shared<std::packaged_task<Result()>>(
-                std::move(function));
+                [pending = std::make_unique<F>(
+                     std::move(function))]() mutable -> Result {
+                    auto execute = std::move(pending);
+                    return (*execute)();
+                });
             auto result = task->get_future();
             std::unique_lock lock { credits_->mutex };
             credits_->capacity.wait(lock, [&] {
@@ -170,10 +178,18 @@ namespace {
         {
             backends_.push_back(backend);
         }
-        void retire(const std::shared_ptr<Backend>& backend)
+        void request_retirement(std::shared_ptr<Backend> backend)
         {
-            backend->renderer.reset();
-            std::erase(backends_, backend);
+            {
+                std::lock_guard lock { credits_->mutex };
+                backend->retiring.store(true, std::memory_order_release);
+                // Drop the publisher's final reference before making the
+                // maintenance predicate visible. Otherwise a wake could see
+                // use_count==2 and miss the final drop with an empty FIFO.
+                backend.reset();
+                maintenance_ = true;
+            }
+            available_.notify_one();
         }
 
     private:
@@ -189,10 +205,18 @@ namespace {
                 Command command;
                 {
                     std::unique_lock lock { credits_->mutex };
-                    available_.wait(
-                        lock, [&] { return stopping_ || !commands_.empty(); });
-                    if (commands_.empty())
-                        break;
+                    available_.wait(lock, [&] {
+                        return stopping_ || maintenance_ || !commands_.empty();
+                    });
+                    maintenance_ = false;
+                    if (commands_.empty()) {
+                        const auto stop = stopping_;
+                        lock.unlock();
+                        retire_ready_backends();
+                        if (stop)
+                            break;
+                        continue;
+                    }
                     command = std::move(commands_.front());
                     commands_.pop_front();
                 }
@@ -206,17 +230,29 @@ namespace {
                     --credits_->count;
                     credits_->bytes -= command.bytes;
                 }
+                retire_ready_backends();
                 credits_->capacity.notify_all();
                 notify_completion();
             }
             backends_.clear();
         }
 
+        void retire_ready_backends()
+        {
+            // Only the worker touches this list. Queued/running jobs retain
+            // Backend too, so a retired publisher cannot destroy EGL state
+            // until every accepted user has really released its ownership.
+            std::erase_if(backends_, [](const auto& backend) {
+                return backend->retiring.load(std::memory_order_acquire) &&
+                       backend.use_count() == 1;
+            });
+        }
+
         std::shared_ptr<Credits> credits_ { std::make_shared<Credits>() };
         std::condition_variable available_;
         std::deque<Command> commands_;
         std::uint64_t next_sequence_ { 1 }, completed_sequence_ { };
-        bool stopping_ { };
+        bool stopping_ { }, maintenance_ { };
         std::vector<std::shared_ptr<Backend>> backends_;
         std::thread thread_;
     };
@@ -229,6 +265,43 @@ namespace {
         if (!executor_instance)
             executor_instance = std::make_shared<ProgramExecutor>();
         return executor_instance;
+    }
+
+    template <typename Value, typename Execute>
+    std::shared_ptr<GlesValueResult<Value>> submit_value(
+        const std::shared_ptr<ProgramExecutor>& executor, std::size_t bytes,
+        Execute execute)
+    {
+        auto result = std::make_shared<GlesValueResult<Value>>();
+        result->completion = executor->submit_host(
+            bytes, [result, execute = std::move(execute)](
+                       DisplayFrame&) { return execute(result->value); });
+        return result->completion ? result : nullptr;
+    }
+
+    bool bounded_link_result(const GlesProgramRenderer::LinkResult& result)
+    {
+        std::size_t bytes = sizeof(result);
+        const auto add = [&](std::size_t size) {
+            if (size > payload_limit - bytes)
+                return false;
+            bytes += size;
+            return true;
+        };
+        if (!add(result.log.size()))
+            return false;
+        for (const auto& [name, location] : result.attributes) {
+            static_cast<void>(location);
+            if (!add(sizeof(name) + sizeof(location) + 4 * sizeof(void*)) ||
+                !add(name.size()))
+                return false;
+        }
+        for (const auto* variables :
+            { &result.active_attributes, &result.active_uniforms })
+            for (const auto& variable : *variables)
+                if (!add(sizeof(variable)) || !add(variable.name.size()))
+                    return false;
+        return true;
     }
 
     struct DrawPacket {
@@ -379,6 +452,7 @@ struct GlesProgramWorker::State {
     std::shared_ptr<ProgramExecutor> executor { shared_executor() };
     std::shared_ptr<Backend> backend { std::make_shared<Backend>() };
     std::string name;
+    bool published { }, initialized { };
     std::set<std::uint32_t> linked;
     struct Pending {
         std::uint64_t sequence;
@@ -414,50 +488,138 @@ GlesProgramWorker::GlesProgramWorker(std::unique_ptr<State> state)
 {
 }
 
-std::unique_ptr<GlesProgramWorker> GlesProgramWorker::create(std::string* error)
+std::unique_ptr<GlesProgramWorker> GlesProgramWorker::begin_create(
+    std::shared_ptr<GlesValueResult<Initialization>>& result)
 {
-    try {
-        auto worker = std::unique_ptr<GlesProgramWorker> {
-            new GlesProgramWorker { std::make_unique<State>() }
-        };
-        auto* state = worker->state_.get();
-        auto result = state->executor->call(
-            [backend = state->backend, executor = state->executor.get()] {
-                std::string failure;
-                // Retain before creation: exceptions must also destroy on
-                // worker.
-                executor->retain(backend);
-                backend->renderer = create_gles_program_renderer(&failure);
-                return std::pair {
-                    backend->renderer
-                        ? std::string { backend->renderer->name() }
-                        : std::string { },
-                    std::move(failure)
-                };
-            });
-        if (!state->backend->renderer) {
-            if (error)
-                *error = std::move(result.second);
-            return { };
-        }
-        state->name = std::move(result.first) + " [render-worker]";
-        return worker;
-    } catch (const std::exception& failure) {
-        if (error)
-            *error = failure.what();
+    auto worker = std::unique_ptr<GlesProgramWorker> { new GlesProgramWorker {
+        std::make_unique<State>() } };
+    auto& state = *worker->state_;
+    result = submit_value<Initialization>(state.executor, initialization_bytes,
+        [backend = state.backend, executor = state.executor.get()](
+            Initialization& info) {
+            // Publish retention before anything can create a driver object.
+            executor->retain(backend);
+            backend->renderer = create_gles_program_renderer(&info.error);
+            if (backend->renderer)
+                info.name = std::string { backend->renderer->name() };
+            if (info.name.size() > initialization_bytes - sizeof(info) ||
+                info.error.size() >
+                    initialization_bytes - sizeof(info) - info.name.size()) {
+                info = { { }, "GLES initialization metadata exceeds budget" };
+                return false;
+            }
+            return backend->renderer != nullptr;
+        });
+    if (!result)
         return { };
+    state.published = true;
+    return worker;
+}
+
+void GlesProgramWorker::complete_initialization(Initialization result)
+{
+    state_->name = std::move(result.name) + " [render-worker]";
+    state_->initialized = true;
+}
+
+bool GlesProgramWorker::initialized() const { return state_->initialized; }
+
+std::shared_ptr<GlesValueResult<std::optional<GlesProgramWorker::Limits>>>
+GlesProgramWorker::enqueue_limits()
+{
+    return submit_value<std::optional<Limits>>(state_->executor,
+        sizeof(std::optional<Limits>),
+        [backend = state_->backend](std::optional<Limits>& result) {
+            result = backend->renderer->limits();
+            return result.has_value();
+        });
+}
+
+std::shared_ptr<GlesValueResult<GlesProgramWorker::LinkedProgram>>
+GlesProgramWorker::enqueue_link(std::uint32_t program, std::string_view vertex,
+    std::string_view fragment,
+    const std::map<std::string, std::uint32_t, std::less<>>& bindings)
+{
+    if (vertex.size() > payload_limit ||
+        fragment.size() > payload_limit - vertex.size())
+        throw std::length_error { "GLES shader sources exceed 64 MiB" };
+    auto bytes = vertex.size() + fragment.size();
+    for (const auto& [name, location] : bindings) {
+        static_cast<void>(location);
+        constexpr auto entry =
+            sizeof(std::string) + sizeof(std::uint32_t) + 4 * sizeof(void*);
+        if (entry > payload_limit - bytes ||
+            name.size() > payload_limit - bytes - entry)
+            throw std::length_error { "GLES link input exceeds 64 MiB" };
+        bytes += entry + name.size();
     }
+    // The input snapshot and at most one full-budget metadata result coexist.
+    // This conservative credit also bounds captures outside the pixel payload.
+    return submit_value<LinkedProgram>(state_->executor, link_result_bytes,
+        [backend = state_->backend, program, vertex = std::string { vertex },
+            fragment = std::string { fragment },
+            bindings](LinkedProgram& value) {
+            value.result =
+                backend->renderer->link(program, vertex, fragment, bindings);
+            value.present = backend->renderer->contains(program);
+            if (!bounded_link_result(value.result)) {
+                value.result = { };
+                value.result.log = "GLES link metadata exceeds 64 MiB";
+                return false;
+            }
+            // A failed guest link is a completed operation with its real log.
+            return true;
+        });
+}
+
+std::shared_ptr<GlesValueResult<GlesProgramWorker::ErasedProgram>>
+GlesProgramWorker::enqueue_erase(std::uint32_t program)
+{
+    return submit_value<ErasedProgram>(state_->executor, sizeof(ErasedProgram),
+        [backend = state_->backend, program](ErasedProgram& value) {
+            value.erased = backend->renderer->erase(program);
+            value.present = backend->renderer->contains(program);
+            return true;
+        });
+}
+
+std::shared_ptr<GlesValueResult<std::optional<std::array<std::int32_t, 3>>>>
+GlesProgramWorker::enqueue_precision(
+    std::uint32_t shader, std::uint32_t precision)
+{
+    using Value = std::optional<std::array<std::int32_t, 3>>;
+    return submit_value<Value>(state_->executor, sizeof(Value),
+        [backend = state_->backend, shader, precision](Value& value) {
+            value = backend->renderer->precision(shader, precision);
+            return value.has_value();
+        });
+}
+
+void GlesProgramWorker::record_program(std::uint32_t program, bool present)
+{
+    if (present)
+        state_->linked.insert(program);
+    else
+        state_->linked.erase(program);
 }
 
 GlesProgramWorker::~GlesProgramWorker()
 {
+    // Discard publisher-owned future references before posting maintenance.
+    // Accepted packaged tasks keep their own storage until real execution.
+    state_->pending.clear();
+    if (state_->published)
+        state_->executor->request_retirement(std::move(state_->backend));
+}
+
+bool GlesProgramWorker::drain() noexcept
+{
     try {
-        state_->executor->call(
-            [backend = state_->backend, executor = state_->executor.get()] {
-                executor->retire(backend);
-            });
+        if (state_->published)
+            state_->executor->call([] { });
+        return true;
     } catch (...) {
-        // The executor still owns this backend and retires it at shutdown.
+        return false;
     }
 }
 
@@ -465,82 +627,6 @@ std::string_view GlesProgramWorker::name() const { return state_->name; }
 bool GlesProgramWorker::contains(std::uint32_t program) const
 {
     return state_->linked.contains(program);
-}
-std::optional<GlesProgramWorker::Limits> GlesProgramWorker::limits()
-{
-    try {
-        return state_->executor->call([backend = state_->backend] {
-            return backend->renderer->limits();
-        });
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-GlesProgramWorker::LinkResult GlesProgramWorker::link(std::uint32_t program,
-    std::string_view vertex, std::string_view fragment,
-    const std::map<std::string, std::uint32_t, std::less<>>& bindings)
-{
-    LinkResult result;
-    try {
-        if (vertex.size() > payload_limit ||
-            fragment.size() > payload_limit - vertex.size())
-            throw std::length_error { "GLES shader sources exceed 64 MiB" };
-        auto bytes = vertex.size() + fragment.size();
-        for (const auto& [name, location] : bindings) {
-            static_cast<void>(location);
-            constexpr auto entry_bytes =
-                sizeof(std::string) + sizeof(std::uint32_t) + 4 * sizeof(void*);
-            if (entry_bytes > payload_limit - bytes ||
-                name.size() > payload_limit - bytes - entry_bytes)
-                throw std::length_error { "GLES link packet exceeds 64 MiB" };
-            bytes += entry_bytes + name.size();
-        }
-        auto linked = state_->executor->call(
-            [backend = state_->backend, program,
-                vertex = std::string { vertex },
-                fragment = std::string { fragment }, bindings] {
-                auto linked_result = backend->renderer->link(
-                    program, vertex, fragment, bindings);
-                return std::pair { std::move(linked_result),
-                    backend->renderer->contains(program) };
-            },
-            bytes);
-        result = std::move(linked.first);
-        if (linked.second)
-            state_->linked.insert(program);
-        else
-            state_->linked.erase(program);
-    } catch (const std::exception& failure) {
-        result.log = failure.what();
-    }
-    return result;
-}
-bool GlesProgramWorker::erase(std::uint32_t program)
-{
-    try {
-        auto result = state_->executor->call([backend = state_->backend,
-                                                 program] {
-            const auto erased = backend->renderer->erase(program);
-            return std::pair { erased, backend->renderer->contains(program) };
-        });
-        if (!result.second)
-            state_->linked.erase(program);
-        return result.first;
-    } catch (...) {
-        return false;
-    }
-}
-std::optional<std::array<std::int32_t, 3>> GlesProgramWorker::precision(
-    std::uint32_t shader, std::uint32_t precision)
-{
-    try {
-        return state_->executor->call(
-            [backend = state_->backend, shader, precision] {
-                return backend->renderer->precision(shader, precision);
-            });
-    } catch (...) {
-        return std::nullopt;
-    }
 }
 std::uint64_t GlesProgramWorker::enqueue_draw(const DisplayFrame& frame,
     GlesRenderTargetKey target, const GlesProgramDraw& draw, std::uint32_t mode,

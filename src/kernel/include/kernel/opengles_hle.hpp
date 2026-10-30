@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -17,6 +18,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "foundation/userland_hle.hpp"
@@ -52,6 +54,7 @@ public:
     void reset();
     void retire_thread(std::size_t processor);
     void service_cancelled_completions();
+    void cancel_pending_work();
     void inherit_state(const OpenGlesHle& parent);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_guest_capabilities(OpenGlesGuestCapabilitySet profile);
@@ -323,17 +326,44 @@ private:
         std::size_t owner { };
         bool consumed { }, cancelled { };
         std::shared_ptr<GlesWorkResult> result;
+        // Core-only shared-object commit, also run if the issuing thread exits.
+        // A whole-process exit/exec discards it instead.
+        std::function<void()> complete_core;
         [[nodiscard]] bool ready() const
         {
-            return consumed || (cancelled && result && result->ready());
+            return consumed || (cancelled && (!result || result->ready()));
         }
         void consume()
         {
+            if (consumed)
+                return;
             consumed = true;
-            result.reset();
+            // Release ownership even if a core metadata commit fails. Keep
+            // the ticket alive throughout that commit, outside the lease.
+            const auto retained = std::move(result);
+            auto completion = std::move(complete_core);
+            if (completion)
+                completion();
         }
     };
     std::shared_ptr<SyncLease> sync_lease_;
+    using ProgramCompletion = std::function<void(UserlandHleCall&, bool)>;
+    [[nodiscard]] std::shared_ptr<SyncLease> program_wait(
+        UserlandHleCall& call);
+    void park_program_job(UserlandHleCall& call,
+        std::shared_ptr<SyncLease> lease,
+        UserlandHleRegistry::Handler completion);
+    void with_program_renderer(
+        UserlandHleCall& call, ProgramCompletion completion);
+    void with_program_limits(
+        UserlandHleCall& call, ProgramCompletion completion);
+    void enqueue_program_link(UserlandHleCall& call, std::uint32_t name,
+        bool restore, ProgramCompletion completion);
+    void link_program(UserlandHleCall& call);
+    void delete_program(UserlandHleCall& call, bool prepared = false);
+    void shader_precision(UserlandHleCall& call);
+    void restore_program_for_draw(UserlandHleCall& call, bool indexed);
+    std::string program_renderer_error_;
 
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     void register_eagl(UserlandHleRegistry& registry);
@@ -342,10 +372,8 @@ private:
     void register_framebuffers(UserlandHleRegistry& registry);
     void register_programmable_gles(UserlandHleRegistry& registry);
     void register_program_queries(UserlandHleRegistry& registry);
-    [[nodiscard]] bool ensure_program_renderer(
-        UserlandHleCall& call, std::string* error = nullptr);
     [[nodiscard]] std::optional<std::uint32_t> program_integer_limit(
-        UserlandHleCall& call, std::uint32_t parameter);
+        std::uint32_t parameter) const;
     void unsupported(UserlandHleCall& call);
 
     std::map<std::size_t, ThreadState> threads_;

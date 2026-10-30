@@ -274,8 +274,14 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
 
 void OpenGlesHle::release_renderer_resources()
 {
-    // Drain and retire the EGL executor before target stores or the Vulkan
-    // owner are released. Published packets never depend on those stores.
+    // Drain accepted jobs before releasing the Vulkan namespace. Backend
+    // destruction itself remains worker-owned. On admission/allocation failure
+    // leave native targets to final renderer shutdown rather than recycle keys
+    // that an accepted job may still use.
+    if (program_renderer_ && !program_renderer_->drain()) {
+        program_renderer_.reset();
+        return;
+    }
     program_renderer_.reset();
     if (renderer_owner_ != 0)
         renderer_->release_owner(renderer_owner_);
@@ -1233,6 +1239,12 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     }
     const auto* program = programs_.program(context->current_program);
     std::optional<GlesProgramDraw> program_draw;
+    if (program && program->linked && program->native_execution &&
+        (!program_renderer_ ||
+            !program_renderer_->contains(context->current_program))) {
+        restore_program_for_draw(call, indexed);
+        return;
+    }
     if (program && program->linked && program->native_execution) {
         program_draw.emplace();
         program_draw->program = context->current_program;
@@ -2652,13 +2664,17 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 set_gl_error(call, gles_abi::invalid_enum);
                 return;
             }
-            const auto limit = program_integer_limit(call, call.argument(0));
-            if (!limit) {
-                set_gl_error(call, gles_abi::invalid_operation);
-                return;
-            }
-            values[0] = *limit;
-            break;
+            with_program_limits(call, [this](UserlandHleCall& resumed,
+                                          bool ready) {
+                const auto limit =
+                    ready ? program_integer_limit(resumed.argument(0))
+                          : std::nullopt;
+                if (!limit)
+                    set_gl_error(resumed, gles_abi::invalid_operation);
+                else if (!resumed.memory().write32(resumed.argument(1), *limit))
+                    set_gl_error(resumed, gles_abi::invalid_value);
+            });
+            return;
         }
         case gles_abi::maximum_viewport_dimensions:
             count = 2;

@@ -24,23 +24,9 @@ namespace {
                call.memory().write8(output, 0U);
     }
 }
-bool OpenGlesHle::ensure_program_renderer(
-    UserlandHleCall& call, std::string* error)
-{
-    if (!program_renderer_) {
-        program_renderer_ = GlesProgramWorker::create(error);
-        if (program_renderer_)
-            call.output().marker("[gles] GLSL executor=" +
-                                 std::string { program_renderer_->name() });
-    }
-    return program_renderer_ != nullptr;
-}
-
 std::optional<std::uint32_t> OpenGlesHle::program_integer_limit(
-    UserlandHleCall& call, std::uint32_t parameter)
+    std::uint32_t parameter) const
 {
-    if (!program_limits_ && ensure_program_renderer(call))
-        program_limits_ = program_renderer_->limits();
     if (!program_limits_)
         return std::nullopt;
     const auto& limits = *program_limits_;
@@ -236,32 +222,7 @@ void OpenGlesHle::register_program_queries(UserlandHleRegistry& registry)
         [get_active](UserlandHleCall& call) { get_active(call, true); });
     add("_glGetActiveAttrib",
         [get_active](UserlandHleCall& call) { get_active(call, false); });
-    add("_glGetShaderPrecisionFormat", [this](UserlandHleCall& call) {
-        const auto shader = call.argument(0), type = call.argument(1);
-        if ((shader != gles_abi::vertex_shader &&
-                shader != gles_abi::fragment_shader) ||
-            type < 0x8df0U || type > 0x8df5U) {
-            set_gl_error(call, gles_abi::invalid_enum);
-            return;
-        }
-        const auto result = ensure_program_renderer(call)
-                                ? program_renderer_->precision(shader, type)
-                                : std::nullopt;
-        if (!result) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        const auto output = call.argument(2);
-        if (output == 0U ||
-            output > std::numeric_limits<std::uint32_t>::max() - 4U ||
-            call.argument(3) == 0U ||
-            !call.memory().write32(
-                output, static_cast<std::uint32_t>((*result)[0])) ||
-            !call.memory().write32(
-                output + 4U, static_cast<std::uint32_t>((*result)[1])) ||
-            !call.memory().write32(
-                call.argument(3), static_cast<std::uint32_t>((*result)[2])))
-            set_gl_error(call, gles_abi::invalid_value);
-    });
+    add("_glGetShaderPrecisionFormat",
+        [this](UserlandHleCall& call) { shader_precision(call); });
 }
 } // namespace ilemu

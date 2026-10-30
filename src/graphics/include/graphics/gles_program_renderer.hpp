@@ -104,6 +104,13 @@ struct GlesWorkResult {
     }
 };
 
+// The worker writes value before publishing completion. Only the serial core
+// consumes it afterwards; no guest pointers or callbacks belong in Value.
+template <typename Value> struct GlesValueResult {
+    std::shared_ptr<GlesWorkResult> completion;
+    Value value;
+};
+
 // Same FIFO as programmable draws. Returns null on temporary capacity pressure;
 // no driver call or wait takes place during admission. Functions own host data.
 [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
@@ -123,17 +130,39 @@ class GlesProgramWorker {
 public:
     using Limits = GlesProgramRenderer::Limits;
     using LinkResult = GlesProgramRenderer::LinkResult;
-    static std::unique_ptr<GlesProgramWorker> create(std::string* error);
-    ~GlesProgramWorker();
-
-    [[nodiscard]] std::optional<Limits> limits();
-    [[nodiscard]] LinkResult link(std::uint32_t program,
-        std::string_view vertex, std::string_view fragment,
+    struct Initialization {
+        std::string name, error;
+    };
+    struct LinkedProgram {
+        LinkResult result;
+        bool present { };
+    };
+    struct ErasedProgram {
+        bool erased { }, present { };
+    };
+    static constexpr std::size_t initialization_bytes = 64U * 1024U;
+    static constexpr std::size_t link_result_bytes = 64U * 1024U * 1024U;
+    static std::unique_ptr<GlesProgramWorker> begin_create(
+        std::shared_ptr<GlesValueResult<Initialization>>& result);
+    void complete_initialization(Initialization result);
+    [[nodiscard]] bool initialized() const;
+    [[nodiscard]] std::shared_ptr<GlesValueResult<std::optional<Limits>>>
+    enqueue_limits();
+    [[nodiscard]] std::shared_ptr<GlesValueResult<LinkedProgram>> enqueue_link(
+        std::uint32_t program, std::string_view vertex,
+        std::string_view fragment,
         const std::map<std::string, std::uint32_t, std::less<>>& bindings);
-    [[nodiscard]] bool erase(std::uint32_t program);
+    [[nodiscard]] std::shared_ptr<GlesValueResult<ErasedProgram>> enqueue_erase(
+        std::uint32_t program);
+    [[nodiscard]] std::shared_ptr<
+        GlesValueResult<std::optional<std::array<std::int32_t, 3>>>>
+    enqueue_precision(std::uint32_t shader_type, std::uint32_t precision_type);
+    void record_program(std::uint32_t program, bool present);
+    // Transitional process teardown barrier, not an API-call return path.
+    // Native owner retirement must be split before this can be removed.
+    [[nodiscard]] bool drain() noexcept;
+    ~GlesProgramWorker();
     [[nodiscard]] bool contains(std::uint32_t program) const;
-    [[nodiscard]] std::optional<std::array<std::int32_t, 3>> precision(
-        std::uint32_t shader_type, std::uint32_t precision_type);
     // Returns a nonzero accepted sequence, not driver success. Allocation or
     // capacity-limit failure throws; accepted commands are never discarded.
     [[nodiscard]] std::uint64_t enqueue_draw(const DisplayFrame& frame,

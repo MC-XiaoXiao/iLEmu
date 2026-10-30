@@ -73,8 +73,21 @@ void OpenGlesHle::service_cancelled_completions()
     if (sync_lease_ && sync_lease_->cancelled && sync_lease_->ready()) {
         // Retire canceled host payloads on the core even if the owning guest
         // has exited and no subsequent GL call will consume their credit.
-        sync_lease_->consume();
+        try {
+            sync_lease_->consume();
+        } catch (...) {
+            // The retired observer has no ABI/error destination. Metadata
+            // committers leave shared objects failed if allocation fails.
+        }
         sync_lease_.reset();
+    }
+}
+
+void OpenGlesHle::cancel_pending_work()
+{
+    if (sync_lease_) {
+        sync_lease_->cancelled = true;
+        sync_lease_->complete_core = { };
     }
 }
 

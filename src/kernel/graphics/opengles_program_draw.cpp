@@ -174,28 +174,11 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     const GlesProgramDraw& draw, std::uint32_t mode,
     const GlesRasterState& state)
 {
-    // Forked guest contexts inherit declarations, but never host EGL objects.
-    if (!program_renderer_) {
-        std::string error;
-        program_renderer_ = GlesProgramWorker::create(&error);
-        if (!program_renderer_) {
-            call.output().marker(
-                "[gles] cannot restore GLSL executor: " + error);
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-    }
-    if (!program_renderer_->contains(draw.program)) {
-        const auto linked = program_renderer_->link(draw.program,
-            programs_.shader_source(draw.program, gles_abi::vertex_shader),
-            programs_.shader_source(draw.program, gles_abi::fragment_shader),
-            draw.state->attributes);
-        if (!linked.linked) {
-            call.output().marker(
-                "[gles] cannot restore GLSL program: " + linked.log);
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
+    // Host initialization/restoration was completed before draw preparation.
+    if (!program_renderer_ || !program_renderer_->initialized() ||
+        !program_renderer_->contains(draw.program)) {
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
     }
     for (auto texture : draw.textures) {
         if (texture == 0U)

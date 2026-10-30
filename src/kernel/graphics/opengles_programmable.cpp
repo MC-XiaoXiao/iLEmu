@@ -525,43 +525,8 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_value);
         }
     });
-    add("_glLinkProgram", [this](UserlandHleCall& call) {
-        if (programs_.program(call.argument(0)) == nullptr) {
-            set_gl_error(call, gles_abi::invalid_value);
-            return;
-        }
-        static_cast<void>(programs_.link(call.argument(0)));
-        auto* program = programs_.program(call.argument(0));
-        program->native_execution = false;
-        program->info_log.clear();
-        if (!program->linked ||
-            !program->interface_profile.requires_glsl_execution)
-            return;
-        if (!ensure_program_renderer(call, &program->info_log)) {
-            program->linked = false;
-            call.output().marker(
-                "[gles] GLSL executor unavailable: " + program->info_log);
-            return;
-        }
-        auto linked = program_renderer_->link(call.argument(0),
-            programs_.shader_source(call.argument(0), gles_abi::vertex_shader),
-            programs_.shader_source(
-                call.argument(0), gles_abi::fragment_shader),
-            program->attributes);
-        program->linked = linked.linked;
-        program->info_log = std::move(linked.log);
-        program->native_execution = linked.linked;
-        if (linked.linked) {
-            program->attributes = std::move(linked.attributes);
-            program->active_attributes = std::move(linked.active_attributes);
-            program->active_uniforms = std::move(linked.active_uniforms);
-            program->uniform_locations.clear();
-            program->uniforms.clear();
-            programs_.refresh_draw_attributes(call.argument(0));
-        } else
-            call.output().marker(
-                "[gles] GLSL link failed: " + program->info_log);
-    });
+    add("_glLinkProgram",
+        [this](UserlandHleCall& call) { link_program(call); });
     add("_glUseProgram", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
         const auto name = call.argument(0);
@@ -574,21 +539,8 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
             context->current_program = name;
         }
     });
-    add("_glDeleteProgram", [this](UserlandHleCall& call) {
-        const auto name = call.argument(0);
-        if (name != 0U && programs_.program(name) == nullptr) {
-            set_gl_error(call, gles_abi::invalid_value);
-            return;
-        }
-        for (auto& [context_name, context] : contexts_) {
-            static_cast<void>(context_name);
-            if (context.current_program == name)
-                context.current_program = 0U;
-        }
-        programs_.delete_program(name);
-        if (program_renderer_ && !program_renderer_->erase(name))
-            set_gl_error(call, gles_abi::invalid_operation);
-    });
+    add("_glDeleteProgram",
+        [this](UserlandHleCall& call) { delete_program(call); });
     add("_glGetUniformLocation", [this](UserlandHleCall& call) {
         const auto name = call.string_argument(1, 256U);
         if (!name) {
