@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "device_state/darwin_abi.hpp"
+#include "device_state/darwin_build_version.hpp"
 #include "foundation/device_input_profile.hpp"
 #include "device_state/darwin_kernel_identity.hpp"
 
@@ -23,6 +24,8 @@ struct DarwinConfigurationEntry {
     std::string_view name;
     std::string_view darwin_release;
     DarwinAbi abi;
+    DarwinBuildVersion minimum_build;
+    UnlockInteraction unlock_interaction { UnlockInteraction::Slide };
 };
 
 enum class DarwinAbiSource {
