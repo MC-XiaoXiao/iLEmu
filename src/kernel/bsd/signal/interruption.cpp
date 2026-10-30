@@ -14,6 +14,8 @@ namespace ilemu {
 bool CompatibilityKernel::interrupt_thread_wait(Cpu& cpu, bool restart)
 {
     const auto processor = cpu.processor_id();
+    if (userland_hle_.pending_call(processor))
+        return false;
     // XNU sleep returns ERESTART only for interruptible BSD operations.
     // select/poll/kevent, connect, psynch and Mach waits have their own
     // interruption results. Queued writes here have transferred no bytes.

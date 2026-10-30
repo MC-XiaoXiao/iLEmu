@@ -10,8 +10,10 @@
 #include "debug/control_channel.hpp"
 #include "foundation/host_file_mapping.hpp"
 #include "foundation/host_memory.hpp"
-#include "graphics/display_presenter.hpp"
+#include "foundation/sensor_input.hpp"
 #include "graphics/boot_logo.hpp"
+#include "graphics/display_presenter.hpp"
+#include "graphics/gles_program_renderer.hpp"
 #include "guest_timing.hpp"
 #include "jit_diagnostics.hpp"
 #include "jit_policy.hpp"
@@ -22,7 +24,6 @@
 #include "runtime/realtime_pacer.hpp"
 #include "runtime/session_host.hpp"
 #include "sensor_control.hpp"
-#include "foundation/sensor_input.hpp"
 #include "session_catalog.hpp"
 #include "session_debugger.hpp"
 #include "session_diagnostics.hpp"
@@ -459,6 +460,18 @@ void EmulatorSession::run()
             };
         output.marker("[control] ready; use help for commands");
     }
+    // The callback is host-only and is unregistered before either adapter is
+    // destroyed. Its mutex serializes unregister with an in-flight publisher.
+    set_gles_completion_wake(
+        [display = display_presenter.get(), control = live_control.get()] {
+            if (display)
+                display->wake_event_wait();
+            if (control)
+                control->wake_event_wait();
+        });
+    struct CompletionWakeLifetime {
+        ~CompletionWakeLifetime() { set_gles_completion_wake({ }); }
+    } completion_wake_lifetime;
     const auto gdb_port = options.gdb_port;
     const bool gdb_enabled = gdb_port.has_value() || options.gdb_socket.has_value();
     const auto watch_address = options.watch_address;
@@ -2212,11 +2225,12 @@ void EmulatorSession::run()
         return host_deadlines.next_deadline();
     };
     const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
+        const auto graphics_generation = gles_completion_generation();
         if (delay <= std::chrono::nanoseconds::zero())
             return;
-        // Host workers do not post window/control events. Keep the existing
-        // bounded completion polling alive without advancing guest clocks or
-        // waking idle tasks that have no host work.
+        // Preserve deadlines for host sources which still require probes.
+        // Graphics completion separately interrupts the native idle wait;
+        // neither path advances guest clocks or wakes unrelated guest tasks.
         const auto now = std::chrono::steady_clock::now();
         for (const auto& runtime : runtimes) {
             if (runtime->kernel->process().exited)
@@ -2240,6 +2254,11 @@ void EmulatorSession::run()
         const auto waitable_window_session =
             display_presenter && (!live_control || live_control->closed()) &&
             !gdb_server;
+        // Native wake events are level retained by SDL/the control pipe. A
+        // completion before this comparison returns immediately; one after it
+        // interrupts the impending wait, including before wait entry.
+        if (gles_completion_generation() != graphics_generation)
+            return;
         if (waitable_window_session) {
             static_cast<void>(display_presenter->wait_for_event(delay));
         } else if (display_presenter) {
@@ -2250,7 +2269,7 @@ void EmulatorSession::run()
         if (live_control && !live_control->closed()) {
             live_control->wait_for(delay);
         } else {
-            std::this_thread::sleep_for(delay);
+            wait_gles_host_activity(graphics_generation, delay);
         }
     };
     std::optional<std::string> display_performance_window;

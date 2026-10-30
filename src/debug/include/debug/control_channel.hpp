@@ -66,6 +66,7 @@ class ControlChannel {
 public:
     virtual ~ControlChannel() = default;
     [[nodiscard]] virtual std::vector<LiveControlCommand> poll() = 0;
+    virtual void wake_event_wait() noexcept { }
     virtual void wait_for(std::chrono::nanoseconds timeout) = 0;
     [[nodiscard]] virtual bool closed() const = 0;
 };

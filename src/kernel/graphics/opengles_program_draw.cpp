@@ -101,17 +101,20 @@ bool OpenGlesHle::prepare_program_attributes(UserlandHleCall& call,
 
 void OpenGlesHle::retire_thread(std::size_t processor)
 {
+    // Cancel only the observer. Accepted host work retains its snapshots and
+    // host resource references through execution; late results have no copyout.
+    if (sync_lease_ && sync_lease_->owner == processor)
+        sync_lease_->cancelled = true;
     if (program_renderer_)
         program_renderer_->retire_issuer(processor);
     threads_.erase(processor);
 }
 
-void OpenGlesHle::collect_program_draw_errors(
-    std::optional<std::size_t> wait_issuer)
+void OpenGlesHle::collect_program_draw_errors()
 {
     if (!program_renderer_)
         return;
-    for (const auto issuer : program_renderer_->collect_errors(wait_issuer)) {
+    for (const auto issuer : program_renderer_->collect_errors()) {
         auto& error = threads_[issuer].gl_error;
         if (error == gles_abi::no_error)
             error = gles_abi::invalid_operation;
@@ -120,6 +123,8 @@ void OpenGlesHle::collect_program_draw_errors(
 
 bool OpenGlesHle::flush_program_draws(UserlandHleCall& call)
 {
+    if (program_flush_failed_)
+        return false;
     if (!pending_program_target_)
         return true;
     auto& target = *pending_program_target_;

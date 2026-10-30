@@ -1556,6 +1556,19 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
         return true;
     bool delivered = false;
     const auto processor = cpu.processor_id();
+    if (userland_hle_.pending_call(processor)) {
+        delivered = !process_.exited &&
+                    userland_hle_.complete_pending_call(cpu, process_.pid);
+        if (delivered) {
+            if (!pending_thread_aborts_.empty())
+                static_cast<void>(complete_thread_abort(cpu));
+            if (signal_state_.ready(processor))
+                static_cast<void>(process_pending_signals(processor));
+            static_cast<void>(deliver_pending_signal(cpu));
+        }
+        refresh_pending_event_processor_locked(processor);
+        return delivered;
+    }
     if (pending_mach_sends_.contains(processor)) {
         delivered = complete_pending_mach_send(cpu);
         note_timer_deadline_transition();
@@ -1627,6 +1640,7 @@ CompatibilityKernel::pending_event_poll_candidates()
 {
     std::lock_guard lock { mutex_ };
     service_completed_file_renames();
+    opengles_hle_.service_cancelled_completions();
     const auto io_generation = shared_state_->io_event_generation_snapshot();
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
@@ -1638,6 +1652,10 @@ CompatibilityKernel::pending_event_poll_candidates()
         static_cast<void>(request_workqueue_kevents(nullptr));
     const auto host_now = std::chrono::steady_clock::now();
     const auto guest_now = shared_state_->clock.now();
+    const auto graphics_generation = gles_completion_generation();
+    const auto graphics_changed =
+        graphics_generation != pending_graphics_generation_;
+    pending_graphics_generation_ = graphics_generation;
     const auto topology_changed = !pending_event_poll_observed_ ||
                                   pending_event_poll_topology_generation_ !=
                                       pending_event_topology_generation_;
@@ -1651,8 +1669,8 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto sample_deadline = hid_event_system_hle_.next_sample_deadline();
     const auto sample_due = sample_deadline && guest_now >= *sample_deadline;
     const auto host_probe_due = host_now >= pending_event_host_probe_;
-    if (!topology_changed && !readiness_changed && !deadline_due && !sample_due &&
-        !host_probe_due) {
+    if (!graphics_changed && !topology_changed && !readiness_changed &&
+        !deadline_due && !sample_due && !host_probe_due) {
         return { };
     }
 
@@ -1667,6 +1685,11 @@ CompatibilityKernel::pending_event_poll_candidates()
     std::optional<std::uint64_t> next_deadline;
     bool requires_host_probe = false;
     for (const auto processor : pending_event_processors_) {
+        if (userland_hle_.pending_call(processor)) {
+            if (userland_hle_.pending_call_ready(processor))
+                processors.push_back(processor);
+            continue;
+        }
         const auto send = pending_mach_sends_.find(processor);
         const auto receive = pending_mach_receives_.find(processor);
         // HID callbacks enter through a blocked receive independently of its
@@ -1724,7 +1747,8 @@ CompatibilityKernel::next_host_event_poll_deadline()
 bool CompatibilityKernel::has_pending_event_locked(
     std::size_t processor) const
 {
-    return exception_delivery_.waiting(processor) ||
+    return userland_hle_.pending_call(processor) ||
+           exception_delivery_.waiting(processor) ||
            pending_mach_sends_.contains(processor) ||
            pending_mach_receives_.contains(processor) ||
            pending_record_locks_.contains(processor) ||
@@ -2456,6 +2480,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
 
 std::string CompatibilityKernel::wait_reason(std::size_t processor) const
 {
+    if (const auto sequence = userland_hle_.pending_call_sequence(processor))
+        return "graphics-hle(sequence=" + std::to_string(*sequence) + ")";
     if (pending_file_renames_.contains(processor))
         return "rename";
     if (pending_filesystem_dispatches_.contains(processor))
@@ -3138,6 +3164,11 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
     // syscalls cannot force every blocked descriptor tree to be rescanned.
     note_timer_deadline_transition();
     std::lock_guard lock { mutex_ };
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        userland_hle_.set_process_incarnation(
+            shared_state_->processes.at(process_.pid).incarnation);
+    }
     static_cast<void>(hid_event_system_hle_.prepare_pending_event(
         cpu, process_.pid, svc_immediate));
     if (apple80211_hle_.deliver_pending_event(

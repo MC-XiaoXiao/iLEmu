@@ -260,7 +260,8 @@ public:
     }
     [[nodiscard]] bool thread_wait_uninterruptible(std::size_t processor) const
     {
-        return pending_file_syncs_.contains(processor) ||
+        return userland_hle_.pending_call(processor) ||
+               pending_file_syncs_.contains(processor) ||
                pending_file_renames_.contains(processor) ||
                pending_filesystem_dispatches_.contains(processor) ||
                pending_file_mappings_.contains(processor);
@@ -1246,6 +1247,7 @@ private:
         std::chrono::steady_clock::time_point::min()
     };
     bool pending_event_poll_observed_ { };
+    std::uint64_t pending_graphics_generation_ { };
     mutable std::optional<std::uint64_t> local_timer_deadline_cache_;
     mutable bool local_timer_deadline_cache_valid_ { };
     // Scheduler-owned copy of the shared snapshot, populated under mach_mutex.

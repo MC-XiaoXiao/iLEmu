@@ -27,6 +27,8 @@ public:
         DisplayGeometry geometry = default_display_geometry,
         SystemGestures system_gestures = classic_compact_system_gestures);
 
+    ~LiveControl() override;
+    void wake_event_wait() noexcept override;
     [[nodiscard]] std::vector<LiveControlCommand> poll() override;
     // Blocks until the descriptor is readable/hung up or the timeout expires.
     // The next poll() still owns buffering and command parsing.
@@ -37,6 +39,7 @@ private:
     [[nodiscard]] std::vector<LiveControlCommand> parse_line(std::string line);
 
     int descriptor_ { };
+    int wake_read_ { -1 }, wake_write_ { -1 };
     DisplayGeometry geometry_;
     SystemGestures system_gestures_;
     std::string buffered_input_;

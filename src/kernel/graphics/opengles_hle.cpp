@@ -195,6 +195,18 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
     , renderer_ { shared_gles_renderer() }
     , command_encoder_ { renderer_->create_command_encoder() }
 {
+    registry.register_call_gate(std::string { opengles_image },
+        [this](UserlandHleCall& call, UserlandHleRegistry::Handler handler) {
+            enter_graphics_call(call, std::move(handler));
+        });
+    registry.register_call_gate("/GLEngine.bundle/GLEngine",
+        [this](UserlandHleCall& call, UserlandHleRegistry::Handler handler) {
+            enter_graphics_call(call, std::move(handler));
+        });
+    registry.register_call_gate("/OpenGLES.framework/libGFXShared.dylib",
+        [this](UserlandHleCall& call, UserlandHleRegistry::Handler handler) {
+            enter_graphics_call(call, std::move(handler));
+        });
     register_eagl(registry);
     register_egl(registry);
     register_gles(registry);
@@ -208,6 +220,7 @@ OpenGlesHle::~OpenGlesHle() { release_renderer_resources(); }
 
 void OpenGlesHle::reset()
 {
+    sync_lease_.reset();
     release_renderer_resources();
     threads_.clear();
     contexts_.clear();
@@ -234,6 +247,7 @@ void OpenGlesHle::reset()
 
 void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
 {
+    sync_lease_.reset();
     release_renderer_resources();
     threads_ = parent.threads_;
     contexts_ = parent.contexts_;
@@ -1451,64 +1465,17 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     }
 }
 
-void OpenGlesHle::read_pixels(UserlandHleCall& call)
+void OpenGlesHle::write_read_pixels(UserlandHleCall& call,
+    const DisplayFrame& frame, bool inverted, std::uint32_t pack_alignment)
 {
-    if (!flush_program_draws(call))
-        return;
-    auto* context = current_context(call);
-    if (context == nullptr) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
     const auto x = static_cast<std::int32_t>(call.argument(0));
     const auto y = static_cast<std::int32_t>(call.argument(1));
     const auto width = static_cast<std::int32_t>(call.argument(2));
     const auto height = static_cast<std::int32_t>(call.argument(3));
     const auto format = call.argument(4);
-    const auto type = call.argument(5);
     const auto output = call.argument(6);
-    if (format != gles_abi::rgba && format != gles_abi::bgra_apple) {
-        set_gl_error(call, gles_abi::invalid_enum);
-        return;
-    }
-    if (type != gles_abi::unsigned_byte) {
-        set_gl_error(call, gles_abi::invalid_enum);
-        return;
-    }
-    if (x < 0 || y < 0 || width < 0 || height < 0) {
-        set_gl_error(call, gles_abi::invalid_value);
-        return;
-    }
-    if (width == 0 || height == 0)
-        return;
-    if (output == 0U) {
-        set_gl_error(call, gles_abi::invalid_value);
-        return;
-    }
-
-    const auto binding = resolve_render_target(call, *context);
-    if (!binding) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    auto frame = render_target(call, *binding);
-    if (!frame) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    if (binding->host_surface) {
-        if (!renderer_->map_cpu(*binding->host_surface, true)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        auto mapping = binding->host_surface->map_cpu(false);
-        *frame = mapping.frame();
-    } else if (!renderer_->synchronize(*frame, binding->key)) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    if (frame->pixels.size() !=
-        static_cast<std::size_t>(frame->width) * frame->height) {
+    if (frame.pixels.size() !=
+        static_cast<std::size_t>(frame.width) * frame.height) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
@@ -1516,9 +1483,9 @@ void OpenGlesHle::read_pixels(UserlandHleCall& call)
     const auto unsigned_y = static_cast<std::uint32_t>(y);
     const auto unsigned_width = static_cast<std::uint32_t>(width);
     const auto unsigned_height = static_cast<std::uint32_t>(height);
-    if (unsigned_x > frame->width || unsigned_y > frame->height ||
-        unsigned_width > frame->width - unsigned_x ||
-        unsigned_height > frame->height - unsigned_y) {
+    if (unsigned_x > frame.width || unsigned_y > frame.height ||
+        unsigned_width > frame.width - unsigned_x ||
+        unsigned_height > frame.height - unsigned_y) {
         set_gl_error(call, gles_abi::invalid_value);
         return;
     }
@@ -1526,7 +1493,7 @@ void OpenGlesHle::read_pixels(UserlandHleCall& call)
     constexpr std::uint64_t bytes_per_pixel = 4U;
     const auto row_bytes =
         static_cast<std::uint64_t>(unsigned_width) * bytes_per_pixel;
-    const auto alignment = static_cast<std::uint64_t>(context->pack_alignment);
+    const auto alignment = static_cast<std::uint64_t>(pack_alignment);
     const auto stride = (row_bytes + alignment - 1U) & ~(alignment - 1U);
     const auto total = stride * (unsigned_height - 1U) + row_bytes;
     if (total > gles_abi::maximum_resource_bytes ||
@@ -1540,12 +1507,11 @@ void OpenGlesHle::read_pixels(UserlandHleCall& call)
     std::vector<std::byte> bytes(static_cast<std::size_t>(total));
     for (std::uint32_t row = 0; row < unsigned_height; ++row) {
         const auto guest_y = unsigned_y + row;
-        const auto host_y =
-            binding->inverted_vertical ? guest_y : frame->height - 1U - guest_y;
+        const auto host_y = inverted ? guest_y : frame.height - 1U - guest_y;
         for (std::uint32_t column = 0; column < unsigned_width; ++column) {
             const auto pixel =
-                frame->pixels[static_cast<std::size_t>(host_y) * frame->width +
-                              unsigned_x + column];
+                frame.pixels[static_cast<std::size_t>(host_y) * frame.width +
+                             unsigned_x + column];
             const auto offset = static_cast<std::size_t>(
                 static_cast<std::uint64_t>(row) * stride +
                 static_cast<std::uint64_t>(column) * bytes_per_pixel);
@@ -2452,7 +2418,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             });
     };
     add("_glGetError", [this](UserlandHleCall& call) {
-        collect_program_draw_errors(call.cpu().processor_id());
+        collect_program_draw_errors();
         auto& current = thread(call);
         call.set_return(current.gl_error);
         current.gl_error = gl_no_error;
@@ -3936,28 +3902,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
     add("_glDrawArrays", [this](UserlandHleCall& call) { draw(call, false); });
     add("_glDrawElements", [this](UserlandHleCall& call) { draw(call, true); });
     add("_glReadPixels", [this](UserlandHleCall& call) { read_pixels(call); });
-    add("_glFlush", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
-            return;
-        auto* context = current_context(call);
-        const auto binding = context != nullptr
-                                 ? resolve_render_target(call, *context)
-                                 : std::nullopt;
-        if (!binding || !renderer_->flush(binding->key)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-        }
-    });
-    add("_glFinish", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
-            return;
-        auto* context = current_context(call);
-        const auto binding = context != nullptr
-                                 ? resolve_render_target(call, *context)
-                                 : std::nullopt;
-        if (!binding || !renderer_->finish(binding->key)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-        }
-    });
+    add("_glFlush",
+        [this](UserlandHleCall& call) { finish_async(call, false); });
+    add("_glFinish",
+        [this](UserlandHleCall& call) { finish_async(call, true); });
     registry.register_prefix(std::string { opengles_image }, "_gl",
         [this](UserlandHleCall& call) {
             if (!call.prefix_argument(0U) &&

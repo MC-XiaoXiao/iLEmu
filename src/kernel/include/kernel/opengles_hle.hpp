@@ -19,6 +19,7 @@
 #include <string_view>
 #include <vector>
 
+#include "foundation/userland_hle.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_math.hpp"
@@ -50,6 +51,7 @@ public:
 
     void reset();
     void retire_thread(std::size_t processor);
+    void service_cancelled_completions();
     void inherit_state(const OpenGlesHle& parent);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_guest_capabilities(OpenGlesGuestCapabilitySet profile);
@@ -230,8 +232,7 @@ private:
         DisplayFrame frame;
     };
     [[nodiscard]] bool flush_program_draws(UserlandHleCall& call);
-    void collect_program_draw_errors(
-        std::optional<std::size_t> wait_issuer = std::nullopt);
+    void collect_program_draw_errors();
 
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
     [[nodiscard]] ContextState* current_context(UserlandHleCall& call);
@@ -291,7 +292,34 @@ private:
         const RenderTargetBinding& binding, DisplayFrame frame,
         const GlesProgramDraw& draw, std::uint32_t mode,
         const GlesRasterState& state);
+    void enter_graphics_call(
+        UserlandHleCall& call, UserlandHleRegistry::Handler handler);
+    void await_program_flush(
+        UserlandHleCall& call, UserlandHleRegistry::Handler handler);
+    void fail_program_flush(UserlandHleCall& call,
+        const UserlandHleRegistry::Handler& handler, std::uint32_t error);
+    bool program_flush_failed_ { };
+    void finish_async(UserlandHleCall& call, bool finish);
     void read_pixels(UserlandHleCall& call);
+    void write_read_pixels(UserlandHleCall& call, const DisplayFrame& frame,
+        bool inverted, std::uint32_t alignment);
+    [[nodiscard]] bool binding_live(const RenderTargetBinding& binding) const;
+    struct SyncLease {
+        std::size_t owner { };
+        bool consumed { }, cancelled { };
+        std::shared_ptr<GlesWorkResult> result;
+        [[nodiscard]] bool ready() const
+        {
+            return consumed || (cancelled && result && result->ready());
+        }
+        void consume()
+        {
+            consumed = true;
+            result.reset();
+        }
+    };
+    std::shared_ptr<SyncLease> sync_lease_;
+
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     void register_eagl(UserlandHleRegistry& registry);
     void register_egl(UserlandHleRegistry& registry);

@@ -5,6 +5,8 @@
 // Parse interactive control commands and monitor their input channel.
 
 #include "app/live_control.hpp"
+#include <fcntl.h>
+#include <stdexcept>
 
 #include <cerrno>
 #include <climits>
@@ -138,6 +140,20 @@ LiveControl::LiveControl(int descriptor, DisplayGeometry geometry,
     , geometry_ { geometry.valid() ? geometry : default_display_geometry }
     , system_gestures_ { system_gestures }
 {
+    int descriptors[2];
+    if (::pipe(descriptors) != 0)
+        throw std::runtime_error { "cannot create control wake pipe" };
+    wake_read_ = descriptors[0];
+    wake_write_ = descriptors[1];
+    for (const auto fd : descriptors) {
+        const auto flags = ::fcntl(fd, F_GETFL);
+        if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
+            ::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+            ::close(wake_read_);
+            ::close(wake_write_);
+            throw std::runtime_error { "cannot configure control wake pipe" };
+        }
+    }
     if (descriptor_ < 0)
         closed_ = true;
 }
@@ -193,6 +209,21 @@ std::vector<LiveControlCommand> LiveControl::poll()
     return commands;
 }
 
+LiveControl::~LiveControl()
+{
+    if (wake_read_ >= 0)
+        ::close(wake_read_);
+    if (wake_write_ >= 0)
+        ::close(wake_write_);
+}
+
+void LiveControl::wake_event_wait() noexcept
+{
+    const char byte = 1;
+    if (wake_write_ >= 0)
+        static_cast<void>(::write(wake_write_, &byte, 1));
+}
+
 void LiveControl::wait_for(std::chrono::nanoseconds timeout)
 {
     if (closed_ || timeout <= std::chrono::nanoseconds::zero())
@@ -203,8 +234,13 @@ void LiveControl::wait_for(std::chrono::nanoseconds timeout)
         whole_milliseconds + (nanoseconds % 1'000'000 != 0 ? 1 : 0);
     const auto poll_timeout =
         milliseconds >= INT_MAX ? INT_MAX : static_cast<int>(milliseconds);
-    pollfd descriptor { descriptor_, POLLIN | POLLHUP, 0 };
-    while (::poll(&descriptor, 1, poll_timeout) < 0 && errno == EINTR) { }
+    pollfd descriptors[] { { descriptor_, POLLIN | POLLHUP, 0 },
+        { wake_read_, POLLIN, 0 } };
+    while (::poll(descriptors, 2, poll_timeout) < 0 && errno == EINTR) { }
+    if ((descriptors[1].revents & POLLIN) != 0) {
+        char bytes[128];
+        while (::read(wake_read_, bytes, sizeof(bytes)) > 0) { }
+    }
 }
 
 std::vector<LiveControlCommand> LiveControl::parse_line(std::string line)
