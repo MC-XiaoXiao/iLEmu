@@ -348,8 +348,13 @@ void wait_gles_host_activity(
     std::uint64_t observed, std::chrono::nanoseconds timeout)
 {
     std::unique_lock lock { wake_mutex };
-    host_activity.wait_for(lock, timeout,
-        [observed] { return gles_completion_generation() != observed; });
+    const auto changed = [observed] {
+        return gles_completion_generation() != observed;
+    };
+    if (timeout == std::chrono::nanoseconds::max())
+        host_activity.wait(lock, changed);
+    else
+        host_activity.wait_for(lock, timeout, changed);
 }
 void shutdown_gles_program_worker()
 {

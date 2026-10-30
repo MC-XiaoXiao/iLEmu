@@ -221,7 +221,7 @@ void LiveControl::wake_event_wait() noexcept
 {
     const char byte = 1;
     if (wake_write_ >= 0)
-        static_cast<void>(::write(wake_write_, &byte, 1));
+        while (::write(wake_write_, &byte, 1) < 0 && errno == EINTR) { }
 }
 
 void LiveControl::wait_for(std::chrono::nanoseconds timeout)

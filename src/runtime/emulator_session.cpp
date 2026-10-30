@@ -2224,8 +2224,11 @@ void EmulatorSession::run()
         refresh_host_deadlines();
         return host_deadlines.next_deadline();
     };
+    auto polled_graphics_generation = gles_completion_generation();
     const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
-        const auto graphics_generation = gles_completion_generation();
+        // Sample before the serial readiness scan, not after it. Headless
+        // sessions have no retained SDL/control event to cover that window.
+        const auto graphics_generation = polled_graphics_generation;
         if (delay <= std::chrono::nanoseconds::zero())
             return;
         // Preserve deadlines for host sources which still require probes.
@@ -3199,6 +3202,7 @@ void EmulatorSession::run()
         // execute while the guest is ahead.
         const auto polled_mach_generation =
             initial_runtime->kernel->mach_message_generation();
+        polled_graphics_generation = gles_completion_generation();
         for (auto& runtime : runtimes) {
             const auto display_vsync_receiver =
                 display_urgent_process && runtime->kernel->process().pid ==
@@ -4905,8 +4909,25 @@ void EmulatorSession::run()
                 }
                 continue;
             }
-            if (bounded_execution)
-                break;
+            if (bounded_execution) {
+                // A host-backed syscall/HLE can be the last runnable thread.
+                // Finish its existing wait protocol before declaring the
+                // finite guest run idle; do not invent instruction ticks.
+                const auto host_call_pending =
+                    std::ranges::any_of(runtimes, [](const auto& runtime) {
+                        if (runtime->kernel->process().exited)
+                            return false;
+                        for (std::size_t slot = 0;
+                            slot < runtime->allocated.size(); ++slot)
+                            if (runtime->allocated[slot] &&
+                                runtime->kernel->thread_wait_uninterruptible(
+                                    slot))
+                                return true;
+                        return false;
+                    });
+                if (!host_call_pending)
+                    break;
+            }
             // An interactive emulator remains alive while every guest thread
             // is blocked: wait for the next automation deadline or control
             // input. Standalone window sessions block on host events; GDB
