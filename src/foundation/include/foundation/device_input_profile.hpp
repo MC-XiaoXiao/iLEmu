@@ -48,11 +48,6 @@ inline constexpr SystemGestures classic_centered_tablet_system_gestures {
 
 struct DeviceInputProfile {
     SystemGestures system_gestures { classic_compact_system_gestures };
-    // Some early tablet digitizer stacks crash when fed synthesized native
-    // HID events; those devices keep the GraphicsServices path as their
-    // canonical input boundary. This is a hardware capability, not an app or
-    // firmware-version switch.
-    bool native_hid_touch_events { true };
 };
 
 } // namespace ilemu

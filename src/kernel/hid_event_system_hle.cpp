@@ -14,6 +14,7 @@
 #include "kernel/kernel_shared_state.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <string>
 
@@ -173,6 +174,25 @@ void HidEventSystemHle::set_shared_state(
     std::shared_ptr<KernelSharedState> state)
 {
     state_ = std::move(state);
+}
+
+bool HidEventSystemHle::enqueue_touch(
+    const TouchInput& input, std::uint64_t* input_sequence)
+{
+    if (!state_)
+        return false;
+    const TouchInput sanitized { input.phase,
+        std::isfinite(input.x) ? input.x : 0.0F,
+        std::isfinite(input.y) ? input.y : 0.0F };
+    std::lock_guard lock { state_->mach_mutex };
+    const auto sequence = state_->allocate_physical_input_sequence_locked();
+    if (input_sequence)
+        *input_sequence = sequence;
+    const auto queued =
+        state_->hid_event_queue.enqueue({ sanitized, state_->clock.now() });
+    if (queued)
+        state_->note_io_event_transition();
+    return queued;
 }
 
 void HidEventSystemHle::reset(std::uint32_t process)

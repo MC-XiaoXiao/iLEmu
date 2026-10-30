@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Route touch and hardware-button input through guest
-// GraphicsServices callbacks.
+// Deliver hardware-button input and observe firmware GraphicsServices
+// lifecycle callbacks.
 
 #pragma once
 
@@ -17,10 +17,8 @@
 
 #include "kernel/kernel_shared_state.hpp"
 #include "foundation/system_button_input.hpp"
-#include "foundation/touch_input.hpp"
 
 namespace ilemu {
-class PresentationTracker;
 class SceneCoordinator;
 class UserlandHleRegistry;
 }
@@ -82,7 +80,7 @@ void record_springboard_alert_state(KernelSharedState& state,
 void record_springboard_lock_state(KernelSharedState& state, bool active);
 
 // Extracts the leading GSEventRecord type from a message with id 123. This is
-// shared by input injection and Mach tracing so application lifecycle events
+// shared by hardware-button delivery and Mach tracing so lifecycle events
 // can be diagnosed without duplicating the private wire offsets.
 [[nodiscard]] std::optional<std::uint32_t> event_type(
     std::span<const std::byte> message);
@@ -102,14 +100,6 @@ void record_bootstrap_registration_locked(
     std::span<const KernelSharedState::MachMessage::PortTransfer> transfers,
     std::uint32_t receiver_process_id = 0,
     SceneCoordinator* scenes = nullptr);
-
-// Thread-safe host entry point. Input arriving before SpringBoard has resolved
-// its event service is retained and flushed as soon as launchd replies.
-[[nodiscard]] EnqueueResult enqueue_touch(KernelSharedState& state,
-    const TouchInput& input, SceneCoordinator* scenes = nullptr,
-    PresentationTracker* presentations = nullptr,
-    bool* home_recovery_requested = nullptr,
-    std::uint64_t* input_sequence = nullptr);
 
 // A complete Home Down/Up pair wakes a sleeping lock screen before touch.
 [[nodiscard]] EnqueueResult enqueue_system_button(KernelSharedState& state,
