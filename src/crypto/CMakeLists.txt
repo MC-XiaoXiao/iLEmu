@@ -21,7 +21,7 @@ target_link_libraries(ilemu_crypto PUBLIC iLEmu::foundation
 
 if(WIN32)
     target_link_libraries(ilemu_crypto PRIVATE rpcrt4)
-elseif(NOT APPLE)
+elseif(NOT APPLE AND NOT ANDROID)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(ILEMU_UUID REQUIRED IMPORTED_TARGET uuid)
     target_link_libraries(ilemu_crypto PRIVATE PkgConfig::ILEMU_UUID)

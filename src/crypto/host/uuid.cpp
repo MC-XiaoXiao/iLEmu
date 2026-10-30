@@ -11,6 +11,10 @@
 #include <stdexcept>
 #include <windows.h>
 #include <rpc.h>
+#elif defined(__ANDROID__)
+#include <openssl/rand.h>
+#include <array>
+#include <stdexcept>
 #else
 #include <uuid/uuid.h>
 #endif
@@ -34,6 +38,23 @@ std::string make_host_uuid()
         [](unsigned char character) {
             return static_cast<char>(std::toupper(character));
         });
+    return result;
+#elif defined(__ANDROID__)
+    // Bionic has no libuuid. Use the existing cryptographic provider for the
+    // RFC 9562 version-4 layout rather than linking the build host's libuuid.
+    std::array<unsigned char, 16> bytes {};
+    if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+        throw std::runtime_error { "host UUID entropy unavailable" };
+    bytes[6] = (bytes[6] & 0x0fU) | 0x40U;
+    bytes[8] = (bytes[8] & 0x3fU) | 0x80U;
+    constexpr char digits[] = "0123456789ABCDEF";
+    std::string result;
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        if (index == 4 || index == 6 || index == 8 || index == 10)
+            result += '-';
+        result += digits[bytes[index] >> 4U];
+        result += digits[bytes[index] & 0x0fU];
+    }
     return result;
 #else
     uuid_t identifier;
