@@ -11,11 +11,13 @@ import com.xxiao.ilemu.containers.Container
 import com.xxiao.ilemu.containers.ContainerRepository
 import com.xxiao.ilemu.containers.ContainerTasks
 import com.xxiao.ilemu.firmware.DownloadState
+import com.xxiao.ilemu.firmware.FirmwareMetadata
 
 /** Read-only summary with independent controls; only the play icon starts a session. */
 internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, private val actions: ContainerActions) {
     private data class Presentation(val name: String, val device: String, val version: String, val build: String,
         val cores: Int, val ready: Boolean, val canPrepare: Boolean, val busy: Boolean, val running: Boolean, val status: String)
+    private val models = FirmwareMetadata.models().associate { it.identifier to it.name }
     private var rendered: Presentation? = null
     private var entry: Container? = null
     private val group = ui.column().also { parent.addView(it, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(16) }) }
@@ -61,8 +63,8 @@ internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, pri
         if (rendered == presentation) return
         rendered = presentation
         title.text = value.name
-        identity.text = "${value.device}  ·  iOS ${value.version.ifEmpty { "—" }}"
-        configuration.text = "${value.build}  ·  ${value.cores} 核"
+        identity.text = models[value.device]?.let { "$it(${value.device})" } ?: value.device
+        configuration.text = "iOS ${value.version.ifEmpty { "—" }}" + value.build.takeIf { it.isNotEmpty() }?.let { "($it)" }.orEmpty()
         status.text = state; status.visibility = if (state.isEmpty()) View.GONE else View.VISIBLE
         card.isClickable = false; card.isFocusable = true
         card.contentDescription = listOf(value.name, identity.text, configuration.text, state).filter { it.isNotEmpty() }.joinToString("，")
