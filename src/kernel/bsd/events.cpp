@@ -1216,7 +1216,24 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 }
                 filter[index] = *value;
             }
+            constexpr std::uint32_t wireless_event_class = 6;
+            constexpr std::uint32_t wireless_driver_subclass = 1;
+            constexpr std::uint32_t link_changed_event = 4;
+            const auto previous_filter = system_event_filters_.find(fd);
+            const bool changed = previous_filter == system_event_filters_.end() ||
+                previous_filter->second != filter;
             system_event_filters_[fd] = filter;
+            if (changed && filter[0] == darwin::network::kernel_event_vendor_apple &&
+                filter[1] == wireless_event_class && filter[2] == wireless_driver_subclass) {
+                // The virtual radio may restore an association before the
+                // firmware's first monitor exists. Publish the current link and
+                // signal through its normal event path after registration; a
+                // retained boot packet predates the new socket's event cursor.
+                inject_wifi_driver_event(0, link_changed_event);
+                output_.write("[wifi-driver] initial-link pid=" +
+                    std::to_string(process_.pid) + " fd=" +
+                    std::to_string(fd) + "\n");
+            }
             bsd_success(cpu, 0);
             return;
         }

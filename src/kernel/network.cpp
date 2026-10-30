@@ -1008,7 +1008,7 @@ void CompatibilityKernel::inject_wifi_driver_event(
     constexpr std::uint32_t ieee80211_event_class = 6;
     constexpr std::uint32_t apple80211_event_subclass = 1;
     constexpr std::uint32_t link_changed_event = 4;
-    constexpr std::size_t link_changed_data_size = 20;
+    constexpr std::size_t link_changed_data_size = 8 * sizeof(std::uint32_t);
     std::vector<std::byte> payload(darwin::network::interface_name_size +
         (event == link_changed_event ? link_changed_data_size : 0));
     if (event == link_changed_event) {
@@ -1019,10 +1019,12 @@ void CompatibilityKernel::inject_wifi_driver_event(
                   0, wifi_driver::scan_signal_ceiling_dbm -
                          wifi_driver::scan_signal_floor_dbm)
             : 0;
-        // Five ARM32 words: link-down, signal, involuntary, reason, subreason.
-        const std::array<std::uint32_t, 5> link_data {
+        // Common link/signal prefix followed by the complete extended tail.
+        // Native readers validate the tail length even on a successful link;
+        // zeroed optional metadata also preserves legacy prefix consumers.
+        const std::array<std::uint32_t, 8> link_data {
             radio.associated_access_point ? 0U : 1U,
-            static_cast<std::uint32_t>(signal), 0, 0, 0
+            static_cast<std::uint32_t>(signal), 0, 0, 0, 0, 0, 0
         };
         for (std::size_t index = 0; index < link_data.size(); ++index) {
             for (std::size_t byte = 0; byte < 4; ++byte) {
