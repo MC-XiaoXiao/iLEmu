@@ -9,6 +9,7 @@
 #include "hid_switch_query.hpp"
 
 #include "foundation/cpu.hpp"
+#include "foundation/output.hpp"
 #include "foundation/userland_hle.hpp"
 #include "kernel/kernel_shared_state.hpp"
 
@@ -44,16 +45,23 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
                 if ((!dispatch && !session_callback) ||
                     !completed.symbol_address("_CFRelease"))
                     return;
-                // Session-based firmware can receive sensor objects through
-                // its native callback while retaining its GraphicsServices
-                // touch/keyboard transport.
-                consumer.digitizer_events = dispatch &&
+                // Both native dispatch and the older session callback route
+                // digitizer objects through the firmware's event system.
+                consumer.digitizer_events =
                     completed.symbol_address("_IOHIDEventCreateDigitizerEvent") &&
-                    completed.symbol_address("_IOHIDEventAppendEvent");
+                    completed.symbol_address("_IOHIDEventAppendEvent") &&
+                    (dispatch || completed.symbol_address(
+                        "_IOHIDEventCreateTranslationEvent"));
                 consumer.keyboard_events = consumer.keyboard_events && dispatch;
                 consumer_process_ = consumer.process;
                 consumer_processor_ = consumer.processor;
                 state_->hid_event_queue.open(consumer);
+                previous_contact_.reset();
+                if (consumer.digitizer_events)
+                    completed.output().line(std::string {
+                        "[loader] HID digitizer transport=" } +
+                        (dispatch ? "native-dispatch" : "session-callback") +
+                        " pid=" + std::to_string(consumer.process));
                 accelerometer_.stop();
                 if (completed.symbol_address("_IOHIDEventCreateAccelerometerEvent") &&
                     completed.symbol_address("_IOHIDEventCreate") &&
@@ -153,6 +161,7 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
             "_IOHIDEventCreateAccelerometerEvent", "_IOHIDEventCreate",
             "_IOHIDEventSetFloatValue",
             "_IOHIDEventSetSenderID",
+            "_IOHIDEventCreateTranslationEvent",
             "_IOHIDEventSystemCopyService", "___IOHIDServiceEventCallback" }) {
         registry_.register_guest_function("/IOKit", symbol);
     }
@@ -176,6 +185,7 @@ void HidEventSystemHle::reset(std::uint32_t process)
     consumer_process_ = 0U;
     delivering_processors_.clear();
     interactive_processors_.clear();
+    previous_contact_.reset();
     accelerometer_.stop();
     if (state_)
         state_->note_kernel_event_transition();
@@ -269,12 +279,25 @@ bool HidEventSystemHle::prepare_pending_event(
     }
     if (!consumer || !event)
         return false;
+    std::array<float, 2> translation { };
+    if (const auto* contact = std::get_if<TouchInput>(&event->input)) {
+        // Measure motion after dequeue/coalescing, relative to the last report
+        // delivered to this consumer rather than the last host sample.
+        if (previous_contact_ && contact->phase != TouchPhase::Down)
+            translation = { contact->x - previous_contact_->x,
+                contact->y - previous_contact_->y };
+        if (contact->phase == TouchPhase::Up ||
+            contact->phase == TouchPhase::Cancel)
+            previous_contact_.reset();
+        else
+            previous_contact_ = *contact;
+    }
     delivering_processors_.insert(processor);
     if (!std::holds_alternative<HidEventQueue::Acceleration>(event->input))
         interactive_processors_.insert(processor);
     const auto queued = HidEventTransaction::enqueue(registry_, *consumer,
         *event, state_->user_interface_geometry, state_->darwin_version,
-        digitizer_sender_id, [this, processor] {
+        digitizer_sender_id, translation, [this, processor] {
             delivering_processors_.erase(processor);
             interactive_processors_.erase(processor);
             if (state_)

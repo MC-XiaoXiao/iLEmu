@@ -60,6 +60,7 @@ private:
     std::unordered_map<std::uint32_t, EventSystemClient> event_clients_;
     std::unordered_set<std::size_t> delivering_processors_;
     std::unordered_set<std::size_t> interactive_processors_;
+    std::optional<TouchInput> previous_contact_;
     HidAccelerometer accelerometer_;
 };
 
