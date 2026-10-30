@@ -5,6 +5,7 @@
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
 #include "kernel/mach_scheduler_abi.hpp"
+#include "network/apple80211_layout.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "support.hpp"
 
@@ -114,11 +115,6 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
         bsd_success(cpu, 0);
         return;
     }
-    const auto record_layout =
-        (shared_state_->darwin_version >= DarwinGeneration::IphoneOs3 &&
-            shared_state_->darwin_version < DarwinGeneration::Ios7)
-            ? wifi_driver::compact_network_record_layout
-            : wifi_driver::aligned_network_record_layout;
     if (registers[1] == wifi_driver::set_request &&
         *command == wifi_driver::command_scan) {
         apple80211_scan_delivered_.erase(fd);
@@ -315,8 +311,9 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
             channels[4 + index * 3] = channel_2ghz_flag;
         }
         for (std::size_t index = 0; index < channels.size(); ++index) {
-            if (!memory_.write32(*data_address +
-                    static_cast<std::uint32_t>(index * sizeof(std::uint32_t)),
+            if (!memory_.write32(
+                    *data_address + static_cast<std::uint32_t>(
+                                        index * sizeof(std::uint32_t)),
                     channels[index])) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
@@ -352,10 +349,8 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
     if (registers[1] == wifi_driver::get_request &&
         (*command == wifi_driver::command_rssi ||
             *command == wifi_driver::command_noise)) {
-        if (*data_address == 0 ||
-            *data_length < wifi_driver::signal_state_size) {
-            bsd_error(cpu, *data_address == 0 ? bsd_support::bad_address
-                                              : bsd_support::invalid_argument);
+        if (*data_address == 0) {
+            bsd_error(cpu, bsd_support::bad_address);
             return;
         }
         const auto associated = wifi_state_->snapshot().associated_access_point;
@@ -363,24 +358,11 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
             bsd_error(cpu, 57); // ENOTCONN
             return;
         }
-        const auto signal = static_cast<std::uint32_t>(
-            *command == wifi_driver::command_rssi ? associated->rssi : -90);
-        if (!memory_.write32(
-                *data_address + wifi_driver::signal_state_count_offset, 1) ||
-            !memory_.write32(
-                *data_address + wifi_driver::signal_state_unit_offset, 0) ||
-            !memory_.write32(
-                *data_address +
-                    wifi_driver::signal_state_control_average_offset,
-                signal) ||
-            !memory_.write32(
-                *data_address +
-                    wifi_driver::signal_state_extension_average_offset,
-                signal) ||
-            !memory_.write32(
-                *data_address + wifi_driver::signal_state_last_offset,
-                signal)) {
-            bsd_error(cpu, bsd_support::bad_address);
+        const auto signal =
+            *command == wifi_driver::command_rssi ? associated->rssi : -90;
+        if (!apple80211_hle_.layout_resolver().write_signal(
+                memory_, cpu, output_, *data_address, *data_length, signal)) {
+            bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
         bsd_success(cpu, 0);
@@ -427,6 +409,14 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
             return;
         }
         const auto& access_point = access_points.front();
+        const auto discovered =
+            apple80211_hle_.layout_resolver().network_record(
+                memory_, cpu, output_, *data_address, *data_length);
+        if (!discovered) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
+        const auto record_layout = *discovered;
         if (*data_address == 0 || *data_length < record_layout.size ||
             access_point.ssid.size() > 32) {
             bsd_error(cpu, *data_address == 0 ? bsd_support::bad_address
@@ -462,7 +452,14 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
     if (registers[1] == wifi_driver::get_request &&
         (*command == wifi_driver::command_current_network ||
             *command == embedded_current_network)) {
-        const auto layout = record_layout;
+        const auto discovered =
+            apple80211_hle_.layout_resolver().network_record(
+                memory_, cpu, output_, *data_address, *data_length);
+        if (!discovered) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
+        const auto layout = *discovered;
         if (*data_address == 0 || *data_length < layout.size) {
             bsd_error(cpu, *data_address == 0 ? bsd_support::bad_address
                                               : bsd_support::invalid_argument);

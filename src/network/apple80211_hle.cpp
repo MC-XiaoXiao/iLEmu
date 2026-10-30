@@ -6,6 +6,7 @@
 // state.
 
 #include "network/apple80211_hle.hpp"
+#include "network/apple80211_layout.hpp"
 
 #include <algorithm>
 #include <array>
@@ -52,6 +53,7 @@ Apple80211Hle::Apple80211Hle(UserlandHleRegistry& registry,
     : state_ { state ? std::move(state) : std::make_shared<WifiState>() }
     , state_changed_ { std::move(state_changed) }
     , registry_ { registry }
+    , layouts_ { std::make_unique<Apple80211LayoutResolver>() }
 {
     const auto add = [&](const std::string& symbol,
                          const UserlandHleRegistry::Handler& handler) {
@@ -268,9 +270,12 @@ Apple80211Hle::Apple80211Hle(UserlandHleRegistry& registry,
     });
 }
 
+Apple80211Hle::~Apple80211Hle() = default;
+
 void Apple80211Hle::reset(std::uint32_t process_id)
 {
     process_handles_.clear();
+    layouts_->reset();
     std::lock_guard broker_lock { event_broker_->mutex };
     event_broker_->registrations.erase(process_id);
     std::erase_if(

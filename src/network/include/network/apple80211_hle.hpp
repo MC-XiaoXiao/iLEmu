@@ -37,6 +37,8 @@ namespace apple80211_abi {
 
 } // namespace apple80211_abi
 
+class Apple80211LayoutResolver;
+
 class Apple80211Hle {
 public:
     using StateChangedHandler =
@@ -47,6 +49,12 @@ public:
     Apple80211Hle(UserlandHleRegistry& registry,
         std::shared_ptr<WifiState> state,
         StateChangedHandler state_changed = { });
+
+    ~Apple80211Hle();
+    [[nodiscard]] Apple80211LayoutResolver& layout_resolver()
+    {
+        return *layouts_;
+    }
 
     void reset(std::uint32_t process_id);
     void inherit_state(const Apple80211Hle& parent,
@@ -105,6 +113,7 @@ private:
         std::make_shared<EventBroker>()
     };
     UserlandHleRegistry& registry_;
+    std::unique_ptr<Apple80211LayoutResolver> layouts_;
 };
 
 } // namespace ilemu

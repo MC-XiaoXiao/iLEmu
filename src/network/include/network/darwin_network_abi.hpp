@@ -183,12 +183,6 @@ namespace apple80211_driver {
     inline constexpr std::uint32_t channel_state_size = 16;
     inline constexpr std::uint32_t channel_state_channel_offset = 8;
     inline constexpr std::uint32_t channel_state_flags_offset = 12;
-    inline constexpr std::uint32_t signal_state_size = 52;
-    inline constexpr std::uint32_t signal_state_count_offset = 4;
-    inline constexpr std::uint32_t signal_state_unit_offset = 8;
-    inline constexpr std::uint32_t signal_state_control_average_offset = 12;
-    inline constexpr std::uint32_t signal_state_extension_average_offset = 28;
-    inline constexpr std::uint32_t signal_state_last_offset = 48;
     inline constexpr std::uint32_t power_state_size = 24;
     inline constexpr std::uint32_t power_state_count_offset = 4;
     inline constexpr std::uint32_t power_state_first_value_offset = 8;
@@ -197,31 +191,17 @@ namespace apple80211_driver {
         std::uint32_t size { };
         std::uint32_t ie_length_offset { };
         std::uint32_t ie_pointer_offset { };
+        std::uint32_t channel_offset { };
+        std::uint32_t noise_offset { };
+        std::uint32_t rssi_offset { };
+        std::uint32_t bssid_offset { };
+        std::uint32_t ssid_length_offset { };
+        std::uint32_t ssid_offset { };
+        std::uint32_t beacon_interval_offset { };
+        std::uint32_t capabilities_offset { };
+        std::uint32_t channel_flags_offset { };
     };
 
-    // Darwin 9 aligns the final pointer after a 16-bit IE length. Darwin 10's
-    // mobile driver removes that padding while preserving selector 201 and all
-    // preceding fields.
-    inline constexpr NetworkRecordLayout aligned_network_record_layout { 144,
-        136, 140 };
-    inline constexpr NetworkRecordLayout compact_network_record_layout { 140,
-        134, 136 };
-
-    inline constexpr std::uint32_t scan_result_size = 144;
-    inline constexpr std::uint32_t scan_channel_offset = 8;
-    inline constexpr std::uint32_t scan_channel_flags_offset = 12;
-    inline constexpr std::uint32_t scan_noise_offset = 16;
-    inline constexpr std::uint32_t scan_rssi_offset = 18;
-    inline constexpr std::uint32_t scan_beacon_interval_offset = 20;
-    inline constexpr std::uint32_t scan_capabilities_offset = 22;
-    inline constexpr std::uint32_t scan_bssid_offset = 24;
-    inline constexpr std::uint32_t scan_rate_count_offset = 30;
-    inline constexpr std::uint32_t scan_ssid_length_offset = 92;
-    inline constexpr std::uint32_t scan_ssid_offset = 93;
-    inline constexpr std::uint32_t scan_age_offset = 128;
-    inline constexpr std::uint32_t scan_flags_offset = 132;
-    inline constexpr std::uint32_t scan_ie_length_offset = 136;
-    inline constexpr std::uint32_t scan_ie_pointer_offset = 140;
     inline constexpr std::int32_t scan_signal_floor_dbm = -100;
     inline constexpr std::int32_t scan_signal_ceiling_dbm = 0;
 
