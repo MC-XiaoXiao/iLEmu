@@ -4,6 +4,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.xxiao.ilemu.ContainerActions
 import com.xxiao.ilemu.NativeBridge
 import com.xxiao.ilemu.R
@@ -16,7 +17,7 @@ import com.xxiao.ilemu.firmware.FirmwareMetadata
 /** Read-only summary with independent controls; only the play icon starts a session. */
 internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, private val actions: ContainerActions) {
     private data class Presentation(val name: String, val device: String, val version: String, val build: String,
-        val cores: Int, val ready: Boolean, val canPrepare: Boolean, val busy: Boolean, val running: Boolean, val status: String)
+        val ready: Boolean, val canPrepare: Boolean, val busy: Boolean, val running: Boolean, val status: String, val progress: Int?)
     private val models = FirmwareMetadata.models().associate { it.identifier to it.name }
     private var rendered: Presentation? = null
     private var entry: Container? = null
@@ -27,6 +28,7 @@ internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, pri
     private val identity = ui.text("", ScreenUi.Type.BODY, true)
     private val configuration = ui.text("", ScreenUi.Type.CAPTION, true)
     private val status = ui.text("", ScreenUi.Type.BODY)
+    private val progress = LinearProgressIndicator(ui.context).apply { visibility = View.GONE }
     private val rail = ui.row().apply { gravity = Gravity.END }
     private val primary = icon(R.drawable.ic_play, "启动") { actions.primary(it) }
     private val settings = icon(R.drawable.ic_settings, "设置") { actions.settings(it) }
@@ -40,6 +42,7 @@ internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, pri
         content.addView(identity, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) })
         content.addView(configuration, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) })
         content.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(8) })
+        content.addView(progress, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(12) })
         (card.layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
         (delete.layoutParams as LinearLayout.LayoutParams).marginStart = ui.dp(12)
         content.addView(rail, LinearLayout.LayoutParams(-1, ui.dp(48)).apply { topMargin = ui.dp(8) })
@@ -51,21 +54,29 @@ internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, pri
         entry = value
         val busy = ContainerTasks.isBusy(value.id)
         val running = value.ready && busy && NativeBridge.ownsRunningSession(value.id)
+        val download = if (!value.ready) DownloadState.read(repository, value) else null
         val state = when {
-            busy -> if (value.ready) (if (running) "运行中" else "正在同步数据") else DownloadState.read(repository, value).toString()
+            busy -> if (value.ready) (if (running) "运行中" else "正在同步数据…") else download!!.summary
             value.error.isNotEmpty() -> value.error
             value.dirty -> "数据等待同步"
             value.ready -> ""
-            else -> DownloadState.read(repository, value).toString()
+            else -> download!!.summary
         }
-        val presentation = Presentation(value.name, value.device, value.version, value.build, value.cores,
-            value.ready, value.firmware != null, busy, running, state)
+        val presentation = Presentation(value.name, value.device, value.version, value.build,
+            value.ready, value.firmware != null, busy, running, state, download?.progressPercent)
         if (rendered == presentation) return
         rendered = presentation
         title.text = value.name
         identity.text = models[value.device]?.let { "$it(${value.device})" } ?: value.device
         configuration.text = "iOS ${value.version.ifEmpty { "—" }}" + value.build.takeIf { it.isNotEmpty() }?.let { "($it)" }.orEmpty()
         status.text = state; status.visibility = if (state.isEmpty()) View.GONE else View.VISIBLE
+        val preparing = busy && !value.ready
+        progress.visibility = if (preparing) View.VISIBLE else View.GONE
+        if (preparing) {
+            progress.isIndeterminate = presentation.progress == null
+            presentation.progress?.let { progress.setProgressCompat(it, true) }
+            progress.contentDescription = state
+        }
         card.isClickable = false; card.isFocusable = true
         card.contentDescription = listOf(value.name, identity.text, configuration.text, state).filter { it.isNotEmpty() }.joinToString("，")
         val (image, label) = when {

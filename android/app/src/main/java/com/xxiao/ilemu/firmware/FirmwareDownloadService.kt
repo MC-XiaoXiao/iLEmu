@@ -20,6 +20,7 @@ import com.liulishuo.okdownload.core.file.FirmwareFileStrategy
 import com.liulishuo.okdownload.core.listener.DownloadListener4
 import com.liulishuo.okdownload.core.listener.assist.Listener4Assist
 import com.xxiao.ilemu.MainActivity
+import com.xxiao.ilemu.AppSettings
 import com.xxiao.ilemu.R
 import com.xxiao.ilemu.containers.*
 import java.io.File
@@ -63,6 +64,7 @@ class FirmwareDownloadService : Service() {
             container = entry
             state = DownloadState.read(repository, entry).copy(phase = "连接中", error = "")
             foreground()
+            publish()
             val release = FirmwareRelease.fromJson(entry.firmware ?: error("未选择固件"))
             val home = repository.home(entry).apply { mkdirs() }
             val partial = File(home, "firmware.ipsw.part")
@@ -71,7 +73,7 @@ class FirmwareDownloadService : Service() {
                 verifier.execute { finishDownload(entry, release, File(home, "firmware.ipsw")) }
             } else {
                 task = DownloadTask.Builder(release.url, home.path, "firmware.ipsw.part")
-                    .setConnectionCount(4).setPreAllocateLength(true).setAutoCallbackToUIThread(false)
+                    .setConnectionCount(AppSettings(this).downloadThreads).setPreAllocateLength(true).setAutoCallbackToUIThread(false)
                     .setMinIntervalMillisCallbackProcess(1000).setPassIfAlreadyCompleted(true).build()
                 task!!.enqueue(listener(entry, release, partial))
             }
@@ -133,9 +135,9 @@ class FirmwareDownloadService : Service() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val pause = PendingIntent.getService(this, 0, Intent(this, FirmwareDownloadService::class.java).setAction(PAUSE), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle(container?.name ?: "固件下载").setContentText(state.toString()).setContentIntent(open)
+            .setContentTitle(container?.name ?: "固件下载").setContentText(state.summary).setContentIntent(open)
             .setOnlyAlertOnce(true).setOngoing(true).addAction(0, "暂停", pause)
-            .setProgress(100, if (state.total > 0) (state.bytes * 100 / state.total).toInt() else 0, state.total == 0L).build()
+            .setProgress(100, state.progressPercent ?: 0, state.progressPercent == null).build()
     }
     private fun foreground() {
         if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)

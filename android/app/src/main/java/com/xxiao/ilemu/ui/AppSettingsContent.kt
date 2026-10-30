@@ -45,16 +45,19 @@ internal class AppSettingsContent(activity: AppCompatActivity, body: LinearLayou
         toggle("硬件按钮触觉反馈", "模拟实体按键时提供振动反馈", prefs.haptics) { prefs.haptics = it }
         val defaults = ui.section(body, "新容器默认值")
         defaults.addView(ui.text("仅用于之后创建的容器。", ScreenUi.Type.BODY, true))
-        fun options(label: String, items: List<Int>, current: Int, save: (Int) -> Unit) {
-            ui.preference(defaults, label, current.toString()) { summary ->
+        fun options(parent: LinearLayout, label: String, items: List<Int>, current: Int, save: (Int) -> Unit) {
+            ui.preference(parent, label, current.toString()) { summary ->
                 MaterialAlertDialogBuilder(activity).setTitle(label)
                     .setSingleChoiceItems(items.map(Int::toString).toTypedArray(), items.indexOf(summary.text.toString().toInt())) { dialog, which ->
                         save(items[which]); summary.text = items[which].toString(); dialog.dismiss()
                     }.setNegativeButton("取消", null).show()
             }
         }
-        options("CPU 核数", (1..8).toList(), prefs.defaultCores) { prefs.defaultCores = it }
-        options("每执行器 JIT 缓存（MiB）", listOf(8,16,32,64,128), prefs.defaultJit) { prefs.defaultJit = it }
+        options(defaults, "CPU 核数", (1..8).toList(), prefs.defaultCores) { prefs.defaultCores = it }
+        options(defaults, "每执行器 JIT 缓存（MiB）", listOf(8,16,32,64,128), prefs.defaultJit) { prefs.defaultJit = it }
+        val downloads = ui.section(body, "固件下载")
+        downloads.addView(ui.text("用于新下载；续传保留已有下载分段。", ScreenUi.Type.BODY, true))
+        options(downloads, "下载线程数", (1..8).toList(), prefs.downloadThreads) { prefs.downloadThreads = it }
         val about = ui.section(body, "关于")
         about.addView(ui.heading("iLEmu ${BuildConfig.VERSION_NAME}"))
         ui.preference(about, activity.getString(R.string.github_repository), "MC-XiaoXiao/iLEmu") { _ ->

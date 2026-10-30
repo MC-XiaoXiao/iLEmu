@@ -20,5 +20,8 @@ internal class AppSettings(context: Context) {
     var defaultJit: Int
         get() = preferences.getInt("defaultJit", 16).takeIf { it in listOf(8,16,32,64,128) } ?: 16
         set(value) { preferences.edit().putInt("defaultJit", value).apply() }
+    var downloadThreads: Int
+        get() = preferences.getInt("downloadThreads", 4).coerceIn(1, 8)
+        set(value) { preferences.edit().putInt("downloadThreads", value.coerceIn(1, 8)).apply() }
     fun applyAppearance() { if (AppCompatDelegate.getDefaultNightMode() != appearance) AppCompatDelegate.setDefaultNightMode(appearance) }
 }
