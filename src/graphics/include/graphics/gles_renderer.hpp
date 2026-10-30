@@ -44,6 +44,9 @@ using GlesRenderTargetKey = HostSurfaceKey;
 // EGL, CoreSurface, LayerKit, or any guest process details.
 class GlesRenderer : public HostGraphicsDevice {
 public:
+    struct ReadbackStamp {
+        std::uint64_t renderer { }, target { }, revision { };
+    };
     virtual ~GlesRenderer() = default;
 
     [[nodiscard]] std::shared_ptr<HostSurface> create_surface(
@@ -54,6 +57,13 @@ public:
     [[nodiscard]] bool map_cpu(HostSurface& surface, bool read,
         PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback,
         std::optional<HostRectangle>* readback_damage = nullptr) override;
+    // Materialize into owned output, without holding HostSurface's lock over
+    // GPU work. Cache publication may lose a generation race; output remains
+    // the actual captured readback rather than a newer CPU cache substitute.
+    [[nodiscard]] bool read_surface(HostSurface& surface, DisplayFrame& output,
+        PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback,
+        bool* cache_committed = nullptr,
+        std::optional<HostRectangle>* readback_damage = nullptr);
     [[nodiscard]] HostNativeImage native_image(
         const HostSurface& surface) const override;
     [[nodiscard]] PresentResult present(
@@ -73,7 +83,15 @@ public:
     // implement this as a no-op.
     [[nodiscard]] virtual bool synchronize(DisplayFrame& frame,
         GlesRenderTargetKey target,
-        std::optional<HostRectangle>* readback_damage = nullptr) = 0;
+        std::optional<HostRectangle>* readback_damage = nullptr,
+        ReadbackStamp* stamp = nullptr) = 0;
+    // A stamped read keeps dirty state until its corresponding CPU cache
+    // commit succeeds. Backends reject acknowledgement of a replaced target
+    // or newer native write, including reuse with identical damage bounds.
+    virtual void acknowledge_readback(
+        GlesRenderTargetKey, const ReadbackStamp&)
+    {
+    }
     // Marks a CPU-side clear or another writer as authoritative for the target.
     virtual void invalidate(GlesRenderTargetKey target) = 0;
     // Releases a lifecycle batch behind one backend synchronization boundary.

@@ -308,14 +308,8 @@ void OpenGlesHle::read_pixels(UserlandHleCall& call)
             frame = std::move(snapshot)](DisplayFrame& output) mutable {
             static_cast<void>(source_lease);
             if (surface) {
-                if (!renderer->map_cpu(*surface, true))
+                if (!renderer->read_surface(*surface, output))
                     return false;
-                {
-                    auto mapping = surface->map_cpu(false);
-                    output.width = mapping.frame().width;
-                    output.height = mapping.frame().height;
-                    output.pixels = mapping.frame().pixels;
-                }
                 // Preserve snapshot()+synchronize order without a core wait.
                 return !synchronize_target ||
                        renderer->synchronize(output, key);

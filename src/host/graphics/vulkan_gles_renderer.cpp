@@ -343,7 +343,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         bool flush(GlesRenderTargetKey target) override;
         bool finish(GlesRenderTargetKey target) override;
         bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target,
-            std::optional<HostRectangle>* readback_damage) override;
+            std::optional<HostRectangle>* readback_damage,
+            ReadbackStamp* stamp) override;
+        void acknowledge_readback(GlesRenderTargetKey target,
+            const ReadbackStamp& stamp) override;
         void invalidate(GlesRenderTargetKey target) override;
         void release(std::span<const GlesRenderTargetKey> targets) override;
         void release_owner(std::uint64_t owner) override;
@@ -446,11 +449,26 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             VkImageLayout render_target_snapshot_layout {
                 VK_IMAGE_LAYOUT_UNDEFINED
             };
+            std::uint64_t incarnation { };
+            std::uint64_t revision { 1 };
             std::uint64_t cpu_generation { };
             PerfSurfaceKind kind { PerfSurfaceKind::GlesRenderTarget };
             bool valid { };
             std::optional<HostRectangle> dirty;
         };
+
+        static void advance_revision(Target& target)
+        {
+            if (target.revision == std::numeric_limits<std::uint64_t>::max())
+                throw std::overflow_error("Vulkan target revision exhausted");
+            ++target.revision;
+        }
+
+        static void record_damage(Target& target, HostRectangle rectangle)
+        {
+            advance_revision(target);
+            add_damage(target.dirty, rectangle);
+        }
 
         struct PooledTarget {
             Target target;
@@ -627,6 +645,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkShaderModule vertex_shader_ { };
         VkShaderModule fragment_shader_ { };
         std::map<PipelineKey, VkPipeline> pipelines_;
+        const std::uint64_t renderer_incarnation_ {
+            allocate_gles_renderer_owner()
+        };
+        std::uint64_t next_target_incarnation_ { 1 };
         std::map<GlesRenderTargetKey, Target> targets_;
         std::multimap<std::pair<std::uint32_t, std::uint32_t>, PooledTarget>
             target_pool_;
@@ -1895,7 +1917,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             targets_.erase(found);
         }
 
+        // This is a binding incarnation, including reuse of a physical image.
+        // Check before creating a framebuffer so exhaustion cannot leak it.
+        if (next_target_incarnation_ ==
+            std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("Vulkan target incarnation exhausted");
+        const auto incarnation = next_target_incarnation_++;
         if (auto pooled = take_pooled_target(width, height)) {
+            pooled->incarnation = incarnation;
+            pooled->revision = 1;
             pooled->cpu_generation = 0;
             pooled->kind = PerfSurfaceKind::GlesRenderTarget;
             pooled->valid = false;
@@ -1907,6 +1937,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         }
 
         Target target;
+        target.incarnation = incarnation;
         target.image = create_image(width, height,
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -2602,8 +2633,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
         GlesRenderTargetKey target,
-        std::optional<HostRectangle>* readback_damage)
+        std::optional<HostRectangle>* readback_damage, ReadbackStamp* stamp)
     {
+        if (stamp)
+            *stamp = { };
         if (readback_damage != nullptr)
             readback_damage->reset();
         std::lock_guard lock { mutex_ };
@@ -2709,7 +2742,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 }
             }
             surface.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            surface.dirty.reset();
+            if (stamp)
+                *stamp = { renderer_incarnation_, surface.incarnation,
+                    surface.revision };
+            else
+                surface.dirty.reset();
             return true;
         } catch (...) {
             last_failure_reason_.store(
@@ -2724,6 +2761,19 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             surface.dirty.reset();
             return false;
         }
+    }
+
+    void VulkanGlesRenderer::acknowledge_readback(
+        GlesRenderTargetKey target, const ReadbackStamp& stamp)
+    {
+        if (stamp.renderer != renderer_incarnation_)
+            return;
+        std::lock_guard lock { mutex_ };
+        const auto found = targets_.find(target);
+        if (found != targets_.end() &&
+            found->second.incarnation == stamp.target &&
+            found->second.revision == stamp.revision)
+            found->second.dirty.reset();
     }
 
     bool VulkanGlesRenderer::flush(GlesRenderTargetKey target)
@@ -3184,6 +3234,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             target.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             static_cast<std::uint32_t>(copies.size()), copies.data());
         target.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        advance_revision(target);
         target.cpu_generation = cpu_generation;
         target.valid = true;
         // A partial CPU upload preserves newer GPU pixels outside the uploaded
@@ -3325,7 +3376,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 clear.layerCount = 1;
                 vkCmdClearAttachments(
                     command_slot().command, 1, &attachment, 1, &clear);
-                add_damage(target.dirty, rectangle);
+                record_damage(target, rectangle);
             }
             destination.mark_gpu_synchronized(
                 destination_preparation.cpu_generation);
@@ -3520,7 +3571,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         mode, global_alpha, true)) {
                     return false;
                 }
-                add_damage(destination_target.dirty, scissor);
+                record_damage(destination_target, scissor);
             }
             quad_white_surface_->mark_gpu_synchronized(
                 white_preparation.cpu_generation);
@@ -3662,7 +3713,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                     : std::optional { source_rectangle })) {
                     return false;
                 }
-                add_damage(destination_target.dirty, scissor);
+                record_damage(destination_target, scissor);
             }
             source.mark_gpu_synchronized(source_preparation.cpu_generation);
             destination.mark_gpu_synchronized(
@@ -4341,7 +4392,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                                          : VK_FILTER_NEAREST);
                     }
                 }
-                add_damage(destination_target.dirty, scissor_rectangle);
+                record_damage(destination_target, scissor_rectangle);
             }
             source.mark_gpu_synchronized(source_preparation.cpu_generation);
             destination.mark_gpu_synchronized(
@@ -4447,7 +4498,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         scissor, mode, global_alpha)) {
                     return false;
                 }
-                add_damage(destination_target.dirty, scissor);
+                record_damage(destination_target, scissor);
             }
             source.mark_gpu_synchronized(source_preparation.cpu_generation);
             destination.mark_gpu_synchronized(
@@ -5363,7 +5414,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 commands.command, state.blend_constant.data());
             vkCmdDraw(commands.command,
                 static_cast<std::uint32_t>(expanded.size()), 1, 0, 0);
-            add_damage(gpu_target.dirty,
+            record_damage(gpu_target,
                 HostRectangle { static_cast<std::int32_t>(scissor_left),
                     static_cast<std::int32_t>(
                         state.render_target_inverted_vertical

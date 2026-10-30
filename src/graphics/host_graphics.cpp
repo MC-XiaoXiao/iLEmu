@@ -635,6 +635,33 @@ HostSurface::CpuMapping HostSurface::map_cpu(
     return CpuMapping { *this, write };
 }
 
+HostSurface::CpuSnapshot HostSurface::snapshot_cpu(PerfCpuMapReason reason) const
+{
+    performance_counters().record_cpu_map(false, reason);
+    std::lock_guard lock { mutex_ };
+    return { DisplayFrame { cpu_frame_.width, cpu_frame_.height,
+                 cpu_frame_.sequence, cpu_frame_.pixels },
+        cpu_generation_, gpu_generation_ };
+}
+
+bool HostSurface::commit_cpu_readback(const CpuSnapshot& snapshot)
+{
+    std::lock_guard lock { mutex_ };
+    if (cpu_generation_ != snapshot.cpu_generation ||
+        gpu_generation_ != snapshot.gpu_generation ||
+        snapshot.frame.width != descriptor_.width ||
+        snapshot.frame.height != descriptor_.height ||
+        snapshot.frame.pixels.size() != cpu_frame_.pixels.size())
+        return false;
+    std::copy(snapshot.frame.pixels.begin(), snapshot.frame.pixels.end(),
+        cpu_frame_.pixels.begin());
+    cpu_generation_ = std::max(cpu_generation_, gpu_generation_);
+    next_generation_ = std::max(next_generation_, cpu_generation_);
+    if (snapshot.gpu_generation >= snapshot.cpu_generation)
+        cpu_damage_.clear();
+    return true;
+}
+
 void HostSurface::replace_cpu(std::span<const std::uint32_t> pixels)
 {
     std::lock_guard lock { mutex_ };

@@ -38,9 +38,12 @@ namespace {
         }
 
         bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target,
-            std::optional<HostRectangle>* readback_damage) override
+            std::optional<HostRectangle>* readback_damage,
+            ReadbackStamp* stamp) override
         {
             static_cast<void>(target);
+            if (stamp)
+                *stamp = { };
             if (readback_damage != nullptr) {
                 *readback_damage =
                     HostRectangle { 0, 0, frame.width, frame.height };
@@ -158,21 +161,38 @@ std::unique_ptr<CommandEncoder> GlesRenderer::create_command_encoder()
     return make_cpu_command_encoder();
 }
 
+bool GlesRenderer::read_surface(HostSurface& surface, DisplayFrame& output,
+    PerfCpuMapReason reason, bool* cache_committed,
+    std::optional<HostRectangle>* readback_damage)
+{
+    if (cache_committed)
+        *cache_committed = false;
+    if (readback_damage)
+        readback_damage->reset();
+    auto snapshot = surface.snapshot_cpu(reason);
+    ReadbackStamp stamp;
+    if (!synchronize(snapshot.frame, surface.key(), readback_damage, &stamp))
+        return false;
+    const auto committed = surface.commit_cpu_readback(snapshot);
+    if (committed)
+        acknowledge_readback(surface.key(), stamp);
+    if (cache_committed)
+        *cache_committed = committed;
+    output = std::move(snapshot.frame);
+    return true;
+}
+
 bool GlesRenderer::map_cpu(HostSurface& surface, bool read,
     PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
 {
-    if (readback_damage != nullptr)
+    if (readback_damage)
         readback_damage->reset();
     if (!read)
         return true;
-    const auto generation = surface.gpu_generation();
-    {
-        auto mapping = surface.map_cpu(false, reason);
-        if (!synchronize(mapping.frame(), surface.key(), readback_damage))
-            return false;
-    }
-    surface.mark_cpu_synchronized(generation);
-    return true;
+    bool committed = false;
+    DisplayFrame output;
+    return read_surface(surface, output, reason, &committed, readback_damage) &&
+           committed;
 }
 
 HostNativeImage GlesRenderer::native_image(const HostSurface& surface) const

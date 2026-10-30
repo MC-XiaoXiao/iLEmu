@@ -142,6 +142,14 @@ public:
     [[nodiscard]] std::uint64_t scanout_presentation_sequence() const;
     [[nodiscard]] CpuMapping map_cpu(
         bool write, PerfCpuMapReason reason = PerfCpuMapReason::Internal);
+    struct CpuSnapshot {
+        DisplayFrame frame;
+        std::uint64_t cpu_generation, gpu_generation;
+    };
+    // Copies host-owned pixels while locked; callers must release the lock
+    // before driver/GPU work. A stale snapshot never overwrites newer pixels.
+    [[nodiscard]] CpuSnapshot snapshot_cpu(PerfCpuMapReason reason) const;
+    [[nodiscard]] bool commit_cpu_readback(const CpuSnapshot& snapshot);
     void replace_cpu(std::span<const std::uint32_t> pixels);
     void replace_cpu_region(
         HostRectangle rectangle, std::span<const std::uint32_t> pixels);
