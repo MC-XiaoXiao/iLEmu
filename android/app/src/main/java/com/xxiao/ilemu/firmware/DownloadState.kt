@@ -7,7 +7,7 @@ import org.json.JSONObject
 import java.io.File
 
 internal data class DownloadState(val phase: String = "等待下载", val bytes: Long = 0, val total: Long = 0,
-    val connections: Int = 0, val resumed: Boolean = false, val error: String = "") {
+    val connections: Int = 0, val resumed: Boolean = false, val error: String = "", val warning: String = "") {
     // Byte counts describe the transfer only; later preparation tools have no total.
     val progressPercent: Int?
         get() = if (phase == "下载中" && total > 0)
@@ -21,16 +21,16 @@ internal data class DownloadState(val phase: String = "等待下载", val bytes:
             else -> phase
         }) + if (error.isNotEmpty()) "\n$error" else ""
     fun json() = JSONObject().put("phase", phase).put("bytes", bytes).put("total", total)
-        .put("connections", connections).put("resumed", resumed).put("error", error)
+        .put("connections", connections).put("resumed", resumed).put("error", error).put("warning", warning)
     override fun toString() = "$phase · ${bytes / (1024 * 1024)} / ${total / (1024 * 1024)} MB" +
         (if (connections > 0) " · $connections 连接" else "") + (if (resumed) " · 续传" else "") +
-        (if (error.isNotEmpty()) "\n$error" else "")
+        (if (error.isNotEmpty()) "\n$error" else "") + (if (warning.isNotEmpty()) "\n$warning" else "")
     companion object {
         @Synchronized fun read(repository: ContainerRepository, container: Container): DownloadState {
             val file = AtomicFile(File(repository.home(container), "download.json"))
             return runCatching {
                 val j = JSONObject(file.openRead().use { it.readBytes().toString(Charsets.UTF_8) })
-                DownloadState(j.getString("phase"), j.getLong("bytes"), j.getLong("total"), j.getInt("connections"), j.getBoolean("resumed"), j.optString("error"))
+                DownloadState(j.getString("phase"), j.getLong("bytes"), j.getLong("total"), j.getInt("connections"), j.getBoolean("resumed"), j.optString("error"), j.optString("warning"))
             }.getOrElse { DownloadState(total = container.firmware?.optLong("size") ?: 0) }
         }
         @Synchronized fun write(repository: ContainerRepository, container: Container, state: DownloadState) {

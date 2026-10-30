@@ -54,12 +54,12 @@ internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, pri
         entry = value
         val busy = ContainerTasks.isBusy(value.id)
         val running = value.ready && busy && NativeBridge.ownsRunningSession(value.id)
-        val download = if (!value.ready) DownloadState.read(repository, value) else null
+        val download = if (!value.ready || value.firmware != null) DownloadState.read(repository, value) else null
         val state = when {
             busy -> if (value.ready) (if (running) "运行中" else "正在同步数据…") else download!!.summary
             value.error.isNotEmpty() -> value.error
             value.dirty -> "数据等待同步"
-            value.ready -> ""
+            value.ready -> download?.warning.orEmpty()
             else -> download!!.summary
         }
         val presentation = Presentation(value.name, value.device, value.version, value.build,

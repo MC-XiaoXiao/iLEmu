@@ -62,7 +62,7 @@ class FirmwareDownloadService : Service() {
             val entry = repository.get(id)
             check(ContainerTasks.reserve(id)) { "容器正在使用中" }
             container = entry
-            state = DownloadState.read(repository, entry).copy(phase = "连接中", error = "")
+            state = DownloadState.read(repository, entry).copy(phase = "连接中", error = "", warning = "")
             foreground()
             publish()
             val release = FirmwareRelease.fromJson(entry.firmware ?: error("未选择固件"))
@@ -105,7 +105,7 @@ class FirmwareDownloadService : Service() {
     private fun finishDownload(entry: Container, release: FirmwareRelease, file: File) {
         try {
             state = state.copy(phase = "校验中", bytes = file.length(), total = release.size); publish()
-            try { FirmwareTransfer.verify(file, release) { paused } } catch (error: Exception) {
+            try { state = state.copy(warning = FirmwareTransfer.verify(file, release) { paused }) } catch (error: Exception) {
                 if (!paused) { file.delete(); task?.let { OkDownload.with().breakpointStore().remove(it.id) } }
                 throw error
             }
