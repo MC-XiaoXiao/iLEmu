@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Define named capability profiles for guest syscall, pthread, IOKit
-// and shared-region ABIs.
+// Resolved wire contracts for guest syscalls, pthread, IOKit and shared
+// regions. The ordered version profiles select these once per session.
 
 #pragma once
 
@@ -15,9 +15,6 @@
 #include "foundation/darwin_address_layout.hpp"
 
 namespace ilemu {
-
-// Select the available kqueue syscall formats independently of pthread ABI.
-enum class DarwinKeventAbi : std::uint8_t { Legacy, QualityOfService };
 
 // Early ARM libSystem marshals gettimeofday from two return registers;
 // newer XNU copies a timeval and optional absolute-time sample to userspace.
@@ -229,10 +226,6 @@ struct DarwinGuestCapabilities {
     // This is a version-sensitive capability; later and unknown profiles keep
     // the XNU behavior of leaving VM permissions unchanged.
     bool arm_cache_trap_grants_execute { };
-    // Darwin 16 exposes the bounded getentropy BSD syscall.
-    bool getentropy { };
-    // Darwin 16 adds the ulock_wait/ulock_wake synchronization pair.
-    bool user_lock_wait { };
     bool file_signature_end_offset { };
 };
 
@@ -346,7 +339,6 @@ struct DarwinAbi {
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers
     };
-    DarwinKeventAbi kevent_abi { DarwinKeventAbi::Legacy };
     DarwinGettimeofdayAbi gettimeofday_abi {
         DarwinGettimeofdayAbi::RegisterTimeval
     };

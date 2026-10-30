@@ -177,7 +177,6 @@ namespace {
 
     constexpr DarwinAbi ios_9 = [] {
         auto abi = ios_8;
-        abi.kevent_abi = DarwinKeventAbi::QualityOfService;
         abi.exception_port_abi = DarwinExceptionPortAbi::ThroughCorpseNotify;
         abi.coalition_abi = DarwinCoalitionAbi::ResourceAndJetsamCoalitions;
         return abi;
@@ -191,8 +190,6 @@ namespace {
             DarwinPthreadAbi::BsdThreadRegisterV1ExpandedTsdKeventWorkqueues;
         abi.mach_voucher_abi = DarwinMachVoucherAbi::HostCreateWithDirectTraps;
         abi.address_layout = DarwinAddressLayout::ArmSharedRegionAt416MiB;
-        abi.capabilities.getentropy = true;
-        abi.capabilities.user_lock_wait = true;
         abi.capabilities.file_signature_end_offset = true;
         return abi;
     }();

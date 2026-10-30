@@ -44,12 +44,6 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
             qos ? 0U : registers[number == 369U ? 6U : 5U];
         std::uint32_t call_flags = number == 369U ? registers[5] : 0U;
         if (qos) {
-            if (shared_state_->darwin_abi.kevent_abi !=
-                DarwinKeventAbi::QualityOfService) {
-                dispatch_bsd_nosys(
-                    cpu, shared_state_->bsd_dispatch_table.sends_sigsys(number));
-                return;
-            }
             // ARM32 syscall wrappers marshal seven words into r0-r6.
             // XNU reads argument eight at saved SP + seven natural words.
             const auto flags = registers[13] <= UINT32_MAX - 28U

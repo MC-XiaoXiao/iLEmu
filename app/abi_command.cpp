@@ -134,16 +134,12 @@ namespace {
                 { "any-file", "sendable-file-types" }) << '\n'
          << "thread-priority-floor: " << choice(abi.thread_priority_floor,
                 { "unrestricted", "throttle" }) << '\n'
-         << "kevent-abi: " << choice(abi.kevent_abi,
-                { "legacy", "quality-of-service" }) << '\n'
          << "gettimeofday-abi: " << choice(abi.gettimeofday_abi,
                 { "register-timeval", "copyout-timeval-and-absolute-time" }) << '\n'
          << std::boolalpha
          << "send-sigsys: " << abi.capabilities.send_sigsys << '\n'
          << "cache-trap-grants-execute: "
          << abi.capabilities.arm_cache_trap_grants_execute << '\n'
-         << "getentropy: " << abi.capabilities.getentropy << '\n'
-         << "user-lock-wait: " << abi.capabilities.user_lock_wait << '\n'
          << "file-signature-end-offset: "
          << abi.capabilities.file_signature_end_offset << '\n';
     }

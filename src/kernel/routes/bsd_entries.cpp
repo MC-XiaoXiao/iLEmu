@@ -37,12 +37,11 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         abi.coalition_abi != DarwinCoalitionAbi::Unsupported);
     add(460, "necp_match_policy", Handler::BsdNetworkPolicy,
         Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
-    add(500, "getentropy", Handler::BsdEntropy,
-        Contract::CurrentDispatcher, abi.capabilities.getentropy);
-    add(515, "ulock_wait", Handler::BsdUlock, Contract::CurrentDispatcher,
-        abi.capabilities.user_lock_wait);
-    add(516, "ulock_wake", Handler::BsdUlock, Contract::CurrentDispatcher,
-        abi.capabilities.user_lock_wait);
+    // Distinct, additive syscall slots need no per-feature ABI selector.
+    // The shared route policy handles reserved slots on older reference tables.
+    add(500, "getentropy", Handler::BsdEntropy);
+    add(515, "ulock_wait", Handler::BsdUlock);
+    add(516, "ulock_wake", Handler::BsdUlock);
     add(461, "getattrlistbulk", Handler::BsdDirectoryAttributes,
         Contract::LaterEpoch, abi.abi_epoch == DarwinAbiEpoch::Later);
     add(463, "openat", Handler::BsdFilesystem, Contract::LaterEpoch,
@@ -369,8 +368,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
     add(362, "kqueue", Handler::BsdKqueue);
     add(363, "kevent", Handler::BsdKqueue);
     add(369, "kevent64", Handler::BsdKqueue);
-    add(374, "kevent_qos", Handler::BsdKqueue, Contract::CurrentDispatcher,
-        abi.kevent_abi == DarwinKeventAbi::QualityOfService);
+    add(374, "kevent_qos", Handler::BsdKqueue);
     add(darwin::syscall::code_signing_operations, "code_signing_operations",
         Handler::BsdCodeSigning);
     add(darwin::syscall::code_signing_audit_operations, "csops_audittoken",
