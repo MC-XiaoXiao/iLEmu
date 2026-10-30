@@ -5,6 +5,7 @@
 // Describe the kernel identity values exposed to guest software.
 
 #include "device_state/darwin_kernel_identity.hpp"
+#include "foundation/build_info.hpp"
 
 namespace ilemu {
 
@@ -13,7 +14,9 @@ DarwinKernelIdentity::DarwinKernelIdentity(
     : name { "darwin" + std::string { darwin_release } },
       operating_system_release { darwin_release },
       version { "Darwin Kernel Version " + operating_system_release +
-                ": iLemu compatibility kernel; " + name + "/RELEASE_ARM" },
+                " (iLEmu): " + std::string { BuildInfo::current().timestamp } +
+                "; " + std::string { BuildInfo::current().user } +
+                ":iLEmu-" + std::string { BuildInfo::current().version } },
       build_version { ios_build }
 {
 }
