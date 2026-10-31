@@ -3026,7 +3026,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             return;
         if (command_recording_)
             submit_commands(false, PerfSubmitReason::ResourceLifetime);
-        wait_for_all_slots();
+        // Invalidation retires no allocation or command-slot storage. The next
+        // CPU upload uses the tracked image layout and queue-ordered barriers;
+        // it need not wait for unrelated submissions before marking this cache
+        // invalid. Slot reuse and actual resource retirement wait separately.
         found->second.valid = false;
         found->second.dirty.reset();
     }
@@ -3426,22 +3429,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
         begin_commands();
         end_render_pass();
-        VkPipelineStageFlags source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        VkAccessFlags source_access { };
-        if (target.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-            source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            source_access = VK_ACCESS_TRANSFER_READ_BIT;
-        } else if (target.layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-            source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            source_access = VK_ACCESS_TRANSFER_WRITE_BIT;
-        } else if (target.layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-            source_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            source_access = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        }
+        // CPU replacement can follow an invalidation without a host fence
+        // wait. Include earlier sampling as well as transfer/attachment use,
+        // across submissions on this queue, before overwriting this image.
         transition_image(commands.command, target.image.image, target.layout,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, source_stage,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, source_access,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
             VK_ACCESS_TRANSFER_WRITE_BIT);
         std::vector<VkBufferImageCopy> copies;
         copies.reserve(upload_rectangles.size());
@@ -5433,20 +5428,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 end_render_pass();
             }
             if (!gpu_target.valid) {
-                auto source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-                VkAccessFlags source_access { };
-                if (gpu_target.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-                    source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-                    source_access = VK_ACCESS_TRANSFER_READ_BIT;
-                } else if (gpu_target.layout ==
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-                    source_stage =
-                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-                    source_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                }
+                // Invalidation retains the allocation while earlier GPU work
+                // is in flight. Order all its reads/writes before CPU upload,
+                // including shader sampling and transfer destinations.
                 transition_image(commands.command, gpu_target.image.image,
                     gpu_target.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    source_stage, VK_PIPELINE_STAGE_TRANSFER_BIT, source_access,
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT);
                 VkBufferImageCopy target_copy { };
                 target_copy.bufferOffset = target_upload_offset;
