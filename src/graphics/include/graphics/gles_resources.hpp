@@ -21,7 +21,6 @@
 namespace ilemu {
 
 class AddressSpace;
-class HostGraphicsDevice;
 class GlesRenderer;
 class GlesRendererOwner;
 class GlesTextureTarget;
@@ -103,17 +102,12 @@ public:
     [[nodiscard]] std::shared_ptr<HostSurface> ensure_texture_render_target(
         std::uint32_t name, std::uint32_t level,
         std::shared_ptr<GlesRenderer> renderer,
-        std::shared_ptr<GlesRendererOwner> lifetime,
-        std::uint64_t owner, std::uint64_t target_namespace);
+        std::shared_ptr<GlesRendererOwner> lifetime, std::uint64_t owner,
+        std::uint64_t target_namespace);
     [[nodiscard]] bool commit_texture_render_target(std::uint32_t name,
         std::uint32_t level, std::span<const std::uint32_t> pixels);
     void update_texture_render_target_generation(
         std::uint32_t name, std::uint32_t level);
-    // Explicit software-fallback boundary for textures whose newest pixels
-    // live only in a HostSurface native image.
-    [[nodiscard]] bool materialize_surface_textures(
-        HostGraphicsDevice& graphics, std::span<const std::uint32_t> textures);
-
     [[nodiscard]] std::uint32_t upload_buffer(AddressSpace& memory,
         std::uint32_t name, std::uint32_t size, std::uint32_t data,
         std::uint32_t usage);
@@ -126,6 +120,7 @@ public:
     [[nodiscard]] const Buffer* buffer(std::uint32_t name) const;
 
 private:
+    friend class GlesPreparedTextures;
     [[nodiscard]] std::uint64_t allocate_texture_revision();
 
     std::map<std::uint32_t, Texture> textures_;

@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+#include "graphics/gles_prepared_textures.hpp"
 #include "graphics/gles_program_renderer.hpp"
 #include "graphics/gles_renderer_owner.hpp"
-#include "graphics/gles_resources.hpp"
 
 #include <algorithm>
 #include <array>
@@ -447,7 +447,8 @@ namespace {
         GlesProgramDraw draw;
         GlesProgramState::Program program;
         GlesRasterState raster;
-        GlesResourceStore textures;
+        GlesPreparedTextures textures;
+        SurfaceCpuReadback target_capture;
         std::uint32_t mode;
     };
 
@@ -492,15 +493,15 @@ namespace {
             add(sizeof(float), uniform.values.size());
         }
         if (raster.resources)
-            add(1, raster.resources->texture_snapshot_bytes(
-                draw.textures, payload_limit));
+            add(1, GlesPreparedTextures::payload_bytes(
+                       *raster.resources, draw.textures, payload_limit));
         return bytes;
     }
 
     std::shared_ptr<DrawPacket> snapshot(const DisplayFrame& frame,
         GlesRenderTargetKey target, const GlesProgramDraw& draw,
         std::uint32_t mode, const GlesRasterState& raster,
-        std::shared_ptr<PayloadCredit> credit)
+        std::shared_ptr<PayloadCredit> credit, const SurfaceStore& surfaces)
     {
         auto packet = std::make_shared<DrawPacket>();
         packet->credit = std::move(credit);
@@ -529,8 +530,9 @@ namespace {
         packet->draw.state = &packet->program;
         packet->raster = raster;
         if (raster.resources)
-            packet->textures = raster.resources->snapshot_textures(draw.textures);
-        packet->raster.resources = &packet->textures;
+            packet->textures = GlesPreparedTextures { *raster.resources,
+                draw.textures, surfaces };
+        packet->raster.resources = &packet->textures.resources();
         return packet;
     }
 } // namespace
@@ -643,7 +645,8 @@ class GlesProgramWorker::PreparedDraw {
     friend class GlesProgramWorker;
     std::weak_ptr<Backend> backend;
     std::shared_ptr<DrawPacket> packet;
-    std::shared_ptr<GlesWorkResult> target_readback;
+    std::shared_ptr<GlesWorkResult> input_readback;
+    bool inputs_ready { };
     bool read_target { };
     std::size_t bytes { }, issuer { };
     std::uint64_t epoch { };
@@ -818,7 +821,7 @@ std::shared_ptr<GlesProgramWorker::PreparedDraw>
 GlesProgramWorker::prepare_draw(const DisplayFrame& frame,
     GlesRenderTargetKey target, const GlesProgramDraw& draw, std::uint32_t mode,
     const GlesRasterState& raster, std::size_t issuer, std::size_t& bytes,
-    bool read_target)
+    bool read_target, const SurfaceStore& surfaces)
 {
     if (!draw.state)
         throw std::invalid_argument { "GLES draw has no uniform state" };
@@ -832,34 +835,50 @@ GlesProgramWorker::prepare_draw(const DisplayFrame& frame,
     prepared->epoch = state_->epochs[issuer];
     prepared->bytes = bytes;
     prepared->read_target = read_target;
-    prepared->packet =
-        snapshot(frame, target, draw, mode, raster, std::move(credit));
+    prepared->packet = snapshot(
+        frame, target, draw, mode, raster, std::move(credit), surfaces);
+    prepared->inputs_ready =
+        !read_target && !prepared->packet->textures.needs_capture();
     return prepared;
 }
 
-std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_target_readback(
+std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_input_readback(
     const std::shared_ptr<PreparedDraw>& draw,
     std::shared_ptr<GlesRenderer> renderer,
     std::shared_ptr<HostSurface> surface)
 {
-    if (draw->target_readback)
-        return draw->target_readback;
+    if (draw->input_readback)
+        return draw->input_readback;
     const auto epoch = state_->epochs.find(draw->issuer);
-    if (!draw->read_target || !renderer ||
+    if (draw->inputs_ready || !renderer ||
         (surface && surface->key() != draw->packet->target) ||
         draw->backend.lock() != state_->backend ||
         epoch == state_->epochs.end() || epoch->second != draw->epoch)
         throw std::invalid_argument { "stale GLES target preparation" };
     auto result = state_->executor->submit_host(
         0,
-        [packet = draw->packet, renderer = std::move(renderer),
+        [packet = draw->packet, read_target = draw->read_target,
+            renderer = std::move(renderer),
             surface = std::move(surface)](DisplayFrame&) {
+            if (!packet->textures.capture(renderer))
+                return false;
+            if (!read_target)
+                return true;
             const auto width = packet->frame.width;
             const auto height = packet->frame.height;
+            if (surface) {
+                std::vector<std::uint32_t>().swap(packet->frame.pixels);
+                packet->target_capture.renderer = renderer;
+                packet->target_capture.surface = surface;
+                if (!packet->target_capture.capture())
+                    return false;
+                const auto& frame = packet->target_capture.snapshot.frame;
+                return frame.width == width && frame.height == height &&
+                       frame.pixels.size() ==
+                           static_cast<std::size_t>(width) * height;
+            }
             auto frame = std::move(packet->frame);
-            const auto read =
-                surface ? renderer->read_surface(*surface, frame)
-                        : renderer->synchronize(frame, packet->target);
+            const auto read = renderer->synchronize(frame, packet->target);
             if (!read || frame.width != width || frame.height != height ||
                 frame.pixels.size() != static_cast<std::size_t>(width) * height)
                 return false;
@@ -867,8 +886,41 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_target_readback(
             return true;
         },
         draw->bytes);
-    draw->target_readback = result;
+    draw->input_readback = result;
     return result;
+}
+
+bool GlesProgramWorker::inputs_ready(
+    const std::shared_ptr<PreparedDraw>& draw) const
+{
+    return draw->inputs_ready;
+}
+
+void GlesProgramWorker::complete_inputs(
+    const std::shared_ptr<PreparedDraw>& draw, GlesResourceStore& revisions)
+{
+    const auto epoch = state_->epochs.find(draw->issuer);
+    if (draw->backend.lock() != state_->backend ||
+        epoch == state_->epochs.end() || epoch->second != draw->epoch)
+        throw std::invalid_argument { "stale GLES input completion" };
+    if (draw->inputs_ready)
+        return;
+    if (!draw->input_readback || !draw->input_readback->ready() ||
+        !draw->input_readback->succeeded())
+        throw std::invalid_argument { "GLES input preparation incomplete" };
+    draw->packet->textures.complete(revisions);
+    auto& target = draw->packet->target_capture;
+    if (target.surface) {
+        if (target.surface->commit_cpu_readback(target.snapshot))
+            target.renderer->acknowledge_readback(
+                target.surface->key(), target.stamp);
+        draw->packet->frame = std::move(target.snapshot.frame);
+        target = { };
+    }
+    draw->inputs_ready = true;
+    // A ready input ticket must not occupy a result slot while the same draw
+    // is waiting to allocate its output ticket. Its success is now explicit.
+    draw->input_readback.reset();
 }
 
 bool GlesProgramWorker::draw_capacity(
@@ -894,9 +946,7 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_draw(
     if (draw->backend.lock() != state_->backend ||
         epoch == state_->epochs.end() || epoch->second != draw->epoch)
         throw std::invalid_argument { "stale GLES prepared draw" };
-    if (draw->read_target &&
-        (!draw->target_readback || !draw->target_readback->ready() ||
-            !draw->target_readback->succeeded()))
+    if (!draw->inputs_ready)
         throw std::invalid_argument { "GLES target preparation incomplete" };
     state_->reap();
     // Allocate observer storage before publication, including the null-capacity

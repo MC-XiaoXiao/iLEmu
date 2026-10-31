@@ -1148,52 +1148,6 @@ void GlesResourceStore::update_texture_render_target_generation(
             level->second.host_surface->gpu_generation());
 }
 
-bool GlesResourceStore::materialize_surface_textures(
-    HostGraphicsDevice& graphics, std::span<const std::uint32_t> textures)
-{
-    for (const auto name : textures) {
-        const auto found = textures_.find(name);
-        if (found == textures_.end())
-            continue;
-        for (auto& [index, level] : found->second.levels) {
-            static_cast<void>(index);
-            if (!level.host_surface)
-                continue;
-            const auto generation =
-                std::max(level.host_surface->cpu_generation(),
-                    level.host_surface->gpu_generation());
-            if (level.argb.size() ==
-                    static_cast<std::size_t>(level.width) * level.height &&
-                level.argb_generation == generation) {
-                continue;
-            }
-            if (level.host_surface->gpu_generation() >
-                    level.host_surface->cpu_generation() &&
-                graphics.native_image(*level.host_surface).api ==
-                    HostNativeImage::Api::None) {
-                return false;
-            }
-            if (!graphics.map_cpu(*level.host_surface, true,
-                    PerfCpuMapReason::SoftwareFallback)) {
-                return false;
-            }
-            auto mapping = level.host_surface->map_cpu(
-                false, PerfCpuMapReason::SoftwareFallback);
-            const auto& frame = mapping.frame();
-            if (frame.width != level.width || frame.height != level.height ||
-                frame.pixels.size() !=
-                    static_cast<std::size_t>(level.width) * level.height) {
-                return false;
-            }
-            level.argb = frame.pixels;
-            level.host_generation = mapping.generation();
-            level.argb_generation = mapping.generation();
-            level.revision = allocate_texture_revision();
-        }
-    }
-    return true;
-}
-
 std::uint32_t GlesResourceStore::upload_buffer(AddressSpace& memory,
     std::uint32_t name, std::uint32_t size, std::uint32_t data,
     std::uint32_t usage)

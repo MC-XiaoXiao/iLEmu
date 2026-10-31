@@ -17,11 +17,12 @@ struct SurfaceCpuReadback {
     GlesRenderer::ReadbackStamp stamp;
     std::optional<HostRectangle> damage;
 
-    [[nodiscard]] bool capture()
+    [[nodiscard]] bool capture(
+        PerfCpuMapReason reason = PerfCpuMapReason::CoreSurface)
     {
         if (!renderer || !surface ||
-            !renderer->capture_readback(*surface, snapshot, stamp,
-                PerfCpuMapReason::CoreSurface, &damage))
+            !renderer->capture_readback(
+                *surface, snapshot, stamp, reason, &damage))
             return false;
         // An absent native target cannot satisfy GPU-newer contents using an
         // older CPU shadow. A live cached image needs no native stamp.

@@ -17,6 +17,8 @@
 #include <vector>
 
 namespace ilemu {
+class SurfaceStore;
+class GlesResourceStore;
 
 // Guest memory and object names are decoded before crossing this boundary.
 // The host compiler executes GLSL; no host API is exposed to the guest kernel.
@@ -174,13 +176,20 @@ public:
         const DisplayFrame& frame, GlesRenderTargetKey target,
         const GlesProgramDraw& program, std::uint32_t mode,
         const GlesRasterState& state, std::size_t issuer,
-        std::size_t& payload_bytes, bool read_target = false);
-    // Completes the frozen packet's target pixels on the host worker. Repeated
+        std::size_t& payload_bytes, bool read_target,
+        const SurfaceStore& surfaces);
+    // Completes frozen texture/target pixels on the host worker. Repeated
     // admission returns the same ticket; no guest references cross this API.
-    [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_target_readback(
+    [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_input_readback(
         const std::shared_ptr<PreparedDraw>& draw,
         std::shared_ptr<GlesRenderer> renderer,
         std::shared_ptr<HostSurface> surface);
+    [[nodiscard]] bool inputs_ready(
+        const std::shared_ptr<PreparedDraw>& draw) const;
+    // Core-only, idempotent result consumption. Revisions come from the live
+    // resource namespace; no guest references survive preparation.
+    void complete_inputs(const std::shared_ptr<PreparedDraw>& draw,
+        GlesResourceStore& revisions);
     [[nodiscard]] bool draw_capacity(
         const std::shared_ptr<PreparedDraw>& draw) const;
     // Null means retry admission; an accepted prepared draw always returns its

@@ -313,7 +313,8 @@ private:
         std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
         const GlesRasterState& raster, bool indexed);
     struct FrameDraw;
-    void await_frame_draw(UserlandHleCall& call, std::shared_ptr<FrameDraw> pending);
+    void await_frame_draw(
+        UserlandHleCall& call, std::shared_ptr<FrameDraw> pending);
     [[nodiscard]] bool prepare_program_attributes(UserlandHleCall& call,
         const ContextState& context, std::uint32_t first,
         GlesProgramDraw& draw) const;
@@ -321,7 +322,7 @@ private:
         const RenderTargetBinding& binding, DisplayFrame frame,
         const GlesProgramDraw& draw, std::uint32_t mode,
         const GlesRasterState& state, bool indexed);
-    void prepare_program_target(UserlandHleCall& call,
+    void prepare_program_inputs(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayGeometry dimensions,
         std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared);
     void submit_program_draw(UserlandHleCall& call,
@@ -338,18 +339,18 @@ private:
     bool program_flush_failed_ { };
     void finish_async(UserlandHleCall& call, bool finish);
     void create_surface(UserlandHleCall& call);
-    void publish_created_surface(UserlandHleCall& call,
-        std::optional<SurfaceState> state);
+    void publish_created_surface(
+        UserlandHleCall& call, std::optional<SurfaceState> state);
     void create_pixmap_surface(UserlandHleCall& call, std::uint32_t id);
     struct PixmapRead;
-    void await_pixmap_read(UserlandHleCall& call,
-        std::shared_ptr<PixmapRead> pending);
+    void await_pixmap_read(
+        UserlandHleCall& call, std::shared_ptr<PixmapRead> pending);
     void make_current(UserlandHleCall& call);
     struct ReadPixelsOutput;
     [[nodiscard]] std::shared_ptr<ReadPixelsOutput> capture_read_pixels_output(
         UserlandHleCall& call);
-    void read_pixels(UserlandHleCall& call,
-        std::shared_ptr<ReadPixelsOutput> output = { });
+    void read_pixels(
+        UserlandHleCall& call, std::shared_ptr<ReadPixelsOutput> output = { });
     void write_read_pixels(UserlandHleCall& call, const DisplayFrame& frame,
         bool inverted, const ReadPixelsOutput& output);
     [[nodiscard]] bool binding_live(const RenderTargetBinding& binding) const;
