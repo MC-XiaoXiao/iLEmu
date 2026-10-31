@@ -109,6 +109,7 @@ private:
     };
 
     void dispatch(UserlandHleCall& call);
+    void import_buffer(UserlandHleCall& call, Buffer& buffer, bool flushing);
     void synchronize_buffer(UserlandHleCall& call, Buffer& buffer, bool releasing);
     void release_buffer(UserlandHleCall& call, Buffer& buffer);
     void complete_buffer_release(

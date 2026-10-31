@@ -871,31 +871,45 @@ bool SurfaceStore::complete_cpu_readback(AddressSpace& memory,
 bool SurfaceStore::synchronize_from_guest(
     AddressSpace& memory, std::uint32_t id) const
 {
+    const auto result = try_synchronize_from_guest(memory, id);
+    if (result != CpuImportResult::PendingGpu)
+        return result == CpuImportResult::Completed;
+    // Legacy host consumers retain their explicit blocking path. Migrated
+    // core HLE callers use only try_synchronize_from_guest and an owned job.
+    const auto surface = host_surface(id);
+    return surface && shared_gles_renderer()->map_cpu(
+                          *surface, true, PerfCpuMapReason::CoreSurface) &&
+           try_synchronize_from_guest(memory, id) == CpuImportResult::Completed;
+}
+
+SurfaceStore::CpuImportResult SurfaceStore::try_synchronize_from_guest(
+    AddressSpace& memory, std::uint32_t id) const
+{
     const auto backing = find(id);
     if (!backing || (!surface_is_32bit(backing->pixel_format) &&
                         !surface_is_packed_555(backing->pixel_format)))
-        return backing.has_value();
+        return backing ? CpuImportResult::Completed : CpuImportResult::Failed;
     const auto sync_state = shared_sync_state(id);
     if (!sync_state)
-        return false;
+        return CpuImportResult::Failed;
     std::unique_lock sync_lock { sync_state->mutex };
     // CoreSurface/IOSurface consumers call this at the firmware's CPU-to-GPU
     // synchronization boundary. Publish the completed Guest writes once per
     // page here so untracked shared pixels can retain direct JIT stores.
     if (!memory.publish_write_generation(
             backing->base, backing->allocation_size)) {
-        return false;
+        return CpuImportResult::Failed;
     }
     const auto shared_changes =
         memory.shared_write_generation_changes(backing->base,
             backing->allocation_size, sync_state->shared_page_generations);
     if (!shared_changes)
-        return false;
+        return CpuImportResult::Failed;
     auto written_ranges = shared_changes->ranges;
     normalize_written_ranges(written_ranges);
     if (written_ranges.empty()) {
         sync_state->shared_page_generations = shared_changes->page_generations;
-        return true;
+        return CpuImportResult::Completed;
     }
 
     const auto pixel_size = surface_bytes_per_pixel(backing->pixel_format);
@@ -903,7 +917,7 @@ bool SurfaceStore::synchronize_from_guest(
         static_cast<std::uint64_t>(backing->width) * pixel_size;
     if (backing->bytes_per_row == 0 ||
         visible_row_bytes > backing->bytes_per_row) {
-        return false;
+        return CpuImportResult::Failed;
     }
     std::vector<HostRectangle> rectangles;
     for (const auto& range : written_ranges) {
@@ -951,7 +965,7 @@ bool SurfaceStore::synchronize_from_guest(
     for (const auto rectangle : rectangles) {
         auto pixels = read_guest_argb_region(memory, *backing, rectangle);
         if (!pixels)
-            return false;
+            return CpuImportResult::Failed;
         guest_regions.push_back(GuestRegion { rectangle, std::move(*pixels) });
     }
 
@@ -964,17 +978,20 @@ bool SurfaceStore::synchronize_from_guest(
         static_cast<std::size_t>(backing->width) * backing->height;
     if (sync_state->guest_pixel_snapshot.size() != expected_pixels) {
         const auto surface = host_surface(id);
-        if (surface && surface->gpu_generation() > surface->cpu_generation()) {
-            return false;
-        }
         const auto pixels = read_guest_argb(memory, *backing);
         if (!pixels)
-            return false;
-        if (surface)
-            surface->replace_cpu(*pixels);
+            return CpuImportResult::Failed;
+        if (surface) {
+            auto mapping = surface->try_map_current_cpu(
+                true, PerfCpuMapReason::CoreSurface);
+            if (!mapping)
+                return CpuImportResult::PendingGpu;
+            std::copy(pixels->begin(), pixels->end(),
+                mapping->frame().pixels.begin());
+        }
         sync_state->guest_pixel_snapshot = *pixels;
         sync_state->shared_page_generations = shared_changes->page_generations;
-        return true;
+        return CpuImportResult::Completed;
     }
     for (const auto& region : guest_regions) {
         for (std::uint32_t row = 0; row < region.rectangle.height; ++row) {
@@ -1017,13 +1034,11 @@ bool SurfaceStore::synchronize_from_guest(
     const auto surface = host_surface(id);
     if (!changed_runs.empty()) {
         if (!surface)
-            return false;
-        if (surface->gpu_generation() > surface->cpu_generation() &&
-            !shared_gles_renderer()->map_cpu(
-                *surface, true, PerfCpuMapReason::CoreSurface)) {
-            return false;
-        }
-        auto mapping = surface->map_cpu(true, PerfCpuMapReason::CoreSurface);
+            return CpuImportResult::Failed;
+        auto mapping = surface->try_map_current_cpu(
+            true, PerfCpuMapReason::CoreSurface);
+        if (!mapping)
+            return CpuImportResult::PendingGpu;
         std::optional<HostRectangle> damage;
         for (const auto& run : changed_runs) {
             const auto destination =
@@ -1032,7 +1047,7 @@ bool SurfaceStore::synchronize_from_guest(
                     backing->width +
                 static_cast<std::uint32_t>(run.rectangle.x);
             std::copy(run.pixels.begin(), run.pixels.end(),
-                mapping.frame().pixels.begin() +
+                mapping->frame().pixels.begin() +
                     static_cast<std::ptrdiff_t>(destination));
             if (!damage) {
                 damage = run.rectangle;
@@ -1053,7 +1068,7 @@ bool SurfaceStore::synchronize_from_guest(
                 static_cast<std::uint32_t>(bottom - top) };
         }
         if (damage)
-            mapping.set_damage(*damage);
+            mapping->set_damage(*damage);
     }
     for (const auto& run : changed_runs) {
         const auto destination =
@@ -1066,7 +1081,7 @@ bool SurfaceStore::synchronize_from_guest(
                 static_cast<std::ptrdiff_t>(destination));
     }
     sync_state->shared_page_generations = shared_changes->page_generations;
-    return true;
+    return CpuImportResult::Completed;
 }
 
 bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,

@@ -219,6 +219,11 @@ public:
         const Backing& expected, const SurfaceCpuReadback& readback) const;
     // Imports guest CPU writes even when a newer GPU generation exists. This
     // is the unlock/flush direction, not a GPU readback request.
+    enum class CpuImportResult { Completed, PendingGpu, Failed };
+    // Core-only import. PendingGpu changes neither the guest baseline nor the
+    // CPU shadow; retry after an owned capture has populated the current cache.
+    [[nodiscard]] CpuImportResult try_synchronize_from_guest(
+        AddressSpace& memory, std::uint32_t id) const;
     [[nodiscard]] bool synchronize_from_guest(
         AddressSpace& memory, std::uint32_t id) const;
     [[nodiscard]] bool write_argb(AddressSpace& memory, std::uint32_t id,

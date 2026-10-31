@@ -1014,29 +1014,9 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
     } else if (operation == "Lock" || operation == "LockPlane") {
         synchronize_buffer(call, *buffer, false);
     } else if (operation == "FlushProcessorCaches") {
-        static_cast<void>(
-            surfaces_->synchronize_from_guest(call.memory(), buffer->id));
-        call.set_return(success);
+        import_buffer(call, *buffer, true);
     } else if (operation == "Unlock" || operation == "UnlockPlane") {
-        // A matching explicit Lock is authoritative. WrapClientImage also
-        // owns an implicit lock and later calls Unlock with its options in r1,
-        // so preserve that firmware argument when no explicit Lock was seen.
-        auto options = call.argument(1);
-        if (!buffer->lock_options.empty()) {
-            options = buffer->lock_options.back();
-            buffer->lock_options.pop_back();
-        }
-        if ((options & core_surface_abi::lock_read_only) == 0) {
-            static_cast<void>(
-                surfaces_->synchronize_from_guest(call.memory(), buffer->id));
-            ++buffer->seed;
-            submit(*buffer, call);
-        }
-        if (buffer_abi.lock_seed_output && call.argument(2) != 0) {
-            static_cast<void>(
-                call.memory().write32(call.argument(2), buffer->seed));
-        }
-        call.set_return(success);
+        import_buffer(call, *buffer, false);
     } else if (operation == "CopyAllValues") {
         // The transport has no stored attachments yet. Return a retained,
         // empty firmware CFDictionary so native CoreVideo can enumerate it.
