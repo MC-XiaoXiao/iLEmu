@@ -10,6 +10,7 @@
 #include "guest_drawable_geometry.hpp"
 #include "guest_eagl_window.hpp"
 #include "opengles_dispatch_hle.hpp"
+#include "graphics/gles_frame_draw.hpp"
 
 #include <algorithm>
 #include <array>
@@ -791,7 +792,8 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
             return std::nullopt;
         return RenderTargetBinding { RenderTargetKind::Pixmap,
             render_target_key(thread(call).draw_surface),
-            pixmap->backing_identifier, pixmap, 0U, host_surface };
+            pixmap->backing_identifier, pixmap, 0U, host_surface,
+            false, false, nullptr, pixmap->identity };
     }
     const auto draw_surface = thread(call).draw_surface;
     auto binding = RenderTargetBinding { RenderTargetKind::Display,
@@ -818,6 +820,8 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
             binding.display_surface = &compatibility_display_surface_;
         }
     }
+    if (binding.display_surface)
+        binding.surface_identity = binding.display_surface->identity;
     return binding;
 }
 
@@ -1370,7 +1374,15 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         });
         return;
     }
-    auto target = render_target(call, *binding);
+    // Capture a CPU-owned display without invoking its optional GPU reader.
+    // Live native inputs retain the established path until writer ordering is
+    // represented for every shared-surface consumer.
+    const auto capture_display = !program_draw && !binding->host_surface &&
+                                 !binding->display_surface && display_;
+    auto target = capture_display ? std::optional { display_->capture_frame() }
+                                 : render_target(call, *binding);
+    if (capture_display && target && target->host_surface)
+        target = render_target(call, *binding);
     if (!target) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
@@ -1461,6 +1473,10 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     if (program_draw) {
         execute_program_draw(call, *binding, std::move(*target), *program_draw,
             mode, state, indexed);
+        return;
+    }
+    if (!binding->host_surface && GlesFrameDraw::can_snapshot(*target, state)) {
+        draw_frame_async(call, *binding, *target, vertices, mode, state, indexed);
         return;
     }
     const auto target_key = binding->key;

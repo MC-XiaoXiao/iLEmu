@@ -486,22 +486,9 @@ namespace {
             add(1, uniform.name.size());
             add(sizeof(float), uniform.values.size());
         }
-        std::set<std::uint32_t> seen;
-        for (const auto name : draw.textures) {
-            const auto* texture = raster.resources && seen.insert(name).second
-                                      ? raster.resources->texture(name)
-                                      : nullptr;
-            if (!texture)
-                continue;
-            add(sizeof(*texture) + 4 * sizeof(void*));
-            add(2 * sizeof(std::uint32_t) + 4 * sizeof(void*),
-                texture->parameters.size());
-            for (const auto& [level, image] : texture->levels) {
-                static_cast<void>(level);
-                add(sizeof(image) + 4 * sizeof(void*));
-                add(sizeof(std::uint32_t), image.argb.size());
-            }
-        }
+        if (raster.resources)
+            add(1, raster.resources->texture_snapshot_bytes(
+                draw.textures, payload_limit));
         return bytes;
     }
 
@@ -536,23 +523,8 @@ namespace {
         packet->program.uniforms = draw.state->uniforms;
         packet->draw.state = &packet->program;
         packet->raster = raster;
-        if (raster.resources) {
-            for (const auto name : draw.textures) {
-                if (packet->textures.has_texture(name))
-                    continue;
-                const auto* texture = raster.resources->texture(name);
-                if (!texture)
-                    continue;
-                packet->textures.ensure_texture(name);
-                *packet->textures.texture(name) = *texture;
-                for (auto& [level, image] :
-                    packet->textures.texture(name)->levels) {
-                    static_cast<void>(level);
-                    image.host_surface.reset();
-                    image.surface_id.reset();
-                }
-            }
-        }
+        if (raster.resources)
+            packet->textures = raster.resources->snapshot_textures(draw.textures);
         packet->raster.resources = &packet->textures;
         return packet;
     }

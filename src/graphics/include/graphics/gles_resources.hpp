@@ -62,6 +62,12 @@ public:
     void erase_buffer(std::uint32_t name);
     [[nodiscard]] bool has_texture(std::uint32_t name) const;
     [[nodiscard]] bool has_buffer(std::uint32_t name) const;
+    [[nodiscard]] std::size_t texture_snapshot_bytes(
+        std::span<const std::uint32_t> names, std::size_t limit) const;
+    // Deep selected CPU texture storage. Live surface identities are not
+    // usable by a CPU snapshot and never cross this boundary.
+    [[nodiscard]] GlesResourceStore snapshot_textures(
+        std::span<const std::uint32_t> names) const;
 
     [[nodiscard]] std::uint32_t upload_texture_2d(AddressSpace& memory,
         std::uint32_t name, std::uint32_t level, std::uint32_t internal_format,

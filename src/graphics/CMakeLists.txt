@@ -7,6 +7,7 @@ add_library(ilemu_graphics STATIC
     display.cpp
     core_animation_remote_abi.cpp
     gles_renderer.cpp
+    gles_frame_draw.cpp
     gles_primitive_assembler.cpp
     gles_resources.cpp
     gles_rasterizer.cpp

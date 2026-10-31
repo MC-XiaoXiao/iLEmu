@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -747,6 +748,58 @@ bool GlesResourceStore::has_texture(std::uint32_t name) const
 bool GlesResourceStore::has_buffer(std::uint32_t name) const
 {
     return buffers_.contains(name);
+}
+
+std::size_t GlesResourceStore::texture_snapshot_bytes(
+    std::span<const std::uint32_t> names, std::size_t limit) const
+{
+    std::size_t bytes = 0;
+    const auto add = [&](std::size_t size, std::size_t count = 1) {
+        if (size && count > (limit - bytes) / size)
+            throw std::length_error { "GLES texture snapshot exceeds budget" };
+        bytes += size * count;
+    };
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        if (std::find(names.begin(), names.begin() + index, names[index]) !=
+            names.begin() + index)
+            continue;
+        const auto* source = texture(names[index]);
+        if (!source)
+            continue;
+        add(sizeof(*source) + 4 * sizeof(void*));
+        add(2 * sizeof(std::uint32_t) + 4 * sizeof(void*),
+            source->parameters.size());
+        for (const auto& [level, image] : source->levels) {
+            static_cast<void>(level);
+            add(sizeof(image) + 4 * sizeof(void*));
+            add(sizeof(std::uint32_t), image.argb.size());
+        }
+    }
+    return bytes;
+}
+
+GlesResourceStore GlesResourceStore::snapshot_textures(
+    std::span<const std::uint32_t> names) const
+{
+    GlesResourceStore snapshot;
+    for (const auto name : names) {
+        if (snapshot.has_texture(name))
+            continue;
+        const auto* source = texture(name);
+        if (!source)
+            continue;
+        snapshot.ensure_texture(name);
+        auto& copied = *snapshot.texture(name);
+        copied = *source;
+        // This copies cached CPU data only. The caller must resolve any GPU
+        // dependency first, or reject live sources before preparing a packet.
+        for (auto& [level, image] : copied.levels) {
+            static_cast<void>(level);
+            image.host_surface.reset();
+            image.surface_id.reset();
+        }
+    }
+    return snapshot;
 }
 
 std::uint32_t GlesResourceStore::upload_texture_2d(AddressSpace& memory,

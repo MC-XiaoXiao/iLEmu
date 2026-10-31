@@ -56,13 +56,17 @@ bool OpenGlesHle::binding_live(const RenderTargetBinding& binding) const
     }
     if (binding.host_surface && binding.host_surface->key() != binding.key)
         return false;
-    // Compare addresses only: never dereference a possibly retired store entry.
+    // Compare addresses and lifetime tokens, never a retired store entry.
     if (binding.pixmap_surface || binding.display_surface) {
-        bool found = binding.display_surface == &compatibility_display_surface_;
+        bool found =
+            binding.display_surface == &compatibility_display_surface_ &&
+            binding.surface_identity == compatibility_display_surface_.identity;
         for (const auto& [name, surface] : surfaces_) {
             static_cast<void>(name);
-            found = found || &surface == binding.pixmap_surface ||
-                    &surface == binding.display_surface;
+            found = found ||
+                    ((&surface == binding.pixmap_surface ||
+                         &surface == binding.display_surface) &&
+                        binding.surface_identity == surface.identity);
         }
         if (!found)
             return false;

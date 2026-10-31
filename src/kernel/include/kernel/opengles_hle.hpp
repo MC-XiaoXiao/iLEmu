@@ -40,6 +40,7 @@ class UserlandHleCall;
 class UserlandHleRegistry;
 class SceneCoordinator;
 class OpenGlesDispatchHle;
+class GlesFrameDraw;
 class SurfaceStore;
 struct KernelSharedState;
 
@@ -81,6 +82,7 @@ private:
         std::uint32_t gl_error { };
     };
     struct SurfaceState {
+        ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
         std::optional<std::uint32_t> backing_identifier;
         std::uint32_t width { };
         std::uint32_t height { };
@@ -236,6 +238,7 @@ private:
         bool inverted_vertical { };
         bool premultiplied { };
         SurfaceState* display_surface { };
+        ResourceIdentity surface_identity { };
     };
 
     struct PendingProgramTarget {
@@ -304,6 +307,12 @@ private:
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
+    void draw_frame_async(UserlandHleCall& call,
+        const RenderTargetBinding& binding, const DisplayFrame& frame,
+        std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
+        const GlesRasterState& raster, bool indexed);
+    struct FrameDraw;
+    void await_frame_draw(UserlandHleCall& call, std::shared_ptr<FrameDraw> pending);
     [[nodiscard]] bool prepare_program_attributes(UserlandHleCall& call,
         const ContextState& context, std::uint32_t first,
         GlesProgramDraw& draw) const;
