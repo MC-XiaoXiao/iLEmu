@@ -193,6 +193,8 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
                                 : std::make_shared<SurfaceStore>() }
     , renderer_owner_ { allocate_gles_renderer_owner() }
     , renderer_ { shared_gles_renderer() }
+    , renderer_lifetime_ {
+        std::make_unique<GlesRendererOwner>(renderer_, renderer_owner_) }
     , command_encoder_ { renderer_->create_command_encoder() }
 {
     registry.register_call_gate(std::string { opengles_image },
@@ -238,6 +240,8 @@ void OpenGlesHle::reset()
     pending_program_target_.reset();
     program_renderer_.reset();
     renderer_owner_ = allocate_gles_renderer_owner();
+    renderer_lifetime_ =
+        std::make_unique<GlesRendererOwner>(renderer_, renderer_owner_);
     next_context_ = 0x00010001U;
     next_surface_ = 0x00020001U;
     egl_error_ = egl_success;
@@ -265,6 +269,8 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
     pending_program_target_.reset();
     program_renderer_.reset();
     renderer_owner_ = allocate_gles_renderer_owner();
+    renderer_lifetime_ =
+        std::make_unique<GlesRendererOwner>(renderer_, renderer_owner_);
     default_guest_capabilities_ = parent.default_guest_capabilities_;
     next_context_ = parent.next_context_;
     next_surface_ = parent.next_surface_;
@@ -274,17 +280,10 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
 
 void OpenGlesHle::release_renderer_resources()
 {
-    // Drain accepted jobs before releasing the Vulkan namespace. Backend
-    // destruction itself remains worker-owned. On admission/allocation failure
-    // leave native targets to final renderer shutdown rather than recycle keys
-    // that an accepted job may still use.
-    if (program_renderer_ && !program_renderer_->drain()) {
-        program_renderer_.reset();
-        return;
-    }
+    // Dropping publishers posts bounded worker maintenance. Accepted work keeps
+    // its snapshots/backend and the owner record's captured FIFO boundary.
     program_renderer_.reset();
-    if (renderer_owner_ != 0)
-        renderer_->release_owner(renderer_owner_);
+    renderer_lifetime_.reset();
 }
 
 void OpenGlesHle::set_display(std::shared_ptr<DisplayState> display)

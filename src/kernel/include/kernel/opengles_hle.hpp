@@ -29,6 +29,7 @@
 #include "graphics/gles_program_state.hpp"
 #include "graphics/gles_rasterizer.hpp"
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "graphics/gles_resources.hpp"
 #include "graphics/opengles_guest_capabilities.hpp"
 
@@ -405,6 +406,7 @@ private:
     std::size_t compatibility_surface_index_ { };
     std::uint64_t next_compatibility_surface_ { };
     std::shared_ptr<GlesRenderer> renderer_;
+    std::unique_ptr<GlesRendererOwner> renderer_lifetime_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     OpenGlesGuestCapabilitySet default_guest_capabilities_ {
         OpenGlesGuestCapabilitySet::MbxLiteLegacy

@@ -73,9 +73,10 @@ namespace {
             static_cast<void>(targets);
         }
 
-        void release_owner(std::uint64_t owner) override
+        bool release_owner(std::uint64_t owner) override
         {
             static_cast<void>(owner);
+            return true;
         }
 
         [[nodiscard]] std::string_view name() const override

@@ -104,6 +104,17 @@ void OpenGlesHle::cancel_pending_work()
 void OpenGlesHle::enter_graphics_call(
     UserlandHleCall& call, UserlandHleRegistry::Handler handler)
 {
+    if (!renderer_lifetime_->activate()) {
+        call.suspend_until(
+            [this] {
+                return renderer_lifetime_->active() ||
+                       GlesRendererOwner::capacity();
+            },
+            [this, handler = std::move(handler)](UserlandHleCall& resumed) {
+                enter_graphics_call(resumed, handler);
+            });
+        return;
+    }
     service_graphics_completions();
     if (sync_lease_ && !sync_lease_->consumed) {
         // Only calls touching this process's graphics stores depend on this

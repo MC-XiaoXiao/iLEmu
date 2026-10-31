@@ -159,9 +159,6 @@ public:
         GlesValueResult<std::optional<std::array<std::int32_t, 3>>>>
     enqueue_precision(std::uint32_t shader_type, std::uint32_t precision_type);
     void record_program(std::uint32_t program, bool present);
-    // Transitional process teardown barrier, not an API-call return path.
-    // Native owner retirement must be split before this can be removed.
-    [[nodiscard]] bool drain() noexcept;
     ~GlesProgramWorker();
     [[nodiscard]] bool contains(std::uint32_t program) const;
     class PreparedDraw;

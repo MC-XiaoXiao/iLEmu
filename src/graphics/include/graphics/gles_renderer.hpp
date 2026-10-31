@@ -109,7 +109,8 @@ public:
     // OpenGLES resource owner. The renderer is shared across guest processes,
     // so retiring only render targets would otherwise leave per-process
     // texture cache entries resident until the global LRU budget is reached.
-    virtual void release_owner(std::uint64_t owner) = 0;
+    // False retains ownership/quarantine credit until renderer shutdown.
+    [[nodiscard]] virtual bool release_owner(std::uint64_t owner) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
     [[nodiscard]] virtual bool accelerated() const = 0;
     // Native queue rendering also works with a CPU Vulkan ICD. Keep physical

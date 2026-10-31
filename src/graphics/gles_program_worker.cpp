@@ -4,8 +4,10 @@
 
 #include "graphics/gles_program_renderer.hpp"
 #include "graphics/gles_resources.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 
 #include <algorithm>
+#include <array>
 #include <condition_variable>
 #include <deque>
 #include <future>
@@ -50,6 +52,13 @@ namespace {
             if (release)
                 release();
         }
+    };
+
+    constexpr std::size_t owner_limit = GlesRendererOwner::maximum_namespaces;
+    struct RendererOwnerRecord {
+        std::shared_ptr<GlesRenderer> renderer;
+        std::uint64_t owner { }, through { };
+        bool retiring { }, failed { };
     };
 
     struct Backend {
@@ -215,6 +224,37 @@ namespace {
             return result;
         }
 
+        bool owner_capacity()
+        {
+            std::lock_guard lock { credits_->mutex };
+            return !stopping_ && owners_used_ < owner_limit;
+        }
+        bool retain_owner(const std::shared_ptr<RendererOwnerRecord>& owner)
+        {
+            std::lock_guard lock { credits_->mutex };
+            if (stopping_ || owners_used_ >= owner_limit)
+                return false;
+            const auto slot = std::ranges::find(owners_, nullptr);
+            *slot = owner;
+            ++owners_used_;
+            return true;
+        }
+        void request_owner_retirement(std::shared_ptr<RendererOwnerRecord> owner)
+        {
+            {
+                std::lock_guard lock { credits_->mutex };
+                // The single FIFO's completed_sequence_ is a continuous host
+                // execution prefix. Native release separately waits its actual
+                // GPU submission fence; host execution is not GPU completion.
+                owner->through = next_sequence_ - 1U;
+                owner->retiring = true;
+                ++owners_retiring_;
+                owner.reset();
+                maintenance_ = true;
+            }
+            available_.notify_one();
+        }
+
         // Only called on the render thread. Retention guarantees that even
         // allocation failure while publishing retirement cannot move an EGL
         // destructor to the core thread; final shutdown retires the remainder.
@@ -256,6 +296,7 @@ namespace {
                         const auto stop = stopping_;
                         lock.unlock();
                         retire_ready_backends();
+                        retire_ready_owners();
                         if (stop)
                             break;
                         continue;
@@ -274,10 +315,12 @@ namespace {
                     credits_->bytes -= command.bytes;
                 }
                 retire_ready_backends();
+                retire_ready_owners();
                 credits_->capacity.notify_all();
                 notify_completion();
             }
             backends_.clear();
+            owners_.fill(nullptr);
         }
 
         void retire_ready_backends()
@@ -291,6 +334,45 @@ namespace {
             });
         }
 
+        void retire_ready_owners()
+        {
+            // Slots stay reserved across the driver call, including failure.
+            // No registration/queue lock spans native release or a GPU wait.
+            for (std::size_t i = 0; i < owners_.size(); ++i) {
+                std::shared_ptr<RendererOwnerRecord> owner;
+                {
+                    std::lock_guard lock { credits_->mutex };
+                    if (owners_retiring_ == 0)
+                        return;
+                    const auto& entry = owners_[i];
+                    if (!entry || !entry->retiring || entry->failed ||
+                        completed_sequence_ < entry->through)
+                        continue;
+                    owner = entry;
+                }
+                bool released = false;
+                try {
+                    released = owner->renderer->release_owner(owner->owner);
+                } catch (...) {
+                }
+                {
+                    std::lock_guard lock { credits_->mutex };
+                    if (released) {
+                        owners_[i].reset();
+                        --owners_used_;
+                    } else {
+                        // Quarantine failed native namespaces until renderer
+                        // shutdown. Their budget cannot fund unbounded retries.
+                        owner->failed = true;
+                    }
+                    --owners_retiring_;
+                }
+                notify_completion();
+            }
+        }
+
+        std::array<std::shared_ptr<RendererOwnerRecord>, owner_limit> owners_;
+        std::size_t owners_used_ { }, owners_retiring_ { };
         std::shared_ptr<Credits> credits_ { std::make_shared<Credits>() };
         std::condition_variable available_;
         std::deque<Command> commands_;
@@ -453,6 +535,40 @@ namespace {
         return packet;
     }
 } // namespace
+
+struct GlesRendererOwner::State {
+    std::shared_ptr<RendererOwnerRecord> record;
+    std::shared_ptr<ProgramExecutor> executor;
+    bool active { };
+};
+
+GlesRendererOwner::GlesRendererOwner(
+    std::shared_ptr<GlesRenderer> renderer, std::uint64_t owner)
+    : state_ { std::make_unique<State>() }
+{
+    state_->record = std::make_shared<RendererOwnerRecord>();
+    state_->record->renderer = std::move(renderer);
+    state_->record->owner = owner;
+}
+
+GlesRendererOwner::~GlesRendererOwner()
+{
+    if (state_->active)
+        state_->executor->request_owner_retirement(std::move(state_->record));
+}
+
+bool GlesRendererOwner::activate()
+{
+    if (state_->active)
+        return true;
+    if (!state_->executor)
+        state_->executor = shared_executor();
+    state_->active = state_->executor->retain_owner(state_->record);
+    return state_->active;
+}
+
+bool GlesRendererOwner::active() const { return state_->active; }
+bool GlesRendererOwner::capacity() { return shared_executor()->owner_capacity(); }
 
 std::uint64_t gles_completion_generation()
 {
@@ -664,17 +780,6 @@ GlesProgramWorker::~GlesProgramWorker()
     state_->pending.clear();
     if (state_->published)
         state_->executor->request_retirement(std::move(state_->backend));
-}
-
-bool GlesProgramWorker::drain() noexcept
-{
-    try {
-        if (state_->published)
-            state_->executor->call([] { });
-        return true;
-    } catch (...) {
-        return false;
-    }
 }
 
 std::string_view GlesProgramWorker::name() const { return state_->name; }

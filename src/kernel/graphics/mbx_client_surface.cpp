@@ -107,7 +107,7 @@ void Mbx2dHle::release_retired_client_host_sources()
 void Mbx2dHle::release_client_renderer_resources()
 {
     if (renderer_owner_ != 0 && host_graphics_)
-        host_graphics_->release_owner(renderer_owner_);
+        static_cast<void>(host_graphics_->release_owner(renderer_owner_));
     retired_client_host_sources_.clear();
 }
 

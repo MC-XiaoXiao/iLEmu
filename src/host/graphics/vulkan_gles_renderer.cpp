@@ -41,6 +41,7 @@
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_primitive_assembler.hpp"
 #include "graphics/gles_resources.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "graphics/gles_sampler_state.hpp"
 #include "graphics/gles_texture_mip_chain.hpp"
 
@@ -355,7 +356,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             const ReadbackStamp& stamp) override;
         void invalidate(GlesRenderTargetKey target) override;
         void release(std::span<const GlesRenderTargetKey> targets) override;
-        void release_owner(std::uint64_t owner) override;
+        bool release_owner(std::uint64_t owner) override;
         [[nodiscard]] std::string_view name() const override
         {
             return renderer_name_;
@@ -526,6 +527,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::uint64_t last_draw_batch { };
         };
 
+        struct RetiredOwner {
+            std::uint64_t owner { };
+            VkDeviceSize bytes { };
+            std::map<GlesRenderTargetKey, Target> targets;
+            std::map<TextureKey, CachedTexture> textures;
+            std::shared_ptr<VulkanSubmissionFence> completion;
+        };
+
         struct CommandSlot {
             VkCommandBuffer command { };
             std::shared_ptr<VulkanSubmissionFence> fence;
@@ -685,6 +694,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         };
         std::uint64_t next_target_incarnation_ { 1 };
         std::map<GlesRenderTargetKey, Target> targets_;
+        std::vector<std::shared_ptr<RetiredOwner>> retired_owners_;
         std::vector<std::shared_ptr<ReadbackTransfer>> readbacks_;
         VkDeviceSize readback_bytes_ { };
         VkDeviceSize readback_source_bytes_ { };
@@ -1603,6 +1613,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             readbacks_.clear();
             readback_bytes_ = 0;
             readback_source_bytes_ = 0;
+            for (auto& owner : retired_owners_)
+                for (auto& [key, target] : owner->targets) {
+                    static_cast<void>(key);
+                    destroy_target_framebuffers(target);
+                }
+            retired_owners_.clear();
             destroy_presentation_swapchain();
             if (pipeline_cache_ != VK_NULL_HANDLE &&
                 !pipeline_cache_path_.empty()) {
@@ -2046,10 +2062,25 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         }
         const auto dimensions =
             std::pair { target.image.width, target.image.height };
+        // Allocate the pool node before transferring native handles. Failure
+        // merely disables reuse; it must not leak a framebuffer or corrupt the
+        // byte counter after an otherwise completed resource retirement.
+        decltype(target_pool_)::iterator pooled;
+        try {
+            pooled = target_pool_.emplace(dimensions, PooledTarget { });
+        } catch (...) {
+            destroy_target_framebuffers(target);
+            return;
+        }
+        const auto framebuffer = std::exchange(target.framebuffer, VK_NULL_HANDLE);
+        const auto stencil_framebuffer =
+            std::exchange(target.stencil_framebuffer, VK_NULL_HANDLE);
+        pooled->second.target = std::move(target);
+        pooled->second.target.framebuffer = framebuffer;
+        pooled->second.target.stencil_framebuffer = stencil_framebuffer;
+        pooled->second.allocation_size = allocation_size;
+        pooled->second.last_used = ++target_pool_use_sequence_;
         target_pool_bytes_ += allocation_size;
-        target_pool_.emplace(
-            dimensions, PooledTarget { std::move(target), allocation_size,
-                            ++target_pool_use_sequence_ });
         trim_target_pool();
     }
 
@@ -2118,6 +2149,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             static_cast<void>(key);
             add(target_allocation_size(target));
         }
+        for (const auto& owner : retired_owners_)
+            add(owner->bytes);
         for (auto transfer = readbacks_.begin(); transfer != readbacks_.end();
             ++transfer) {
             add((*transfer)->download.size);
@@ -2130,9 +2163,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 [&source](const auto& entry) {
                     return entry.second.target.image.allocation_owner == source;
                 });
+            const auto retiring = std::ranges::any_of(retired_owners_,
+                [&source](const auto& owner) {
+                    return std::ranges::any_of(owner->targets,
+                        [&source](const auto& entry) {
+                            return entry.second.image.allocation_owner == source;
+                        });
+                });
             const auto counted = std::any_of(readbacks_.begin(), transfer,
                 [&source](const auto& prior) { return prior->source == source; });
-            if (!active && !pooled && !counted)
+            if (!active && !pooled && !retiring && !counted)
                 add((*transfer)->source_bytes);
         }
         for (const auto& slot : command_slots_) {
@@ -3010,62 +3050,82 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         }
     }
 
-    void VulkanGlesRenderer::release_owner(std::uint64_t owner)
+    bool VulkanGlesRenderer::release_owner(std::uint64_t owner)
     {
         if (owner == 0)
-            return;
+            return true;
         const PerformanceLatencyScope latency {
             PerfLatencyKind::GlesTargetRelease
         };
-        std::lock_guard lock { mutex_ };
-        const auto owns_target = [owner](const auto& entry) {
+        std::unique_lock lock { mutex_ };
+        if (std::ranges::any_of(retired_owners_,
+                [owner](const auto& entry) { return entry->owner == owner; }))
+            return false;
+        const auto owns = [owner](const auto& entry) {
             return entry.first.owner == owner;
         };
-        const auto owns_texture = [owner](const auto& entry) {
-            return entry.first.owner == owner;
-        };
-        const auto has_target = std::ranges::any_of(targets_, owns_target);
-        const auto has_texture =
-            std::ranges::any_of(texture_cache_, owns_texture);
-        if (!has_target && !has_texture) {
-            return;
-        }
-        // Recorded descriptors and render passes can still reference both maps.
-        // Submit once and wait once before retiring the complete process batch.
+        if (!std::ranges::any_of(targets_, owns) &&
+            !std::ranges::any_of(texture_cache_, owns))
+            return true;
+        if (retired_owners_.size() >= GlesRendererOwner::maximum_namespaces)
+            return false;
+
+        std::shared_ptr<RetiredOwner> retired;
         try {
-            if (command_recording_)
-                submit_commands(false, PerfSubmitReason::ResourceLifetime);
-            wait_for_all_slots();
+            retired = std::make_shared<RetiredOwner>();
+            retired->owner = owner;
+            // Install retention before submission or detachment. A failed wait
+            // keeps the real native resources, not just their old names.
+            retired_owners_.push_back(retired);
+            submit_commands(false, PerfSubmitReason::ResourceLifetime);
+            retired->completion = last_submission_;
+            const auto add_bytes = [&retired](VkDeviceSize bytes) {
+                constexpr auto maximum =
+                    std::numeric_limits<VkDeviceSize>::max();
+                retired->bytes = bytes > maximum - retired->bytes
+                                     ? maximum
+                                     : retired->bytes + bytes;
+            };
+            for (auto entry = targets_.begin(); entry != targets_.end();) {
+                if (entry->first.owner != owner) {
+                    ++entry;
+                    continue;
+                }
+                add_bytes(target_allocation_size(entry->second));
+                retired->targets.insert(targets_.extract(entry++));
+            }
+            for (auto entry = texture_cache_.begin();
+                entry != texture_cache_.end();) {
+                if (entry->first.owner != owner) {
+                    ++entry;
+                    continue;
+                }
+                const auto bytes = entry->second.image.allocation_size;
+                add_bytes(bytes);
+                texture_cache_bytes_ -= std::min(texture_cache_bytes_, bytes);
+                retired->textures.insert(texture_cache_.extract(entry++));
+            }
+            lock.unlock();
+            if (retired->completion)
+                require_success(
+                    retired->completion->wait(fence_timeout_nanoseconds),
+                    "vkWaitForFences(owner retirement)");
+            lock.lock();
+            for (auto& [key, target] : retired->targets) {
+                static_cast<void>(key);
+                pool_target(std::move(target));
+            }
+            retired->targets.clear();
+            retired->textures.clear();
+            std::erase(retired_owners_, retired);
+            return true;
         } catch (...) {
-            // Resource release is reached from process teardown and OpenGLES
-            // reset paths, both of which are noexcept from the guest's point of
-            // view. Leave the owner entries for the renderer-wide destructor
-            // after recording has been discarded rather than terminating the
-            // emulator while unwinding an exiting task.
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
-            static_cast<void>(vkDeviceWaitIdle(device_));
-            discard_commands();
-            return;
-        }
-        for (auto target = targets_.begin(); target != targets_.end();) {
-            if (target->first.owner != owner) {
-                ++target;
-                continue;
-            }
-            auto retired = std::move(target->second);
-            target = targets_.erase(target);
-            pool_target(std::move(retired));
-        }
-        for (auto texture = texture_cache_.begin();
-            texture != texture_cache_.end();) {
-            if (texture->first.owner != owner) {
-                ++texture;
-                continue;
-            }
-            texture_cache_bytes_ -= std::min(
-                texture_cache_bytes_, texture->second.image.allocation_size);
-            texture = texture_cache_.erase(texture);
+            // The installed record or original maps retain resources on every
+            // failure. Do not reset later commands, wait idle under the mutex,
+            // recycle names, or release the caller's quarantine credit.
+            return false;
         }
     }
 
