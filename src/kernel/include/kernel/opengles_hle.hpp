@@ -331,6 +331,12 @@ private:
         bool inverted, std::uint32_t alignment);
     [[nodiscard]] bool binding_live(const RenderTargetBinding& binding) const;
     using SyncLease = GraphicsCallLease;
+    struct TextureDeletion;
+    void delete_names(UserlandHleCall& call);
+    void commit_texture_deletion(std::span<const std::uint32_t> names);
+    void await_texture_deletion(UserlandHleCall& call,
+        std::shared_ptr<TextureDeletion> deletion,
+        std::shared_ptr<SyncLease> lease);
     std::shared_ptr<SyncLease> sync_lease_;
     using ProgramCompletion = std::function<void(UserlandHleCall&, bool)>;
     [[nodiscard]] std::shared_ptr<SyncLease> program_wait(

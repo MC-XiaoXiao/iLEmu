@@ -3275,75 +3275,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                             : context->bound_element_array_buffer;
         binding = call.argument(1);
     });
-    const auto delete_names = [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
-            return;
-        const auto signed_count = static_cast<std::int32_t>(call.argument(0));
-        const auto input = call.argument(1);
-        if (current_context(call) == nullptr) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        if (signed_count < 0 || (signed_count != 0 && input == 0)) {
-            set_gl_error(call, gles_abi::invalid_value);
-            return;
-        }
-        const auto texture_names = call.symbol() == "_glDeleteTextures";
-        const auto count = static_cast<std::uint32_t>(signed_count);
-        for (std::uint32_t index = 0; index < count; ++index) {
-            const auto name = call.memory().read32(input + index * 4U);
-            if (!name) {
-                set_gl_error(call, gl_invalid_value);
-                break;
-            }
-            if (texture_names) {
-                std::vector<GlesRenderTargetKey> render_targets;
-                if (const auto* texture = resources_.texture(*name)) {
-                    for (const auto& [level_index, level] : texture->levels) {
-                        static_cast<void>(level_index);
-                        if (!level.surface_id && level.host_surface &&
-                            level.host_surface->key().owner ==
-                                renderer_owner_) {
-                            render_targets.push_back(level.host_surface->key());
-                        }
-                    }
-                }
-                if (!render_targets.empty())
-                    renderer_->release(render_targets);
-                resources_.erase_texture(*name);
-                for (auto& [context_name, context] : contexts_) {
-                    static_cast<void>(context_name);
-                    for (auto& unit : context.texture_units) {
-                        if (unit.bound_texture_2d == *name) {
-                            unit.bound_texture_2d = 0;
-                        }
-                        if (unit.bound_texture_rectangle == *name) {
-                            unit.bound_texture_rectangle = 0;
-                        }
-                    }
-                    for (auto& [framebuffer_name, framebuffer] :
-                        context.framebuffers) {
-                        static_cast<void>(framebuffer_name);
-                        if (framebuffer.color_texture == *name)
-                            framebuffer.color_texture = 0U;
-                    }
-                }
-            } else {
-                resources_.erase_buffer(*name);
-                for (auto& [context_name, context] : contexts_) {
-                    static_cast<void>(context_name);
-                    if (context.bound_array_buffer == *name) {
-                        context.bound_array_buffer = 0;
-                    }
-                    if (context.bound_element_array_buffer == *name) {
-                        context.bound_element_array_buffer = 0;
-                    }
-                }
-            }
-        }
-    };
-    add("_glDeleteTextures", delete_names);
-    add("_glDeleteBuffers", delete_names);
+    add("_glDeleteTextures",
+        [this](UserlandHleCall& call) { delete_names(call); });
+    add("_glDeleteBuffers",
+        [this](UserlandHleCall& call) { delete_names(call); });
     add("_glPixelStorei", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
         if (context == nullptr) {
