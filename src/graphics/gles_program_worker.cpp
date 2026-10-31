@@ -230,6 +230,11 @@ namespace {
             std::lock_guard lock { credits_->mutex };
             return !stopping_ && owners_used_ < owner_limit;
         }
+        bool owner_retirement_pending()
+        {
+            std::lock_guard lock { credits_->mutex };
+            return !stopping_ && owners_retiring_ != 0;
+        }
         bool retain_owner(const std::shared_ptr<RendererOwnerRecord>& owner)
         {
             std::lock_guard lock { credits_->mutex };
@@ -574,6 +579,11 @@ bool GlesRendererOwner::active() const { return state_->active; }
 bool GlesRendererOwner::capacity()
 {
     return shared_executor()->owner_capacity();
+}
+
+bool GlesRendererOwner::retirement_pending()
+{
+    return shared_executor()->owner_retirement_pending();
 }
 
 std::uint64_t gles_completion_generation()

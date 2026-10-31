@@ -80,7 +80,7 @@ namespace {
     constexpr std::uint32_t egl_pbuffer_bit = 0x0001;
     constexpr std::uint32_t egl_pixmap_bit = 0x0002;
     constexpr std::uint32_t egl_opengl_es_bit = 0x0001;
-    constexpr std::uint64_t texture_render_target_namespace = 1ULL << 32U;
+    constexpr std::uint64_t texture_render_target_namespace = 1ULL << 63U;
     constexpr std::uint64_t compatibility_surface_namespace = 2ULL << 32U;
     constexpr std::size_t compatibility_surface_ring_size = 4;
 
@@ -195,7 +195,7 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
     , renderer_owner_ { allocate_gles_renderer_owner() }
     , renderer_ { shared_gles_renderer() }
     , renderer_lifetime_ {
-        std::make_unique<GlesRendererOwner>(renderer_, renderer_owner_) }
+        std::make_shared<GlesRendererOwner>(renderer_, renderer_owner_) }
     , command_encoder_ { renderer_->create_command_encoder() }
 {
     registry.register_call_gate(std::string { opengles_image },
@@ -242,7 +242,7 @@ void OpenGlesHle::reset()
     program_renderer_.reset();
     renderer_owner_ = allocate_gles_renderer_owner();
     renderer_lifetime_ =
-        std::make_unique<GlesRendererOwner>(renderer_, renderer_owner_);
+        std::make_shared<GlesRendererOwner>(renderer_, renderer_owner_);
     next_context_ = 0x00010001U;
     next_surface_ = 0x00020001U;
     egl_error_ = egl_success;
@@ -271,7 +271,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
     program_renderer_.reset();
     renderer_owner_ = allocate_gles_renderer_owner();
     renderer_lifetime_ =
-        std::make_unique<GlesRendererOwner>(renderer_, renderer_owner_);
+        std::make_shared<GlesRendererOwner>(renderer_, renderer_owner_);
     default_guest_capabilities_ = parent.default_guest_capabilities_;
     next_context_ = parent.next_context_;
     next_surface_ = parent.next_surface_;
@@ -764,8 +764,8 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
                 level->render_target_inverted_vertical };
         }
         auto host_surface =
-            resources_.ensure_texture_render_target(texture, 0U, *renderer_,
-                renderer_owner_, texture_render_target_namespace | texture);
+            resources_.ensure_texture_render_target(texture, 0U, renderer_,
+                renderer_lifetime_, renderer_owner_, texture_render_target_namespace);
         if (!host_surface)
             return std::nullopt;
         const auto renderbuffer =
@@ -3312,6 +3312,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 texture->levels.find(static_cast<std::uint32_t>(level));
             if (previous != texture->levels.end() &&
                 !previous->second.surface_id && previous->second.host_surface &&
+                !previous->second.native_lifetime &&
                 previous->second.host_surface->key().owner == renderer_owner_) {
                 previous_render_target = previous->second.host_surface->key();
             }
@@ -3367,6 +3368,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 texture->levels.find(static_cast<std::uint32_t>(level));
             if (previous != texture->levels.end() &&
                 !previous->second.surface_id && previous->second.host_surface &&
+                !previous->second.native_lifetime &&
                 previous->second.host_surface->key().owner == renderer_owner_) {
                 previous_render_target = previous->second.host_surface->key();
             }

@@ -288,6 +288,7 @@ private:
     [[nodiscard]] bool attach_eagl_window_surface(UserlandHleCall& call,
         ContextState& context, std::uint32_t renderbuffer, std::uint32_t window,
         std::uint32_t surface);
+    [[nodiscard]] bool needs_target_allocation(UserlandHleCall& call);
     [[nodiscard]] std::optional<RenderTargetBinding> resolve_render_target(
         UserlandHleCall& call, ContextState& context);
     [[nodiscard]] GlesRenderTargetKey render_target_key(
@@ -415,7 +416,7 @@ private:
     std::size_t compatibility_surface_index_ { };
     std::uint64_t next_compatibility_surface_ { };
     std::shared_ptr<GlesRenderer> renderer_;
-    std::unique_ptr<GlesRendererOwner> renderer_lifetime_;
+    std::shared_ptr<GlesRendererOwner> renderer_lifetime_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     OpenGlesGuestCapabilitySet default_guest_capabilities_ {
         OpenGlesGuestCapabilitySet::MbxLiteLegacy

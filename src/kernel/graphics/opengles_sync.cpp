@@ -130,6 +130,48 @@ void OpenGlesHle::enter_graphics_call(
     await_graphics_call(call, std::move(handler));
 }
 
+bool OpenGlesHle::needs_target_allocation(UserlandHleCall& call)
+{
+    const auto symbol = call.symbol();
+    const auto present = symbol == "-[EAGLContext presentRenderbuffer:]";
+    if (!present && symbol != "_glClear" && symbol != "_glDrawArrays" &&
+        symbol != "_glDrawElements" && symbol != "_glReadPixels" &&
+        symbol != "_glFinish" && symbol != "_glFlush")
+        return false;
+    const auto* context = present ? eagl_context(call) : current_context(call);
+    if (!context)
+        return false;
+    auto framebuffer = context->framebuffers.find(context->bound_framebuffer);
+    if (present) {
+        if (call.argument(2) != gles_abi::renderbuffer ||
+            !context->bound_renderbuffer)
+            return false;
+        const auto attached = std::find_if(context->framebuffers.begin(),
+            context->framebuffers.end(), [context](const auto& entry) {
+                return entry.second.color_renderbuffer ==
+                       context->bound_renderbuffer;
+            });
+        if (attached != context->framebuffers.end())
+            framebuffer = attached;
+    }
+    if (framebuffer == context->framebuffers.end())
+        return false;
+    const auto* texture = resources_.texture(framebuffer->second.color_texture);
+    if (!texture)
+        return false;
+    const auto found = texture->levels.find(0U);
+    if (found == texture->levels.end())
+        return false;
+    const auto& image = found->second;
+    if (image.surface_id || !image.width || !image.height ||
+        image.argb.size() != static_cast<std::uint64_t>(image.width) * image.height)
+        return false;
+    return !image.host_surface || !image.native_lifetime ||
+           image.host_surface->key().owner != renderer_owner_ ||
+           image.host_surface->descriptor().width != image.width ||
+           image.host_surface->descriptor().height != image.height;
+}
+
 void OpenGlesHle::await_graphics_call(
     UserlandHleCall& call, UserlandHleRegistry::Handler handler)
 {
@@ -157,6 +199,23 @@ void OpenGlesHle::await_graphics_call(
         return;
     }
     sync_lease_.reset();
+    if (!GlesRendererOwner::capacity() && GlesRendererOwner::retirement_pending() &&
+        needs_target_allocation(call)) {
+        // No native target or handler effect has been accepted. Hold the
+        // existing store gate while already retired GPU resources are reclaimed.
+        // Deletion/binding/query calls do not need this creation credit.
+        const auto lease = program_wait(call);
+        call.suspend_until(
+            [] {
+                return GlesRendererOwner::capacity() ||
+                       !GlesRendererOwner::retirement_pending();
+            },
+            [this, lease, handler = std::move(handler)](UserlandHleCall& resumed) {
+                lease->consume();
+                await_graphics_call(resumed, handler);
+            });
+        return;
+    }
     if (call.symbol() == "_glGetError" && program_renderer_ &&
         !program_renderer_->issuer_ready(call.cpu().processor_id())) {
         const auto issuer = call.cpu().processor_id();
@@ -226,7 +285,9 @@ void OpenGlesHle::await_program_flush(
                 pending_program_target_.reset();
             lease->consume();
             if (committed)
-                handler(resumed);
+                // Other tasks may have consumed target capacity during the
+                // readback. The completed target is already removed above.
+                await_graphics_call(resumed, handler);
             else
                 fail_program_flush(
                     resumed, handler, gles_abi::invalid_operation);

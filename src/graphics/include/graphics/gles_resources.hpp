@@ -22,6 +22,9 @@ namespace ilemu {
 
 class AddressSpace;
 class HostGraphicsDevice;
+class GlesRenderer;
+class GlesRendererOwner;
+class GlesTextureTarget;
 class HostSurface;
 class SurfaceStore;
 
@@ -39,6 +42,9 @@ public:
         bool render_target_inverted_vertical { };
         // Generation represented by argb, independently of the native image.
         std::uint64_t argb_generation { };
+        // A copied/forked texture retains its exact native incarnation until
+        // its last logical or pending host user releases it.
+        std::shared_ptr<GlesTextureTarget> native_lifetime { };
     };
     struct Texture {
         std::uint32_t name { };
@@ -95,8 +101,10 @@ public:
     [[nodiscard]] std::uint32_t refresh_surface_texture(
         AddressSpace& memory, std::uint32_t name, const SurfaceStore& surfaces);
     [[nodiscard]] std::shared_ptr<HostSurface> ensure_texture_render_target(
-        std::uint32_t name, std::uint32_t level, HostGraphicsDevice& graphics,
-        std::uint64_t owner, std::uint64_t surface);
+        std::uint32_t name, std::uint32_t level,
+        std::shared_ptr<GlesRenderer> renderer,
+        std::shared_ptr<GlesRendererOwner> lifetime,
+        std::uint64_t owner, std::uint64_t target_namespace);
     [[nodiscard]] bool commit_texture_render_target(std::uint32_t name,
         std::uint32_t level, std::span<const std::uint32_t> pixels);
     void update_texture_render_target_generation(

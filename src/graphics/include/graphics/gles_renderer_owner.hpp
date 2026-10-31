@@ -29,6 +29,8 @@ public:
     [[nodiscard]] bool activate();
     [[nodiscard]] bool active() const;
     [[nodiscard]] static bool capacity();
+    // Distinguish temporary reclamation pressure from a fully live budget.
+    [[nodiscard]] static bool retirement_pending();
 
 private:
     struct State;

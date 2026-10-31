@@ -18,10 +18,28 @@
 
 #include "foundation/address_space.hpp"
 #include "graphics/gles_abi.hpp"
+#include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "graphics/host_graphics.hpp"
 #include "graphics/surface_store.hpp"
 
 namespace ilemu {
+// Both retirements use the existing bounded owner lane. Retain the process
+// owner while any image survives; renderer caches retain neither owner.
+class GlesTextureTarget {
+public:
+    GlesTextureTarget(std::shared_ptr<GlesRenderer> renderer,
+        std::shared_ptr<GlesRendererOwner> owner, HostSurfaceKey key)
+        : owner_ { std::move(owner) }, target_ { std::move(renderer), key }
+    {
+    }
+    [[nodiscard]] bool activate() { return target_.activate(); }
+
+private:
+    std::shared_ptr<GlesRendererOwner> owner_;
+    GlesRendererOwner target_;
+};
+
 namespace {
 
     struct PixelLayout {
@@ -796,6 +814,7 @@ GlesResourceStore GlesResourceStore::snapshot_textures(
         for (auto& [level, image] : copied.levels) {
             static_cast<void>(level);
             image.host_surface.reset();
+            image.native_lifetime.reset();
             image.surface_id.reset();
         }
     }
@@ -1042,11 +1061,13 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
 }
 
 std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
-    std::uint32_t name, std::uint32_t level_index, HostGraphicsDevice& graphics,
-    std::uint64_t owner, std::uint64_t surface)
+    std::uint32_t name, std::uint32_t level_index,
+    std::shared_ptr<GlesRenderer> renderer,
+    std::shared_ptr<GlesRendererOwner> lifetime,
+    std::uint64_t owner, std::uint64_t target_namespace)
 {
     auto texture = textures_.find(name);
-    if (name == 0U || texture == textures_.end())
+    if (!renderer || !lifetime || name == 0U || texture == textures_.end())
         return nullptr;
     auto level = texture->second.levels.find(level_index);
     if (level == texture->second.levels.end() || level->second.width == 0U ||
@@ -1056,18 +1077,30 @@ std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
                 level->second.height) {
         return nullptr;
     }
-    const auto key = HostSurfaceKey { owner, surface };
     const auto descriptor = HostSurfaceDescriptor { level->second.width,
         level->second.height, level->second.width * 4U,
         surface_pixel_format_bgra, PerfSurfaceKind::GlesRenderTarget };
     if (!level->second.host_surface ||
-        level->second.host_surface->key() != key ||
+        level->second.host_surface->key().owner != owner ||
+        !level->second.native_lifetime ||
         level->second.host_surface->descriptor().width != descriptor.width ||
         level->second.host_surface->descriptor().height != descriptor.height) {
-        level->second.host_surface =
-            graphics.create_surface(key, descriptor, level->second.argb);
-        if (!level->second.host_surface)
+        // Names may be reused while another fork or host packet still owns
+        // the old image. Reserve a new identity from the existing revision
+        // sequence rather than deriving physical identity from the GL name.
+        const auto identity = allocate_texture_revision();
+        if (identity >= target_namespace)
             return nullptr;
+        const auto key = HostSurfaceKey { owner, target_namespace | identity };
+        auto native = std::make_shared<GlesTextureTarget>(
+            renderer, std::move(lifetime), key);
+        if (!native->activate())
+            return nullptr;
+        auto surface = renderer->create_surface(key, descriptor, level->second.argb);
+        if (!surface)
+            return nullptr;
+        level->second.host_surface = std::move(surface);
+        level->second.native_lifetime = std::move(native);
         level->second.host_generation =
             level->second.host_surface->cpu_generation();
         level->second.argb_generation = level->second.host_generation;

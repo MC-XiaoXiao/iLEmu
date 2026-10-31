@@ -94,6 +94,7 @@ void OpenGlesHle::delete_names(UserlandHleCall& call)
             for (const auto& [level_index, level] : texture->levels) {
                 static_cast<void>(level_index);
                 if (!level.surface_id && level.host_surface &&
+                    !level.native_lifetime &&
                     level.host_surface->key().owner == renderer_owner_)
                     visit(level.host_surface->key());
             }
