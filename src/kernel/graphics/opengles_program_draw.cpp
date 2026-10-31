@@ -201,17 +201,6 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
             return;
         }
         frame = *refreshed;
-        if (binding.host_surface) {
-            if (!renderer_->map_cpu(*binding.host_surface, true)) {
-                set_gl_error(call, gles_abi::invalid_operation);
-                return;
-            }
-            auto mapping = binding.host_surface->map_cpu(false);
-            frame = mapping.frame();
-        } else if (!renderer_->synchronize(frame, binding.key)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
     }
     if (!resources_.materialize_surface_textures(*renderer_, draw.textures)) {
         set_gl_error(call, gles_abi::invalid_operation);
@@ -222,7 +211,8 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     std::size_t bytes = 0;
     try {
         prepared = program_renderer_->prepare_draw(frame, binding.key, draw,
-            mode, state, call.cpu().processor_id(), bytes);
+            mode, state, call.cpu().processor_id(), bytes,
+            !pending_program_target_);
     } catch (const std::bad_alloc&) {
         set_gl_error(call, gles_abi::out_of_memory);
         return;
@@ -246,8 +236,62 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
             });
         return;
     }
-    submit_program_draw(
-        call, binding, { frame.width, frame.height }, std::move(prepared));
+    const DisplayGeometry dimensions { frame.width, frame.height };
+    if (!pending_program_target_) {
+        prepare_program_target(call, binding, dimensions, std::move(prepared));
+        return;
+    }
+    submit_program_draw(call, binding, dimensions, std::move(prepared));
+}
+
+void OpenGlesHle::prepare_program_target(UserlandHleCall& call,
+    const RenderTargetBinding& binding, DisplayGeometry dimensions,
+    std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared)
+{
+    const auto lease = program_wait(call);
+    if (!program_renderer_ || !binding_live(binding)) {
+        lease->consume();
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    std::shared_ptr<GlesWorkResult> result;
+    try {
+        result = program_renderer_->enqueue_target_readback(
+            prepared, renderer_, binding.host_surface);
+    } catch (const std::bad_alloc&) {
+        lease->consume();
+        set_gl_error(call, gles_abi::out_of_memory);
+        return;
+    } catch (...) {
+        lease->consume();
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    if (!result) {
+        call.suspend_until(
+            [this, prepared] {
+                return !program_renderer_ ||
+                       program_renderer_->draw_capacity(prepared);
+            },
+            [this, binding, dimensions, prepared](UserlandHleCall& resumed) {
+                prepare_program_target(resumed, binding, dimensions, prepared);
+            });
+        return;
+    }
+    lease->result = result;
+    call.suspend_until([result] { return result->ready(); },
+        [this, binding, dimensions, prepared, result, lease](
+            UserlandHleCall& resumed) {
+            if (!result->succeeded()) {
+                lease->consume();
+                set_gl_error(resumed, gles_abi::invalid_operation);
+                return;
+            }
+            // Keep the process graphics gate until draw admission. The packet
+            // already owns attributes/uniforms/textures; do not replay draw().
+            submit_program_draw(resumed, binding, dimensions, prepared);
+        },
+        result->sequence);
 }
 
 void OpenGlesHle::submit_program_draw(UserlandHleCall& call,

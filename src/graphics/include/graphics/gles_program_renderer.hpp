@@ -168,7 +168,13 @@ public:
         const DisplayFrame& frame, GlesRenderTargetKey target,
         const GlesProgramDraw& program, std::uint32_t mode,
         const GlesRasterState& state, std::size_t issuer,
-        std::size_t& payload_bytes);
+        std::size_t& payload_bytes, bool read_target = false);
+    // Completes the frozen packet's target pixels on the host worker. Repeated
+    // admission returns the same ticket; no guest references cross this API.
+    [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_target_readback(
+        const std::shared_ptr<PreparedDraw>& draw,
+        std::shared_ptr<GlesRenderer> renderer,
+        std::shared_ptr<HostSurface> surface);
     [[nodiscard]] bool draw_capacity(
         const std::shared_ptr<PreparedDraw>& draw) const;
     // Null means retry admission; an accepted prepared draw always returns its

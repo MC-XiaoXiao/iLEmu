@@ -3,8 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #include "graphics/gles_program_renderer.hpp"
-#include "graphics/gles_resources.hpp"
 #include "graphics/gles_renderer_owner.hpp"
+#include "graphics/gles_resources.hpp"
 
 #include <algorithm>
 #include <array>
@@ -239,7 +239,8 @@ namespace {
             ++owners_used_;
             return true;
         }
-        void request_owner_retirement(std::shared_ptr<RendererOwnerRecord> owner)
+        void request_owner_retirement(
+            std::shared_ptr<RendererOwnerRecord> owner)
         {
             {
                 std::lock_guard lock { credits_->mutex };
@@ -444,7 +445,8 @@ namespace {
     // snapshot allocation. One producer preparation packet can coexist with
     // the bounded queued/running set; neither can grow without a fixed limit.
     std::size_t payload_bytes(const DisplayFrame& frame,
-        const GlesProgramDraw& draw, const GlesRasterState& raster)
+        const GlesProgramDraw& draw, const GlesRasterState& raster,
+        bool read_target)
     {
         std::size_t bytes = sizeof(DrawPacket);
         const auto add = [&](std::size_t size, std::size_t count = 1) {
@@ -452,7 +454,21 @@ namespace {
                 throw std::length_error { "GLES draw snapshot exceeds 64 MiB" };
             bytes += size * count;
         };
-        add(sizeof(std::uint32_t), frame.pixels.size());
+        if (read_target) {
+            // Retained output plus the worker's temporary readback frame. An
+            // accelerated input frame can carry dimensions with no CPU pixels.
+            const auto pixels =
+                static_cast<std::uint64_t>(frame.width) * frame.height;
+            if (pixels > payload_limit / (2U * sizeof(std::uint32_t)))
+                throw std::length_error {
+                    "GLES target readback exceeds 64 MiB"
+                };
+            add(sizeof(std::uint32_t), std::max(frame.pixels.size(),
+                                           static_cast<std::size_t>(pixels)));
+            add(sizeof(std::uint32_t), static_cast<std::size_t>(pixels));
+        } else {
+            add(sizeof(std::uint32_t), frame.pixels.size());
+        }
         add(sizeof(std::uint16_t), draw.indices.size());
         for (const auto& attribute : draw.attributes) {
             add(sizeof(attribute));
@@ -484,7 +500,7 @@ namespace {
         return bytes;
     }
 
-    std::shared_ptr<const DrawPacket> snapshot(const DisplayFrame& frame,
+    std::shared_ptr<DrawPacket> snapshot(const DisplayFrame& frame,
         GlesRenderTargetKey target, const GlesProgramDraw& draw,
         std::uint32_t mode, const GlesRasterState& raster,
         std::shared_ptr<PayloadCredit> credit)
@@ -492,8 +508,9 @@ namespace {
         auto packet = std::make_shared<DrawPacket>();
         packet->credit = std::move(credit);
         // Do not copy DisplayFrame readers, native surfaces or presentation
-        // leases: EGL consumes only dimensions and the already materialized CPU
-        // pixels. Keep all guest/presentation callbacks on their original side.
+        // leases: EGL consumes dimensions and owned CPU pixels. A separately
+        // accepted target readback can fill this frame before draw admission.
+        // Keep guest/presentation callbacks on their original side.
         packet->frame.width = frame.width;
         packet->frame.height = frame.height;
         packet->frame.pixels = frame.pixels;
@@ -568,7 +585,10 @@ bool GlesRendererOwner::activate()
 }
 
 bool GlesRendererOwner::active() const { return state_->active; }
-bool GlesRendererOwner::capacity() { return shared_executor()->owner_capacity(); }
+bool GlesRendererOwner::capacity()
+{
+    return shared_executor()->owner_capacity();
+}
 
 std::uint64_t gles_completion_generation()
 {
@@ -617,7 +637,9 @@ std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
 class GlesProgramWorker::PreparedDraw {
     friend class GlesProgramWorker;
     std::weak_ptr<Backend> backend;
-    std::shared_ptr<const DrawPacket> packet;
+    std::shared_ptr<DrawPacket> packet;
+    std::shared_ptr<GlesWorkResult> target_readback;
+    bool read_target { };
     std::size_t bytes { }, issuer { };
     std::uint64_t epoch { };
     std::shared_ptr<GlesWorkResult> accepted;
@@ -790,11 +812,12 @@ bool GlesProgramWorker::contains(std::uint32_t program) const
 std::shared_ptr<GlesProgramWorker::PreparedDraw>
 GlesProgramWorker::prepare_draw(const DisplayFrame& frame,
     GlesRenderTargetKey target, const GlesProgramDraw& draw, std::uint32_t mode,
-    const GlesRasterState& raster, std::size_t issuer, std::size_t& bytes)
+    const GlesRasterState& raster, std::size_t issuer, std::size_t& bytes,
+    bool read_target)
 {
     if (!draw.state)
         throw std::invalid_argument { "GLES draw has no uniform state" };
-    bytes = payload_bytes(frame, draw, raster);
+    bytes = payload_bytes(frame, draw, raster, read_target);
     auto credit = state_->executor->reserve_preparation(bytes);
     if (!credit)
         return { };
@@ -803,9 +826,44 @@ GlesProgramWorker::prepare_draw(const DisplayFrame& frame,
     prepared->issuer = issuer;
     prepared->epoch = state_->epochs[issuer];
     prepared->bytes = bytes;
+    prepared->read_target = read_target;
     prepared->packet =
         snapshot(frame, target, draw, mode, raster, std::move(credit));
     return prepared;
+}
+
+std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_target_readback(
+    const std::shared_ptr<PreparedDraw>& draw,
+    std::shared_ptr<GlesRenderer> renderer,
+    std::shared_ptr<HostSurface> surface)
+{
+    if (draw->target_readback)
+        return draw->target_readback;
+    const auto epoch = state_->epochs.find(draw->issuer);
+    if (!draw->read_target || !renderer ||
+        (surface && surface->key() != draw->packet->target) ||
+        draw->backend.lock() != state_->backend ||
+        epoch == state_->epochs.end() || epoch->second != draw->epoch)
+        throw std::invalid_argument { "stale GLES target preparation" };
+    auto result = state_->executor->submit_host(
+        0,
+        [packet = draw->packet, renderer = std::move(renderer),
+            surface = std::move(surface)](DisplayFrame&) {
+            const auto width = packet->frame.width;
+            const auto height = packet->frame.height;
+            auto frame = std::move(packet->frame);
+            const auto read =
+                surface ? renderer->read_surface(*surface, frame)
+                        : renderer->synchronize(frame, packet->target);
+            if (!read || frame.width != width || frame.height != height ||
+                frame.pixels.size() != static_cast<std::size_t>(width) * height)
+                return false;
+            packet->frame = std::move(frame);
+            return true;
+        },
+        draw->bytes);
+    draw->target_readback = result;
+    return result;
 }
 
 bool GlesProgramWorker::draw_capacity(
@@ -831,6 +889,10 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_draw(
     if (draw->backend.lock() != state_->backend ||
         epoch == state_->epochs.end() || epoch->second != draw->epoch)
         throw std::invalid_argument { "stale GLES prepared draw" };
+    if (draw->read_target &&
+        (!draw->target_readback || !draw->target_readback->ready() ||
+            !draw->target_readback->succeeded()))
+        throw std::invalid_argument { "GLES target preparation incomplete" };
     state_->reap();
     // Allocate observer storage before publication, including the null-capacity
     // case. Nothing after successful admission allocates or can lose the job.

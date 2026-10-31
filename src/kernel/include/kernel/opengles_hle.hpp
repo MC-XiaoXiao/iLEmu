@@ -310,6 +310,9 @@ private:
         const RenderTargetBinding& binding, DisplayFrame frame,
         const GlesProgramDraw& draw, std::uint32_t mode,
         const GlesRasterState& state, bool indexed);
+    void prepare_program_target(UserlandHleCall& call,
+        const RenderTargetBinding& binding, DisplayGeometry dimensions,
+        std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared);
     void submit_program_draw(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayGeometry dimensions,
         std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared);
