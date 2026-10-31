@@ -366,9 +366,9 @@ public:
     {
         audio_service_->set_decoder(std::move(decoder));
     }
-    [[nodiscard]] DisplayFrame display_snapshot() const
+    [[nodiscard]] DisplayFrame capture_display_frame() const
     {
-        return display_state_->snapshot();
+        return display_state_->capture_frame();
     }
     [[nodiscard]] std::uint64_t display_submitted_frames() const
     {

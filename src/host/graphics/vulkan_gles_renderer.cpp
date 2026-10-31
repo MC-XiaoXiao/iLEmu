@@ -2940,7 +2940,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         if (stamp.renderer != renderer_incarnation_)
             return;
-        std::lock_guard lock { mutex_ };
+        // This is advisory cache/dirty bookkeeping, including core result
+        // consumption. Do not wait behind legacy driver work holding this
+        // mutex across a GPU slot wait; retaining dirty is safe and retryable.
+        std::unique_lock lock { mutex_, std::try_to_lock };
+        if (!lock.owns_lock())
+            return;
         const auto found = targets_.find(target);
         if (found != targets_.end() &&
             found->second.incarnation == stamp.target &&

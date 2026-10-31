@@ -27,6 +27,7 @@
 #include "session_catalog.hpp"
 #include "session_debugger.hpp"
 #include "session_diagnostics.hpp"
+#include "session_snapshots.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2188,6 +2189,8 @@ void EmulatorSession::run()
     std::vector<
         std::pair<std::chrono::steady_clock::time_point, std::filesystem::path>>
         scheduled_snapshots;
+    SessionSnapshots snapshots { gles_renderer, output };
+    bool quit_after_snapshots = false;
     enum class HostDeadlineSource : std::uint8_t {
         TouchReplay,
         LiveButton,
@@ -2804,7 +2807,7 @@ void EmulatorSession::run()
             mark_transition_input_complete(*pending_button_input_completion);
             pending_button_input_completion.reset();
         }
-        if (live_control) {
+        if (live_control && !quit_after_snapshots) {
             auto commands = std::move(pending_control_commands);
             pending_control_commands.clear();
             for (auto& command : live_control->poll())
@@ -2939,15 +2942,17 @@ void EmulatorSession::run()
                     break;
                 }
                 case LiveControlCommandKind::Snapshot: {
-                    FrameFilePresenter snapshot_writer { command.path };
-                    const auto frame =
-                        initial_runtime->kernel->display_snapshot();
-                    snapshot_writer.present(frame);
-                    output.marker("[control] snapshot=" + command.path.string() +
-                                " frame=" + std::to_string(frame.sequence));
+                    snapshots.submit(command.path,
+                        initial_runtime->kernel->capture_display_frame());
                     break;
                 }
                 case LiveControlCommandKind::SnapshotSequence: {
+                    if (command.snapshot_count >
+                        SessionSnapshots::maximum_scheduled -
+                            scheduled_snapshots.size()) {
+                        output.marker("[control] error: snapshot schedule is full");
+                        break;
+                    }
                     const auto start = std::chrono::steady_clock::now();
                     for (std::size_t index = 0; index < command.snapshot_count;
                         ++index) {
@@ -3110,12 +3115,15 @@ void EmulatorSession::run()
                     break;
                 case LiveControlCommandKind::Quit:
                     output.marker("[control] quit requested");
-                    hard_stop = true;
+                    scheduled_snapshots.clear();
+                    quit_after_snapshots = true;
                     break;
                 case LiveControlCommandKind::Error:
                     output.marker("[control] error: " + command.message);
                     break;
                 }
+                if (quit_after_snapshots)
+                    break;
             }
             if (hard_stop)
                 break;
@@ -3123,13 +3131,8 @@ void EmulatorSession::run()
         while (!scheduled_snapshots.empty() &&
                std::chrono::steady_clock::now() >=
                    scheduled_snapshots.front().first) {
-            FrameFilePresenter snapshot_writer {
-                scheduled_snapshots.front().second
-            };
-            snapshot_writer.present(
-                initial_runtime->kernel->display_snapshot());
-            output.marker("[control] snapshot-sequence frame=" +
-                        scheduled_snapshots.front().second.string());
+            snapshots.submit(scheduled_snapshots.front().second,
+                initial_runtime->kernel->capture_display_frame(), true);
             scheduled_snapshots.erase(scheduled_snapshots.begin());
         }
         bool display_receive_pending = false;
@@ -3203,6 +3206,11 @@ void EmulatorSession::run()
         const auto polled_mach_generation =
             initial_runtime->kernel->mach_message_generation();
         polled_graphics_generation = gles_completion_generation();
+        snapshots.poll();
+        if (quit_after_snapshots && snapshots.empty()) {
+            hard_stop = true;
+            break;
+        }
         for (auto& runtime : runtimes) {
             const auto display_vsync_receiver =
                 display_urgent_process && runtime->kernel->process().pid ==
@@ -4954,6 +4962,7 @@ void EmulatorSession::run()
             wait_for_host_activity(delay);
         }
     }
+    snapshots.cancel();
     output.line(
         "[display-attribution] vsync-pulses=" +
         std::to_string(initial_runtime->kernel->display_vsync_pulse_count()) +
