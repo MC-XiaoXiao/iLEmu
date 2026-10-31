@@ -4,6 +4,8 @@
 
 #include "surface_guest_import.hpp"
 
+#include "kernel/graphics_call_lease.hpp"
+
 #include "foundation/address_space.hpp"
 #include "foundation/userland_hle.hpp"
 #include "graphics/gles_program_renderer.hpp"
@@ -21,6 +23,7 @@ struct SurfaceGuestImport::Pending {
     std::shared_ptr<HostSurface> surface;
     std::shared_ptr<GlesValueResult<SurfaceCpuReadback>> host;
     Completion completion;
+    std::shared_ptr<GraphicsCallLease> lease;
     std::size_t bytes { };
     bool consumed { };
 
@@ -34,11 +37,13 @@ struct SurfaceGuestImport::Pending {
 };
 
 void SurfaceGuestImport::run(UserlandHleCall& call,
-    std::shared_ptr<SurfaceStore> store, std::uint32_t id, Completion completion)
+    std::shared_ptr<SurfaceStore> store, std::uint32_t id, Completion completion,
+    std::shared_ptr<GraphicsCallLease> lease)
 {
     auto pending = std::make_shared<Pending>();
     pending->store = std::move(store);
     pending->completion = std::move(completion);
+    pending->lease = std::move(lease);
     try {
         const auto backing = pending->store->find(id);
         if (!backing)
@@ -82,6 +87,8 @@ try {
         // this snapshot; the atomic import below decides if another is needed.
         if (read.surface->commit_cpu_readback(read.snapshot))
             read.renderer->acknowledge_readback(read.surface->key(), read.stamp);
+        if (pending->lease)
+            pending->lease->result.reset();
         pending->host.reset();
     }
     if (!pending->host) {
@@ -118,6 +125,8 @@ try {
         }
     }
     const auto ticket = host->completion;
+    if (pending->lease)
+        pending->lease->result = ticket;
     call.suspend_until([ticket] { return ticket->ready(); },
         [pending](UserlandHleCall& resumed) { resume(resumed, pending); },
         ticket->sequence);

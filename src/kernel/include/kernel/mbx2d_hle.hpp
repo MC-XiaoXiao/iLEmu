@@ -155,7 +155,11 @@ private:
     void quad_color(UserlandHleCall& call);
     void quad_copy(UserlandHleCall& call, bool context_api = false,
         bool perspective_api = false);
+    struct FlushPlan;
     void flush_surfaces(UserlandHleCall& call);
+    void await_flush_surfaces(UserlandHleCall& call,
+        std::shared_ptr<GraphicsCallLease> lease,
+        std::shared_ptr<FlushPlan> plan);
     void terminate(UserlandHleCall& call);
     [[nodiscard]] std::optional<ResolvedSurface> resolve(
         const std::optional<Binding>& binding) const;

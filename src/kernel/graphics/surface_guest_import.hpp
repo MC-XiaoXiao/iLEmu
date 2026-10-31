@@ -9,6 +9,7 @@
 
 namespace ilemu {
 class SurfaceStore;
+struct GraphicsCallLease;
 class UserlandHleCall;
 
 // Core-only import observer. The existing registry owns the guest continuation;
@@ -17,7 +18,8 @@ class SurfaceGuestImport final {
 public:
     using Completion = std::function<void(UserlandHleCall&, bool)>;
     static void run(UserlandHleCall& call, std::shared_ptr<SurfaceStore> store,
-        std::uint32_t id, Completion completion);
+        std::uint32_t id, Completion completion,
+        std::shared_ptr<GraphicsCallLease> lease = { });
 
 private:
     struct Pending;

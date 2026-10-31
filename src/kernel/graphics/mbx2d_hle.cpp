@@ -1380,52 +1380,6 @@ void Mbx2dHle::submit_destination(UserlandHleCall& call, bool context_api)
     }
 }
 
-void Mbx2dHle::flush_surfaces(UserlandHleCall& call)
-{
-    const auto array = call.argument(0);
-    const auto count = call.argument(1);
-    if (count == 0) {
-        call.set_return(mbx_success);
-        return;
-    }
-    if (array == 0 || count > mbx2d_abi::maximum_flush_surface_count) {
-        call.set_return(mbx_failure);
-        return;
-    }
-    for (std::uint32_t index = 0; index < count; ++index) {
-        const auto address =
-            static_cast<std::uint64_t>(array) +
-            static_cast<std::uint64_t>(index) * sizeof(std::uint32_t);
-        if (address > std::numeric_limits<std::uint32_t>::max()) {
-            call.set_return(mbx_failure);
-            return;
-        }
-        const auto surface =
-            call.memory().read32(static_cast<std::uint32_t>(address));
-        const auto found = surface ? surfaces_.find(*surface) : surfaces_.end();
-        if (found == surfaces_.end()) {
-            call.set_return(mbx_failure);
-            return;
-        }
-        const auto core_surface_id = found->second.core_surface_id;
-        if (found->second.client_backing)
-            found->second.client_host_source_dirty = true;
-        // Both lists are unified-memory visibility barriers. Source publication
-        // makes CPU-rendered pixels available to a retained handle; destination
-        // invalidation does the same before GPU commands consume prior
-        // contents. Exact merging preserves unrelated native pixels in either
-        // direction.
-        if (core_surface_id != 0 && !surface_store_->synchronize_from_guest(
-                                        call.memory(), core_surface_id)) {
-            call.set_return(mbx_failure);
-            return;
-        }
-    }
-    // FlushSurfaces publishes unified-memory changes; it is not a command
-    // queue flush. Pending GPU work remains ordered until mbx2DFlush,
-    // mbx2DFinish, or a host consumer submits it.
-    call.set_return(mbx_success);
-}
 
 void Mbx2dHle::terminate(UserlandHleCall& call)
 {
