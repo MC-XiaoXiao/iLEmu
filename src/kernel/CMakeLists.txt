@@ -72,6 +72,7 @@ add_library(ilemu_kernel_graphics STATIC
     graphics/opengles_dispatch_hle.cpp
     graphics/opengles_programmable.cpp
     graphics/opengles_sync.cpp
+    graphics/opengles_surface_sync.cpp
     graphics/opengles_retirement.cpp
     graphics/opengles_program_sync.cpp
     graphics/opengles_program_draw.cpp

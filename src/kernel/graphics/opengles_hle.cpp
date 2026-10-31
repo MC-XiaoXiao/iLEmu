@@ -2018,6 +2018,49 @@ void OpenGlesHle::make_current(UserlandHleCall& call)
     call.set_return(egl_true);
 }
 
+void OpenGlesHle::publish_created_surface(
+    UserlandHleCall& call, std::optional<SurfaceState> state)
+{
+    if (!state) {
+        egl_error_ = egl_bad_parameter;
+        call.set_return(0U);
+        return;
+    }
+    const auto surface = next_surface_++;
+    surfaces_.emplace(surface, std::move(*state));
+    egl_error_ = egl_success;
+    call.set_return(surface);
+}
+
+void OpenGlesHle::create_surface(UserlandHleCall& call)
+{
+    if (!is_valid_display(call.argument(0))) {
+        egl_error_ = egl_bad_display;
+        call.set_return(0U);
+        return;
+    }
+    if (!egl_config(call.argument(1))) {
+        publish_created_surface(call, std::nullopt);
+        return;
+    }
+    if (call.symbol() == "_eglCreatePixmapSurface") {
+        const auto identifier = core_surface_identifier(call, call.argument(2));
+        if (!identifier) {
+            publish_created_surface(call, std::nullopt);
+            return;
+        }
+        create_pixmap_surface(call, *identifier);
+        return;
+    }
+    const auto geometry = display_geometry_for_process(shared_state_,
+        call.process_id(),
+        display_ ? display_->geometry() : default_display_geometry);
+    SurfaceState state;
+    state.width = geometry.width;
+    state.height = geometry.height;
+    publish_created_surface(call, std::move(state));
+}
+
 void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
 {
     const auto add = [&](std::string symbol,
@@ -2203,53 +2246,10 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
         egl_error_ = egl_success;
         call.set_return(egl_true);
     });
-    const auto create_surface = [this](UserlandHleCall& call) {
-        if (!is_valid_display(call.argument(0))) {
-            egl_error_ = egl_bad_display;
-            call.set_return(0);
-            return;
-        }
-        if (!egl_config(call.argument(1))) {
-            egl_error_ = egl_bad_parameter;
-            call.set_return(0);
-            return;
-        }
-        SurfaceState state;
-        const auto geometry =
-            display_geometry_for_process(shared_state_, call.process_id(),
-                display_ ? display_->geometry() : default_display_geometry);
-        state.width = geometry.width;
-        state.height = geometry.height;
-        if (call.symbol() == "_eglCreatePixmapSurface") {
-            const auto identifier =
-                core_surface_identifier(call, call.argument(2));
-            const auto backing =
-                identifier ? surface_store_->find(*identifier) : std::nullopt;
-            const auto pixels = identifier ? surface_store_->read_argb(
-                                                 call.memory(), *identifier)
-                                           : std::nullopt;
-            if (!identifier || !backing || !pixels) {
-                egl_error_ = egl_bad_parameter;
-                call.set_return(0);
-                return;
-            }
-            state.backing_identifier = *identifier;
-            state.width = backing->width;
-            state.height = backing->height;
-            state.pixels = std::move(*pixels);
-            if (const auto host_surface =
-                    surface_store_->host_surface(*identifier)) {
-                state.backing_cpu_generation = host_surface->cpu_generation();
-            }
-        }
-        const auto surface = next_surface_++;
-        surfaces_.emplace(surface, std::move(state));
-        egl_error_ = egl_success;
-        call.set_return(surface);
-    };
-    add("_eglCreateWindowSurface", create_surface);
-    add("_eglCreatePbufferSurface", create_surface);
-    add("_eglCreatePixmapSurface", create_surface);
+    const auto create = [this](UserlandHleCall& call) { create_surface(call); };
+    add("_eglCreateWindowSurface", create);
+    add("_eglCreatePbufferSurface", create);
+    add("_eglCreatePixmapSurface", create);
     add("_eglDestroySurface", [this](UserlandHleCall& call) {
         if (!flush_program_draws(call)) {
             egl_error_ = egl_bad_surface;

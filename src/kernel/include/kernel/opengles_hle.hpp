@@ -325,6 +325,13 @@ private:
         const UserlandHleRegistry::Handler& handler, std::uint32_t error);
     bool program_flush_failed_ { };
     void finish_async(UserlandHleCall& call, bool finish);
+    void create_surface(UserlandHleCall& call);
+    void publish_created_surface(UserlandHleCall& call,
+        std::optional<SurfaceState> state);
+    void create_pixmap_surface(UserlandHleCall& call, std::uint32_t id);
+    struct PixmapRead;
+    void await_pixmap_read(UserlandHleCall& call,
+        std::shared_ptr<PixmapRead> pending);
     void make_current(UserlandHleCall& call);
     void read_pixels(UserlandHleCall& call);
     void write_read_pixels(UserlandHleCall& call, const DisplayFrame& frame,
