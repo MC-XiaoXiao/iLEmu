@@ -114,9 +114,15 @@ template <typename Value> struct GlesValueResult {
 // Same FIFO as programmable draws. Returns null on temporary capacity pressure;
 // no driver call or wait takes place during admission. Functions own host data.
 [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
-    std::size_t result_bytes, std::function<bool(DisplayFrame&)> execute);
-[[nodiscard]] bool gles_host_work_capacity(std::size_t result_bytes);
+    std::size_t result_bytes, std::function<bool(DisplayFrame&)> execute,
+    std::size_t command_bytes = 0);
+[[nodiscard]] bool gles_host_work_capacity(
+    std::size_t result_bytes, std::size_t command_bytes = 0);
 [[nodiscard]] bool gles_draw_preparation_capacity(std::size_t payload_bytes);
+// The same bounded immutable-snapshot credits used by prepared draws.
+[[nodiscard]] bool gles_host_preparation_capacity(std::size_t payload_bytes);
+[[nodiscard]] std::shared_ptr<void> reserve_gles_host_preparation(
+    std::size_t payload_bytes);
 [[nodiscard]] std::uint64_t gles_completion_generation();
 void set_gles_completion_wake(std::function<void()> wake);
 // Only a session's idle wait uses this, never a graphics call continuation.

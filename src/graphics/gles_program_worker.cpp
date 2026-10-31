@@ -634,18 +634,27 @@ void shutdown_gles_program_worker()
     }
     retiring.reset();
 }
-bool gles_host_work_capacity(std::size_t bytes)
+bool gles_host_work_capacity(std::size_t bytes, std::size_t command_bytes)
 {
-    return shared_executor()->capacity(bytes);
+    return shared_executor()->capacity(bytes, command_bytes);
 }
-bool gles_draw_preparation_capacity(std::size_t bytes)
+bool gles_host_preparation_capacity(std::size_t bytes)
 {
     return shared_executor()->preparation_capacity(bytes);
 }
-std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
-    std::size_t bytes, std::function<bool(DisplayFrame&)> execute)
+bool gles_draw_preparation_capacity(std::size_t bytes)
 {
-    return shared_executor()->submit_host(bytes, std::move(execute));
+    return gles_host_preparation_capacity(bytes);
+}
+std::shared_ptr<void> reserve_gles_host_preparation(std::size_t bytes)
+{
+    return shared_executor()->reserve_preparation(bytes);
+}
+std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(std::size_t bytes,
+    std::function<bool(DisplayFrame&)> execute, std::size_t command_bytes)
+{
+    return shared_executor()->submit_host(
+        bytes, std::move(execute), command_bytes);
 }
 
 class GlesProgramWorker::PreparedDraw {

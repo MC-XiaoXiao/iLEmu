@@ -64,6 +64,7 @@ add_library(ilemu_kernel_graphics STATIC
     graphics/mbx2d_hle.cpp
     graphics/mbx3d_quad_hle.cpp
     graphics/mbx_client_surface.cpp
+    graphics/mbx_sync.cpp
     graphics/mobile_framebuffer_hle.cpp
     graphics/mobile_framebuffer_devices.cpp
     graphics/opengles_hle.cpp

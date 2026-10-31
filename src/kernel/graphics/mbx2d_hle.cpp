@@ -200,16 +200,10 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
     add("_mbx3DCtxQuadCopyPerspective",
         [this](UserlandHleCall& call) { quad_copy(call, true, true); });
 
-    add("_mbx2DFinish", [this](UserlandHleCall& call) {
-        static_cast<void>(
-            submit_host_commands(true, PerfSubmitReason::MbxFinish));
-        release_retired_client_host_sources();
-        submit_destination(call, false);
-        call.set_return(mbx_success);
-    });
+    add("_mbx2DFinish", [this](UserlandHleCall& call) { finish(call, false); });
     add("_mbx2DFlush", [this](UserlandHleCall& call) {
         static_cast<void>(
-            submit_host_commands(false, PerfSubmitReason::MbxFlush));
+            submit_host_commands(PerfSubmitReason::MbxFlush));
         submit_destination(call, false);
         call.set_return(mbx_success);
     });
@@ -219,13 +213,13 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
         [this](UserlandHleCall& call) { flush_surfaces(call); });
     add("_mbx2DCtxFlush", [this](UserlandHleCall& call) {
         static_cast<void>(
-            submit_host_commands(false, PerfSubmitReason::MbxFlush));
+            submit_host_commands(PerfSubmitReason::MbxFlush));
         submit_destination(call, true);
         call.set_return(mbx_success);
     });
     const auto present = [this](UserlandHleCall& call) {
         static_cast<void>(
-            submit_host_commands(false, PerfSubmitReason::MbxFlush));
+            submit_host_commands(PerfSubmitReason::MbxFlush));
         submit_destination(call, false);
         if (display_ && (!presentation_tracker_ ||
                             !presentation_tracker_->has_presented_frame()))
@@ -262,6 +256,16 @@ void Mbx2dHle::enter_graphics_call(
             });
         return;
     }
+    service_graphics_completions();
+    if (sync_lease_ && !sync_lease_->consumed) {
+        const auto lease = sync_lease_;
+        call.suspend_until([lease] { return lease->ready(); },
+            [this, handler = std::move(handler)](UserlandHleCall& resumed) {
+                enter_graphics_call(resumed, handler);
+            }, lease->result ? lease->result->sequence : 0);
+        return;
+    }
+    sync_lease_.reset();
     handler(call);
 }
 
@@ -273,6 +277,8 @@ Mbx2dHle::~Mbx2dHle()
 
 void Mbx2dHle::reset()
 {
+    cancel_pending_work();
+    sync_lease_.reset();
     release_client_renderer_resources();
     release_core_surface_references();
     renderer_owner_ = allocate_gles_renderer_owner();
@@ -291,6 +297,8 @@ void Mbx2dHle::reset()
 
 void Mbx2dHle::inherit_state(const Mbx2dHle& parent)
 {
+    cancel_pending_work();
+    sync_lease_.reset();
     release_client_renderer_resources();
     release_core_surface_references();
     renderer_owner_ = allocate_gles_renderer_owner();
@@ -1057,12 +1065,9 @@ std::optional<HostCompositeMode> Mbx2dHle::host_composite_mode(
     return std::nullopt;
 }
 
-bool Mbx2dHle::submit_host_commands(bool wait, PerfSubmitReason reason)
+bool Mbx2dHle::submit_host_commands(PerfSubmitReason reason)
 {
-    if (!command_encoder_)
-        return false;
-    return wait ? command_encoder_->finish(reason)
-                : command_encoder_->submit(reason);
+    return command_encoder_ && command_encoder_->submit(reason);
 }
 
 void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
@@ -1428,9 +1433,7 @@ void Mbx2dHle::terminate(UserlandHleCall& call)
         call.set_return(mbx_failure);
         return;
     }
-    static_cast<void>(submit_host_commands(true, PerfSubmitReason::MbxFinish));
-    reset();
-    call.set_return(mbx_success);
+    finish(call, true);
 }
 
 void Mbx2dHle::deferred(UserlandHleCall& call)

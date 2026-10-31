@@ -394,6 +394,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     private:
         bool retire_resources(std::uint64_t owner,
             std::span<const GlesRenderTargetKey> selected);
+        bool finish_commands(PerfSubmitReason reason,
+            std::optional<GlesRenderTargetKey> target = std::nullopt);
         void acknowledge_target_readback(GlesRenderTargetKey target,
             const ReadbackStamp& stamp, bool cache_committed);
         bool synchronize_impl(DisplayFrame& frame, GlesRenderTargetKey target,
@@ -955,18 +957,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
         bool finish(PerfSubmitReason reason) override
         {
-            std::lock_guard lock { renderer_.mutex_ };
-            try {
-                renderer_.submit_commands(true, reason);
-                return true;
-            } catch (...) {
-                renderer_.last_failure_reason_.store(
-                    PerfFallbackReason::BackendFailure,
-                    std::memory_order_relaxed);
-                static_cast<void>(vkDeviceWaitIdle(renderer_.device_));
-                renderer_.discard_commands();
-                return false;
-            }
+            return renderer_.finish_commands(reason);
         }
 
     private:
@@ -2985,13 +2976,19 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     bool VulkanGlesRenderer::finish(GlesRenderTargetKey target)
     {
+        return finish_commands(PerfSubmitReason::GlesSync, target);
+    }
+
+    bool VulkanGlesRenderer::finish_commands(PerfSubmitReason reason,
+        std::optional<GlesRenderTargetKey> target)
+    {
         std::unique_lock lock { mutex_ };
         last_failure_reason_.store(
             PerfFallbackReason::None, std::memory_order_relaxed);
-        if (!targets_.contains(target))
+        if (target && !targets_.contains(*target))
             return true;
         try {
-            submit_commands(false, PerfSubmitReason::GlesSync);
+            submit_commands(false, reason);
             // All submissions use one serialized queue. Its last fence covers
             // commands earlier in submission order, not an arbitrary observed
             // completion maximum. The shared owner prevents slot reuse from
@@ -3003,12 +3000,13 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     "vkWaitForFences");
             return true;
         } catch (...) {
-            // Existing backend recovery remains serialized. It must not reset
-            // resources still referenced by accepted submissions.
-            if (!lock.owns_lock())
-                lock.lock();
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
+            // Accepted submissions still own their slot/resources. A failed
+            // outside-lock wait must not reset newer commands or stall core
+            // callers by reacquiring the mutex for device-idle recovery.
+            if (!lock.owns_lock())
+                return false;
             static_cast<void>(vkDeviceWaitIdle(device_));
             discard_commands();
             return false;

@@ -32,6 +32,7 @@
 #include "graphics/gles_renderer_owner.hpp"
 #include "graphics/gles_resources.hpp"
 #include "graphics/opengles_guest_capabilities.hpp"
+#include "kernel/graphics_call_lease.hpp"
 
 namespace ilemu {
 
@@ -329,30 +330,7 @@ private:
     void write_read_pixels(UserlandHleCall& call, const DisplayFrame& frame,
         bool inverted, std::uint32_t alignment);
     [[nodiscard]] bool binding_live(const RenderTargetBinding& binding) const;
-    struct SyncLease {
-        std::size_t owner { };
-        bool consumed { }, cancelled { };
-        std::shared_ptr<GlesWorkResult> result;
-        // Core-only shared-object commit, also run if the issuing thread exits.
-        // A whole-process exit/exec discards it instead.
-        std::function<void()> complete_core;
-        [[nodiscard]] bool ready() const
-        {
-            return consumed || (cancelled && (!result || result->ready()));
-        }
-        void consume()
-        {
-            if (consumed)
-                return;
-            consumed = true;
-            // Release ownership even if a core metadata commit fails. Keep
-            // the ticket alive throughout that commit, outside the lease.
-            const auto retained = std::move(result);
-            auto completion = std::move(complete_core);
-            if (completion)
-                completion();
-        }
-    };
+    using SyncLease = GraphicsCallLease;
     std::shared_ptr<SyncLease> sync_lease_;
     using ProgramCompletion = std::function<void(UserlandHleCall&, bool)>;
     [[nodiscard]] std::shared_ptr<SyncLease> program_wait(

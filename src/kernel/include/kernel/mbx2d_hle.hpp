@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "foundation/userland_hle.hpp"
+#include "kernel/graphics_call_lease.hpp"
 #include "graphics/host_graphics.hpp"
 #include "graphics/mbx2d_abi.hpp"
 #include "graphics/surface_store.hpp"
@@ -43,6 +44,9 @@ public:
 
     void reset();
     void inherit_state(const Mbx2dHle& parent);
+    void service_graphics_completions();
+    void cancel_pending_work();
+    void retire_thread(std::size_t processor);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_presentation_tracker(
         std::shared_ptr<PresentationTracker> presentations);
@@ -51,6 +55,22 @@ public:
 private:
     void enter_graphics_call(
         UserlandHleCall& call, UserlandHleRegistry::Handler handler);
+    struct FinishPlan {
+        // Credit dies after retained payload storage.
+        std::shared_ptr<void> credit;
+        std::vector<HostSurfaceKey> retired;
+        std::shared_ptr<HostSurface> destination;
+        std::uint64_t owner { }, publication { };
+        std::size_t bytes { };
+        std::uint32_t surface_id { }, width { }, height { };
+        bool has_destination { }, framebuffer { }, prepared { }, accepted { };
+        bool retired_completed { };
+    };
+    void finish(UserlandHleCall& call, bool terminate);
+    void await_finish(UserlandHleCall& call, bool terminate,
+        std::shared_ptr<GraphicsCallLease> lease, std::shared_ptr<FinishPlan> plan);
+    [[nodiscard]] bool finish_destination_live(const FinishPlan& plan) const;
+    std::shared_ptr<GraphicsCallLease> sync_lease_;
     struct Surface {
         std::uint32_t handle { };
         std::uint32_t core_surface_id { };
@@ -119,7 +139,6 @@ private:
     [[nodiscard]] std::optional<ResolvedSurface> resolve_source(
         UserlandHleCall& call, const std::optional<Binding>& binding);
     void retire_client_host_source(Surface& surface);
-    void release_retired_client_host_sources();
     void release_client_renderer_resources();
     [[nodiscard]] std::uint32_t allocate_context();
     [[nodiscard]] RenderState* select_state(
@@ -164,7 +183,7 @@ private:
         UserlandHleCall& call);
     [[nodiscard]] std::optional<HostCompositeMode> host_composite_mode(
         const RenderState& state) const;
-    [[nodiscard]] bool submit_host_commands(bool wait, PerfSubmitReason reason);
+    [[nodiscard]] bool submit_host_commands(PerfSubmitReason reason);
     void submit_destination(UserlandHleCall& call, bool context_api);
     void deferred(UserlandHleCall& call);
 
@@ -187,7 +206,7 @@ private:
     std::vector<HostSurfaceKey> retired_client_host_sources_;
     std::shared_ptr<GlesRenderer> host_graphics_;
     std::unique_ptr<GlesRendererOwner> renderer_lifetime_;
-    std::unique_ptr<CommandEncoder> command_encoder_;
+    std::shared_ptr<CommandEncoder> command_encoder_;
 };
 
 } // namespace ilemu

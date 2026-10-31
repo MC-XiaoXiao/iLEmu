@@ -54,6 +54,7 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     signal_state_.retire(processor);
     userland_hle_.cancel_pending_call(processor);
     opengles_hle_.retire_thread(processor);
+    mbx2d_hle_.retire_thread(processor);
     last_delivered_graphics_inputs_.erase(processor);
     scheduler_yields_.erase(processor);
     scheduler_handoffs_.erase(processor);

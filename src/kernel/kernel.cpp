@@ -1641,6 +1641,7 @@ CompatibilityKernel::pending_event_poll_candidates()
     std::lock_guard lock { mutex_ };
     service_completed_file_renames();
     opengles_hle_.service_graphics_completions(!process_.exited);
+    mbx2d_hle_.service_graphics_completions();
     const auto io_generation = shared_state_->io_event_generation_snapshot();
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
