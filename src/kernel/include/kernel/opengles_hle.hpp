@@ -319,6 +319,8 @@ private:
         std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared);
     void enter_graphics_call(
         UserlandHleCall& call, UserlandHleRegistry::Handler handler);
+    void await_graphics_call(
+        UserlandHleCall& call, UserlandHleRegistry::Handler handler);
     void await_program_flush(
         UserlandHleCall& call, UserlandHleRegistry::Handler handler);
     void fail_program_flush(UserlandHleCall& call,
@@ -333,9 +335,13 @@ private:
     void await_pixmap_read(UserlandHleCall& call,
         std::shared_ptr<PixmapRead> pending);
     void make_current(UserlandHleCall& call);
-    void read_pixels(UserlandHleCall& call);
+    struct ReadPixelsOutput;
+    [[nodiscard]] std::shared_ptr<ReadPixelsOutput> capture_read_pixels_output(
+        UserlandHleCall& call);
+    void read_pixels(UserlandHleCall& call,
+        std::shared_ptr<ReadPixelsOutput> output = { });
     void write_read_pixels(UserlandHleCall& call, const DisplayFrame& frame,
-        bool inverted, std::uint32_t alignment);
+        bool inverted, const ReadPixelsOutput& output);
     [[nodiscard]] bool binding_live(const RenderTargetBinding& binding) const;
     using SyncLease = GraphicsCallLease;
     struct TextureDeletion;

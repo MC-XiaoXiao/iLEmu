@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
 #include <stdexcept>
 #include <utility>
 
@@ -104,6 +105,30 @@ void OpenGlesHle::cancel_pending_work()
 void OpenGlesHle::enter_graphics_call(
     UserlandHleCall& call, UserlandHleRegistry::Handler handler)
 {
+    // Public wrappers only resolve TLS before their prefixed driver entry.
+    // The actual driver entry captures output before any graphics wait.
+    if (call.symbol().starts_with("_gl") && !call.prefix_argument(0U) &&
+        dispatch_hle_->uses_context_first_dispatch()) {
+        handler(call);
+        return;
+    }
+    if (call.symbol() == "_glReadPixels") {
+        try {
+            const auto output = capture_read_pixels_output(call);
+            handler = [this, output](UserlandHleCall& ready) {
+                read_pixels(ready, output);
+            };
+        } catch (const std::bad_alloc&) {
+            set_gl_error(call, gles_abi::out_of_memory);
+            return;
+        }
+    }
+    await_graphics_call(call, std::move(handler));
+}
+
+void OpenGlesHle::await_graphics_call(
+    UserlandHleCall& call, UserlandHleRegistry::Handler handler)
+{
     if (!renderer_lifetime_->activate()) {
         call.suspend_until(
             [this] {
@@ -111,7 +136,7 @@ void OpenGlesHle::enter_graphics_call(
                        GlesRendererOwner::capacity();
             },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
-                enter_graphics_call(resumed, handler);
+                await_graphics_call(resumed, handler);
             });
         return;
     }
@@ -122,17 +147,12 @@ void OpenGlesHle::enter_graphics_call(
         const auto lease = sync_lease_;
         call.suspend_until([lease] { return lease->ready(); },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
-                enter_graphics_call(resumed, handler);
+                await_graphics_call(resumed, handler);
             },
             lease->result ? lease->result->sequence : 0);
         return;
     }
     sync_lease_.reset();
-    if (call.symbol().starts_with("_gl") && !call.prefix_argument(0U) &&
-        dispatch_hle_->uses_context_first_dispatch()) {
-        handler(call);
-        return;
-    }
     if (call.symbol() == "_glGetError" && program_renderer_ &&
         !program_renderer_->issuer_ready(call.cpu().processor_id())) {
         const auto issuer = call.cpu().processor_id();
@@ -176,7 +196,7 @@ void OpenGlesHle::await_program_flush(
     if (!result) {
         call.suspend_until([bytes] { return gles_host_work_capacity(bytes); },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
-                enter_graphics_call(resumed, handler);
+                await_graphics_call(resumed, handler);
             });
         return;
     }
@@ -260,107 +280,5 @@ void OpenGlesHle::finish_async(UserlandHleCall& call, bool finish)
         result->sequence);
 }
 
-void OpenGlesHle::read_pixels(UserlandHleCall& call)
-{
-    auto* context = current_context(call);
-    if (!context) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    const auto x = static_cast<std::int32_t>(call.argument(0));
-    const auto y = static_cast<std::int32_t>(call.argument(1));
-    const auto width = static_cast<std::int32_t>(call.argument(2));
-    const auto height = static_cast<std::int32_t>(call.argument(3));
-    if ((call.argument(4) != gles_abi::rgba &&
-            call.argument(4) != gles_abi::bgra_apple) ||
-        call.argument(5) != gles_abi::unsigned_byte) {
-        set_gl_error(call, gles_abi::invalid_enum);
-        return;
-    }
-    if (x < 0 || y < 0 || width < 0 || height < 0 ||
-        (width && height && call.argument(6) == 0)) {
-        set_gl_error(call, gles_abi::invalid_value);
-        return;
-    }
-    if (!width || !height)
-        return;
-    const auto binding = resolve_render_target(call, *context);
-    if (!binding) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    const auto display_source = binding->kind == RenderTargetKind::Display &&
-                                !binding->display_surface &&
-                                !binding->pixmap_surface;
-    auto frame = display_source && display_
-                     ? std::optional { display_->capture_frame() }
-                     : render_target(call, *binding);
-    if (!frame) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    const auto surface =
-        binding->host_surface ? binding->host_surface : frame->host_surface;
-    std::size_t bytes;
-    try {
-        bytes = frame_bytes(frame->width, frame->height);
-        if (surface) {
-            const auto descriptor = surface->descriptor();
-            bytes = std::max(bytes,
-                frame_bytes(descriptor.width, descriptor.height));
-        }
-    } catch (...) {
-        set_gl_error(call, gles_abi::out_of_memory);
-        return;
-    }
-    // Guest/reader callbacks never cross; retain the host content lease
-    // separately from the plain CPU dimensions/pixels input.
-    DisplayFrame snapshot { frame->width, frame->height, 0, { } };
-    if (!surface)
-        snapshot.pixels = std::move(frame->pixels);
-    auto result = enqueue_gles_host_work(bytes,
-        [renderer = renderer_, surface,
-            source_lease = std::move(frame->presentation_lease),
-            synchronize_target = !binding->host_surface, key = binding->key,
-            frame = std::move(snapshot)](DisplayFrame& output) mutable {
-            static_cast<void>(source_lease);
-            if (surface) {
-                if (!renderer->read_surface(*surface, output))
-                    return false;
-                // Preserve snapshot()+synchronize order without a core wait.
-                return !synchronize_target ||
-                       renderer->synchronize(output, key);
-            }
-            output = std::move(frame);
-            return renderer->synchronize(output, key);
-        });
-    if (!result) {
-        call.suspend_until([bytes] { return gles_host_work_capacity(bytes); },
-            [this](UserlandHleCall& resumed) { read_pixels(resumed); });
-        return;
-    }
-    auto lease = std::make_shared<SyncLease>();
-    lease->owner = call.cpu().processor_id();
-    lease->result = result;
-    sync_lease_ = lease;
-    const auto alignment = context->pack_alignment;
-    call.suspend_until([result] { return result->ready(); },
-        [this, result, lease, inverted = binding->inverted_vertical, alignment,
-            backing = binding->backing_identifier,
-            key = binding->key](UserlandHleCall& resumed) {
-            const auto current =
-                backing ? surface_store_->find(*backing) : std::nullopt;
-            const bool live =
-                !backing ||
-                (current &&
-                    current->provenance.publication_sequence == key.surface);
-            if (!result->succeeded() || !live)
-                set_gl_error(resumed, gles_abi::invalid_operation);
-            else
-                write_read_pixels(resumed, result->frame, inverted, alignment);
-            lease->consume();
-        },
-        result->sequence);
-}
 
 } // namespace ilemu

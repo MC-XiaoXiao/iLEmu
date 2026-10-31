@@ -1490,69 +1490,6 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     }
 }
 
-void OpenGlesHle::write_read_pixels(UserlandHleCall& call,
-    const DisplayFrame& frame, bool inverted, std::uint32_t pack_alignment)
-{
-    const auto x = static_cast<std::int32_t>(call.argument(0));
-    const auto y = static_cast<std::int32_t>(call.argument(1));
-    const auto width = static_cast<std::int32_t>(call.argument(2));
-    const auto height = static_cast<std::int32_t>(call.argument(3));
-    const auto format = call.argument(4);
-    const auto output = call.argument(6);
-    if (frame.pixels.size() !=
-        static_cast<std::size_t>(frame.width) * frame.height) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    const auto unsigned_x = static_cast<std::uint32_t>(x);
-    const auto unsigned_y = static_cast<std::uint32_t>(y);
-    const auto unsigned_width = static_cast<std::uint32_t>(width);
-    const auto unsigned_height = static_cast<std::uint32_t>(height);
-    if (unsigned_x > frame.width || unsigned_y > frame.height ||
-        unsigned_width > frame.width - unsigned_x ||
-        unsigned_height > frame.height - unsigned_y) {
-        set_gl_error(call, gles_abi::invalid_value);
-        return;
-    }
-
-    constexpr std::uint64_t bytes_per_pixel = 4U;
-    const auto row_bytes =
-        static_cast<std::uint64_t>(unsigned_width) * bytes_per_pixel;
-    const auto alignment = static_cast<std::uint64_t>(pack_alignment);
-    const auto stride = (row_bytes + alignment - 1U) & ~(alignment - 1U);
-    const auto total = stride * (unsigned_height - 1U) + row_bytes;
-    if (total > gles_abi::maximum_resource_bytes ||
-        static_cast<std::uint64_t>(output) + total >
-            static_cast<std::uint64_t>(
-                std::numeric_limits<std::uint32_t>::max()) +
-                1U) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    std::vector<std::byte> bytes(static_cast<std::size_t>(total));
-    for (std::uint32_t row = 0; row < unsigned_height; ++row) {
-        const auto guest_y = unsigned_y + row;
-        const auto host_y = inverted ? guest_y : frame.height - 1U - guest_y;
-        for (std::uint32_t column = 0; column < unsigned_width; ++column) {
-            const auto pixel =
-                frame.pixels[static_cast<std::size_t>(host_y) * frame.width +
-                             unsigned_x + column];
-            const auto offset = static_cast<std::size_t>(
-                static_cast<std::uint64_t>(row) * stride +
-                static_cast<std::uint64_t>(column) * bytes_per_pixel);
-            const auto red = static_cast<std::byte>((pixel >> 16U) & 0xffU);
-            const auto green = static_cast<std::byte>((pixel >> 8U) & 0xffU);
-            const auto blue = static_cast<std::byte>(pixel & 0xffU);
-            bytes[offset] = format == gles_abi::rgba ? red : blue;
-            bytes[offset + 1U] = green;
-            bytes[offset + 2U] = format == gles_abi::rgba ? blue : red;
-            bytes[offset + 3U] = static_cast<std::byte>(pixel >> 24U);
-        }
-    }
-    if (!call.memory().copy_in(output, bytes))
-        set_gl_error(call, gles_abi::invalid_operation);
-}
-
 void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
 {
     // Resolve the native capability without patching its Objective-C entry.
