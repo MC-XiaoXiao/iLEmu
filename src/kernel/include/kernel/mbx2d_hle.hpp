@@ -15,6 +15,7 @@
 #include <set>
 #include <vector>
 
+#include "foundation/userland_hle.hpp"
 #include "graphics/host_graphics.hpp"
 #include "graphics/mbx2d_abi.hpp"
 #include "graphics/surface_store.hpp"
@@ -25,6 +26,7 @@ class UserlandHleCall;
 class UserlandHleRegistry;
 class DisplayState;
 class GlesRenderer;
+class GlesRendererOwner;
 struct KernelSharedState;
 class PresentationTracker;
 
@@ -47,6 +49,8 @@ public:
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
 
 private:
+    void enter_graphics_call(
+        UserlandHleCall& call, UserlandHleRegistry::Handler handler);
     struct Surface {
         std::uint32_t handle { };
         std::uint32_t core_surface_id { };
@@ -182,6 +186,7 @@ private:
     std::uint64_t next_client_host_source_ { 1 };
     std::vector<HostSurfaceKey> retired_client_host_sources_;
     std::shared_ptr<GlesRenderer> host_graphics_;
+    std::unique_ptr<GlesRendererOwner> renderer_lifetime_;
     std::unique_ptr<CommandEncoder> command_encoder_;
 };
 

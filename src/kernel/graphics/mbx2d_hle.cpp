@@ -25,6 +25,7 @@
 #include "foundation/address_space.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "graphics/mbx2d_abi.hpp"
 #include "foundation/output.hpp"
@@ -59,8 +60,14 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
     , presentation_tracker_ { std::move(presentations) }
     , renderer_owner_ { allocate_gles_renderer_owner() }
     , host_graphics_ { shared_gles_renderer() }
+    , renderer_lifetime_ {
+        std::make_unique<GlesRendererOwner>(host_graphics_, renderer_owner_) }
     , command_encoder_ { host_graphics_->create_command_encoder() }
 {
+    registry.register_call_gate(std::string { mbx2d_image },
+        [this](UserlandHleCall& call, UserlandHleRegistry::Handler handler) {
+            enter_graphics_call(call, std::move(handler));
+        });
     const auto add = [&](std::string symbol,
                          UserlandHleRegistry::Handler handler) {
         registry.register_function(
@@ -241,6 +248,23 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
         [this](UserlandHleCall& call) { deferred(call); });
 }
 
+void Mbx2dHle::enter_graphics_call(
+    UserlandHleCall& call, UserlandHleRegistry::Handler handler)
+{
+    if (!renderer_lifetime_->activate()) {
+        call.suspend_until(
+            [this] {
+                return renderer_lifetime_->active() ||
+                       GlesRendererOwner::capacity();
+            },
+            [this, handler = std::move(handler)](UserlandHleCall& resumed) {
+                enter_graphics_call(resumed, handler);
+            });
+        return;
+    }
+    handler(call);
+}
+
 Mbx2dHle::~Mbx2dHle()
 {
     release_client_renderer_resources();
@@ -252,6 +276,8 @@ void Mbx2dHle::reset()
     release_client_renderer_resources();
     release_core_surface_references();
     renderer_owner_ = allocate_gles_renderer_owner();
+    renderer_lifetime_ =
+        std::make_unique<GlesRendererOwner>(host_graphics_, renderer_owner_);
     next_client_host_source_ = 1;
     contexts_.clear();
     next_context_ = first_context_handle;
@@ -268,6 +294,8 @@ void Mbx2dHle::inherit_state(const Mbx2dHle& parent)
     release_client_renderer_resources();
     release_core_surface_references();
     renderer_owner_ = allocate_gles_renderer_owner();
+    renderer_lifetime_ =
+        std::make_unique<GlesRendererOwner>(host_graphics_, renderer_owner_);
     next_client_host_source_ = 1;
     contexts_ = parent.contexts_;
     next_context_ = parent.next_context_;

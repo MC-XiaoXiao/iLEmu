@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "foundation/userland_hle.hpp"
 
 namespace ilemu {
@@ -106,8 +107,7 @@ void Mbx2dHle::release_retired_client_host_sources()
 
 void Mbx2dHle::release_client_renderer_resources()
 {
-    if (renderer_owner_ != 0 && host_graphics_)
-        static_cast<void>(host_graphics_->release_owner(renderer_owner_));
+    renderer_lifetime_.reset();
     retired_client_host_sources_.clear();
 }
 
