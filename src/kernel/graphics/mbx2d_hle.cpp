@@ -674,10 +674,10 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
         x + width > surface.width || y + height > surface.height) {
         return std::nullopt;
     }
-    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
     if (surface.cpu_frame && surface.backing &&
         (surface.backing->pixel_format == surface_pixel_format_bgra ||
             surface_is_packed_555(surface.backing->pixel_format))) {
+        std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
         const auto& frame = *surface.cpu_frame;
         if (frame.width != surface.width || frame.height != surface.height ||
             frame.pixels.size() !=
@@ -695,6 +695,7 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
         if (!display_)
             return std::nullopt;
         const auto frame = display_->snapshot();
+        std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
         for (std::int64_t row = 0; row < height; ++row) {
             const auto source =
                 static_cast<std::size_t>((y + row) * frame.width + x);
@@ -704,12 +705,7 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
         }
         return pixels;
     }
-    if (!surface.backing ||
-        (surface.backing->pixel_format != surface_pixel_format_bgra &&
-            !surface_is_packed_555(surface.backing->pixel_format))) {
-        return std::nullopt;
-    }
-    if (surface.host_surface &&
+    if (surface.host_surface && surface.backing &&
         (surface.backing->pixel_format == surface_pixel_format_bgra ||
             surface_is_packed_555(surface.backing->pixel_format)) &&
         surface.host_surface->gpu_generation() >
@@ -718,6 +714,22 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
             call.memory(), surface.core_surface_id, { })) {
         return std::nullopt;
     }
+    return read_guest_region(surface, x, y, width, height, call);
+}
+
+std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_guest_region(
+    const ResolvedSurface& surface, std::int64_t x, std::int64_t y,
+    std::int64_t width, std::int64_t height, UserlandHleCall& call) const
+{
+    // Reads only guest backing. A caller needing GPU visibility must first
+    // establish it; CpuDraw holds a current-generation mapping while reading.
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
+        x + width > surface.width || y + height > surface.height ||
+        !surface.backing ||
+        (surface.backing->pixel_format != surface_pixel_format_bgra &&
+            !surface_is_packed_555(surface.backing->pixel_format)))
+        return std::nullopt;
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
     const auto& backing = *surface.backing;
     const auto backing_bytes_per_pixel =
         surface_bytes_per_pixel(backing.pixel_format);
@@ -827,14 +839,15 @@ Mbx2dHle::CpuWriteState Mbx2dHle::try_write_region(const ResolvedSurface& surfac
         return CpuWriteState::Failed;
     std::vector<std::byte> encoded(
         static_cast<std::size_t>(width) * backing_bytes_per_pixel);
-    auto mapping = !replaces_entire_surface && surface.host_surface
+    const auto needs_current = !replaces_entire_surface || gpu.has_value();
+    auto mapping = needs_current && surface.host_surface
                        ? surface.host_surface->try_map_current_cpu(
                              true, PerfCpuMapReason::SoftwareFallback)
                        : std::optional<HostSurface::CpuMapping> { };
     const auto damage = HostRectangle { static_cast<std::int32_t>(x),
         static_cast<std::int32_t>(y), static_cast<std::uint32_t>(width),
         static_cast<std::uint32_t>(height) };
-    if (!replaces_entire_surface && surface.host_surface) {
+    if (needs_current && surface.host_surface) {
         if (!mapping || (gpu && mapping->gpu_generation() != *gpu))
             return CpuWriteState::PendingGpu;
         mapping->set_damage(damage);
@@ -910,28 +923,36 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite(
     }
     auto destination_pixels =
         read_region(destination, x, y, width, height, call);
-    if (!destination_pixels || destination_pixels->size() != source.size()) {
+    if (!destination_pixels)
         return std::nullopt;
-    }
+    return composite_pixels(state.blend, source, std::move(*destination_pixels));
+}
+
+std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite_pixels(
+    const BlendState& blend, const std::vector<std::uint32_t>& source,
+    std::vector<std::uint32_t> destination_pixels)
+{
+    if (destination_pixels.size() != source.size())
+        return std::nullopt;
     const auto scale_byte = [](std::uint32_t value, std::uint32_t factor) {
         return (value * factor + 127U) / 255U;
     };
-    const auto alpha = static_cast<std::uint32_t>(state.blend.global_alpha);
+    const auto alpha = static_cast<std::uint32_t>(blend.global_alpha);
     const auto is_constant_alpha_crossfade =
-        !state.blend.complex &&
-        state.blend.source_factor ==
+        !blend.complex &&
+        blend.source_factor ==
             mbx2d_abi::layerkit_crossfade_source_word &&
-        state.blend.destination_factor ==
+        blend.destination_factor ==
             mbx2d_abi::layerkit_crossfade_destination_word;
     const auto is_straight_alpha_source_over =
-        state.blend.complex &&
-        state.blend.source_factor == mbx2d_abi::layerkit_mask_source_word &&
-        state.blend.destination_factor ==
+        blend.complex &&
+        blend.source_factor == mbx2d_abi::layerkit_mask_source_word &&
+        blend.destination_factor ==
             mbx2d_abi::layerkit_mask_destination_word &&
-        state.blend.operation == mbx2d_abi::layerkit_mask_operation_word;
+        blend.operation == mbx2d_abi::layerkit_mask_operation_word;
     for (std::size_t index = 0; index < source.size(); ++index) {
         const auto source_pixel = source[index];
-        const auto destination_pixel = (*destination_pixels)[index];
+        const auto destination_pixel = destination_pixels[index];
         if (is_constant_alpha_crossfade) {
             const auto inverse_alpha = 255U - alpha;
             std::uint32_t result { };
@@ -943,7 +964,7 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite(
                 result |= std::min(255U, source_channel + destination_channel)
                           << shift;
             }
-            (*destination_pixels)[index] = result;
+            destination_pixels[index] = result;
             continue;
         }
         const auto source_alpha = scale_byte(source_pixel >> 24U, alpha);
@@ -962,7 +983,7 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite(
         const auto destination_alpha =
             scale_byte(destination_pixel >> 24U, inverse_alpha);
         result |= std::min(255U, source_alpha + destination_alpha) << 24U;
-        (*destination_pixels)[index] = result;
+        destination_pixels[index] = result;
     }
     return destination_pixels;
 }
@@ -1274,7 +1295,6 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
             return;
         }
         if (!cpu && source->backing &&
-            !state->enabled_features.contains(mbx2d_abi::feature_blend) &&
             destination->host_surface && destination->core_surface_id != 0) {
             prepare_cpu_draw(call, context_api, *source, *destination,
                 static_cast<std::size_t>(region.width * region.height) *
@@ -1400,7 +1420,6 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
         return;
     }
     if (!cpu && source->backing &&
-        !state->enabled_features.contains(mbx2d_abi::feature_blend) &&
         destination->host_surface && destination->core_surface_id != 0) {
         BlitRegion output { 0, 0, region.destination_x, region.destination_y,
             output_width, output_height };

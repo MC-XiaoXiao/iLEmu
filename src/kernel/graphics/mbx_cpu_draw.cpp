@@ -20,6 +20,7 @@ struct Mbx2dHle::CpuDraw {
     std::shared_ptr<DisplayState> display;
     std::shared_ptr<GraphicsCallLease> lease;
     CpuContinuation continuation;
+    std::optional<BlendState> blend;
     HostRectangle rectangle { };
     std::uint64_t owner { };
     std::size_t bytes { };
@@ -83,6 +84,11 @@ try {
     cpu->owner = renderer_owner_;
     cpu->display = display_;
     cpu->context_api = context_api;
+    const auto* state = select_state(call, context_api);
+    if (!state)
+        throw std::runtime_error { "missing MBX CPU state" };
+    if (state->enabled_features.contains(mbx2d_abi::feature_blend))
+        cpu->blend = state->blend;
     cpu->bytes = bytes;
     cpu->continuation = std::move(continuation);
     cpu->lease = std::make_shared<GraphicsCallLease>();
@@ -141,7 +147,7 @@ try {
     const auto r = cpu->rectangle;
     const auto full = r.x == 0 && r.y == 0 && r.width == target.width &&
                       r.height == target.height;
-    if (!full && !gpu) {
+    if ((!full || cpu->blend) && !gpu) {
         const auto observed = target.host_surface->gpu_generation();
         const auto required = surface_store_->cpu_sync_required(
             target.core_surface_id, { });
@@ -150,14 +156,39 @@ try {
         if (!*required)
             gpu = observed;
     }
-    if (full || gpu) {
-        const auto written = try_write_region(target, r.x, r.y, r.width,
-            r.height, cpu->pixels, call, gpu);
-        if (written != CpuWriteState::PendingGpu) {
-            cpu->lease->consume();
-            call.set_return(written == CpuWriteState::Completed
-                                ? mbx2d_abi::success : mbx2d_abi::failure);
-            return;
+    if ((full && !cpu->blend) || gpu) {
+        // Source sampling/transformation is already owned. Only the target
+        // read/merge may be retried if another producer advances its boundary.
+        std::optional<std::vector<std::uint32_t>> blended;
+        bool target_current = true;
+        if (cpu->blend) {
+            {
+                auto current = target.host_surface->try_map_current_cpu(
+                    false, PerfCpuMapReason::SoftwareFallback);
+                target_current = current && current->gpu_generation() == *gpu;
+                if (target_current) {
+                    blended = read_guest_region(
+                        target, r.x, r.y, r.width, r.height, call);
+                    if (!blended)
+                        throw std::runtime_error { "unreadable MBX blend target" };
+                }
+            }
+            if (blended) {
+                blended = composite_pixels(
+                    *cpu->blend, cpu->pixels, std::move(*blended));
+                if (!blended)
+                    throw std::runtime_error { "invalid MBX blend output" };
+            }
+        }
+        if (target_current) {
+            const auto written = try_write_region(target, r.x, r.y, r.width,
+                r.height, blended ? *blended : cpu->pixels, call, gpu);
+            if (written != CpuWriteState::PendingGpu) {
+                cpu->lease->consume();
+                call.set_return(written == CpuWriteState::Completed
+                                    ? mbx2d_abi::success : mbx2d_abi::failure);
+                return;
+            }
         }
     }
     // Preserve the legacy partial-write visibility: publish real GPU contents

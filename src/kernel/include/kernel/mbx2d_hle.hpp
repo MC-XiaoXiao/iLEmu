@@ -206,6 +206,12 @@ private:
     [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_region(
         const ResolvedSurface& surface, std::int64_t x, std::int64_t y,
         std::int64_t width, std::int64_t height, UserlandHleCall& call) const;
+    [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_guest_region(
+        const ResolvedSurface& surface, std::int64_t x, std::int64_t y,
+        std::int64_t width, std::int64_t height, UserlandHleCall& call) const;
+    [[nodiscard]] static std::optional<std::vector<std::uint32_t>> composite_pixels(
+        const BlendState& blend, const std::vector<std::uint32_t>& source,
+        std::vector<std::uint32_t> destination);
     enum class CpuWriteState { Completed, PendingGpu, Failed };
     [[nodiscard]] CpuWriteState try_write_region(const ResolvedSurface& surface,
         std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
