@@ -7,8 +7,10 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -152,9 +154,21 @@ private:
     void set_feature(UserlandHleCall& call, bool context_api, bool enabled);
     void blit_color(UserlandHleCall& call, bool context_api);
     void blit_copy(UserlandHleCall& call, bool context_api);
+    void execute_blit_copy(UserlandHleCall& call, bool context_api,
+        const ResolvedSurface& source, const ResolvedSurface& destination);
+    using SourceContinuation = std::function<void(UserlandHleCall&,
+        const ResolvedSurface&, const ResolvedSurface&)>;
+    void import_source(UserlandHleCall& call, bool context_api,
+        ResolvedSurface source, ResolvedSurface destination,
+        SourceContinuation continuation);
     void quad_color(UserlandHleCall& call);
     void quad_copy(UserlandHleCall& call, bool context_api = false,
         bool perspective_api = false);
+    void execute_quad_copy(UserlandHleCall& call, bool context_api,
+        const ResolvedSurface& source, const ResolvedSurface& destination,
+        const std::array<HostPoint, 4>& positions,
+        const std::array<HostPoint, 4>& texture,
+        const std::array<float, 4>& perspective, bool source_imported = false);
     struct FlushPlan;
     void flush_surfaces(UserlandHleCall& call);
     void await_flush_surfaces(UserlandHleCall& call,
@@ -163,7 +177,7 @@ private:
     void terminate(UserlandHleCall& call);
     [[nodiscard]] std::optional<ResolvedSurface> resolve(
         const std::optional<Binding>& binding) const;
-    [[nodiscard]] bool synchronize_host_source(
+    [[nodiscard]] SurfaceStore::CpuImportResult synchronize_host_source(
         UserlandHleCall& call, const ResolvedSurface& surface) const;
     [[nodiscard]] bool source_surface_allowed(
         const ResolvedSurface& surface) const;

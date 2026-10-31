@@ -563,16 +563,16 @@ std::optional<Mbx2dHle::ResolvedSurface> Mbx2dHle::resolve(
         backing->width, backing->height, binding->surface };
 }
 
-bool Mbx2dHle::synchronize_host_source(
+SurfaceStore::CpuImportResult Mbx2dHle::synchronize_host_source(
     UserlandHleCall& call, const ResolvedSurface& surface) const
 {
     if (!surface.host_surface || surface.core_surface_id == 0)
-        return true;
+        return SurfaceStore::CpuImportResult::Completed;
     // LayerKit can retain an MBX handle across multiple guest-side revisions
     // without issuing another FlushSurfaces call. Publish exact guest changes
     // when that handle is consumed, preserving unrelated GPU-owned pixels.
     const auto started = std::chrono::steady_clock::now();
-    const auto synchronized = surface_store_->synchronize_from_guest(
+    const auto synchronized = surface_store_->try_synchronize_from_guest(
         call.memory(), surface.core_surface_id);
     performance_counters().record_diagnostic_graphics_hle(
         PerfDiagnosticGraphicsHleKind::SynchronizeHostSource,
@@ -1123,13 +1123,12 @@ void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
 }
 
 void Mbx2dHle::blit_copy(UserlandHleCall& call, bool context_api)
-{
+try {
     auto* state = select_state(call, context_api);
     if (state == nullptr) {
         call.set_return(mbx_failure);
         return;
     }
-    const auto first = context_api ? 1U : 0U;
     const auto source = resolve_source(call, state->source);
     const auto destination = resolve(state->destination);
     if (!source || !destination) {
@@ -1140,16 +1139,47 @@ void Mbx2dHle::blit_copy(UserlandHleCall& call, bool context_api)
         call.set_return(mbx_success);
         return;
     }
+    const auto imported = synchronize_host_source(call, *source);
+    if (imported == SurfaceStore::CpuImportResult::PendingGpu) {
+        import_source(call, context_api, *source, *destination,
+            [this, context_api](UserlandHleCall& resumed,
+                const ResolvedSurface& ready_source,
+                const ResolvedSurface& ready_destination) {
+                execute_blit_copy(
+                    resumed, context_api, ready_source, ready_destination);
+            });
+        return;
+    }
+    if (imported != SurfaceStore::CpuImportResult::Completed) {
+        call.set_return(mbx_failure);
+        return;
+    }
+    execute_blit_copy(call, context_api, *source, *destination);
+} catch (...) {
+    call.set_return(mbx_failure);
+}
+
+void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
+    const ResolvedSurface& source_surface,
+    const ResolvedSurface& destination_surface)
+{
+    const auto* source = &source_surface;
+    const auto* destination = &destination_surface;
+    const auto* state = select_state(call, context_api);
+    if (!state) {
+        call.set_return(mbx_failure);
+        return;
+    }
+    const auto first = context_api ? 1U : 0U;
     BlitRegion region { signed_argument(call, first),
         signed_argument(call, first + 1U), signed_argument(call, first + 2U),
         signed_argument(call, first + 3U), signed_argument(call, first + 4U),
         signed_argument(call, first + 5U) };
     const auto composite_mode = host_composite_mode(*state);
-    const auto host_source_current = synchronize_host_source(call, *source);
     const auto try_host_copy = [&](HostRectangle source_rectangle,
                                    HostRectangle destination_rectangle,
                                    HostRotation rotation) {
-        if (!host_graphics_->accelerated() || !host_source_current ||
+        if (!host_graphics_->accelerated() ||
             !source->host_surface || !destination->host_surface ||
             !source->backing || !destination->backing ||
             source->backing->pixel_format != surface_pixel_format_bgra ||

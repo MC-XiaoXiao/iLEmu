@@ -29,10 +29,7 @@
 namespace ilemu {
 namespace {
 
-    struct Point {
-        float x { };
-        float y { };
-    };
+    using Point = HostPoint;
 
     constexpr float edge_tolerance = 0.01F;
     constexpr std::uint64_t maximum_quad_pixels = 16U * 1024U * 1024U;
@@ -321,7 +318,7 @@ void Mbx2dHle::quad_copy(
         call.set_return(mbx2d_abi::failure);
         return;
     }
-    auto& state = *selected_state;
+    const auto& state = *selected_state;
     const auto first_argument = context_api ? 1U : 0U;
     const auto source = resolve_source(call, state.source);
     const auto destination = resolve(state.destination);
@@ -347,6 +344,27 @@ void Mbx2dHle::quad_copy(
         return;
     }
 
+    execute_quad_copy(call, context_api, *source, *destination,
+        *positions, *texture, perspective);
+}
+
+void Mbx2dHle::execute_quad_copy(UserlandHleCall& call, bool context_api,
+    const ResolvedSurface& source_surface,
+    const ResolvedSurface& destination_surface,
+    const std::array<HostPoint, 4>& position_values,
+    const std::array<HostPoint, 4>& texture_values,
+    const std::array<float, 4>& perspective, bool source_imported)
+try {
+    const auto* selected_state = select_state(call, context_api);
+    if (!selected_state) {
+        call.set_return(mbx2d_abi::failure);
+        return;
+    }
+    const auto& state = *selected_state;
+    const auto* source = &source_surface;
+    const auto* destination = &destination_surface;
+    const auto* positions = &position_values;
+    const auto* texture = &texture_values;
     auto left_value = (*positions)[0].x;
     auto right_value = left_value;
     auto top_value = (*positions)[0].y;
@@ -486,7 +504,24 @@ void Mbx2dHle::quad_copy(
         nearly_equal(top_value, static_cast<float>(unclipped_top)) &&
         nearly_equal(bottom_value, static_cast<float>(unclipped_bottom));
     const auto composite_mode = host_composite_mode(state);
-    const auto host_source_current = synchronize_host_source(call, *source);
+    if (!source_imported) {
+        const auto imported = synchronize_host_source(call, *source);
+        if (imported == SurfaceStore::CpuImportResult::PendingGpu) {
+            import_source(call, context_api, *source, *destination,
+                [this, context_api, position_values, texture_values, perspective](
+                    UserlandHleCall& resumed, const ResolvedSurface& ready_source,
+                    const ResolvedSurface& ready_destination) {
+                    execute_quad_copy(resumed, context_api, ready_source,
+                        ready_destination, position_values, texture_values,
+                        perspective, true);
+                });
+            return;
+        }
+        if (imported != SurfaceStore::CpuImportResult::Completed) {
+            call.set_return(mbx2d_abi::failure);
+            return;
+        }
+    }
     const auto encode_host_rectangle = [&] {
         const auto started = std::chrono::steady_clock::now();
         const auto encoded = command_encoder_->copy(source->host_surface,
@@ -510,7 +545,7 @@ void Mbx2dHle::quad_copy(
     };
     if (axis_aligned_affine && host_rotation && destination_unclipped &&
         destination_integral && host_graphics_->accelerated() &&
-        host_source_current && source->host_surface &&
+        source->host_surface &&
         destination->host_surface && source->backing && destination->backing &&
         source->backing->pixel_format == surface_pixel_format_bgra &&
         destination->backing->pixel_format == surface_pixel_format_bgra &&
@@ -534,7 +569,7 @@ void Mbx2dHle::quad_copy(
     }
     const auto ordered_geometry = triangles_share_only_diagonal(*positions);
     const auto host_ready =
-        host_graphics_->accelerated() && host_source_current &&
+        host_graphics_->accelerated() &&
         source->host_surface && destination->host_surface && source->backing &&
         destination->backing &&
         source->backing->pixel_format == surface_pixel_format_bgra &&
@@ -674,6 +709,8 @@ void Mbx2dHle::quad_copy(
         write_region(*destination, left, top, width, height, *pixels, call)
             ? mbx2d_abi::success
             : mbx2d_abi::failure);
+} catch (...) {
+    call.set_return(mbx2d_abi::failure);
 }
 
 } // namespace ilemu

@@ -177,4 +177,79 @@ try {
 } catch (...) {
     fail_import(call, lease);
 }
+void Mbx2dHle::import_source(UserlandHleCall& call, bool context_api,
+    ResolvedSurface source, ResolvedSurface destination,
+    SourceContinuation continuation)
+try {
+    const auto observe = [&call](const ResolvedSurface& surface) {
+        return surface.backing ? call.memory().observe_mapping(
+                                     surface.backing->base,
+                                     surface.backing->allocation_size)
+                               : AddressSpace::MappingObservation { };
+    };
+    const auto source_mapping = observe(source);
+    const auto destination_mapping = observe(destination);
+    const auto owner = renderer_owner_;
+    const auto display = display_;
+    auto lease = std::make_shared<GraphicsCallLease>();
+    lease->owner = call.cpu().processor_id();
+    sync_lease_ = lease;
+    const auto id = source.core_surface_id;
+    try {
+        SurfaceGuestImport::run(call, surface_store_, id,
+            [this, context_api, owner, display, source = std::move(source),
+                destination = std::move(destination), source_mapping,
+                destination_mapping, lease, continuation = std::move(continuation)](
+                UserlandHleCall& resumed,
+                bool succeeded) {
+                try {
+                    const auto* state = select_state(resumed, context_api);
+                    const auto live = [](const ResolvedSurface& expected,
+                                          const std::optional<ResolvedSurface>& current,
+                                          const AddressSpace::MappingObservation& mapping) {
+                        if (!current ||
+                            expected.surface_handle != current->surface_handle ||
+                            expected.core_surface_id != current->core_surface_id ||
+                            expected.host_surface != current->host_surface ||
+                            expected.width != current->width ||
+                            expected.height != current->height ||
+                            expected.framebuffer != current->framebuffer ||
+                            expected.backing.has_value() != current->backing.has_value())
+                            return false;
+                        if (!expected.backing)
+                            return true;
+                        const auto& a = *expected.backing;
+                        const auto& b = *current->backing;
+                        return mapping.valid() && a.base == b.base &&
+                               a.allocation_size == b.allocation_size &&
+                               a.bytes_per_row == b.bytes_per_row &&
+                               a.pixel_format == b.pixel_format &&
+                               a.provenance.publication_sequence ==
+                                   b.provenance.publication_sequence;
+                    };
+                    // The existing MBX gate preserves both bindings/state.
+                    // Mapping and publication checks additionally exclude
+                    // unmap/remap and shared backing replacement during wait.
+                    if (!succeeded || owner != renderer_owner_ || !state ||
+                        lease->cancelled || display != display_ ||
+                        !live(source, resolve(state->source), source_mapping) ||
+                        !live(destination, resolve(state->destination),
+                            destination_mapping)) {
+                        fail_import(resumed, lease);
+                        return;
+                    }
+                    continuation(resumed, source, destination);
+                    lease->consume();
+                } catch (...) {
+                    fail_import(resumed, lease);
+                }
+            },
+            lease);
+    } catch (...) {
+        fail_import(call, lease);
+    }
+} catch (...) {
+    call.set_return(mbx2d_abi::failure);
+}
+
 } // namespace ilemu
