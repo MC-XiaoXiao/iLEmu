@@ -250,13 +250,21 @@ void OpenGlesHle::reset()
     unsupported_trace_count_ = 0;
 }
 
-void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
+void OpenGlesHle::inherit_state(const OpenGlesHle& parent,
+    std::uint32_t parent_pid, std::uint32_t child_pid)
 {
     sync_lease_.reset();
     release_renderer_resources();
     threads_ = parent.threads_;
     contexts_ = parent.contexts_;
-    eagl_contexts_ = parent.eagl_contexts_;
+    eagl_contexts_.clear();
+    // Guest object addresses survive fork, while their process namespace
+    // changes. Public EAGL calls and the inherited driver handles must resolve
+    // the same copied context, including framebuffer and thread-local state.
+    for (const auto& [object, context] : parent.eagl_contexts_)
+        if (object.first == parent_pid)
+            eagl_contexts_.emplace(
+                std::pair { child_pid, object.second }, context);
     eagl_context_abi_ = parent.eagl_context_abi_;
     dispatch_hle_->inherit_state(*parent.dispatch_hle_);
     surfaces_ = parent.surfaces_;
@@ -743,7 +751,8 @@ bool OpenGlesHle::attach_eagl_window_surface(UserlandHleCall& call,
 }
 
 std::optional<OpenGlesHle::RenderTargetBinding>
-OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
+OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context,
+    bool writable)
 {
     if (context.bound_framebuffer != 0U) {
         const auto framebuffer =
@@ -765,7 +774,8 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
         }
         auto host_surface =
             resources_.ensure_texture_render_target(texture, 0U, renderer_,
-                renderer_lifetime_, renderer_owner_, texture_render_target_namespace);
+                renderer_lifetime_, renderer_owner_, texture_render_target_namespace,
+                writable);
         if (!host_surface)
             return std::nullopt;
         const auto renderbuffer =
@@ -1359,7 +1369,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     if ((program_draw ? static_cast<std::size_t>(count) : vertices.size()) <
         GlesPrimitiveAssembler::minimum_vertex_count(mode))
         return;
-    const auto binding = resolve_render_target(call, *context);
+    const auto binding = resolve_render_target(call, *context, true);
     if (!binding) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
@@ -2913,7 +2923,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             ++context->depth_generation;
         if ((mask & gles_abi::color_buffer_bit) == 0)
             return;
-        const auto binding = resolve_render_target(call, *context);
+        const auto binding = resolve_render_target(call, *context, true);
         if (!binding) {
             set_gl_error(call, gles_abi::invalid_operation);
             return;
@@ -2983,7 +2993,17 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 }
             }
         }
-        if (!renderer_->synchronize(*frame, target)) {
+        if (binding->host_surface) {
+            // Native frames carry dimensions and a surface, not CPU pixels.
+            // Private GPU inputs were captured at the guest wait boundary.
+            auto mapping = binding->host_surface->try_map_current_cpu(
+                false, PerfCpuMapReason::SoftwareFallback);
+            if (!mapping) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+            *frame = mapping->frame();
+        } else if (!renderer_->synchronize(*frame, target)) {
             set_gl_error(call, gles_abi::invalid_operation);
             return;
         }

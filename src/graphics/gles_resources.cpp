@@ -1060,11 +1060,27 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
     return gles_abi::no_error;
 }
 
+bool GlesResourceStore::needs_texture_render_target(std::uint32_t name,
+    std::uint32_t level, bool writable) const
+{
+    const auto* object = texture(name);
+    if (!object)
+        return false;
+    const auto found = object->levels.find(level);
+    if (found == object->levels.end())
+        return false;
+    const auto& image = found->second;
+    return !image.host_surface || !image.native_lifetime ||
+           image.host_surface->descriptor().width != image.width ||
+           image.host_surface->descriptor().height != image.height ||
+           (writable && image.native_lifetime.use_count() > 1);
+}
+
 std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
     std::uint32_t name, std::uint32_t level_index,
     std::shared_ptr<GlesRenderer> renderer,
     std::shared_ptr<GlesRendererOwner> lifetime,
-    std::uint64_t owner, std::uint64_t target_namespace)
+    std::uint64_t owner, std::uint64_t target_namespace, bool writable)
 {
     auto texture = textures_.find(name);
     if (!renderer || !lifetime || name == 0U || texture == textures_.end())
@@ -1080,11 +1096,12 @@ std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
     const auto descriptor = HostSurfaceDescriptor { level->second.width,
         level->second.height, level->second.width * 4U,
         surface_pixel_format_bgra, PerfSurfaceKind::GlesRenderTarget };
-    if (!level->second.host_surface ||
-        level->second.host_surface->key().owner != owner ||
-        !level->second.native_lifetime ||
-        level->second.host_surface->descriptor().width != descriptor.width ||
-        level->second.host_surface->descriptor().height != descriptor.height) {
+    if (needs_texture_render_target(name, level_index, writable)) {
+        if (level->second.host_surface &&
+            level->second.argb_generation !=
+                std::max(level->second.host_surface->cpu_generation(),
+                    level->second.host_surface->gpu_generation()))
+            return nullptr; // The guest preparation boundary must capture first.
         // Names may be reused while another fork or host packet still owns
         // the old image. Reserve a new identity from the existing revision
         // sequence rather than deriving physical identity from the GL name.

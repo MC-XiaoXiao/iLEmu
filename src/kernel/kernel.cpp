@@ -3031,7 +3031,8 @@ void CompatibilityKernel::inherit_process_state(
         apple80211_hle_.inherit_state(
             parent.apple80211_hle_, parent.process_.pid, child_pid);
         core_surface_hle_.inherit_state(parent.core_surface_hle_);
-        opengles_hle_.inherit_state(parent.opengles_hle_);
+        opengles_hle_.inherit_state(
+            parent.opengles_hle_, parent.process_.pid, child_pid);
         mbx2d_hle_.inherit_state(parent.mbx2d_hle_);
         mobile_framebuffer_hle_.inherit_state(parent.mobile_framebuffer_hle_);
     }

@@ -58,7 +58,8 @@ public:
     void retire_thread(std::size_t processor);
     void service_graphics_completions(bool process_live = true);
     void cancel_pending_work();
-    void inherit_state(const OpenGlesHle& parent);
+    void inherit_state(const OpenGlesHle& parent,
+        std::uint32_t parent_pid, std::uint32_t child_pid);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_guest_capabilities(OpenGlesGuestCapabilitySet profile);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
@@ -289,8 +290,14 @@ private:
         ContextState& context, std::uint32_t renderbuffer, std::uint32_t window,
         std::uint32_t surface);
     [[nodiscard]] bool needs_target_allocation(UserlandHleCall& call);
+    struct TextureTargetInput;
+    [[nodiscard]] bool prepare_texture_target(UserlandHleCall& call,
+        const UserlandHleRegistry::Handler& handler);
+    void await_texture_target(UserlandHleCall& call,
+        std::shared_ptr<TextureTargetInput> pending,
+        UserlandHleRegistry::Handler handler);
     [[nodiscard]] std::optional<RenderTargetBinding> resolve_render_target(
-        UserlandHleCall& call, ContextState& context);
+        UserlandHleCall& call, ContextState& context, bool writable = false);
     [[nodiscard]] GlesRenderTargetKey render_target_key(
         std::uint32_t surface) const;
     void release_renderer_resources();

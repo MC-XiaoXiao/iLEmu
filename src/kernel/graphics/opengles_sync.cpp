@@ -166,10 +166,10 @@ bool OpenGlesHle::needs_target_allocation(UserlandHleCall& call)
     if (image.surface_id || !image.width || !image.height ||
         image.argb.size() != static_cast<std::uint64_t>(image.width) * image.height)
         return false;
-    return !image.host_surface || !image.native_lifetime ||
-           image.host_surface->key().owner != renderer_owner_ ||
-           image.host_surface->descriptor().width != image.width ||
-           image.host_surface->descriptor().height != image.height;
+    const auto writable = symbol == "_glClear" || symbol == "_glDrawArrays" ||
+                          symbol == "_glDrawElements";
+    return resources_.needs_texture_render_target(
+        framebuffer->second.color_texture, 0U, writable);
 }
 
 void OpenGlesHle::await_graphics_call(
@@ -234,7 +234,8 @@ void OpenGlesHle::await_graphics_call(
         await_program_flush(call, std::move(handler));
         return;
     }
-    handler(call);
+    if (!prepare_texture_target(call, handler))
+        handler(call);
 }
 
 void OpenGlesHle::await_program_flush(

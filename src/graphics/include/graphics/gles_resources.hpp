@@ -99,11 +99,13 @@ public:
         std::uint32_t surface_id, bool render_target_inverted_vertical);
     [[nodiscard]] std::uint32_t refresh_surface_texture(
         AddressSpace& memory, std::uint32_t name, const SurfaceStore& surfaces);
+    [[nodiscard]] bool needs_texture_render_target(std::uint32_t name,
+        std::uint32_t level, bool writable) const;
     [[nodiscard]] std::shared_ptr<HostSurface> ensure_texture_render_target(
         std::uint32_t name, std::uint32_t level,
         std::shared_ptr<GlesRenderer> renderer,
         std::shared_ptr<GlesRendererOwner> lifetime, std::uint64_t owner,
-        std::uint64_t target_namespace);
+        std::uint64_t target_namespace, bool writable);
     [[nodiscard]] bool commit_texture_render_target(std::uint32_t name,
         std::uint32_t level, std::span<const std::uint32_t> pixels);
     void update_texture_render_target_generation(
