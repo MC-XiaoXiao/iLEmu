@@ -5,6 +5,7 @@
 #include "kernel/mbx2d_hle.hpp"
 
 #include "foundation/cpu.hpp"
+#include "graphics/display.hpp"
 #include "surface_guest_import.hpp"
 
 #include <stdexcept>
@@ -179,7 +180,7 @@ try {
 }
 void Mbx2dHle::import_source(UserlandHleCall& call, bool context_api,
     ResolvedSurface source, ResolvedSurface destination,
-    SourceContinuation continuation)
+    SourceContinuation continuation, bool capture_pixels)
 try {
     const auto observe = [&call](const ResolvedSurface& surface) {
         return surface.backing ? call.memory().observe_mapping(
@@ -196,12 +197,13 @@ try {
     sync_lease_ = lease;
     const auto id = source.core_surface_id;
     try {
-        SurfaceGuestImport::run(call, surface_store_, id,
-            [this, context_api, owner, display, source = std::move(source),
+        auto completed =
+            [this, context_api, owner, display, capture_pixels,
+                source = std::move(source),
                 destination = std::move(destination), source_mapping,
                 destination_mapping, lease, continuation = std::move(continuation)](
-                UserlandHleCall& resumed,
-                bool succeeded) {
+                UserlandHleCall& resumed, bool succeeded,
+                std::vector<std::uint32_t> pixels) mutable {
                 try {
                     const auto* state = select_state(resumed, context_api);
                     const auto live = [](const ResolvedSurface& expected,
@@ -238,13 +240,38 @@ try {
                         fail_import(resumed, lease);
                         return;
                     }
+                    if (capture_pixels) {
+                        if (pixels.size() !=
+                            static_cast<std::uint64_t>(source.width) * source.height)
+                            throw std::runtime_error { "invalid MBX source image" };
+                        source.cpu_frame = std::make_shared<DisplayFrame>(
+                            DisplayFrame { source.width, source.height, 0,
+                                std::move(pixels) });
+                    }
                     continuation(resumed, source, destination);
                     lease->consume();
                 } catch (...) {
                     fail_import(resumed, lease);
                 }
-            },
-            lease);
+            };
+        if (capture_pixels) {
+            SurfaceGuestImport::read(call, surface_store_, id,
+                [completed = std::move(completed)](UserlandHleCall& resumed,
+                    std::optional<std::vector<std::uint32_t>> pixels) mutable {
+                    const auto succeeded = pixels.has_value();
+                    completed(resumed, succeeded,
+                        succeeded ? std::move(*pixels)
+                                  : std::vector<std::uint32_t> { });
+                },
+                lease);
+        } else {
+            SurfaceGuestImport::run(call, surface_store_, id,
+                [completed = std::move(completed)](
+                    UserlandHleCall& resumed, bool succeeded) mutable {
+                    completed(resumed, succeeded, { });
+                },
+                lease);
+        }
     } catch (...) {
         fail_import(call, lease);
     }

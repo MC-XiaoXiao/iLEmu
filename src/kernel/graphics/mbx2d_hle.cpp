@@ -675,6 +675,22 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
         return std::nullopt;
     }
     std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
+    if (surface.cpu_frame && surface.backing &&
+        (surface.backing->pixel_format == surface_pixel_format_bgra ||
+            surface_is_packed_555(surface.backing->pixel_format))) {
+        const auto& frame = *surface.cpu_frame;
+        if (frame.width != surface.width || frame.height != surface.height ||
+            frame.pixels.size() !=
+                static_cast<std::uint64_t>(frame.width) * frame.height)
+            return std::nullopt;
+        for (std::int64_t row = 0; row < height; ++row) {
+            const auto offset = static_cast<std::size_t>((y + row) * frame.width + x);
+            std::copy_n(frame.pixels.begin() + static_cast<std::ptrdiff_t>(offset),
+                static_cast<std::size_t>(width),
+                pixels.begin() + static_cast<std::ptrdiff_t>(row * width));
+        }
+        return pixels;
+    }
     if (surface.framebuffer) {
         if (!display_)
             return std::nullopt;
@@ -1179,7 +1195,7 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
     const auto try_host_copy = [&](HostRectangle source_rectangle,
                                    HostRectangle destination_rectangle,
                                    HostRotation rotation) {
-        if (!host_graphics_->accelerated() ||
+        if (source->cpu_frame || !host_graphics_->accelerated() ||
             !source->host_surface || !destination->host_surface ||
             !source->backing || !destination->backing ||
             source->backing->pixel_format != surface_pixel_format_bgra ||
@@ -1228,6 +1244,17 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
                     static_cast<std::uint32_t>(region.height) },
                 HostRotation::Identity)) {
             call.set_return(mbx_success);
+            return;
+        }
+        if (!source->cpu_frame && source->core_surface_id != 0 &&
+            source->host_surface && source->host_surface->gpu_generation() != 0) {
+            import_source(call, context_api, *source, *destination,
+                [this, context_api](UserlandHleCall& resumed,
+                    const ResolvedSurface& ready_source,
+                    const ResolvedSurface& ready_destination) {
+                    execute_blit_copy(resumed, context_api, ready_source, ready_destination);
+                },
+                true);
             return;
         }
         const auto source_pixels = read_region(*source, region.source_x,
@@ -1319,6 +1346,17 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
                 static_cast<std::uint32_t>(output_height) },
             *host_rotation)) {
         call.set_return(mbx_success);
+        return;
+    }
+    if (!source->cpu_frame && source->core_surface_id != 0 &&
+        source->host_surface && source->host_surface->gpu_generation() != 0) {
+        import_source(call, context_api, *source, *destination,
+            [this, context_api](UserlandHleCall& resumed,
+                const ResolvedSurface& ready_source,
+                const ResolvedSurface& ready_destination) {
+                execute_blit_copy(resumed, context_api, ready_source, ready_destination);
+            },
+            true);
         return;
     }
     const auto source_pixels = read_region(*source, region.source_x,

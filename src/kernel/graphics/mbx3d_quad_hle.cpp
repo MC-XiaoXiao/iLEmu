@@ -544,7 +544,7 @@ try {
         return encoded;
     };
     if (axis_aligned_affine && host_rotation && destination_unclipped &&
-        destination_integral && host_graphics_->accelerated() &&
+        destination_integral && !source->cpu_frame && host_graphics_->accelerated() &&
         source->host_surface &&
         destination->host_surface && source->backing && destination->backing &&
         source->backing->pixel_format == surface_pixel_format_bgra &&
@@ -569,7 +569,7 @@ try {
     }
     const auto ordered_geometry = triangles_share_only_diagonal(*positions);
     const auto host_ready =
-        host_graphics_->accelerated() &&
+        !source->cpu_frame && host_graphics_->accelerated() &&
         source->host_surface && destination->host_surface && source->backing &&
         destination->backing &&
         source->backing->pixel_format == surface_pixel_format_bgra &&
@@ -611,10 +611,25 @@ try {
             return;
         }
     }
-    performance_counters().record_hle(native_quad_attempted
-                                          ? "QuadCopy.NativeQuadDeclined"
-                                          : "QuadCopy.NativeQuadIneligible",
-        0);
+    if (!source->cpu_frame) {
+        performance_counters().record_hle(native_quad_attempted
+                                              ? "QuadCopy.NativeQuadDeclined"
+                                              : "QuadCopy.NativeQuadIneligible",
+            0);
+    }
+    if (!source->cpu_frame && source->core_surface_id != 0 &&
+        source->host_surface && source->host_surface->gpu_generation() != 0) {
+        import_source(call, context_api, *source, *destination,
+            [this, context_api, position_values, texture_values, perspective](
+                UserlandHleCall& resumed, const ResolvedSurface& ready_source,
+                const ResolvedSurface& ready_destination) {
+                execute_quad_copy(resumed, context_api, ready_source,
+                    ready_destination, position_values, texture_values,
+                    perspective, true);
+            },
+            true);
+        return;
+    }
     performance_counters().record_hle("QuadCopy.Software", 0);
     const auto source_pixels = read_region(
         *source, source_left, source_top, source_width, source_height, call);

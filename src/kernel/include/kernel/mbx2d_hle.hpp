@@ -123,6 +123,8 @@ private:
         std::uint32_t width { };
         std::uint32_t height { };
         std::uint32_t surface_handle { };
+        // Core-owned software input; never sent to the renderer or guest.
+        std::shared_ptr<const DisplayFrame> cpu_frame { };
     };
     struct BlitRegion {
         std::int64_t source_x { };
@@ -160,7 +162,7 @@ private:
         const ResolvedSurface&, const ResolvedSurface&)>;
     void import_source(UserlandHleCall& call, bool context_api,
         ResolvedSurface source, ResolvedSurface destination,
-        SourceContinuation continuation);
+        SourceContinuation continuation, bool capture_pixels = false);
     void quad_color(UserlandHleCall& call);
     void quad_copy(UserlandHleCall& call, bool context_api = false,
         bool perspective_api = false);

@@ -23,16 +23,25 @@ struct SurfaceGuestImport::Pending {
     std::shared_ptr<HostSurface> surface;
     std::shared_ptr<GlesValueResult<SurfaceCpuReadback>> host;
     Completion completion;
+    ReadCompletion read_completion;
     std::shared_ptr<GraphicsCallLease> lease;
     std::size_t bytes { };
     bool consumed { };
 
-    void finish(UserlandHleCall& call, bool succeeded)
+    void finish(UserlandHleCall& call, bool succeeded,
+        std::vector<std::uint32_t> pixels = { })
     {
         if (std::exchange(consumed, true))
             return;
-        auto callback = std::move(completion);
-        callback(call, succeeded);
+        if (read_completion) {
+            auto callback = std::move(read_completion);
+            callback(call, succeeded
+                               ? std::optional { std::move(pixels) }
+                               : std::nullopt);
+        } else {
+            auto callback = std::move(completion);
+            callback(call, succeeded);
+        }
     }
 };
 
@@ -44,6 +53,23 @@ void SurfaceGuestImport::run(UserlandHleCall& call,
     pending->store = std::move(store);
     pending->completion = std::move(completion);
     pending->lease = std::move(lease);
+    start(call, std::move(pending), id);
+}
+
+void SurfaceGuestImport::read(UserlandHleCall& call,
+    std::shared_ptr<SurfaceStore> store, std::uint32_t id,
+    ReadCompletion completion, std::shared_ptr<GraphicsCallLease> lease)
+{
+    auto pending = std::make_shared<Pending>();
+    pending->store = std::move(store);
+    pending->read_completion = std::move(completion);
+    pending->lease = std::move(lease);
+    start(call, std::move(pending), id);
+}
+
+void SurfaceGuestImport::start(UserlandHleCall& call,
+    std::shared_ptr<Pending> pending, std::uint32_t id)
+{
     try {
         const auto backing = pending->store->find(id);
         if (!backing)
@@ -92,12 +118,22 @@ try {
         pending->host.reset();
     }
     if (!pending->host) {
-        const auto imported = pending->store->try_synchronize_from_guest(
-            call.memory(), expected.id);
-        if (imported != SurfaceStore::CpuImportResult::PendingGpu) {
-            pending->finish(
-                call, imported == SurfaceStore::CpuImportResult::Completed);
-            return;
+        if (pending->read_completion) {
+            auto read = pending->store->try_read_argb(call.memory(), expected.id);
+            if (read.state != SurfaceStore::CpuReadResult::State::PendingGpu) {
+                pending->finish(call,
+                    read.state == SurfaceStore::CpuReadResult::State::Completed,
+                    std::move(read.pixels));
+                return;
+            }
+        } else {
+            const auto imported = pending->store->try_synchronize_from_guest(
+                call.memory(), expected.id);
+            if (imported != SurfaceStore::CpuImportResult::PendingGpu) {
+                pending->finish(
+                    call, imported == SurfaceStore::CpuImportResult::Completed);
+                return;
+            }
         }
         // The readback budget limits only pending GPU payloads. CPU-only
         // imports keep the existing SurfaceStore allocation-size limits.
