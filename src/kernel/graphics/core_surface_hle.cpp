@@ -160,6 +160,9 @@ void CoreSurfaceHle::reset()
     free_client_buffers_.clear();
     free_imported_mappings_.clear();
     unsupported_trace_count_ = 0;
+    discard_default_scanout();
+    last_scanout_publication_ = 0;
+    last_scanout_gpu_generation_ = 0;
     last_scanout_generation_.reset();
     last_scanout_pixels_.clear();
     surfaces_->reset();
@@ -175,6 +178,9 @@ void CoreSurfaceHle::inherit_state(const CoreSurfaceHle& parent)
     clients_by_id_ = parent.clients_by_id_;
     free_client_buffers_ = parent.free_client_buffers_;
     free_imported_mappings_ = parent.free_imported_mappings_;
+    discard_default_scanout();
+    last_scanout_publication_ = parent.last_scanout_publication_;
+    last_scanout_gpu_generation_ = parent.last_scanout_gpu_generation_;
     last_scanout_generation_ = parent.last_scanout_generation_;
     last_scanout_pixels_ = parent.last_scanout_pixels_;
     presentation_tracker_ = parent.presentation_tracker_;
@@ -183,6 +189,10 @@ void CoreSurfaceHle::inherit_state(const CoreSurfaceHle& parent)
 
 void CoreSurfaceHle::set_display(std::shared_ptr<DisplayState> display)
 {
+    if (display_ != display) {
+        discard_default_scanout();
+        last_scanout_generation_.reset();
+    }
     display_ = std::move(display);
 }
 
@@ -209,59 +219,6 @@ void CoreSurfaceHle::set_surface_port_handlers(
 {
     create_surface_port_ = std::move(create);
     lookup_surface_port_ = std::move(lookup);
-}
-
-bool CoreSurfaceHle::refresh_default_scanout(
-    AddressSpace& memory, std::uint32_t owner_process_id)
-{
-    if (!display_)
-        return false;
-    const auto backing =
-        surfaces_->find(iokit_abi::mobile_framebuffer_default_surface_id);
-    if (!backing)
-        return false;
-    const auto generation =
-        memory.range_write_generation(backing->base, backing->allocation_size);
-    if (!generation || generation == last_scanout_generation_)
-        return false;
-    last_scanout_generation_ = generation;
-    const auto pixels = surfaces_->read_argb(
-        memory, iokit_abi::mobile_framebuffer_default_surface_id);
-    if (!pixels || pixels->empty() || *pixels == last_scanout_pixels_) {
-        return false;
-    }
-
-    // A freshly allocated CoreSurface is zero-filled.  Do not replace the
-    // display's opaque-black power-on frame until the firmware has actually
-    // rendered something into the LCD backing store.
-    if (std::none_of(pixels->begin(), pixels->end(),
-            [](std::uint32_t pixel) { return pixel != 0; })) {
-        last_scanout_pixels_ = *pixels;
-        return false;
-    }
-
-    std::optional<ApplicationDisplay> profile;
-    if (shared_state_) {
-        std::lock_guard lock { shared_state_->mach_mutex };
-        const auto process = shared_state_->processes.find(owner_process_id);
-        if (process != shared_state_->processes.end() &&
-            process->second.application_display.kind !=
-                ApplicationDisplayMode::Native) {
-            profile = process->second.application_display;
-        }
-    }
-    auto display_pixels = *pixels;
-    if (profile) {
-        display_pixels = compose_application_display_pixels(*profile,
-            { backing->width, backing->height }, display_->geometry(),
-            display_pixels);
-        if (display_pixels.empty())
-            return false;
-    }
-    last_scanout_pixels_ = *pixels;
-    display_->replace_pixels(std::move(display_pixels), owner_process_id);
-    display_->present(owner_process_id);
-    return true;
 }
 
 CoreSurfaceHle::Buffer* CoreSurfaceHle::find(std::uint32_t client)

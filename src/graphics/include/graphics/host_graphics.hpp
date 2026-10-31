@@ -112,6 +112,10 @@ public:
         {
             return surface_->cpu_generation_;
         }
+        [[nodiscard]] std::uint64_t gpu_generation() const
+        {
+            return surface_->gpu_generation_;
+        }
         // Narrows a write mapping to the pixels actually modified. Omitting
         // this keeps the conservative full-surface damage used by callers
         // that expose the raw mapping to arbitrary software.
@@ -141,6 +145,10 @@ public:
     void mark_scanout_presentation();
     [[nodiscard]] std::uint64_t scanout_presentation_sequence() const;
     [[nodiscard]] CpuMapping map_cpu(
+        bool write, PerfCpuMapReason reason = PerfCpuMapReason::Internal);
+    // No driver work: return empty if a GPU readback is needed. The check and
+    // mapping share the same lock, so later GPU writes cannot race a CPU merge.
+    [[nodiscard]] std::optional<CpuMapping> try_map_current_cpu(
         bool write, PerfCpuMapReason reason = PerfCpuMapReason::Internal);
     struct CpuSnapshot {
         DisplayFrame frame;

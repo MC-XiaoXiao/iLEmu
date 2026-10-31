@@ -635,6 +635,17 @@ HostSurface::CpuMapping HostSurface::map_cpu(
     return CpuMapping { *this, write };
 }
 
+std::optional<HostSurface::CpuMapping> HostSurface::try_map_current_cpu(
+    bool write, PerfCpuMapReason reason)
+{
+    CpuMapping mapping { *this, false };
+    if (gpu_generation_ > cpu_generation_)
+        return std::nullopt;
+    performance_counters().record_cpu_map(write, reason);
+    mapping.write_ = write;
+    return mapping;
+}
+
 HostSurface::CpuSnapshot HostSurface::snapshot_cpu(PerfCpuMapReason reason) const
 {
     performance_counters().record_cpu_map(false, reason);

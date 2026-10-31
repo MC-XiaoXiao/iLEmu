@@ -484,29 +484,80 @@ std::shared_ptr<SurfaceStore::SyncState> SurfaceStore::shared_sync_state(
 std::optional<std::vector<std::uint32_t>> SurfaceStore::read_argb(
     AddressSpace& memory, std::uint32_t id) const
 {
+    auto result = try_read_argb(memory, id);
+    if (result.state == CpuReadResult::State::Completed)
+        return std::move(result.pixels);
+    if (result.state != CpuReadResult::State::PendingGpu)
+        return std::nullopt;
+    const auto surface = host_surface(id);
+    if (!surface || !shared_gles_renderer()->map_cpu(
+                        *surface, true, PerfCpuMapReason::CoreSurface))
+        return std::nullopt;
+    auto mapping = surface->map_cpu(false, PerfCpuMapReason::CoreSurface);
+    return mapping.frame().pixels;
+}
+
+SurfaceStore::CpuReadResult SurfaceStore::try_read_argb(
+    AddressSpace& memory, std::uint32_t id) const
+{
     const auto backing = find(id);
     if (!backing || (!surface_is_packed_555(backing->pixel_format) &&
                         !surface_is_32bit(backing->pixel_format) &&
-                        !surface_is_yuv422(backing->pixel_format))) {
-        return std::nullopt;
-    }
+                        !surface_is_yuv422(backing->pixel_format)))
+        return { };
+    const auto sync = shared_sync_state(id);
+    if (!sync)
+        return { };
+    std::unique_lock sync_lock { sync->mutex };
     const auto surface = host_surface(id);
-    if (surface && surface->gpu_generation() > surface->cpu_generation()) {
-        if (!shared_gles_renderer()->map_cpu(
-                *surface, true, PerfCpuMapReason::CoreSurface))
-            return std::nullopt;
-        auto mapping = surface->map_cpu(false, PerfCpuMapReason::CoreSurface);
-        return mapping.frame().pixels;
-    }
+    if (surface && surface->gpu_generation() > surface->cpu_generation())
+        return { CpuReadResult::State::PendingGpu, { }, 0 };
     auto pixels = read_guest_argb(memory, *backing);
-    if (pixels) {
-        if (surface)
-            surface->replace_cpu(*pixels);
-        update_guest_snapshot(*backing,
-            HostRectangle { 0, 0, backing->width, backing->height }, *pixels);
-        update_guest_sync_generation(memory, *backing);
+    if (!pixels)
+        return { };
+    const auto generations = memory.shared_write_generation_changes(
+        backing->base, backing->allocation_size);
+    std::uint64_t gpu_generation = 0;
+    if (surface) {
+        auto& baseline = sync->guest_pixel_snapshot;
+        const auto guest_changed =
+            baseline.size() != pixels->size() || baseline != *pixels;
+        // Reading an unchanged guest allocation must not issue a new CPU-write
+        // generation: GPU synchronization would otherwise trigger another
+        // scanout read, CPU dirtying and redundant upload indefinitely.
+        auto mapping = surface->try_map_current_cpu(
+            guest_changed, PerfCpuMapReason::CoreSurface);
+        if (!mapping)
+            return { CpuReadResult::State::PendingGpu, { }, 0 };
+        if (mapping->frame().pixels.size() != pixels->size())
+            return { };
+        if (baseline.size() == pixels->size()) {
+            // A different host reader may already have materialized GPU data.
+            // Preserve those pixels unless the guest changed them since its
+            // last import; the guest baseline records guest bytes, not the
+            // merged host image.
+            for (std::size_t index = 0; index < pixels->size(); ++index) {
+                const auto guest = (*pixels)[index];
+                if (guest == baseline[index])
+                    (*pixels)[index] = mapping->frame().pixels[index];
+                baseline[index] = guest;
+                mapping->frame().pixels[index] = (*pixels)[index];
+            }
+        } else {
+            std::copy(pixels->begin(), pixels->end(),
+                mapping->frame().pixels.begin());
+            baseline = *pixels;
+        }
+        // GPU writes are excluded by this mapping's lock until it is released.
+        // The CPU-write generation changes on destruction, the GPU one does not.
+        gpu_generation = mapping->gpu_generation();
+    } else {
+        sync->guest_pixel_snapshot = *pixels;
     }
-    return pixels;
+    if (generations)
+        sync->shared_page_generations = generations->page_generations;
+    return { CpuReadResult::State::Completed, std::move(*pixels),
+        gpu_generation };
 }
 
 std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb(
@@ -514,8 +565,7 @@ std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb(
 {
     const auto yuv = surface_is_yuv422(backing.pixel_format);
     const auto packed_555 = surface_is_packed_555(backing.pixel_format);
-    if (!surface_is_32bit(backing.pixel_format) && !packed_555 &&
-        !yuv)
+    if (!surface_is_32bit(backing.pixel_format) && !packed_555 && !yuv)
         return std::nullopt;
     if (yuv && (backing.width & 1U) != 0U)
         return std::nullopt;

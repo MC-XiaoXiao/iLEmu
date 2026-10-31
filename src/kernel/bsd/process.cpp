@@ -181,6 +181,7 @@ void CompatibilityKernel::exit_process(
         return;
     opengles_hle_.cancel_pending_work();
     mbx2d_hle_.cancel_pending_work();
+    core_surface_hle_.discard_default_scanout();
     userland_hle_.cancel_pending_calls();
     const auto usage = collect_resource_usage();
     note_timer_deadline_transition();

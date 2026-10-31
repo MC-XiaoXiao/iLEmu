@@ -61,7 +61,14 @@ public:
     bool refresh_default_scanout(
         AddressSpace& memory, std::uint32_t owner_process_id = 0);
 
+    [[nodiscard]] bool default_scanout_pending() const;
+    [[nodiscard]] bool default_scanout_ready() const;
+    void discard_default_scanout();
+
 private:
+    struct ScanoutRead;
+    std::shared_ptr<ScanoutRead> pending_scanout_;
+    std::uint64_t last_scanout_publication_ { }, last_scanout_gpu_generation_ { };
     struct BufferLifetime { };
     struct CpuAccess;
     struct Buffer {

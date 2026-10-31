@@ -197,6 +197,16 @@ public:
         std::uint32_t id) const;
     [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_argb(
         AddressSpace& memory, std::uint32_t id) const;
+    struct CpuReadResult {
+        enum class State { Completed, PendingGpu, Failed };
+        State state { State::Failed };
+        std::vector<std::uint32_t> pixels;
+        std::uint64_t gpu_generation { };
+    };
+    // Core-only CPU path. PendingGpu requests a separate owned host capture;
+    // this function never waits for the driver or accesses a stale CPU shadow.
+    [[nodiscard]] CpuReadResult try_read_argb(
+        AddressSpace& memory, std::uint32_t id) const;
     // CPU map is the explicit GPU completion/readback boundary. The resulting
     // pixels are copied into the guest mapping for firmware access.
     [[nodiscard]] bool synchronize_for_cpu(AddressSpace& memory,

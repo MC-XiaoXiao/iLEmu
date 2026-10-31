@@ -826,6 +826,7 @@ bool CompatibilityKernel::refresh_display_scanout()
     }
 
     if (!power_on) {
+        core_surface_hle_.discard_default_scanout();
         display_state_->set_powered_on(false);
         return false;
     }
@@ -835,6 +836,7 @@ bool CompatibilityKernel::refresh_display_scanout()
     // the sole frame boundary. Polling the legacy default surface here would
     // expose partially rendered offscreen buffers between layer transactions.
     if (mobile_framebuffer_hle_.has_active_layers()) {
+        core_surface_hle_.discard_default_scanout();
         display_state_->set_powered_on(true);
         return false;
     }
@@ -845,7 +847,8 @@ bool CompatibilityKernel::refresh_display_scanout()
     if (waking) {
         const auto refreshed =
             core_surface_hle_.refresh_default_scanout(memory_, process_.pid);
-        display_state_->set_powered_on(true);
+        if (!core_surface_hle_.default_scanout_pending())
+            display_state_->set_powered_on(true);
         if (refreshed) {
             output_.write(
                 "[display] scanout pid=" + std::to_string(process_.pid) +
@@ -857,12 +860,15 @@ bool CompatibilityKernel::refresh_display_scanout()
 
     display_state_->set_powered_on(true);
     const auto now = shared_state_->clock.now();
-    if (next_display_scanout_deadline_ &&
-        now < *next_display_scanout_deadline_) {
-        return false;
+    // A completed readback belongs to the already scheduled frame. Consume it
+    // on its native completion wake without advancing the next vsync deadline.
+    if (!core_surface_hle_.default_scanout_ready()) {
+        if (next_display_scanout_deadline_ &&
+            now < *next_display_scanout_deadline_)
+            return false;
+        next_display_scanout_deadline_ =
+            now + iokit_abi::display_vsync::period_absolute_time;
     }
-    next_display_scanout_deadline_ =
-        now + iokit_abi::display_vsync::period_absolute_time;
     const auto refreshed =
         core_surface_hle_.refresh_default_scanout(memory_, process_.pid);
     if (refreshed) {
@@ -1642,6 +1648,14 @@ CompatibilityKernel::pending_event_poll_candidates()
     service_completed_file_renames();
     opengles_hle_.service_graphics_completions(!process_.exited);
     mbx2d_hle_.service_graphics_completions();
+    // Host scanout has no guest HLE observer. Consume its retained completion
+    // at the same serial boundary even when no guest thread is runnable.
+    if (!process_.exited && core_surface_hle_.default_scanout_ready()) {
+        if (owns_display_scanout())
+            static_cast<void>(refresh_display_scanout());
+        else
+            core_surface_hle_.discard_default_scanout();
+    }
     const auto io_generation = shared_state_->io_event_generation_snapshot();
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
