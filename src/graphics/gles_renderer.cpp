@@ -68,9 +68,10 @@ namespace {
             static_cast<void>(target);
         }
 
-        void release(std::span<const GlesRenderTargetKey> targets) override
+        bool release(std::span<const GlesRenderTargetKey> targets) override
         {
             static_cast<void>(targets);
+            return true;
         }
 
         bool release_owner(std::uint64_t owner) override

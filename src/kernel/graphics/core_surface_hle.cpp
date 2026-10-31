@@ -168,6 +168,10 @@ void CoreSurfaceHle::reset()
 void CoreSurfaceHle::inherit_state(const CoreSurfaceHle& parent)
 {
     buffers_ = parent.buffers_;
+    for (auto& [client, buffer] : buffers_) {
+        static_cast<void>(client);
+        buffer.identity = std::make_shared<BufferLifetime>();
+    }
     clients_by_id_ = parent.clients_by_id_;
     free_client_buffers_ = parent.free_client_buffers_;
     free_imported_mappings_ = parent.free_imported_mappings_;
@@ -974,39 +978,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
             buffer->references));
         call.set_return(argument);
     } else if (operation == "Release") {
-        if (buffer->references != 0)
-            --buffer->references;
-        static_cast<void>(call.memory().write32(
-            buffer->client + buffer_abi.reference_count_offset,
-            buffer->references));
-        if (buffer->references == 0) {
-            // A caller-owned pixel buffer remains live after the surface
-            // wrapper is released. Publish completed GPU writes before that
-            // caller reads its own memory again.
-            if (!buffer->owns_memory) {
-                static_cast<void>(surfaces_->synchronize_for_cpu(call.memory(),
-                    buffer->id,
-                    SurfaceStore::CpuSynchronizationOptions {
-                        .read_only = true,
-                    }));
-            }
-            const auto client = buffer->client;
-            const auto id = buffer->id;
-            const auto imported_mapping_base = buffer->imported_mapping_base;
-            const auto imported_mapping_size = buffer->imported_mapping_size;
-            const auto imported_mapping_lease_token =
-                buffer->imported_mapping_lease_token;
-            const auto indexed = clients_by_id_.find({ id, buffer->transport });
-            if (indexed != clients_by_id_.end() && indexed->second == client) {
-                clients_by_id_.erase(indexed);
-            }
-            buffers_.erase(client);
-            surfaces_->release(id);
-            release_imported_mapping(call.memory(), imported_mapping_base,
-                imported_mapping_size, imported_mapping_lease_token);
-            recycle_client_buffer(client, buffer_abi);
-        }
-        call.set_return(0);
+        release_buffer(call, *buffer);
     } else if (operation == "GetPlaneCount") {
         call.set_return(static_cast<std::uint32_t>(buffer->planes.size()));
     } else if (!buffer->planes.empty() &&
@@ -1083,22 +1055,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
     } else if (operation == "IsGlobal") {
         call.set_return(1);
     } else if (operation == "Lock" || operation == "LockPlane") {
-        const auto options = call.argument(1);
-        const auto synchronized = surfaces_->synchronize_for_cpu(call.memory(),
-            buffer->id,
-            SurfaceStore::CpuSynchronizationOptions {
-                .avoid_sync =
-                    (options & core_surface_abi::lock_avoid_sync) != 0,
-                .read_only = (options & core_surface_abi::lock_read_only) != 0,
-            });
-        if (synchronized)
-            buffer->lock_options.push_back(options);
-        if (synchronized && buffer_abi.lock_seed_output &&
-            call.argument(2) != 0) {
-            static_cast<void>(
-                call.memory().write32(call.argument(2), buffer->seed));
-        }
-        call.set_return(synchronized ? success : 1U);
+        synchronize_buffer(call, *buffer, false);
     } else if (operation == "FlushProcessorCaches") {
         static_cast<void>(
             surfaces_->synchronize_from_guest(call.memory(), buffer->id));

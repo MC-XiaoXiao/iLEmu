@@ -24,6 +24,8 @@ namespace ilemu {
 
 class AddressSpace;
 class HostSurface;
+class GlesRendererOwner;
+struct SurfaceCpuReadback;
 class SurfaceTransportLease;
 struct HostRectangle;
 
@@ -199,6 +201,12 @@ public:
     // pixels are copied into the guest mapping for firmware access.
     [[nodiscard]] bool synchronize_for_cpu(AddressSpace& memory,
         std::uint32_t id, CpuSynchronizationOptions options) const;
+    [[nodiscard]] std::optional<bool> cpu_sync_required(
+        std::uint32_t id, CpuSynchronizationOptions options) const;
+    // Core-only publication of a separately captured host result. Preserve
+    // guest writes not yet imported by synchronize_from_guest.
+    [[nodiscard]] bool complete_cpu_readback(AddressSpace& memory,
+        const Backing& expected, const SurfaceCpuReadback& readback) const;
     // Imports guest CPU writes even when a newer GPU generation exists. This
     // is the unlock/flush direction, not a GPU readback request.
     [[nodiscard]] bool synchronize_from_guest(
@@ -216,6 +224,7 @@ private:
         std::mutex mutex;
         std::vector<std::uint64_t> shared_page_generations;
         std::vector<std::uint32_t> guest_pixel_snapshot;
+        std::uint64_t guest_gpu_generation { };
     };
     struct SharedObject {
         Backing metadata;
@@ -223,6 +232,7 @@ private:
         std::uint32_t mapping_size { };
         std::vector<std::shared_ptr<GuestPageBacking>> pages;
         std::shared_ptr<HostSurface> host_surface;
+        std::shared_ptr<GlesRendererOwner> renderer_lifetime;
         std::shared_ptr<SyncState> sync_state;
         std::size_t store_references { };
     };

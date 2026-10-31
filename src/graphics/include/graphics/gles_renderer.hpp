@@ -104,7 +104,7 @@ public:
     // Releases a lifecycle batch behind one backend synchronization boundary.
     // Guest-facing stores already know the complete retiring set; preserving
     // that batch prevents a host fence wait per individual surface.
-    virtual void release(std::span<const GlesRenderTargetKey> targets) = 0;
+    virtual bool release(std::span<const GlesRenderTargetKey> targets) = 0;
     // Drops every process-local target and sampled texture associated with an
     // OpenGLES resource owner. The renderer is shared across guest processes,
     // so retiring only render targets would otherwise leave per-process

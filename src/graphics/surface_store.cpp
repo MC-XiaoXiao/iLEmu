@@ -6,6 +6,7 @@
 // leases.
 
 #include "graphics/surface_store.hpp"
+#include "graphics/surface_cpu_readback.hpp"
 
 #include <algorithm>
 
@@ -21,6 +22,7 @@
 #include "foundation/address_space.hpp"
 #include "graphics/core_surface_abi.hpp"
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "graphics/host_graphics.hpp"
 
 namespace ilemu {
@@ -142,7 +144,6 @@ class SurfaceTransportLease {
 public:
     ~SurfaceTransportLease()
     {
-        std::optional<std::uint64_t> released_target;
         {
             std::lock_guard lock { registry_->mutex };
             const auto object = registry_->objects.find(id_);
@@ -155,13 +156,8 @@ public:
                 --object->second.store_references;
                 return;
             }
-            if (object->second.host_surface) {
-                released_target = publication_sequence_;
-            }
             registry_->objects.erase(object);
         }
-        if (released_target)
-            release_gles_render_target({ 0, *released_target });
     }
 
 private:
@@ -185,7 +181,6 @@ SurfaceStore::~SurfaceStore() { reset(); }
 void SurfaceStore::reset()
 {
     const auto registry = registry_;
-    std::vector<GlesRenderTargetKey> released_targets;
     {
         std::scoped_lock lock { mutex_, registry->mutex };
         for (const auto& [id, backing] : backings_) {
@@ -196,15 +191,12 @@ void SurfaceStore::reset()
             if (object->second.store_references > 1) {
                 --object->second.store_references;
             } else {
-                released_targets.push_back({ 0,
-                    object->second.metadata.provenance.publication_sequence });
                 registry->objects.erase(object);
             }
         }
         backings_.clear();
         backing_references_.clear();
     }
-    release_gles_render_targets(released_targets);
 }
 
 void SurfaceStore::inherit_state(const SurfaceStore& parent)
@@ -314,11 +306,19 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing)
         object.mapping_size = mapping_size;
         object.pages = std::move(*pages);
         if (surface_bytes_per_pixel(backing.pixel_format) != 0U) {
-            object.host_surface = shared_gles_renderer()->create_surface(
+            const auto renderer = shared_gles_renderer();
+            object.renderer_lifetime = std::make_shared<GlesRendererOwner>(
+                renderer,
+                HostSurfaceKey { 0, backing.provenance.publication_sequence });
+            if (!object.renderer_lifetime->activate())
+                return false;
+            object.host_surface = renderer->create_surface(
                 { 0, backing.provenance.publication_sequence },
                 HostSurfaceDescriptor { backing.width, backing.height,
                     backing.bytes_per_row, backing.pixel_format,
                     PerfSurfaceKind::CoreSurface });
+            if (!object.host_surface)
+                return false;
         }
         object.sync_state = std::make_shared<SyncState>();
         object.store_references = 1;
@@ -431,7 +431,6 @@ bool SurfaceStore::retain(std::uint32_t id)
 void SurfaceStore::release(std::uint32_t id)
 {
     const auto registry = registry_;
-    std::optional<std::uint64_t> released_target;
     {
         std::scoped_lock lock { mutex_, registry->mutex };
         const auto backing = backings_.find(id);
@@ -450,15 +449,9 @@ void SurfaceStore::release(std::uint32_t id)
         if (object->second.store_references > 1) {
             --object->second.store_references;
         } else {
-            if (object->second.host_surface) {
-                released_target =
-                    object->second.metadata.provenance.publication_sequence;
-            }
             registry->objects.erase(object);
         }
     }
-    if (released_target)
-        release_gles_render_target({ 0, *released_target });
 }
 
 std::optional<SurfaceStore::Backing> SurfaceStore::find(std::uint32_t id) const
@@ -691,72 +684,137 @@ std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb_region(
     return pixels;
 }
 
-bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory, std::uint32_t id,
-    CpuSynchronizationOptions options) const
+std::optional<bool> SurfaceStore::cpu_sync_required(
+    std::uint32_t id, CpuSynchronizationOptions options) const
 {
     const auto backing = find(id);
     if (!backing)
+        return std::nullopt;
+    if ((!surface_is_32bit(backing->pixel_format) &&
+            !surface_is_packed_555(backing->pixel_format)) ||
+        (options.avoid_sync && !options.read_only))
         return false;
-    if (!surface_is_32bit(backing->pixel_format) &&
-        !surface_is_packed_555(backing->pixel_format))
-        return true;
     const auto surface = host_surface(id);
-    if (!surface || surface->gpu_generation() <= surface->cpu_generation())
-        return true;
-    // Real devices expose one shared surface allocation. ReadOnly|AvoidSync
-    // can therefore consume producer-complete pixels without an extra cache
-    // operation. Our native renderer has a separate GPU image, so skipping
-    // materialization here would expose stale Guest bytes (for example to the
-    // firmware snapshot encoder). Preserve AvoidSync only for writable
-    // ownership, where the caller did not request readable contents.
-    if (options.avoid_sync && !options.read_only)
-        return true;
-
+    if (!surface)
+        return false;
     const auto sync_state = shared_sync_state(id);
     if (!sync_state)
-        return false;
-    // Both synchronization directions serialize the shared guest snapshot
-    // before touching the host surface.  Keeping one lock order avoids a
-    // GPU-readback/guest-flush deadlock when different guest tasks use the
-    // same CoreSurface concurrently.
-    std::unique_lock sync_lock { sync_state->mutex };
+        return std::nullopt;
+    std::lock_guard lock { sync_state->mutex };
+    // A host CPU cache can be populated by another reader without copying
+    // pixels to the shared guest allocation. Track guest publication
+    // separately.
+    return surface->gpu_generation() > sync_state->guest_gpu_generation;
+}
 
-    std::optional<HostRectangle> damage;
-    if (!shared_gles_renderer()->map_cpu(
-            *surface, true, PerfCpuMapReason::CoreSurface, &damage)) {
+bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory, std::uint32_t id,
+    CpuSynchronizationOptions options) const
+{
+    const auto required = cpu_sync_required(id, options);
+    if (!required || !*required)
+        return required.has_value();
+    const auto backing = find(id);
+    if (!backing)
         return false;
-    }
-    if (!damage)
-        return true;
-    auto mapping = surface->map_cpu(false, PerfCpuMapReason::CoreSurface);
-    if (!write_argb_region_to_guest(
-            memory, *backing, *damage, mapping.frame().pixels)) {
+    SurfaceCpuReadback readback;
+    readback.renderer = shared_gles_renderer();
+    readback.surface = host_surface(id);
+    // Legacy callers remain synchronous; async HLE callers capture on their
+    // worker and invoke only complete_cpu_readback at the serial core boundary.
+    return readback.capture() &&
+           complete_cpu_readback(memory, *backing, readback);
+}
+
+bool SurfaceStore::complete_cpu_readback(AddressSpace& memory,
+    const Backing& expected, const SurfaceCpuReadback& readback) const
+{
+    const auto backing = find(expected.id);
+    const auto surface = host_surface(expected.id);
+    if (!backing || !surface || surface != readback.surface ||
+        backing->provenance.publication_sequence !=
+            expected.provenance.publication_sequence ||
+        backing->base != expected.base ||
+        backing->allocation_size != expected.allocation_size ||
+        backing->width != expected.width ||
+        backing->height != expected.height ||
+        backing->pixel_format != expected.pixel_format ||
+        backing->bytes_per_row != expected.bytes_per_row)
         return false;
-    }
+    const auto& captured = readback.snapshot;
     const auto pixel_count =
         static_cast<std::size_t>(backing->width) * backing->height;
-    auto& snapshot = sync_state->guest_pixel_snapshot;
-    if (snapshot.size() != pixel_count) {
-        snapshot = mapping.frame().pixels;
-    } else {
-        for (std::uint32_t row = 0; row < damage->height; ++row) {
-            const auto offset =
-                (static_cast<std::size_t>(
-                     static_cast<std::uint32_t>(damage->y) + row) *
-                    backing->width) +
-                static_cast<std::uint32_t>(damage->x);
-            std::copy_n(mapping.frame().pixels.begin() +
-                            static_cast<std::ptrdiff_t>(offset),
-                damage->width,
-                snapshot.begin() + static_cast<std::ptrdiff_t>(offset));
+    if (captured.frame.width != backing->width ||
+        captured.frame.height != backing->height ||
+        captured.frame.pixels.size() != pixel_count)
+        return false;
+    const auto sync_state = shared_sync_state(expected.id);
+    if (!sync_state)
+        return false;
+    std::unique_lock sync_lock { sync_state->mutex };
+    if (sync_state->guest_gpu_generation >= captured.gpu_generation)
+        return true;
+    auto& baseline = sync_state->guest_pixel_snapshot;
+    if (baseline.size() != pixel_count)
+        return false;
+    auto pixels = read_guest_argb(memory, *backing);
+    if (!pixels || pixels->size() != pixel_count)
+        return false;
+    const auto cpu_changed = *pixels != baseline;
+    auto damage = readback.damage;
+    // Native dirty may already have been acknowledged by a host-only reader.
+    // A CPU baseline newer than the last guest publication needs a full copy.
+    if (!damage || captured.cpu_generation > sync_state->guest_gpu_generation)
+        damage = HostRectangle { 0, 0, backing->width, backing->height };
+    if (damage->x < 0 || damage->y < 0 || damage->width > backing->width ||
+        damage->height > backing->height ||
+        static_cast<std::uint32_t>(damage->x) >
+            backing->width - damage->width ||
+        static_cast<std::uint32_t>(damage->y) >
+            backing->height - damage->height)
+        return false;
+    for (std::uint32_t row = 0; row < damage->height; ++row) {
+        const auto begin =
+            (static_cast<std::size_t>(damage->y) + row) * backing->width +
+            static_cast<std::uint32_t>(damage->x);
+        for (std::size_t index = begin; index < begin + damage->width;
+            ++index) {
+            if ((*pixels)[index] == baseline[index])
+                (*pixels)[index] = captured.frame.pixels[index];
         }
     }
-    const auto shared_generation = memory.shared_write_generation_changes(
-        backing->base, backing->allocation_size);
-    if (shared_generation) {
-        sync_state->shared_page_generations =
-            shared_generation->page_generations;
+    if (!write_argb_region_to_guest(memory, *backing, *damage, *pixels))
+        return false;
+    // Advance the baseline only for GPU-owned pixels. Keep original values at
+    // CPU-written pixels so a later Unlock still imports those writes. Do not
+    // clear page write tracking while any such CPU difference remains.
+    for (std::uint32_t row = 0; row < damage->height; ++row) {
+        const auto begin =
+            (static_cast<std::size_t>(damage->y) + row) * backing->width +
+            static_cast<std::uint32_t>(damage->x);
+        for (std::size_t index = begin; index < begin + damage->width;
+            ++index) {
+            if ((*pixels)[index] != captured.frame.pixels[index])
+                continue;
+            baseline[index] =
+                surface_is_packed_555(backing->pixel_format)
+                    ? surface_decode_packed_555(backing->pixel_format,
+                          surface_encode_packed_555(
+                              backing->pixel_format, (*pixels)[index]))
+                    : (*pixels)[index];
+        }
     }
+    if (!cpu_changed) {
+        const auto generation = memory.shared_write_generation_changes(
+            backing->base, backing->allocation_size);
+        if (generation)
+            sync_state->shared_page_generations = generation->page_generations;
+    }
+    sync_state->guest_gpu_generation = captured.gpu_generation;
+    // Never replace newer host CPU/GPU contents; a failed cache commit leaves
+    // native damage intact for the next reader. Guest pixels still describe
+    // this call's captured boundary.
+    if (surface->commit_cpu_readback(captured))
+        readback.renderer->acknowledge_readback(surface->key(), readback.stamp);
     return true;
 }
 

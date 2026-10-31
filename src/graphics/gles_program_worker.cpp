@@ -58,6 +58,7 @@ namespace {
     struct RendererOwnerRecord {
         std::shared_ptr<GlesRenderer> renderer;
         std::uint64_t owner { }, through { };
+        std::optional<HostSurfaceKey> target;
         bool retiring { }, failed { };
     };
 
@@ -353,7 +354,11 @@ namespace {
                 }
                 bool released = false;
                 try {
-                    released = owner->renderer->release_owner(owner->owner);
+                    released =
+                        owner->target
+                            ? owner->renderer->release(
+                                  std::span { &*owner->target, 1U })
+                            : owner->renderer->release_owner(owner->owner);
                 } catch (...) {
                 }
                 {
@@ -566,6 +571,15 @@ GlesRendererOwner::GlesRendererOwner(
     state_->record = std::make_shared<RendererOwnerRecord>();
     state_->record->renderer = std::move(renderer);
     state_->record->owner = owner;
+}
+
+GlesRendererOwner::GlesRendererOwner(
+    std::shared_ptr<GlesRenderer> renderer, HostSurfaceKey target)
+    : state_ { std::make_unique<State>() }
+{
+    state_->record = std::make_shared<RendererOwnerRecord>();
+    state_->record->renderer = std::move(renderer);
+    state_->record->target = target;
 }
 
 GlesRendererOwner::~GlesRendererOwner()
