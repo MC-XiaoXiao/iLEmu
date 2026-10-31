@@ -1175,6 +1175,26 @@ void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
         call.set_return(mbx_success);
         return;
     }
+    if (destination->host_surface && destination->core_surface_id != 0) {
+        // A fill owns no source binding. Admit its output before allocating
+        // pixels that may remain alive across the target visibility wait.
+        prepare_cpu_draw(call, context_api, std::nullopt, *destination,
+            static_cast<std::size_t>(region.width * region.height) *
+                sizeof(std::uint32_t),
+            [this, region, color](UserlandHleCall& resumed,
+                const std::optional<ResolvedSurface>&, const ResolvedSurface&,
+                std::shared_ptr<CpuDraw> cpu) {
+                std::vector<std::uint32_t> pixels(
+                    static_cast<std::size_t>(region.width * region.height), color);
+                write_cpu_draw(resumed, std::move(cpu),
+                    { static_cast<std::int32_t>(region.destination_x),
+                        static_cast<std::int32_t>(region.destination_y),
+                        static_cast<std::uint32_t>(region.width),
+                        static_cast<std::uint32_t>(region.height) },
+                    std::move(pixels));
+            });
+        return;
+    }
     const std::vector<std::uint32_t> source_pixels(
         static_cast<std::size_t>(region.width * region.height), color);
     const auto pixels = composite(*state, *destination, region.destination_x,
@@ -1300,10 +1320,10 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
                 static_cast<std::size_t>(region.width * region.height) *
                     sizeof(std::uint32_t),
                 [this, context_api](UserlandHleCall& resumed,
-                    const ResolvedSurface& ready_source,
+                    const std::optional<ResolvedSurface>& ready_source,
                     const ResolvedSurface& ready_destination,
                     std::shared_ptr<CpuDraw> ready) {
-                    execute_blit_copy(resumed, context_api, ready_source,
+                    execute_blit_copy(resumed, context_api, *ready_source,
                         ready_destination, std::move(ready));
                 });
             return;
@@ -1431,10 +1451,10 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
             static_cast<std::size_t>(output.width * output.height) *
                 sizeof(std::uint32_t),
             [this, context_api](UserlandHleCall& resumed,
-                const ResolvedSurface& ready_source,
+                const std::optional<ResolvedSurface>& ready_source,
                 const ResolvedSurface& ready_destination,
                 std::shared_ptr<CpuDraw> ready) {
-                execute_blit_copy(resumed, context_api, ready_source,
+                execute_blit_copy(resumed, context_api, *ready_source,
                     ready_destination, std::move(ready));
             });
         return;

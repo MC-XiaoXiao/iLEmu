@@ -158,13 +158,14 @@ private:
     void blit_copy(UserlandHleCall& call, bool context_api);
     struct CpuDraw;
     using CpuContinuation = std::function<void(UserlandHleCall&,
-        const ResolvedSurface&, const ResolvedSurface&, std::shared_ptr<CpuDraw>)>;
+        const std::optional<ResolvedSurface>&, const ResolvedSurface&,
+        std::shared_ptr<CpuDraw>)>;
     void execute_blit_copy(UserlandHleCall& call, bool context_api,
         const ResolvedSurface& source, const ResolvedSurface& destination,
         std::shared_ptr<CpuDraw> cpu = { });
     void prepare_cpu_draw(UserlandHleCall& call, bool context_api,
-        ResolvedSurface source, ResolvedSurface destination, std::size_t bytes,
-        CpuContinuation continuation);
+        std::optional<ResolvedSurface> source, ResolvedSurface destination,
+        std::size_t bytes, CpuContinuation continuation);
     void await_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu);
     void write_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
         HostRectangle rectangle, std::vector<std::uint32_t> pixels);

@@ -15,7 +15,8 @@ struct Mbx2dHle::CpuDraw {
     // Credit outlives its owned result, including cancellation while parked.
     std::shared_ptr<void> credit;
     std::vector<std::uint32_t> pixels;
-    ResolvedSurface source, destination;
+    std::optional<ResolvedSurface> source;
+    ResolvedSurface destination;
     AddressSpace::MappingObservation source_mapping, destination_mapping;
     std::shared_ptr<DisplayState> display;
     std::shared_ptr<GraphicsCallLease> lease;
@@ -63,22 +64,24 @@ bool Mbx2dHle::cpu_draw_live(
     };
     return live(cpu.destination, resolve(bindings.destination),
                cpu.destination_mapping) &&
-           (!check_source || live(cpu.source, resolve(bindings.source),
-                                 cpu.source_mapping));
+           (!check_source || !cpu.source ||
+               live(*cpu.source, resolve(bindings.source), cpu.source_mapping));
 }
 
 void Mbx2dHle::prepare_cpu_draw(UserlandHleCall& call, bool context_api,
-    ResolvedSurface source, ResolvedSurface destination, std::size_t bytes,
-    CpuContinuation continuation)
+    std::optional<ResolvedSurface> source, ResolvedSurface destination,
+    std::size_t bytes, CpuContinuation continuation)
 try {
     constexpr std::size_t limit = 64U * 1024U * 1024U;
-    if (!bytes || bytes > limit || !source.backing || !destination.backing)
+    if (!bytes || bytes > limit || (source && !source->backing) ||
+        !destination.backing)
         throw std::length_error { "MBX CPU output exceeds its budget" };
     auto cpu = std::make_shared<CpuDraw>();
     cpu->source = std::move(source);
     cpu->destination = std::move(destination);
-    cpu->source_mapping = call.memory().observe_mapping(
-        cpu->source.backing->base, cpu->source.backing->allocation_size);
+    if (cpu->source)
+        cpu->source_mapping = call.memory().observe_mapping(
+            cpu->source->backing->base, cpu->source->backing->allocation_size);
     cpu->destination_mapping = call.memory().observe_mapping(
         cpu->destination.backing->base, cpu->destination.backing->allocation_size);
     cpu->owner = renderer_owner_;
