@@ -180,7 +180,8 @@ try {
 }
 void Mbx2dHle::import_source(UserlandHleCall& call, bool context_api,
     ResolvedSurface source, ResolvedSurface destination,
-    SourceContinuation continuation, bool capture_pixels)
+    SourceContinuation continuation, bool capture_pixels,
+    std::shared_ptr<GraphicsCallLease> lease)
 try {
     const auto observe = [&call](const ResolvedSurface& surface) {
         return surface.backing ? call.memory().observe_mapping(
@@ -192,16 +193,20 @@ try {
     const auto destination_mapping = observe(destination);
     const auto owner = renderer_owner_;
     const auto display = display_;
-    auto lease = std::make_shared<GraphicsCallLease>();
-    lease->owner = call.cpu().processor_id();
-    sync_lease_ = lease;
+    const auto owns_lease = !lease;
+    if (!lease) {
+        lease = std::make_shared<GraphicsCallLease>();
+        lease->owner = call.cpu().processor_id();
+        sync_lease_ = lease;
+    }
     const auto id = source.core_surface_id;
     try {
         auto completed =
             [this, context_api, owner, display, capture_pixels,
                 source = std::move(source),
                 destination = std::move(destination), source_mapping,
-                destination_mapping, lease, continuation = std::move(continuation)](
+                destination_mapping, lease, owns_lease,
+                continuation = std::move(continuation)](
                 UserlandHleCall& resumed, bool succeeded,
                 std::vector<std::uint32_t> pixels) mutable {
                 try {
@@ -249,7 +254,8 @@ try {
                                 std::move(pixels) });
                     }
                     continuation(resumed, source, destination);
-                    lease->consume();
+                    if (owns_lease || !resumed.has_pending_completion())
+                        lease->consume();
                 } catch (...) {
                     fail_import(resumed, lease);
                 }

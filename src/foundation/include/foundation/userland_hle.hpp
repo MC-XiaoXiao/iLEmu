@@ -82,6 +82,10 @@ public:
     // Neither closure may retain this call or its temporary Cpu reference.
     void suspend_until(std::function<bool()> ready, Continuation completion,
         std::uint64_t completion_sequence = 0);
+    [[nodiscard]] bool has_pending_completion() const
+    {
+        return static_cast<bool>(pending_completion_);
+    }
 
     // Continue at another registered guest entry while preserving the caller's
     // link register. This supports compatibility adapters that finish through

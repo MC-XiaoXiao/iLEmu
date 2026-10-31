@@ -156,13 +156,30 @@ private:
     void set_feature(UserlandHleCall& call, bool context_api, bool enabled);
     void blit_color(UserlandHleCall& call, bool context_api);
     void blit_copy(UserlandHleCall& call, bool context_api);
+    struct CpuDraw;
+    using CpuContinuation = std::function<void(UserlandHleCall&,
+        const ResolvedSurface&, const ResolvedSurface&, std::shared_ptr<CpuDraw>)>;
     void execute_blit_copy(UserlandHleCall& call, bool context_api,
-        const ResolvedSurface& source, const ResolvedSurface& destination);
+        const ResolvedSurface& source, const ResolvedSurface& destination,
+        std::shared_ptr<CpuDraw> cpu = { });
+    void prepare_cpu_draw(UserlandHleCall& call, bool context_api,
+        ResolvedSurface source, ResolvedSurface destination, std::size_t bytes,
+        CpuContinuation continuation);
+    void await_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu);
+    void write_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
+        HostRectangle rectangle, std::vector<std::uint32_t> pixels);
+    void await_cpu_write(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
+        std::optional<std::uint64_t> gpu = std::nullopt);
+    [[nodiscard]] bool cpu_draw_live(UserlandHleCall& call,
+        const CpuDraw& cpu, bool source) const;
+    [[nodiscard]] static std::shared_ptr<GraphicsCallLease> cpu_draw_lease(
+        const std::shared_ptr<CpuDraw>& cpu);
     using SourceContinuation = std::function<void(UserlandHleCall&,
         const ResolvedSurface&, const ResolvedSurface&)>;
     void import_source(UserlandHleCall& call, bool context_api,
         ResolvedSurface source, ResolvedSurface destination,
-        SourceContinuation continuation, bool capture_pixels = false);
+        SourceContinuation continuation, bool capture_pixels = false,
+        std::shared_ptr<GraphicsCallLease> lease = { });
     void quad_color(UserlandHleCall& call);
     void quad_copy(UserlandHleCall& call, bool context_api = false,
         bool perspective_api = false);
@@ -189,6 +206,11 @@ private:
     [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_region(
         const ResolvedSurface& surface, std::int64_t x, std::int64_t y,
         std::int64_t width, std::int64_t height, UserlandHleCall& call) const;
+    enum class CpuWriteState { Completed, PendingGpu, Failed };
+    [[nodiscard]] CpuWriteState try_write_region(const ResolvedSurface& surface,
+        std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
+        const std::vector<std::uint32_t>& pixels, UserlandHleCall& call,
+        std::optional<std::uint64_t> gpu = std::nullopt);
     [[nodiscard]] bool write_region(const ResolvedSurface& surface,
         std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
         const std::vector<std::uint32_t>& pixels, UserlandHleCall& call);

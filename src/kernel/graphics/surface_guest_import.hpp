@@ -19,6 +19,8 @@ class UserlandHleCall;
 class SurfaceGuestImport final {
 public:
     using Completion = std::function<void(UserlandHleCall&, bool)>;
+    using Publication =
+        std::function<void(UserlandHleCall&, bool, std::uint64_t)>;
     using ReadCompletion = std::function<void(UserlandHleCall&,
         std::optional<std::vector<std::uint32_t>>)>;
     static void run(UserlandHleCall& call, std::shared_ptr<SurfaceStore> store,
@@ -29,6 +31,12 @@ public:
     // edits. This does not publish GPU pixels into the guest allocation.
     static void read(UserlandHleCall& call, std::shared_ptr<SurfaceStore> store,
         std::uint32_t id, ReadCompletion completion,
+        std::shared_ptr<GraphicsCallLease> lease = { });
+
+    // Publish a real captured GPU boundary into its original guest mapping.
+    // The callback receives that boundary's GPU generation, not a later one.
+    static void publish(UserlandHleCall& call, std::shared_ptr<SurfaceStore> store,
+        std::uint32_t id, Publication completion,
         std::shared_ptr<GraphicsCallLease> lease = { });
 
 private:

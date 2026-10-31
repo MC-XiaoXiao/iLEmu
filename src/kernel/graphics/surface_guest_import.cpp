@@ -24,12 +24,13 @@ struct SurfaceGuestImport::Pending {
     std::shared_ptr<GlesValueResult<SurfaceCpuReadback>> host;
     Completion completion;
     ReadCompletion read_completion;
+    Publication publication;
     std::shared_ptr<GraphicsCallLease> lease;
     std::size_t bytes { };
     bool consumed { };
 
     void finish(UserlandHleCall& call, bool succeeded,
-        std::vector<std::uint32_t> pixels = { })
+        std::vector<std::uint32_t> pixels = { }, std::uint64_t gpu = 0)
     {
         if (std::exchange(consumed, true))
             return;
@@ -38,6 +39,9 @@ struct SurfaceGuestImport::Pending {
             callback(call, succeeded
                                ? std::optional { std::move(pixels) }
                                : std::nullopt);
+        } else if (publication) {
+            auto callback = std::move(publication);
+            callback(call, succeeded, gpu);
         } else {
             auto callback = std::move(completion);
             callback(call, succeeded);
@@ -63,6 +67,17 @@ void SurfaceGuestImport::read(UserlandHleCall& call,
     auto pending = std::make_shared<Pending>();
     pending->store = std::move(store);
     pending->read_completion = std::move(completion);
+    pending->lease = std::move(lease);
+    start(call, std::move(pending), id);
+}
+
+void SurfaceGuestImport::publish(UserlandHleCall& call,
+    std::shared_ptr<SurfaceStore> store, std::uint32_t id,
+    Publication completion, std::shared_ptr<GraphicsCallLease> lease)
+{
+    auto pending = std::make_shared<Pending>();
+    pending->store = std::move(store);
+    pending->publication = std::move(completion);
     pending->lease = std::move(lease);
     start(call, std::move(pending), id);
 }
@@ -108,6 +123,16 @@ try {
         const auto& read = pending->host->value;
         if (!pending->host->completion->succeeded())
             throw std::runtime_error { "guest import capture failed" };
+        if (pending->publication) {
+            const auto gpu = read.snapshot.gpu_generation;
+            const auto published = pending->store->complete_cpu_readback(
+                call.memory(), expected, read);
+            if (pending->lease)
+                pending->lease->result.reset();
+            pending->host.reset();
+            pending->finish(call, published, { }, gpu);
+            return;
+        }
         // This direction updates only the host cache. Unlock must not publish
         // GPU pixels into guest memory. A concurrent newer CPU/GPU pair rejects
         // this snapshot; the atomic import below decides if another is needed.
@@ -118,7 +143,16 @@ try {
         pending->host.reset();
     }
     if (!pending->host) {
-        if (pending->read_completion) {
+        if (pending->publication) {
+            const auto gpu = pending->surface
+                                 ? pending->surface->gpu_generation() : 0;
+            const auto required = pending->store->cpu_sync_required(
+                expected.id, { });
+            if (!required || !*required) {
+                pending->finish(call, required.has_value(), { }, gpu);
+                return;
+            }
+        } else if (pending->read_completion) {
             auto read = pending->store->try_read_argb(call.memory(), expected.id);
             if (read.state != SurfaceStore::CpuReadResult::State::PendingGpu) {
                 pending->finish(call,

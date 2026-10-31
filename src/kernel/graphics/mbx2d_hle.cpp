@@ -772,14 +772,30 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
     std::int64_t y, std::int64_t width, std::int64_t height,
     const std::vector<std::uint32_t>& pixels, UserlandHleCall& call)
 {
+    const auto result = try_write_region(surface, x, y, width, height, pixels, call);
+    if (result != CpuWriteState::PendingGpu)
+        return result == CpuWriteState::Completed;
+    // Unconverted legacy callers keep their explicit synchronization. The
+    // CPU-copy packet uses only try_write_region and the owned capture path.
+    return surface_store_->synchronize_for_cpu(
+               call.memory(), surface.core_surface_id, { }) &&
+           try_write_region(surface, x, y, width, height, pixels, call) ==
+               CpuWriteState::Completed;
+}
+
+Mbx2dHle::CpuWriteState Mbx2dHle::try_write_region(const ResolvedSurface& surface, std::int64_t x,
+    std::int64_t y, std::int64_t width, std::int64_t height,
+    const std::vector<std::uint32_t>& pixels, UserlandHleCall& call,
+    std::optional<std::uint64_t> gpu)
+{
     if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
         x + width > surface.width || y + height > surface.height ||
         pixels.size() != static_cast<std::size_t>(width * height)) {
-        return false;
+        return CpuWriteState::Failed;
     }
     if (surface.framebuffer) {
         if (!display_)
-            return false;
+            return CpuWriteState::Failed;
         auto frame = display_->snapshot();
         for (std::int64_t row = 0; row < height; ++row) {
             const auto source = static_cast<std::size_t>(row * width);
@@ -790,35 +806,39 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
                 frame.pixels.begin() + destination);
         }
         display_->replace_pixels(std::move(frame.pixels), call.process_id());
-        return true;
+        return CpuWriteState::Completed;
     }
     if (!surface.backing ||
         (surface.backing->pixel_format != surface_pixel_format_bgra &&
             !surface_is_packed_555(surface.backing->pixel_format))) {
-        return false;
+        return CpuWriteState::Failed;
     }
     const auto& backing = *surface.backing;
     const auto replaces_entire_surface =
         x == 0 && y == 0 && width == surface.width && height == surface.height;
-    if (!replaces_entire_surface && surface.host_surface &&
-        backing.pixel_format == surface_pixel_format_bgra &&
-        surface.host_surface->gpu_generation() >
-            surface.host_surface->cpu_generation() &&
-        !surface_store_->synchronize_for_cpu(
-            call.memory(), surface.core_surface_id, { })) {
-        return false;
-    }
     const auto backing_bytes_per_pixel =
         surface_bytes_per_pixel(backing.pixel_format);
     if (backing.bytes_per_row < surface.width * backing_bytes_per_pixel)
-        return false;
+        return CpuWriteState::Failed;
     const auto final_byte =
         static_cast<std::uint64_t>(y + height - 1) * backing.bytes_per_row +
         static_cast<std::uint64_t>(x + width) * backing_bytes_per_pixel;
     if (final_byte > backing.allocation_size)
-        return false;
+        return CpuWriteState::Failed;
     std::vector<std::byte> encoded(
         static_cast<std::size_t>(width) * backing_bytes_per_pixel);
+    auto mapping = !replaces_entire_surface && surface.host_surface
+                       ? surface.host_surface->try_map_current_cpu(
+                             true, PerfCpuMapReason::SoftwareFallback)
+                       : std::optional<HostSurface::CpuMapping> { };
+    const auto damage = HostRectangle { static_cast<std::int32_t>(x),
+        static_cast<std::int32_t>(y), static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height) };
+    if (!replaces_entire_surface && surface.host_surface) {
+        if (!mapping || (gpu && mapping->gpu_generation() != *gpu))
+            return CpuWriteState::PendingGpu;
+        mapping->set_damage(damage);
+    }
     for (std::int64_t row = 0; row < height; ++row) {
         if (surface_is_packed_555(backing.pixel_format)) {
             for (std::int64_t column = 0; column < width; ++column) {
@@ -854,23 +874,30 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
             static_cast<std::uint32_t>((y + row) * backing.bytes_per_row +
                                        x * backing_bytes_per_pixel);
         if (!call.memory().copy_in(address, encoded))
-            return false;
+            return CpuWriteState::Failed;
+        if (mapping) {
+            const auto offset = static_cast<std::size_t>(
+                (y + row) * surface.width + x);
+            std::copy_n(pixels.begin() + static_cast<std::ptrdiff_t>(row * width),
+                static_cast<std::size_t>(width),
+                mapping->frame().pixels.begin() +
+                    static_cast<std::ptrdiff_t>(offset));
+        }
     }
     if (surface.core_surface_id == 0 && surface.surface_handle != 0) {
         const auto client = surfaces_.find(surface.surface_handle);
         if (client != surfaces_.end() && client->second.client_backing)
             client->second.client_host_source_dirty = true;
     }
-    if (surface.host_surface &&
-        (backing.pixel_format == surface_pixel_format_bgra ||
-            surface_is_packed_555(backing.pixel_format))) {
-        surface.host_surface->replace_cpu_region(
-            HostRectangle { static_cast<std::int32_t>(x),
-                static_cast<std::int32_t>(y), static_cast<std::uint32_t>(width),
-                static_cast<std::uint32_t>(height) },
-            pixels);
+    if (surface.host_surface && !mapping) {
+        // A full replacement needs no old GPU contents. Guest rows are written
+        // first, so an allocation failure cannot dirty a stale host shadow.
+        auto full = surface.host_surface->map_cpu(
+            true, PerfCpuMapReason::SoftwareFallback);
+        std::copy(pixels.begin(), pixels.end(), full.frame().pixels.begin());
+        full.set_damage(damage);
     }
-    return true;
+    return CpuWriteState::Completed;
 }
 
 std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite(
@@ -1177,7 +1204,7 @@ try {
 
 void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
     const ResolvedSurface& source_surface,
-    const ResolvedSurface& destination_surface)
+    const ResolvedSurface& destination_surface, std::shared_ptr<CpuDraw> cpu)
 {
     const auto* source = &source_surface;
     const auto* destination = &destination_surface;
@@ -1195,7 +1222,7 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
     const auto try_host_copy = [&](HostRectangle source_rectangle,
                                    HostRectangle destination_rectangle,
                                    HostRotation rotation) {
-        if (source->cpu_frame || !host_graphics_->accelerated() ||
+        if (cpu || source->cpu_frame || !host_graphics_->accelerated() ||
             !source->host_surface || !destination->host_surface ||
             !source->backing || !destination->backing ||
             source->backing->pixel_format != surface_pixel_format_bgra ||
@@ -1246,19 +1273,43 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
             call.set_return(mbx_success);
             return;
         }
+        if (!cpu && source->backing &&
+            !state->enabled_features.contains(mbx2d_abi::feature_blend) &&
+            destination->host_surface && destination->core_surface_id != 0) {
+            prepare_cpu_draw(call, context_api, *source, *destination,
+                static_cast<std::size_t>(region.width * region.height) *
+                    sizeof(std::uint32_t),
+                [this, context_api](UserlandHleCall& resumed,
+                    const ResolvedSurface& ready_source,
+                    const ResolvedSurface& ready_destination,
+                    std::shared_ptr<CpuDraw> ready) {
+                    execute_blit_copy(resumed, context_api, ready_source,
+                        ready_destination, std::move(ready));
+                });
+            return;
+        }
         if (!source->cpu_frame && source->core_surface_id != 0 &&
             source->host_surface && source->host_surface->gpu_generation() != 0) {
             import_source(call, context_api, *source, *destination,
-                [this, context_api](UserlandHleCall& resumed,
+                [this, context_api, cpu](UserlandHleCall& resumed,
                     const ResolvedSurface& ready_source,
                     const ResolvedSurface& ready_destination) {
-                    execute_blit_copy(resumed, context_api, ready_source, ready_destination);
+                    execute_blit_copy(resumed, context_api, ready_source, ready_destination, cpu);
                 },
-                true);
+                true, cpu_draw_lease(cpu));
             return;
         }
-        const auto source_pixels = read_region(*source, region.source_x,
+        auto source_pixels = read_region(*source, region.source_x,
             region.source_y, region.width, region.height, call);
+        if (cpu && source_pixels) {
+            write_cpu_draw(call, std::move(cpu),
+                { static_cast<std::int32_t>(region.destination_x),
+                    static_cast<std::int32_t>(region.destination_y),
+                    static_cast<std::uint32_t>(region.width),
+                    static_cast<std::uint32_t>(region.height) },
+                std::move(*source_pixels));
+            return;
+        }
         const auto pixels =
             source_pixels
                 ? composite(*state, *destination, region.destination_x,
@@ -1348,15 +1399,36 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
         call.set_return(mbx_success);
         return;
     }
+    if (!cpu && source->backing &&
+        !state->enabled_features.contains(mbx2d_abi::feature_blend) &&
+        destination->host_surface && destination->core_surface_id != 0) {
+        BlitRegion output { 0, 0, region.destination_x, region.destination_y,
+            output_width, output_height };
+        if (!clip_region(output, nullptr, *destination, state->scissor)) {
+            call.set_return(mbx_success);
+            return;
+        }
+        prepare_cpu_draw(call, context_api, *source, *destination,
+            static_cast<std::size_t>(output.width * output.height) *
+                sizeof(std::uint32_t),
+            [this, context_api](UserlandHleCall& resumed,
+                const ResolvedSurface& ready_source,
+                const ResolvedSurface& ready_destination,
+                std::shared_ptr<CpuDraw> ready) {
+                execute_blit_copy(resumed, context_api, ready_source,
+                    ready_destination, std::move(ready));
+            });
+        return;
+    }
     if (!source->cpu_frame && source->core_surface_id != 0 &&
         source->host_surface && source->host_surface->gpu_generation() != 0) {
         import_source(call, context_api, *source, *destination,
-            [this, context_api](UserlandHleCall& resumed,
+            [this, context_api, cpu](UserlandHleCall& resumed,
                 const ResolvedSurface& ready_source,
                 const ResolvedSurface& ready_destination) {
-                execute_blit_copy(resumed, context_api, ready_source, ready_destination);
+                execute_blit_copy(resumed, context_api, ready_source, ready_destination, cpu);
             },
-            true);
+            true, cpu_draw_lease(cpu));
         return;
     }
     const auto source_pixels = read_region(*source, region.source_x,
@@ -1390,6 +1462,15 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
         std::copy_n(transformed->begin() + source_offset,
             static_cast<std::size_t>(transformed_region.width),
             clipped.begin() + destination_offset);
+    }
+    if (cpu) {
+        write_cpu_draw(call, std::move(cpu),
+            { static_cast<std::int32_t>(transformed_region.destination_x),
+                static_cast<std::int32_t>(transformed_region.destination_y),
+                static_cast<std::uint32_t>(transformed_region.width),
+                static_cast<std::uint32_t>(transformed_region.height) },
+            std::move(clipped));
+        return;
     }
     const auto pixels = composite(*state, *destination,
         transformed_region.destination_x, transformed_region.destination_y,
