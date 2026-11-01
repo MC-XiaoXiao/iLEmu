@@ -23,10 +23,12 @@ struct Mbx2dHle::NativeDraw {
         std::shared_ptr<HostSurface> target, source;
         HostRectangle rectangle { }, source_rectangle { };
         std::optional<std::array<HostPoint, 4>> positions;
+        std::optional<std::array<HostTexturedVertex, 4>> vertices;
         std::uint32_t color { };
         HostCompositeMode mode { };
         std::uint8_t alpha { };
         HostRotation rotation { HostRotation::Identity };
+        bool quad_rectangle { };
 
         bool execute() const
         {
@@ -36,13 +38,19 @@ struct Mbx2dHle::NativeDraw {
             if (!source)
                 return encoder->fill(target, rectangle, color, mode, alpha);
             const auto started = std::chrono::steady_clock::now();
-            const auto encoded = encoder->copy(source, target, source_rectangle,
-                rectangle, mode, alpha, HostFilter::Nearest, rotation);
+            const auto encoded = vertices
+                ? encoder->copy_quad(source, target, *vertices, source_rectangle,
+                      rectangle, mode, alpha, HostFilter::Nearest)
+                : encoder->copy(source, target, source_rectangle,
+                      rectangle, mode, alpha, HostFilter::Nearest, rotation);
             performance_counters().record_diagnostic_graphics_hle(
-                PerfDiagnosticGraphicsHleKind::HostCopyEncode,
+                vertices ? PerfDiagnosticGraphicsHleKind::HostQuadEncode
+                         : PerfDiagnosticGraphicsHleKind::HostCopyEncode,
                 static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - started).count()));
+            if (encoded && quad_rectangle)
+                performance_counters().record_hle("QuadCopy.NativeRectangle", 0);
             return encoded;
         }
     };
@@ -160,7 +168,8 @@ try {
 void Mbx2dHle::copy_native(UserlandHleCall& call, bool context_api,
     const ResolvedSurface& source, const ResolvedSurface& destination,
     HostRectangle source_rectangle, HostRectangle destination_rectangle,
-    HostCompositeMode mode, std::uint8_t alpha, HostRotation rotation)
+    HostCompositeMode mode, std::uint8_t alpha, HostRotation rotation,
+    UserlandHleCall::Continuation fallback, bool quad_rectangle)
 try {
     auto pending = prepare_native_draw(call, context_api, destination, source);
     pending->work->source_rectangle = source_rectangle;
@@ -168,10 +177,33 @@ try {
     pending->work->mode = mode;
     pending->work->alpha = alpha;
     pending->work->rotation = rotation;
-    pending->fallback = [this, context_api, source, destination](
-                            UserlandHleCall& resumed) {
-        execute_blit_copy(resumed, context_api, source, destination, { }, true);
-    };
+    pending->work->quad_rectangle = quad_rectangle;
+    if (!fallback) {
+        fallback = [this, context_api, source, destination](
+                       UserlandHleCall& resumed) {
+            execute_blit_copy(resumed, context_api, source, destination, { }, true);
+        };
+    }
+    pending->fallback = std::move(fallback);
+    await_native_draw(call, std::move(pending));
+} catch (...) {
+    call.set_return(mbx2d_abi::failure);
+}
+
+void Mbx2dHle::copy_quad_native(UserlandHleCall& call, bool context_api,
+    const ResolvedSurface& source, const ResolvedSurface& destination,
+    std::array<HostTexturedVertex, 4> vertices,
+    HostRectangle source_rectangle, HostRectangle scissor,
+    HostCompositeMode mode, std::uint8_t alpha,
+    UserlandHleCall::Continuation fallback)
+try {
+    auto pending = prepare_native_draw(call, context_api, destination, source);
+    pending->work->vertices = std::move(vertices);
+    pending->work->source_rectangle = source_rectangle;
+    pending->work->rectangle = scissor;
+    pending->work->mode = mode;
+    pending->work->alpha = alpha;
+    pending->fallback = std::move(fallback);
     await_native_draw(call, std::move(pending));
 } catch (...) {
     call.set_return(mbx2d_abi::failure);

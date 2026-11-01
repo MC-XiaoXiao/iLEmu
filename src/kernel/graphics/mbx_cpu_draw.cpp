@@ -23,7 +23,7 @@ struct Mbx2dHle::CpuDraw {
     CpuContinuation continuation;
     std::optional<BlendState> blend;
     HostRectangle rectangle { };
-    std::optional<std::array<HostPoint, 4>> coverage;
+    std::optional<QuadCoverage> coverage;
     std::uint64_t owner { };
     std::size_t bytes { };
     bool context_api { };
@@ -131,7 +131,7 @@ try {
 void Mbx2dHle::write_cpu_draw(UserlandHleCall& call,
     std::shared_ptr<CpuDraw> cpu, HostRectangle rectangle,
     std::vector<std::uint32_t> pixels,
-    std::optional<std::array<HostPoint, 4>> coverage)
+    std::optional<QuadCoverage> coverage)
 {
     if (!cpu || pixels.size() > cpu->bytes / sizeof(std::uint32_t)) {
         call.set_return(mbx2d_abi::failure);
@@ -210,7 +210,7 @@ try {
                                        static_cast<std::int64_t>(index % r.width);
                         const auto y = static_cast<std::int64_t>(r.y) +
                                        static_cast<std::int64_t>(index / r.width);
-                        if (!quad_contains(*cpu->coverage,
+                        if (!quad_covers(*cpu->coverage,
                                 { static_cast<float>(x) + 0.5F,
                                     static_cast<float>(y) + 0.5F }))
                             (*blended)[index] = (*destination)[index];

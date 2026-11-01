@@ -180,11 +180,22 @@ private:
     void copy_native(UserlandHleCall& call, bool context_api,
         const ResolvedSurface& source, const ResolvedSurface& destination,
         HostRectangle source_rectangle, HostRectangle destination_rectangle,
-        HostCompositeMode mode, std::uint8_t alpha, HostRotation rotation);
+        HostCompositeMode mode, std::uint8_t alpha, HostRotation rotation,
+        UserlandHleCall::Continuation fallback = { }, bool quad_rectangle = false);
+    void copy_quad_native(UserlandHleCall& call, bool context_api,
+        const ResolvedSurface& source, const ResolvedSurface& destination,
+        std::array<HostTexturedVertex, 4> vertices,
+        HostRectangle source_rectangle, HostRectangle scissor,
+        HostCompositeMode mode, std::uint8_t alpha,
+        UserlandHleCall::Continuation fallback);
     void await_native_draw(
         UserlandHleCall& call, std::shared_ptr<NativeDraw> pending);
     void blit_copy(UserlandHleCall& call, bool context_api);
     struct CpuDraw;
+    struct QuadCoverage {
+        std::array<HostPoint, 4> positions;
+        std::optional<std::array<float, 4>> perspective;
+    };
     using CpuContinuation = std::function<void(UserlandHleCall&,
         const std::optional<ResolvedSurface>&, const ResolvedSurface&,
         std::shared_ptr<CpuDraw>)>;
@@ -197,7 +208,7 @@ private:
     void await_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu);
     void write_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
         HostRectangle rectangle, std::vector<std::uint32_t> pixels,
-        std::optional<std::array<HostPoint, 4>> coverage = { });
+        std::optional<QuadCoverage> coverage = { });
     void await_cpu_write(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
         std::optional<std::uint64_t> gpu = std::nullopt);
     [[nodiscard]] bool cpu_draw_live(UserlandHleCall& call,
@@ -219,15 +230,17 @@ private:
         const ResolvedSurface& destination,
         const std::array<HostPoint, 4>& positions,
         std::shared_ptr<CpuDraw> cpu = { }, bool native_attempted = false);
-    [[nodiscard]] static bool quad_contains(
-        const std::array<HostPoint, 4>& positions, HostPoint point);
+    [[nodiscard]] static bool quad_covers(
+        const QuadCoverage& coverage, HostPoint point);
     void quad_copy(UserlandHleCall& call, bool context_api = false,
         bool perspective_api = false);
+    enum class QuadStage { Rectangle, Quad, Software };
     void execute_quad_copy(UserlandHleCall& call, bool context_api,
         const ResolvedSurface& source, const ResolvedSurface& destination,
         const std::array<HostPoint, 4>& positions,
         const std::array<HostPoint, 4>& texture,
-        const std::array<float, 4>& perspective, bool source_imported = false);
+        const std::array<float, 4>& perspective, bool source_imported = false,
+        std::shared_ptr<CpuDraw> cpu = { }, QuadStage stage = QuadStage::Rectangle);
     struct FlushPlan;
     void flush_surfaces(UserlandHleCall& call);
     void await_flush_surfaces(UserlandHleCall& call,
