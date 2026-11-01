@@ -715,15 +715,7 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
         }
         return pixels;
     }
-    if (surface.host_surface && surface.backing &&
-        (surface.backing->pixel_format == surface_pixel_format_bgra ||
-            surface_is_packed_555(surface.backing->pixel_format)) &&
-        surface.host_surface->gpu_generation() >
-            surface.host_surface->cpu_generation() &&
-        !surface_store_->synchronize_for_cpu(
-            call.memory(), surface.core_surface_id, { })) {
-        return std::nullopt;
-    }
+    // GPU sources are captured by import_source or CpuDraw before sampling.
     return read_guest_region(surface, x, y, width, height, call);
 }
 
@@ -794,15 +786,8 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
     std::int64_t y, std::int64_t width, std::int64_t height,
     const std::vector<std::uint32_t>& pixels, UserlandHleCall& call)
 {
-    const auto result = try_write_region(surface, x, y, width, height, pixels, call);
-    if (result != CpuWriteState::PendingGpu)
-        return result == CpuWriteState::Completed;
-    // Unconverted legacy callers keep their explicit synchronization. The
-    // CPU-copy packet uses only try_write_region and the owned capture path.
-    return surface_store_->synchronize_for_cpu(
-               call.memory(), surface.core_surface_id, { }) &&
-           try_write_region(surface, x, y, width, height, pixels, call) ==
-               CpuWriteState::Completed;
+    return try_write_region(surface, x, y, width, height, pixels, call) ==
+           CpuWriteState::Completed;
 }
 
 Mbx2dHle::CpuWriteState Mbx2dHle::try_write_region(const ResolvedSurface& surface, std::int64_t x,
