@@ -27,7 +27,8 @@ android {
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             cmake {
-                arguments += listOf("-DCMAKE_BUILD_TYPE=RelWithDebInfo")
+                // Native libraries exchange C++ objects and exception state.
+                arguments += listOf("-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DANDROID_STL=c++_shared")
                 targets += listOf("ilemu", "SDL2", "firmware_dmg", "firmware_decrypt", "firmware_hfstar")
             }
         }
