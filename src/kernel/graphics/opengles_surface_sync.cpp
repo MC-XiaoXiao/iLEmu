@@ -4,147 +4,180 @@
 
 #include "kernel/opengles_hle.hpp"
 
-#include "foundation/address_space.hpp"
-#include "graphics/surface_cpu_readback.hpp"
+#include "surface_guest_import.hpp"
+
 #include "graphics/surface_store.hpp"
 
-#include <stdexcept>
 #include <utility>
 
 namespace ilemu {
 
-struct OpenGlesHle::PixmapRead {
-    SurfaceStore::Backing backing;
-    AddressSpace::MappingObservation mapping;
-    std::uint64_t owner { };
-    std::size_t bytes { };
-    std::shared_ptr<SyncLease> lease;
-    std::shared_ptr<GlesValueResult<SurfaceCpuReadback>> host;
-};
-
 void OpenGlesHle::create_pixmap_surface(UserlandHleCall& call, std::uint32_t id)
 try {
     const auto backing = surface_store_->find(id);
-    if (!backing) {
-        publish_created_surface(call, std::nullopt);
-        return;
-    }
     constexpr std::size_t limit = 64U * 1024U * 1024U;
     const auto count =
-        static_cast<std::uint64_t>(backing->width) * backing->height;
+        backing ? static_cast<std::uint64_t>(backing->width) * backing->height
+                : 0;
     if (!count || count > limit / sizeof(std::uint32_t)) {
         publish_created_surface(call, std::nullopt);
         return;
     }
-    auto read = surface_store_->try_read_argb(call.memory(), id);
-    if (read.state == SurfaceStore::CpuReadResult::State::Completed) {
-        SurfaceState state;
-        state.backing_identifier = id;
-        state.width = backing->width;
-        state.height = backing->height;
-        state.pixels = std::move(read.pixels);
-        if (const auto surface = surface_store_->host_surface(id))
-            state.backing_cpu_generation = surface->cpu_generation();
-        publish_created_surface(call, std::move(state));
-        return;
-    }
-    if (read.state != SurfaceStore::CpuReadResult::State::PendingGpu) {
-        publish_created_surface(call, std::nullopt);
-        return;
-    }
-    auto pending = std::make_shared<PixmapRead>();
-    pending->backing = *backing;
-    pending->mapping =
-        call.memory().observe_mapping(backing->base, backing->allocation_size);
-    pending->owner = renderer_owner_;
-    pending->bytes = static_cast<std::size_t>(count) * sizeof(std::uint32_t);
-    pending->host = std::make_shared<GlesValueResult<SurfaceCpuReadback>>();
-    pending->host->value.renderer = renderer_;
-    pending->host->value.surface = surface_store_->host_surface(id);
-    pending->lease = program_wait(call);
-    await_pixmap_read(call, std::move(pending));
+    const auto owner = renderer_owner_;
+    const auto lease = program_wait(call);
+    SurfaceGuestImport::read(
+        call, surface_store_, id,
+        [this, backing = *backing, owner, lease](UserlandHleCall& resumed,
+            std::optional<std::vector<std::uint32_t>> pixels) {
+            try {
+                lease->consume();
+                if (!pixels || owner != renderer_owner_) {
+                    publish_created_surface(resumed, std::nullopt);
+                    return;
+                }
+                SurfaceState state;
+                state.backing_identifier = backing.id;
+                state.width = backing.width;
+                state.height = backing.height;
+                state.pixels = std::move(*pixels);
+                if (const auto surface =
+                        surface_store_->host_surface(backing.id))
+                    state.backing_cpu_generation = surface->cpu_generation();
+                publish_created_surface(resumed, std::move(state));
+            } catch (...) {
+                lease->consume();
+                publish_created_surface(resumed, std::nullopt);
+            }
+        },
+        lease);
 } catch (...) {
+    if (sync_lease_)
+        sync_lease_->cancelled = true;
     publish_created_surface(call, std::nullopt);
 }
 
-void OpenGlesHle::await_pixmap_read(
-    UserlandHleCall& call, std::shared_ptr<PixmapRead> pending)
-try {
-    const auto& expected = pending->backing;
-    const auto backing = surface_store_->find(expected.id);
-    const auto host = pending->host;
-    if (renderer_owner_ != pending->owner || !pending->mapping.valid() ||
-        !backing ||
-        backing->provenance.publication_sequence !=
-            expected.provenance.publication_sequence ||
-        backing->base != expected.base ||
-        backing->allocation_size != expected.allocation_size ||
-        backing->width != expected.width ||
-        backing->height != expected.height ||
-        backing->bytes_per_row != expected.bytes_per_row ||
-        backing->pixel_format != expected.pixel_format ||
-        surface_store_->host_surface(expected.id) != host->value.surface ||
-        !call.memory().accessible(
-            expected.base, expected.allocation_size, MemoryPermission::Read))
-        throw std::runtime_error { "pixmap source was replaced" };
-    if (!host->completion) {
-        // Only immutable host ownership crosses the queue. The mapping,
-        // backing identity, EGL state and continuation remain on the core.
-        host->completion = enqueue_gles_host_work(pending->bytes,
-            [host](DisplayFrame&) { return host->value.capture(); });
-        if (!host->completion) {
-            call.suspend_until(
-                [bytes = pending->bytes] {
-                    return gles_host_work_capacity(bytes);
-                },
-                [this, pending](UserlandHleCall& resumed) {
-                    await_pixmap_read(resumed, pending);
-                });
-            return;
-        }
-        pending->lease->result = host->completion;
+bool OpenGlesHle::prepare_pixmap_surface(
+    UserlandHleCall& call, const UserlandHleRegistry::Handler& handler)
+{
+    const auto symbol = call.symbol();
+    if (symbol != "_glClear" && symbol != "_glDrawArrays" &&
+        symbol != "_glDrawElements" && symbol != "_glReadPixels" &&
+        symbol != "_glFinish" && symbol != "_glFlush")
+        return false;
+    const auto* context = current_context(call);
+    if (!context || context->bound_framebuffer)
+        return false;
+    auto* state = current_pixmap_surface(call);
+    if (!state)
+        return false;
+    const auto surface =
+        surface_store_->host_surface(*state->backing_identifier);
+    if (!surface)
+        return false;
+    const auto cpu_generation = surface->cpu_generation();
+    if (cpu_generation <= state->backing_cpu_generation)
+        return false;
+    if (surface->gpu_generation() > cpu_generation) {
+        state->backing_cpu_generation = cpu_generation;
+        return false;
     }
-    if (!host->completion->ready()) {
-        call.suspend_until(
-            [result = host->completion] { return result->ready(); },
-            [this, pending](UserlandHleCall& resumed) {
-                await_pixmap_read(resumed, pending);
-            },
-            host->completion->sequence());
+    reload_surface_async(call, thread(call).draw_surface,
+        [this, handler](UserlandHleCall& resumed, bool succeeded) {
+            if (succeeded)
+                await_graphics_call(resumed, handler);
+            else
+                set_gl_error(resumed, gles_abi::invalid_operation);
+        });
+    return true;
+}
+
+void OpenGlesHle::reload_surface_async(UserlandHleCall& call,
+    std::uint32_t surface,
+    std::function<void(UserlandHleCall&, bool)> completed)
+try {
+    const auto found = surfaces_.find(surface);
+    if (found == surfaces_.end()) {
+        completed(call, false);
         return;
     }
-    const auto& captured = host->value.snapshot;
-    if (!host->completion->succeeded() ||
-        captured.frame.width != expected.width ||
-        captured.frame.height != expected.height ||
-        captured.frame.pixels.size() != pending->bytes / sizeof(std::uint32_t))
-        throw std::runtime_error { "pixmap capture failed" };
-    std::vector<std::uint32_t> pixels;
-    // Publish the cache before moving its captured pixels. Only an unchanged
-    // CPU/GPU pair can accept it; later GPU writes keep their dirty state.
-    if (host->value.surface->commit_cpu_readback(captured)) {
-        host->value.renderer->acknowledge_readback(
-            host->value.surface->key(), host->value.stamp);
-        auto merged = surface_store_->try_read_argb(call.memory(), expected.id);
-        if (merged.state == SurfaceStore::CpuReadResult::State::Failed)
-            throw std::runtime_error { "pixmap guest import failed" };
-        if (merged.state == SurfaceStore::CpuReadResult::State::Completed)
-            pixels = std::move(merged.pixels);
+    auto& state = found->second;
+    if (!state.backing_identifier) {
+        completed(call, true);
+        return;
     }
-    if (pixels.empty())
-        pixels = std::move(host->value.snapshot.frame.pixels);
-    SurfaceState state;
-    state.backing_identifier = expected.id;
-    state.width = expected.width;
-    state.height = expected.height;
-    state.pixels = std::move(pixels);
-    // Leave refresh conservative: a later GPU writer or guest CPU edit must
-    // not be hidden by sampling a newer watermark after this captured frame.
-    pending->lease->consume();
-    publish_created_surface(call, std::move(state));
+    const auto id = *state.backing_identifier;
+    const auto backing = surface_store_->find(id);
+    const auto host_surface = surface_store_->host_surface(id);
+    if (!backing || !host_surface) {
+        completed(call, false);
+        return;
+    }
+    if (host_surface->gpu_generation() > host_surface->cpu_generation()) {
+        state.width = backing->width;
+        state.height = backing->height;
+        state.backing_cpu_generation = host_surface->cpu_generation();
+        state.refreshed_textures.clear();
+        state.dirty = false;
+        completed(call, true);
+        return;
+    }
+    const auto owner = renderer_owner_;
+    auto binding = RenderTargetBinding { };
+    binding.key = render_target_key(surface);
+    binding.backing_identifier = id;
+    binding.pixmap_surface = &state;
+    binding.surface_identity = state.identity;
+    binding.host_surface = host_surface;
+    const auto lease = program_wait(call);
+    SurfaceGuestImport::read(
+        call, surface_store_, id,
+        [this, binding, owner, lease, completed](UserlandHleCall& resumed,
+            std::optional<std::vector<std::uint32_t>> pixels) {
+            try {
+                lease->consume();
+                if (!pixels || owner != renderer_owner_ ||
+                    !binding_live(binding)) {
+                    completed(resumed, false);
+                    return;
+                }
+                auto lifetime = surface_store_->acquire_transport_lease(
+                    *binding.backing_identifier);
+                if (!lifetime) {
+                    completed(resumed, false);
+                    return;
+                }
+                auto& state = *binding.pixmap_surface;
+                const auto descriptor = binding.host_surface->descriptor();
+                state.width = descriptor.width;
+                state.height = descriptor.height;
+                state.pixels = std::move(*pixels);
+                state.backing_cpu_generation =
+                    binding.host_surface->cpu_generation();
+                state.refreshed_textures.clear();
+                state.dirty = false;
+                submit_host_work_async(
+                    resumed, 0,
+                    [renderer = renderer_, key = binding.key, lifetime](
+                        DisplayFrame&) {
+                        renderer->invalidate(key);
+                        return true;
+                    },
+                    [this, binding, owner, completed](UserlandHleCall& done,
+                        const std::shared_ptr<GlesWorkResult>& result) {
+                        completed(done, result && result->succeeded() &&
+                                            owner == renderer_owner_ &&
+                                            binding_live(binding));
+                    });
+            } catch (...) {
+                lease->consume();
+                completed(resumed, false);
+            }
+        },
+        lease);
 } catch (...) {
-    pending->lease->consume();
-    publish_created_surface(call, std::nullopt);
+    if (sync_lease_)
+        sync_lease_->cancelled = true;
+    completed(call, false);
 }
 
 } // namespace ilemu

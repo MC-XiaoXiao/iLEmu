@@ -282,8 +282,8 @@ private:
     [[nodiscard]] std::optional<std::uint32_t> core_surface_identifier(
         UserlandHleCall& call, std::uint32_t surface) const;
     [[nodiscard]] SurfaceState* current_pixmap_surface(UserlandHleCall& call);
-    [[nodiscard]] bool refresh_pixmap_surface(
-        UserlandHleCall& call, std::uint32_t surface);
+    [[nodiscard]] bool prepare_pixmap_surface(UserlandHleCall& call,
+        const UserlandHleRegistry::Handler& handler);
     [[nodiscard]] const GlesResourceStore::TextureLevel*
     current_framebuffer_level(const ContextState& context) const;
     [[nodiscard]] std::uint32_t ensure_renderbuffer_storage(
@@ -304,8 +304,8 @@ private:
     [[nodiscard]] GlesRenderTargetKey render_target_key(
         std::uint32_t surface) const;
     void release_renderer_resources();
-    [[nodiscard]] bool reload_surface(
-        UserlandHleCall& call, std::uint32_t surface);
+    void reload_surface_async(UserlandHleCall& call, std::uint32_t surface,
+        std::function<void(UserlandHleCall&, bool)> completed);
     void flush_surface_frame_async(UserlandHleCall& call, std::uint32_t surface,
         std::function<void(UserlandHleCall&, bool)> completed);
     void flush_surface_async(UserlandHleCall& call, std::uint32_t surface,
@@ -368,9 +368,6 @@ private:
     void publish_created_surface(
         UserlandHleCall& call, std::optional<SurfaceState> state);
     void create_pixmap_surface(UserlandHleCall& call, std::uint32_t id);
-    struct PixmapRead;
-    void await_pixmap_read(
-        UserlandHleCall& call, std::shared_ptr<PixmapRead> pending);
     void make_current(UserlandHleCall& call);
     void complete_make_current(UserlandHleCall& call);
     void destroy_surface_after_flush(

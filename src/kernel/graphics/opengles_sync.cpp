@@ -234,7 +234,8 @@ void OpenGlesHle::await_graphics_call(
         await_program_flush(call, std::move(handler));
         return;
     }
-    if (!prepare_texture_target(call, handler))
+    if (!prepare_pixmap_surface(call, handler) &&
+        !prepare_texture_target(call, handler))
         handler(call);
 }
 
