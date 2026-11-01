@@ -3060,7 +3060,17 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         if (!commit_render_target(call, *binding, std::move(*frame))) {
             set_gl_error(call, gles_abi::invalid_operation);
         } else {
-            renderer_->invalidate(target);
+            submit_host_work_async(call, 0,
+                [renderer = renderer_, lifetime = renderer_lifetime_, target](
+                    DisplayFrame&) {
+                    renderer->invalidate(target);
+                    return true;
+                },
+                [this](UserlandHleCall& resumed,
+                    const std::shared_ptr<GlesWorkResult>& result) {
+                    if (!result || !result->succeeded())
+                        set_gl_error(resumed, gles_abi::invalid_operation);
+                });
         }
     });
     add("_glViewport", [this](UserlandHleCall& call) {
