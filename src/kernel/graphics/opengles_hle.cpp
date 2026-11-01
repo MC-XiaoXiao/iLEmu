@@ -3369,17 +3369,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         const auto binding = target == gles_abi::texture_rectangle_apple
                                  ? unit.bound_texture_rectangle
                                  : unit.bound_texture_2d;
-        std::optional<GlesRenderTargetKey> previous_render_target;
-        if (const auto* texture = resources_.texture(binding)) {
-            const auto previous =
-                texture->levels.find(static_cast<std::uint32_t>(level));
-            if (previous != texture->levels.end() &&
-                !previous->second.surface_id && previous->second.host_surface &&
-                !previous->second.native_lifetime &&
-                previous->second.host_surface->key().owner == renderer_owner_) {
-                previous_render_target = previous->second.host_surface->key();
-            }
-        }
         const auto error = resources_.upload_texture_2d(call.memory(), binding,
             static_cast<std::uint32_t>(level), call.argument(2),
             static_cast<std::uint32_t>(width),
@@ -3388,9 +3377,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             open_gles_client_bitmap_profile(context->guest_capabilities));
         if (error != gles_abi::no_error) {
             set_gl_error(call, error);
-        } else if (previous_render_target) {
-            renderer_->release(
-                std::span { &*previous_render_target, std::size_t { 1 } });
         }
     });
     add("_glCompressedTexImage2D", [this](UserlandHleCall& call) {
@@ -3425,17 +3411,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         const auto binding = target == gles_abi::texture_rectangle_apple
                                  ? unit.bound_texture_rectangle
                                  : unit.bound_texture_2d;
-        std::optional<GlesRenderTargetKey> previous_render_target;
-        if (const auto* texture = resources_.texture(binding)) {
-            const auto previous =
-                texture->levels.find(static_cast<std::uint32_t>(level));
-            if (previous != texture->levels.end() &&
-                !previous->second.surface_id && previous->second.host_surface &&
-                !previous->second.native_lifetime &&
-                previous->second.host_surface->key().owner == renderer_owner_) {
-                previous_render_target = previous->second.host_surface->key();
-            }
-        }
         const auto error = resources_.upload_compressed_texture_2d(
             call.memory(), binding, static_cast<std::uint32_t>(level), format,
             static_cast<std::uint32_t>(width),
@@ -3445,9 +3420,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, error);
             return;
         }
-        if (previous_render_target)
-            renderer_->release(
-                std::span { &*previous_render_target, std::size_t { 1 } });
     });
     add("_glTexSubImage2D", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
