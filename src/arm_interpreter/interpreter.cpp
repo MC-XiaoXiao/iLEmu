@@ -411,6 +411,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 duplicate_vector(state,
                     std::get<arm::VectorDuplicateOperands>(inst.vector));
                 break;
+            case arm::InstructionKind::VectorFloatingConversion:
+                convert_vector(state,
+                    std::get<arm::VectorFloatingConversionOperands>(inst.vector));
+                break;
             case arm::InstructionKind::VectorFloatingArithmetic:
                 floating_vector(state,
                     std::get<arm::VectorFloatingArithmeticOperands>(inst.vector));

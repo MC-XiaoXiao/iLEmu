@@ -39,6 +39,7 @@ public:
             return;
         using Kind = arm::InstructionKind;
         switch (inst.kind) {
+        case Kind::VectorFloatingConversion:
         case Kind::VectorFloatingArithmetic:
         case Kind::FloatingArithmetic:
         case Kind::FloatingComparison:

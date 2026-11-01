@@ -522,6 +522,12 @@ namespace {
             // Retain standard controls until a guest-control consumer needs
             // them. Predicate joins and group backedges revoke that knowledge.
         }
+        void vector_conversion(const arm::VectorFloatingConversionOperands& v)
+        {
+            floating_.use();
+            floating_.standard_controls(code_);
+            SimdEmitter { code_, vectors_ }.conversion(v);
+        }
         void comparison(const arm::FloatingComparisonOperands& v, bool preserve_apsr)
         {
             floating_.use();
@@ -1148,6 +1154,10 @@ static CompiledTrace compile_trace(InstructionSource& source,
                 case arm::InstructionKind::VectorImmediate:
                     SimdEmitter { emit.code(), emit.vectors() }.immediate(
                         std::get<arm::VectorImmediateOperands>(inst.vector));
+                    break;
+                case arm::InstructionKind::VectorFloatingConversion:
+                    emit.vector_conversion(
+                        std::get<arm::VectorFloatingConversionOperands>(inst.vector));
                     break;
                 case arm::InstructionKind::VectorFloatingArithmetic:
                     emit.vector_arithmetic(

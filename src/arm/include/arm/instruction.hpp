@@ -46,7 +46,8 @@ enum class InstructionKind {
     SaturatingArithmetic,
     VectorIntegerArithmetic,
     VectorReverse,
-    VectorShiftImmediate
+    VectorShiftImmediate,
+    VectorFloatingConversion
 };
 enum class SystemOperation {
     ThreadPointerReadWrite,
@@ -94,6 +95,10 @@ struct VectorShiftImmediateOperands {
     unsigned destination = 0, source = 0, element_bits = 8, amount = 0;
     bool quad = false, right = true, unsigned_value = false;
     bool rounding = false, accumulate = false, insert = false;
+};
+struct VectorFloatingConversionOperands {
+    unsigned destination = 0, source = 0;
+    bool quad = false, to_integer = false, unsigned_value = false;
 };
 struct VectorImmediateOperands {
     unsigned destination = 0; // D register index, even for Q destinations.
@@ -164,7 +169,7 @@ using VectorOperands = std::variant<VectorDuplicateOperands,
     VectorBitwiseOperands, VectorExtractOperands, VectorTransferOperands, VectorCoreMoveOperands,
     FloatingConversionOperands, FloatingArithmeticOperands, FloatingComparisonOperands, FloatingImmediateOperands, FloatingSystemOperands, VectorImmediateOperands,
     VectorFloatingArithmeticOperands, VectorIntegerOperands, VectorReverseOperands,
-    VectorShiftImmediateOperands>;
+    VectorShiftImmediateOperands, VectorFloatingConversionOperands>;
 
 // Only validated instruction families enter an executor. Unimplemented or
 // unpredictable encodings remain explicit; they are never treated as NOPs.

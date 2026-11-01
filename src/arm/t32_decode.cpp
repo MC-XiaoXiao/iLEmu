@@ -12,6 +12,7 @@
 #include "simd_integer_decode.hpp"
 #include "simd_extract.hpp"
 #include "simd_reverse.hpp"
+#include "simd_conversion.hpp"
 #include "simd_shift_immediate.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
@@ -73,7 +74,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
         if (!second)
             return out;
         const unsigned tail = *second;
-        if (word == 0xf3afU && tail == 0x8000U) {
+        if (word == 0xf3afU && (tail & 0xfffeU) == 0x8000U) {
             if (execution::has_armv6t2_extensions(architecture))
                 out.kind = InstructionKind::Nop;
             return out;
@@ -102,6 +103,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_simd_duplicate(out, (word << 16U) | tail, true) ||
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||
             decode_simd_extract(out, (word << 16U) | tail, true) ||
+            decode_simd_conversion(out, (word << 16U) | tail, true, vfp, architecture, simd) ||
             decode_simd_reverse(out, (word << 16U) | tail, true, vfp, architecture, simd) ||
             decode_simd_shift_immediate(out, (word << 16U) | tail, true, vfp, architecture, simd) ||
             decode_simd_transfer(out, (word << 16U) | tail, true))
@@ -317,7 +319,9 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
     } else if ((word & 0xff00U) == 0xbf00U) {
         const auto mask = word & 15U, cond = (word >> 4U) & 15U;
         if (mask == 0) {
-            if (cond == 0 && execution::has_armv6t2_extensions(architecture))
+            // NOP and advisory YIELD need no architectural state change;
+            // the executor already bounds host execution slices.
+            if (cond <= 1 && execution::has_armv6t2_extensions(architecture))
                 out.kind = InstructionKind::Nop;
         } else if (it == 0 && cond != 15 &&
                    (cond != 14 || std::popcount(mask) == 1)) {

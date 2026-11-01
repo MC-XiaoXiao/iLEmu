@@ -18,6 +18,7 @@ public:
     void extract(const arm::VectorExtractOperands&);
     void reverse(const arm::VectorReverseOperands&);
     void shift(const arm::VectorShiftImmediateOperands&);
+    void conversion(const arm::VectorFloatingConversionOperands&);
     void core_move(const arm::VectorCoreMoveOperands&);
     void floating(const arm::VectorFloatingArithmeticOperands&);
     void integer(const arm::VectorIntegerOperands&);
