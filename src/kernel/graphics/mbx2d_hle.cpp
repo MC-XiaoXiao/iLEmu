@@ -1206,7 +1206,8 @@ void Mbx2dHle::blit_color(
             color, *composite_mode, state->blend.global_alpha);
         return;
     }
-    if (destination->host_surface && destination->core_surface_id != 0) {
+    if (destination->framebuffer ||
+        (destination->host_surface && destination->core_surface_id != 0)) {
         // A fill owns no source binding. Admit its output before allocating
         // pixels that may remain alive across the target visibility wait.
         prepare_cpu_draw(call, context_api, std::nullopt, *destination,
@@ -1339,7 +1340,8 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
             return;
         }
         if (!cpu && source->backing &&
-            destination->host_surface && destination->core_surface_id != 0) {
+            (destination->framebuffer ||
+                (destination->host_surface && destination->core_surface_id != 0))) {
             prepare_cpu_draw(call, context_api, *source, *destination,
                 static_cast<std::size_t>(region.width * region.height) *
                     sizeof(std::uint32_t),
@@ -1464,7 +1466,8 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
         return;
     }
     if (!cpu && source->backing &&
-        destination->host_surface && destination->core_surface_id != 0) {
+        (destination->framebuffer ||
+            (destination->host_surface && destination->core_surface_id != 0))) {
         BlitRegion output { 0, 0, region.destination_x, region.destination_y,
             output_width, output_height };
         if (!clip_region(output, nullptr, *destination, state->scissor)) {
@@ -1569,6 +1572,11 @@ void Mbx2dHle::submit_destination(UserlandHleCall& call, bool context_api)
     if (host_graphics_->accelerated() && destination->host_surface) {
         auto graphics = host_graphics_;
         auto surface = destination->host_surface;
+        auto transport = surface_store_->acquire_transport_lease(
+            destination->core_surface_id);
+        if (!transport)
+            return;
+        auto presentation = make_host_surface_presentation_lease(surface, transport);
         display_->replace_surface(
             surface,
             [graphics, surface] {
@@ -1583,7 +1591,7 @@ void Mbx2dHle::submit_destination(UserlandHleCall& call, bool context_api)
             [surface] {
                 return std::max(
                     surface->cpu_generation(), surface->gpu_generation());
-            });
+            }, std::move(presentation));
         return;
     }
     const auto pixels = read_region(

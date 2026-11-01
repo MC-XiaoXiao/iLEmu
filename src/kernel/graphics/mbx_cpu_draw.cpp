@@ -2,32 +2,40 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#include "kernel/mbx2d_hle.hpp"
+#include "mbx_cpu_draw.hpp"
 
 #include "foundation/cpu.hpp"
 #include "surface_guest_import.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
 namespace ilemu {
-struct Mbx2dHle::CpuDraw {
-    // Credit outlives its owned result, including cancellation while parked.
-    std::shared_ptr<void> credit;
-    std::vector<std::uint32_t> pixels;
-    std::optional<ResolvedSurface> source;
-    ResolvedSurface destination;
-    AddressSpace::MappingObservation source_mapping, destination_mapping;
-    std::shared_ptr<DisplayState> display;
-    std::shared_ptr<GraphicsCallLease> lease;
-    CpuContinuation continuation;
-    std::optional<BlendState> blend;
-    HostRectangle rectangle { };
-    std::optional<QuadCoverage> coverage;
-    std::uint64_t owner { };
-    std::size_t bytes { };
-    bool context_api { };
-};
+
+std::optional<std::vector<std::uint32_t>> Mbx2dHle::CpuDraw::Output::merge(
+    std::vector<std::uint32_t> destination) const
+{
+    auto result = blend
+        ? Mbx2dHle::composite_pixels(*blend, pixels,
+              coverage ? destination : std::move(destination))
+        : std::optional { pixels };
+    if (!result)
+        return std::nullopt;
+    if (coverage) {
+        for (std::size_t index = 0; index < result->size(); ++index) {
+            const auto x = static_cast<std::int64_t>(rectangle.x) +
+                           static_cast<std::int64_t>(index % rectangle.width);
+            const auto y = static_cast<std::int64_t>(rectangle.y) +
+                           static_cast<std::int64_t>(index / rectangle.width);
+            if (!Mbx2dHle::quad_covers(*coverage,
+                    { static_cast<float>(x) + 0.5F,
+                        static_cast<float>(y) + 0.5F }))
+                (*result)[index] = destination[index];
+        }
+    }
+    return result;
+}
 
 std::shared_ptr<GraphicsCallLease> Mbx2dHle::cpu_draw_lease(
     const std::shared_ptr<CpuDraw>& cpu)
@@ -39,12 +47,16 @@ bool Mbx2dHle::surface_binding_live(const ResolvedSurface& expected,
     const std::optional<ResolvedSurface>& current,
     const AddressSpace::MappingObservation& mapping)
 {
-    if (!current || !mapping.valid() || !expected.backing ||
-        !current->backing || expected.surface_handle != current->surface_handle ||
+    if (!current || expected.framebuffer != current->framebuffer ||
+        expected.surface_handle != current->surface_handle ||
         expected.core_surface_id != current->core_surface_id ||
         (expected.core_surface_id != 0 &&
             expected.host_surface != current->host_surface) ||
         expected.width != current->width || expected.height != current->height)
+        return false;
+    if (expected.framebuffer)
+        return true;
+    if (!mapping.valid() || !expected.backing || !current->backing)
         return false;
     const auto& a = *expected.backing;
     const auto& b = *current->backing;
@@ -77,16 +89,36 @@ void Mbx2dHle::prepare_cpu_draw(UserlandHleCall& call, bool context_api,
 try {
     constexpr std::size_t limit = 64U * 1024U * 1024U;
     if (!bytes || bytes > limit || (source && !source->backing) ||
-        !destination.backing)
+        (!destination.backing && !destination.framebuffer))
         throw std::length_error { "MBX CPU output exceeds its budget" };
     auto cpu = std::make_shared<CpuDraw>();
+    cpu->output = std::make_shared<CpuDraw::Output>();
+    cpu->output_bytes = bytes;
+    if (destination.framebuffer) {
+        constexpr auto metadata = sizeof(CpuDraw) + sizeof(CpuDraw::Output) +
+                                  sizeof(CpuDraw::Framebuffer);
+        const auto count =
+            static_cast<std::uint64_t>(destination.width) * destination.height;
+        if (count > (limit - metadata) / sizeof(std::uint32_t))
+            throw std::length_error { "MBX framebuffer exceeds its budget" };
+        const auto frame =
+            static_cast<std::size_t>(count) * sizeof(std::uint32_t);
+        const auto extra = frame + 2U * std::min(bytes, frame);
+        if (bytes > limit - metadata || extra > limit - metadata - bytes)
+            throw std::length_error {
+                "MBX framebuffer merge exceeds its budget"
+            };
+        bytes += extra + metadata;
+    }
     cpu->source = std::move(source);
     cpu->destination = std::move(destination);
     if (cpu->source)
         cpu->source_mapping = call.memory().observe_mapping(
             cpu->source->backing->base, cpu->source->backing->allocation_size);
-    cpu->destination_mapping = call.memory().observe_mapping(
-        cpu->destination.backing->base, cpu->destination.backing->allocation_size);
+    if (cpu->destination.backing)
+        cpu->destination_mapping =
+            call.memory().observe_mapping(cpu->destination.backing->base,
+                cpu->destination.backing->allocation_size);
     cpu->owner = renderer_owner_;
     cpu->display = display_;
     cpu->context_api = context_api;
@@ -94,7 +126,7 @@ try {
     if (!state)
         throw std::runtime_error { "missing MBX CPU state" };
     if (state->enabled_features.contains(mbx2d_abi::feature_blend))
-        cpu->blend = state->blend;
+        cpu->output->blend = state->blend;
     cpu->bytes = bytes;
     cpu->continuation = std::move(continuation);
     cpu->lease = std::make_shared<GraphicsCallLease>();
@@ -133,13 +165,13 @@ void Mbx2dHle::write_cpu_draw(UserlandHleCall& call,
     std::vector<std::uint32_t> pixels,
     std::optional<QuadCoverage> coverage)
 {
-    if (!cpu || pixels.size() > cpu->bytes / sizeof(std::uint32_t)) {
+    if (!cpu || pixels.size() > cpu->output_bytes / sizeof(std::uint32_t)) {
         call.set_return(mbx2d_abi::failure);
         return;
     }
-    cpu->rectangle = rectangle;
-    cpu->pixels = std::move(pixels);
-    cpu->coverage = std::move(coverage);
+    cpu->output->rectangle = rectangle;
+    cpu->output->pixels = std::move(pixels);
+    cpu->output->coverage = std::move(coverage);
     // The input is now owned output. No later stage rereads guest source bytes
     // or replays the CPU renderer. Only the original target must remain live.
     cpu->continuation = { };
@@ -152,6 +184,10 @@ try {
     if (!cpu_draw_live(call, *cpu, false))
         throw std::runtime_error { "stale MBX CPU output" };
     const auto& target = cpu->destination;
+    if (target.framebuffer) {
+        await_framebuffer_write(call, std::move(cpu));
+        return;
+    }
     // Preparation/readback may have yielded since the call-entry gate. A
     // full CPU replacement needs no old pixels, but must still follow every
     // previously accepted reader/writer of this physical image.
@@ -167,10 +203,10 @@ try {
             }, dependency->sequence());
         return;
     }
-    const auto r = cpu->rectangle;
+    const auto r = cpu->output->rectangle;
     const auto full = r.x == 0 && r.y == 0 && r.width == target.width &&
                       r.height == target.height;
-    if ((!full || cpu->blend || cpu->coverage) && !gpu) {
+    if ((!full || cpu->output->blend || cpu->output->coverage) && !gpu) {
         const auto observed = target.host_surface->gpu_generation();
         const auto required = surface_store_->cpu_sync_required(
             target.core_surface_id, { });
@@ -179,12 +215,12 @@ try {
         if (!*required)
             gpu = observed;
     }
-    if ((full && !cpu->blend && !cpu->coverage) || gpu) {
+    if ((full && !cpu->output->blend && !cpu->output->coverage) || gpu) {
         // Source sampling/transformation is already owned. Only the target
         // read/merge may be retried if another producer advances its boundary.
         std::optional<std::vector<std::uint32_t>> blended;
         bool target_current = true;
-        if (cpu->blend || cpu->coverage) {
+        if (cpu->output->blend || cpu->output->coverage) {
             std::optional<std::vector<std::uint32_t>> destination;
             {
                 auto current = target.host_surface->try_map_current_cpu(
@@ -198,36 +234,21 @@ try {
                 }
             }
             if (destination) {
-                blended = cpu->blend
-                    ? composite_pixels(*cpu->blend, cpu->pixels,
-                          cpu->coverage ? *destination : std::move(*destination))
-                    : std::optional { cpu->pixels };
+                blended = cpu->output->merge(std::move(*destination));
                 if (!blended)
                     throw std::runtime_error { "invalid MBX blend output" };
-                if (cpu->coverage) {
-                    for (std::size_t index = 0; index < blended->size(); ++index) {
-                        const auto x = static_cast<std::int64_t>(r.x) +
-                                       static_cast<std::int64_t>(index % r.width);
-                        const auto y = static_cast<std::int64_t>(r.y) +
-                                       static_cast<std::int64_t>(index / r.width);
-                        if (!quad_covers(*cpu->coverage,
-                                { static_cast<float>(x) + 0.5F,
-                                    static_cast<float>(y) + 0.5F }))
-                            (*blended)[index] = (*destination)[index];
-                    }
-                }
             }
         }
         if (target_current) {
             const auto written = try_write_region(target, r.x, r.y, r.width,
-                r.height, blended ? *blended : cpu->pixels, call, gpu);
+                r.height, blended ? *blended : cpu->output->pixels, call, gpu);
             if (written != CpuWriteState::PendingGpu) {
                 // These are completed emulator CPU writes, not newer raw
                 // guest edits to preserve over a subsequent GPU generation.
                 const auto recorded = written == CpuWriteState::Completed &&
                                       surface_store_->record_cpu_write(
                                           *target.backing, r,
-                                          blended ? *blended : cpu->pixels);
+                                          blended ? *blended : cpu->output->pixels);
                 cpu->lease->consume();
                 call.set_return(recorded ? mbx2d_abi::success
                                          : mbx2d_abi::failure);

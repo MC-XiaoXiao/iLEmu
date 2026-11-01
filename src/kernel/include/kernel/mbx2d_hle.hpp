@@ -211,6 +211,7 @@ private:
         std::optional<QuadCoverage> coverage = { });
     void await_cpu_write(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
         std::optional<std::uint64_t> gpu = std::nullopt);
+    void await_framebuffer_write(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu);
     [[nodiscard]] bool cpu_draw_live(UserlandHleCall& call,
         const CpuDraw& cpu, bool source) const;
     [[nodiscard]] static bool surface_binding_live(
