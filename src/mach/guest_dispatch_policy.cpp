@@ -149,6 +149,17 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
     }
     input_target_burst_ = 0U;
 
+    if (observation.frame_dependency_thread &&
+        runnable(scheduler, *observation.frame_dependency_thread)) {
+        // A compositor wake must not hide a queued foreground frame callback.
+        // Follow the real receiver, including after touch input has ended, but
+        // return every fourth decision to the existing realtime/XNU paths.
+        if (++frame_dependency_burst_ <= preferred_process_burst_limit)
+            return direct(observation.frame_dependency_thread,
+                GuestDispatchReason::FrameDependency);
+    }
+    frame_dependency_burst_ = 0U;
+
     if (!observation.active_process) {
         if (!realtime_burst_deadline_)
             realtime_burst_deadline_ =

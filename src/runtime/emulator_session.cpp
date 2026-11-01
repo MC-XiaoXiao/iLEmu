@@ -3577,6 +3577,27 @@ void EmulatorSession::run()
         }
         const auto active_process =
             initial_runtime->kernel->active_client_process_id();
+        std::optional<XnuThreadId> frame_dependency_thread;
+        if (active_process) {
+            if (auto* runtime = runtime_index.find(*active_process)) {
+                const auto prefer_runnable =
+                    [&](std::optional<std::size_t> processor) {
+                        if (!processor)
+                            return;
+                        const XnuThreadId thread { *active_process,
+                            static_cast<std::uint32_t>(*processor) };
+                        const auto info = scheduler.info(thread);
+                        if (info && info->state == XnuThreadState::Runnable)
+                            frame_dependency_thread = thread;
+                    };
+                prefer_runnable(
+                    runtime->kernel->display_vsync_dependency_processor());
+                if (!frame_dependency_thread &&
+                    runtime->kernel->display_vsync_callback_pending())
+                    prefer_runnable(
+                        runtime->kernel->display_vsync_callback_processor());
+            }
+        }
         const auto dispatch = guest_dispatch_policy.decide(scheduler,
             GuestDispatchObservation {
                 .now = dispatch_now,
@@ -3587,6 +3608,7 @@ void EmulatorSession::run()
                 .realtime_receiver_thread = display_urgent_receiver_thread,
                 .realtime_yielded_thread = display_yielded_thread,
                 .realtime_inflight_thread = display_inflight_callback_thread,
+                .frame_dependency_thread = frame_dependency_thread,
                 .input_target_thread = input_preferred_thread,
                 .input_receiver_process = input_receiver_process,
                 .foreground_transition_process = transition_process,

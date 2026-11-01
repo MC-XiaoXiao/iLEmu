@@ -28,6 +28,9 @@ struct GuestDispatchObservation {
     std::optional<XnuThreadId> realtime_receiver_thread;
     std::optional<XnuThreadId> realtime_yielded_thread;
     std::optional<XnuThreadId> realtime_inflight_thread;
+    // Exact foreground receiver of a queued frame notification. Keep it
+    // separate from the compositor's own realtime dependency chain.
+    std::optional<XnuThreadId> frame_dependency_thread;
     std::optional<XnuThreadId> input_target_thread;
     std::optional<std::uint32_t> input_receiver_process;
     std::optional<std::uint32_t> foreground_transition_process;
@@ -52,6 +55,7 @@ enum class GuestDispatchReason : std::uint8_t {
     ForegroundTransition,
     InputProcess,
     InteractiveProcess,
+    FrameDependency,
 };
 
 struct GuestDispatchDecision {
@@ -89,6 +93,7 @@ private:
     std::optional<std::uint32_t> preferred_process_;
     std::size_t preferred_process_burst_ { };
     std::size_t input_target_burst_ { };
+    std::size_t frame_dependency_burst_ { };
 };
 
 } // namespace ilemu
