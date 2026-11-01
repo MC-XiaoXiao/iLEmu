@@ -58,10 +58,11 @@ enum class JitPrecompileSource : std::uint8_t {
     DemandProfile,
     ExecutableCatalog,
     Other,
+    ExecutionDemand,
 };
 
 inline constexpr std::size_t jit_precompile_source_count =
-    static_cast<std::size_t>(JitPrecompileSource::Other) + 1U;
+    static_cast<std::size_t>(JitPrecompileSource::ExecutionDemand) + 1U;
 
 struct JitPrecompileBatchResult {
     std::uint64_t elapsed_nanoseconds { };
@@ -151,6 +152,7 @@ struct JitPrecompileMemoryStats {
 
 class JitTranslationProfile;
 class JitArtifactStore;
+class JitTieredExecution;
 enum class JitArtifactRetention : std::uint8_t;
 
 // Guest architectural exceptions are distinct from JIT implementation failures.
@@ -179,6 +181,7 @@ struct CpuRunResult {
     // Compilation cost is not a sample of steady-state Guest throughput.
     bool translated_code { };
     std::optional<CpuException> architectural_exception;
+    bool backend_switch { };
 };
 
 enum class SvcDispatchMode : std::uint8_t {
@@ -342,6 +345,7 @@ public:
     [[nodiscard]] std::optional<std::size_t> add_cpu();
     void set_process_id(std::uint32_t process_id);
     void set_jit_code_cache_size(std::size_t bytes);
+    void set_tiered_execution(std::shared_ptr<JitTieredExecution> service);
     // Select an independent backend before the first Guest run. Slots retain
     // existing scheduler ownership; factories own host code-allocation policy.
     void set_executor_factory(execution::ExecutorFactory);

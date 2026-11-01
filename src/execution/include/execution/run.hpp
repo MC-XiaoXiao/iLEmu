@@ -29,6 +29,7 @@ enum class StopReason : std::uint32_t {
     InvalidTiming = 1U << 8,
     DataFault = 1U << 9,
     Breakpoint = 1U << 10,
+    BackendSwitch = 1U << 11,
 };
 constexpr StopReason operator|(StopReason a, StopReason b) noexcept
 {

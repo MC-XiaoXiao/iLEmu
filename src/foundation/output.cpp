@@ -32,6 +32,7 @@ namespace {
             "[perf-artifact]",
             "[perf-artifact-validation]",
             "[perf-jit-profile]",
+            "[jit-tiered]",
             "[precompile]",
             "[precompile-outcomes]",
             "[precompile-schedule]",

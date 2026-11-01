@@ -54,6 +54,7 @@ add_library(ilemu_foundation STATIC
     jit_artifact_diagnostics.cpp
     jit_code_cache_governor.cpp
     jit_execution_budget.cpp
+    jit_tiered_execution.cpp
     jit_page_table.cpp
     jit_translation_profile.cpp
     jit_work_policy.cpp
@@ -81,7 +82,7 @@ target_include_directories(ilemu_foundation SYSTEM PRIVATE
 target_link_libraries(ilemu_foundation PUBLIC
     dynarmic Threads::Threads iLEmu::xnu_adapter
     iLEmu::foundation_memory iLEmu::execution
-    PRIVATE OpenSSL::Crypto)
+    PRIVATE OpenSSL::Crypto iLEmu::arm_interpreter)
 if(TARGET iLEmu::plist)
     target_link_libraries(ilemu_foundation PRIVATE iLEmu::plist)
     target_compile_definitions(ilemu_foundation PRIVATE

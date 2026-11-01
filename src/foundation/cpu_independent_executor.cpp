@@ -136,10 +136,12 @@ CpuRunResult IndependentCpuExecutor::run(Cpu& cpu, std::uint64_t ticks,
     callback_fault_.reset();
     static_cast<void>(source_.take_fault());
     source_.set_write_observer(
-        cpu.memory_write_watch_address_ && cpu.memory_write_handler_
-            ? ExecutionMemory::WriteObserver { [&cpu](std::uint32_t address,
+        backend_write_observer_ || (cpu.memory_write_watch_address_ && cpu.memory_write_handler_)
+            ? ExecutionMemory::WriteObserver { [this, &cpu](std::uint32_t address,
                                                    unsigned size,
                                                    std::uint32_t value) {
+                  if (backend_write_observer_)
+                      backend_write_observer_(address, size, value);
                   if (!cpu.memory_write_watch_address_ ||
                       !cpu.memory_write_handler_)
                       return;
@@ -259,6 +261,10 @@ CpuRunResult IndependentCpuExecutor::run(Cpu& cpu, std::uint64_t ticks,
                 result.host_yielded = true;
                 ++result.host_yield_checks;
             }
+        }
+        if (has(StopReason::BackendSwitch)) {
+            result.backend_switch = true;
+            break;
         }
         if (callback_fault_ ||
             cpu.requested_halt_reason_ != Dynarmic::HaltReason { })

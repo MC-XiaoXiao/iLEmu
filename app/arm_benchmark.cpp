@@ -6,6 +6,7 @@
 #include "foundation/arm_cpu_model.hpp"
 #include "foundation/execution_memory.hpp"
 #include "foundation/cpu.hpp"
+#include "foundation/jit_tiered_execution.hpp"
 #include "foundation/output.hpp"
 #include "host_execution/code_memory.hpp"
 #include <array>
@@ -25,12 +26,14 @@ namespace {
     }
 }
 void run_arm_benchmark(std::uint32_t iterations, std::size_t cache_size,
-    std::string_view backend, Output& output)
+    std::string_view backend, Output& output, bool tiered)
 {
     if (backend != "dynarmic" && backend != "interpreter" && backend != "arm64")
         throw std::runtime_error {
             "--executor must be dynarmic, interpreter or arm64"
         };
+    if (tiered && backend != "dynarmic")
+        throw std::runtime_error("--jit-tiered requires the dynarmic executor");
     AddressSpace memory;
     constexpr std::uint32_t code_address = 0x1000;
     if (!memory.map(code_address, AddressSpace::page_size,
@@ -86,8 +89,17 @@ void run_arm_benchmark(std::uint32_t iterations, std::size_t cache_size,
         if (compiled)
             compiled_stats = compiled->statistics();
     } else {
+        auto resources = tiered ? std::make_unique<HostResourceController>() : nullptr;
+        auto service = tiered ? std::make_shared<JitTieredExecution>(*resources) : nullptr;
+        if (tiered) {
+            memory.protect(code_address, AddressSpace::page_size,
+                MemoryPermission::Read | MemoryPermission::Execute);
+            memory.mark_translation_profile_stable(code_address, AddressSpace::page_size);
+        }
         CpuCluster cluster { 1, memory };
         cluster.set_jit_code_cache_size(cache_size);
+        if (service)
+            cluster.set_tiered_execution(service);
         auto& cpu = cluster.cpu(0);
         cpu.registers() = state.registers;
         cpu.set_cpsr(state.cpsr);
@@ -97,6 +109,13 @@ void run_arm_benchmark(std::uint32_t iterations, std::size_t cache_size,
         state.registers = cpu.registers();
         ticks = result.ticks_consumed;
         svc_result = result.svc;
+        cluster.quiesce_precompilation();
+        if (service) {
+            const auto stats = service->statistics();
+            output.line("[jit-tiered] requests=" + std::to_string(stats.requests) +
+                " compiled=" + std::to_string(stats.compiled) + " ready=" + std::to_string(stats.ready) +
+                " interpreted-ticks=" + std::to_string(stats.interpreted_ticks));
+        }
     }
     if (state.registers[0] != 0 || state.registers[1] != iterations ||
         svc_result != std::optional<std::uint32_t> { 0x80 }) {

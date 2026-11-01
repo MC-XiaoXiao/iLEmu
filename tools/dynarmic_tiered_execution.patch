@@ -1,0 +1,51 @@
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -81,6 +81,11 @@
+     // Thus function is called before the instruction at pc is interpreted.
+     // IR code can be emitted by the callee prior to translation of the instruction.
+     void PreCodeTranslationHook(bool /*is_thumb*/, VAddr /*pc*/, A32::IREmitter& /*ir*/) override {}
++
++    // On an executing native-cache miss, allow the owner to continue through
++    // another backend while an independent Jit compiles this location.
++    // True exits Run with CodeCacheMiss before retiring the missing block.
++    virtual bool DeferCodeTranslation(std::uint64_t /*location_descriptor*/) noexcept { return false; }
+ 
+     // Called only after the backend has emitted host code for the block.
+     virtual void CodeTranslationCompleted(
+--- a/src/dynarmic/backend/arm64/a32_interface.cpp
++++ b/src/dynarmic/backend/arm64/a32_interface.cpp
+@@ -319,6 +319,10 @@
+                 }
+             }
+         }
++        if (jit_interface->is_executing && GetA32RuntimeCallbacks(conf)->DeferCodeTranslation(descriptor.Value())) {
++            HaltExecution(HaltReason::CodeCacheMiss);
++            return {shared_slab->return_from_run_code(), 0, generation};
++        }
+         const auto started = std::chrono::steady_clock::now();
+         auto* prepared = portable_provider ? portable_provider(portable_provider_arg, descriptor.Value(), generation) : nullptr;
+         bool completed = false;
+--- a/src/dynarmic/backend/x64/a32_interface.cpp
++++ b/src/dynarmic/backend/x64/a32_interface.cpp
+@@ -1048,6 +1048,11 @@
+             }
+         }
+ 
++        if (jit_interface->is_executing && conf.callbacks->DeferCodeTranslation(descriptor.Value())) {
++            HaltExecution(HaltReason::CodeCacheMiss);
++            return {native_code_slab->return_from_run_code(), 0, generation};
++        }
++
+         const auto translation_started = std::chrono::steady_clock::now();
+ 
+         bool portable_completion_called = false;
+--- a/src/dynarmic/interface/halt_reason.h
++++ b/src/dynarmic/interface/halt_reason.h
+@@ -13,6 +13,7 @@
+     Step = 0x00000001,
+     CacheInvalidation = 0x00000002,
+     MemoryAbort = 0x00000004,
++    CodeCacheMiss = 0x00000008,
+     UserDefined1 = 0x01000000,
+     UserDefined2 = 0x02000000,
+     UserDefined3 = 0x04000000,
