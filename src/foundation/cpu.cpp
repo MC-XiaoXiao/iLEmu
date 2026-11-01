@@ -2625,11 +2625,12 @@ public:
         callbacks_->deferred_emission = std::move(emission);
     }
     bool emit_prepared_block(Dynarmic::IR::Block block,
-        std::uint64_t generation, std::uint64_t revision)
+        std::uint64_t generation, std::uint64_t revision, JitCompilationMode mode)
     {
         const std::lock_guard lock{execution_mutex_};
         ensure_jit();
-        return jit_->EmitPreparedBlock(std::move(block), generation, revision) ==
+        return jit_->EmitPreparedBlock(std::move(block), generation, revision,
+                   mode == JitCompilationMode::Baseline) ==
             Dynarmic::A32::Jit::PortableIREmitOutcome::NativeEmitted;
     }
     bool can_interpret(const CpuThreadState& state) const
@@ -3718,6 +3719,7 @@ public:
         , native_preimport_tracker_ { }
         , monitor_ { monitor }
         , cpu_model_ { cpu_model }
+        , compilation_mode_ { compilation_mode }
         , artifact_store_ { std::move(artifact_store) }
     {
         if (execution_slot_count == 0) {
@@ -3807,7 +3809,7 @@ public:
             tiered_emission_ = std::make_unique<JitEmissionQueue>(tiered_service_,
                 [this](Dynarmic::IR::Block block, std::uint64_t generation, std::uint64_t revision) {
                     return precompile_executors_.front()->emit_prepared_block(
-                        std::move(block), generation, revision);
+                        std::move(block), generation, revision, compilation_mode_);
                 });
             for (auto& compiler : precompile_executors_)
                 compiler->set_native_code_versions(false);
@@ -3815,7 +3817,8 @@ public:
         for (std::size_t slot = 0; slot < executors_.size(); ++slot) {
             auto* native = executors_[slot].get();
             if constexpr (JitBackendCapabilities::native_code_versions) {
-                native->set_native_code_versions(true,
+                native->set_native_code_versions(
+                    compilation_mode_ == JitCompilationMode::Baseline,
                     [this](Dynarmic::IR::Block& block, std::uint64_t generation, std::uint64_t revision) {
                         return tiered_emission_->defer(block, generation, revision);
                     });
@@ -3949,7 +3952,8 @@ public:
                 }
             } else {
                 part = native.run(cpu, ticks - total.ticks_consumed, false, cooperative, budget);
-                if (!part.translated_code && part.ticks_consumed && part.host_execution_ns >= 100'000) {
+                if (compilation_mode_ == JitCompilationMode::Baseline &&
+                    !part.translated_code && part.ticks_consumed && part.host_execution_ns >= 100'000) {
                     bool hot;
                     {
                         const std::lock_guard lock{tiered_mutex_};
@@ -5655,6 +5659,7 @@ private:
     std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
     Dynarmic::ExclusiveMonitor& monitor_;
     const ArmCpuModel& cpu_model_;
+    const JitCompilationMode compilation_mode_;
     std::shared_ptr<JitArtifactStore> artifact_store_;
     std::size_t code_cache_size_ { 64U * 1024U * 1024U };
     std::atomic<bool> execution_started_ { false };

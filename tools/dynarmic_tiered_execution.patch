@@ -113,14 +113,14 @@ index 8d7098b..2823944 100644
 +        return emitted.newly_emitted;
 +    }
 +
-+    PortableIREmitOutcome EmitPreparedBlock(IR::Block block, u64 generation, u64 revision) {
++    PortableIREmitOutcome EmitPreparedBlock(IR::Block block, u64 generation, u64 revision, bool baseline) {
 +        ASSERT(!jit_interface->is_executing);
-+        auto baseline = conf;
-+        baseline.fast_compilation = true;
-+        auto native_template = BuildTemplate(block, &baseline);
++        auto source = conf;
++        source.fast_compilation = baseline;
++        auto native_template = BuildTemplate(block, &source);
 +        const auto result = native_template
-+            ? shared_slab->import_template(*native_template, generation, baseline, revision)
-+            : shared_slab->emit(block, generation, baseline, revision);
++            ? shared_slab->import_template(*native_template, generation, source, revision)
++            : shared_slab->emit(block, generation, source, revision);
 +        if (!result.entrypoint)
 +            return PortableIREmitOutcome::EmitFailed;
 +        return result.newly_emitted ? PortableIREmitOutcome::NativeEmitted : PortableIREmitOutcome::AlreadyPresent;
@@ -174,8 +174,8 @@ index 8d7098b..2823944 100644
 +    return impl->OptimizeBlock(descriptor);
 +}
 +
-+Jit::PortableIREmitOutcome Jit::EmitPreparedBlock(IR::Block block, u64 generation, u64 revision) {
-+    return impl->EmitPreparedBlock(std::move(block), generation, revision);
++Jit::PortableIREmitOutcome Jit::EmitPreparedBlock(IR::Block block, u64 generation, u64 revision, bool baseline) {
++    return impl->EmitPreparedBlock(std::move(block), generation, revision, baseline);
 +}
 +
 diff --git a/src/dynarmic/backend/arm64/a32_ir_translator.cpp b/src/dynarmic/backend/arm64/a32_ir_translator.cpp
@@ -372,7 +372,7 @@ index a9f053f..7675ead 100644
 +
 @@ -1281,0 +1289,5 @@ Jit::GetHostExecutionBudgetResult() const {
 +bool Jit::OptimizeBlock(std::uint64_t) { return false; }
-+Jit::PortableIREmitOutcome Jit::EmitPreparedBlock(IR::Block, u64, u64) {
++Jit::PortableIREmitOutcome Jit::EmitPreparedBlock(IR::Block, u64, u64, bool) {
 +    return PortableIREmitOutcome::EmitFailed;
 +}
 +
@@ -445,7 +445,7 @@ index 5a89c0d..bad48ef 100644
 @@ -183,0 +187,3 @@ public:
 +    bool OptimizeBlock(std::uint64_t location_descriptor);
 +    PortableIREmitOutcome EmitPreparedBlock(IR::Block block,
-+        std::uint64_t generation, std::uint64_t revision);
++        std::uint64_t generation, std::uint64_t revision, bool baseline = true);
 diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
 index bf4a037..3de23f2 100644
 --- a/src/dynarmic/interface/A32/config.h
