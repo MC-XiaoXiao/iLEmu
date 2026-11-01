@@ -253,6 +253,8 @@ private:
     [[nodiscard]] bool program_draw_needs_flush(
         const RenderTargetBinding& binding,
         std::span<const std::uint32_t> textures) const;
+    void present_eagl_window_async(UserlandHleCall& call,
+        const ContextState& context, const RenderTargetBinding& binding);
     void complete_drawable_storage(UserlandHleCall& call,
         ResourceIdentity context, ResourceIdentity renderbuffer,
         std::uint32_t name, DisplayGeometry pixels,

@@ -1858,38 +1858,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             if (binding && renderbuffer.drawable_surface_id &&
                 binding->backing_identifier ==
                     renderbuffer.drawable_surface_id) {
-                const auto window =
-                    GuestEaglWindow::open(call, renderbuffer.native_window);
-                if (!window || !renderer_->flush(binding->key)) {
-                    call.set_return(0U);
-                    return;
-                }
-                const auto renderbuffer_name = context->bound_renderbuffer;
-                window->present(call,
-                    [this, context, renderbuffer_name,
-                        address = window->address()](UserlandHleCall& completed,
-                        bool presented, std::uint32_t next_surface) {
-                        if (presented &&
-                            !attach_eagl_window_surface(completed, *context,
-                                renderbuffer_name, address, next_surface)) {
-                            // The frame is already in CoreAnimation. Restore
-                            // a private renderbuffer if its next drawable is
-                            // unavailable, so later draws remain usable.
-                            const auto found =
-                                context->renderbuffers.find(renderbuffer_name);
-                            if (found != context->renderbuffers.end()) {
-                                const auto width = found->second.width;
-                                const auto height = found->second.height;
-                                if (ensure_renderbuffer_storage(*context,
-                                        renderbuffer_name, width, height,
-                                        gles_abi::bgra_apple) ==
-                                    gles_abi::no_error) {
-                                    found->second.display_oriented = true;
-                                }
-                            }
-                        }
-                        completed.set_return(presented ? 1U : 0U);
-                    });
+                present_eagl_window_async(call, *context, *binding);
                 return;
             }
             if (!binding ||
