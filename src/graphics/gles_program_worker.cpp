@@ -10,12 +10,10 @@
 #include <array>
 #include <condition_variable>
 #include <deque>
-#include <future>
 #include <mutex>
 #include <set>
 #include <stdexcept>
 #include <thread>
-#include <type_traits>
 #include <utility>
 
 namespace ilemu {
@@ -41,7 +39,6 @@ namespace {
     }
     struct Credits {
         std::mutex mutex;
-        std::condition_variable capacity;
         std::size_t count { }, bytes { }, results { }, result_bytes { };
         std::size_t preparations { }, preparation_bytes { };
     };
@@ -84,50 +81,7 @@ namespace {
                 stopping_ = true;
             }
             available_.notify_all();
-            credits_->capacity.notify_all();
             thread_.join();
-        }
-
-        template <typename F> auto submit(std::size_t bytes, F function)
-        {
-            using Result = std::invoke_result_t<F>;
-            if (bytes > payload_limit)
-                throw std::length_error {
-                    "GLES command payload exceeds 64 MiB"
-                };
-            // future's shared state can outlive execution. Empty its callable
-            // on the worker so ready boolean results do not retain deep draw
-            // snapshots or Backend references after command-credit release.
-            auto task = std::make_shared<std::packaged_task<Result()>>(
-                [pending = std::make_unique<F>(
-                     std::move(function))]() mutable -> Result {
-                    auto execute = std::move(pending);
-                    return (*execute)();
-                });
-            auto result = task->get_future();
-            std::unique_lock lock { credits_->mutex };
-            credits_->capacity.wait(lock, [&] {
-                return stopping_ ||
-                       (credits_->count < command_limit &&
-                           bytes <= payload_limit - credits_->bytes);
-            });
-            if (stopping_)
-                throw std::runtime_error { "GLES render worker stopped" };
-            if (next_sequence_ == 0)
-                throw std::overflow_error { "GLES sequence space exhausted" };
-            const auto sequence = next_sequence_;
-            commands_.push_back({ sequence, bytes, [task] { (*task)(); } });
-            ++next_sequence_;
-            ++credits_->count;
-            credits_->bytes += bytes;
-            lock.unlock();
-            available_.notify_one();
-            return std::pair { sequence, std::move(result) };
-        }
-
-        template <typename F> auto call(F function, std::size_t bytes = 0)
-        {
-            return submit(bytes, std::move(function)).second.get();
         }
 
         bool capacity(std::size_t bytes, std::size_t command_bytes = 0)
@@ -186,7 +140,6 @@ namespace {
                     --credits->results;
                     credits->result_bytes -= bytes;
                 }
-                credits->capacity.notify_all();
                 notify_completion();
             };
             Command command { 0, command_bytes,
@@ -324,8 +277,8 @@ namespace {
                     command = std::move(commands_.front());
                     commands_.pop_front();
                 }
-                // packaged_task publishes a value or exception for every
-                // accepted command. No queue lock spans driver/GPU execution.
+                // Each accepted command publishes its terminal result.
+                // No queue lock spans driver/GPU execution.
                 executing_work_sequence = command.sequence;
                 command.execute();
                 executing_work_sequence = 0;
@@ -338,7 +291,6 @@ namespace {
                 }
                 retire_ready_backends();
                 retire_ready_owners();
-                credits_->capacity.notify_all();
                 notify_completion();
             }
             backends_.clear();
@@ -835,8 +787,8 @@ void GlesProgramWorker::record_program(std::uint32_t program, bool present)
 
 GlesProgramWorker::~GlesProgramWorker()
 {
-    // Discard publisher-owned future references before posting maintenance.
-    // Accepted packaged tasks keep their own storage until real execution.
+    // Discard publisher-owned result references before posting maintenance.
+    // Accepted commands keep their own storage until real execution.
     state_->pending.clear();
     if (state_->published)
         state_->executor->request_retirement(std::move(state_->backend));
@@ -1047,26 +999,5 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_readback(
                 renderer->invalidate(target);
             return true;
         });
-}
-bool GlesProgramWorker::readback(
-    DisplayFrame& frame, GlesRenderTargetKey target)
-{
-    try {
-        auto result =
-            state_->executor->call([backend = state_->backend, target] {
-                DisplayFrame pixels;
-                const auto success =
-                    backend->renderer->readback(pixels, target);
-                return std::pair { success, std::move(pixels) };
-            });
-        if (!result.first)
-            return false;
-        frame.width = result.second.width;
-        frame.height = result.second.height;
-        frame.pixels = std::move(result.second.pixels);
-        return true;
-    } catch (...) {
-        return false;
-    }
 }
 } // namespace ilemu

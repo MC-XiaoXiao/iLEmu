@@ -121,30 +121,6 @@ void OpenGlesHle::collect_program_draw_errors()
     }
 }
 
-bool OpenGlesHle::flush_program_draws(UserlandHleCall& call)
-{
-    if (program_flush_failed_)
-        return false;
-    if (!pending_program_target_)
-        return true;
-    auto& target = *pending_program_target_;
-    const auto read =
-        program_renderer_ &&
-        program_renderer_->readback(target.frame, target.binding.key);
-    collect_program_draw_errors();
-    if (!read) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return false;
-    }
-    renderer_->invalidate(target.binding.key);
-    if (!commit_render_target(call, target.binding, std::move(target.frame))) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return false;
-    }
-    pending_program_target_.reset();
-    return true;
-}
-
 bool OpenGlesHle::program_draw_needs_flush(const RenderTargetBinding& binding,
     std::span<const std::uint32_t> textures) const
 {

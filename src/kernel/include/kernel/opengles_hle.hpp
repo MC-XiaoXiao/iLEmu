@@ -250,7 +250,6 @@ private:
         RenderTargetBinding binding;
         DisplayFrame frame;
     };
-    [[nodiscard]] bool flush_program_draws(UserlandHleCall& call);
     [[nodiscard]] bool program_draw_needs_flush(
         const RenderTargetBinding& binding,
         std::span<const std::uint32_t> textures) const;

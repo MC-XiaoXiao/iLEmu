@@ -238,8 +238,6 @@ public:
     [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_readback(
         GlesRenderTargetKey target, std::size_t result_bytes,
         std::shared_ptr<GlesRenderer> invalidate_renderer = { });
-    [[nodiscard]] bool readback(
-        DisplayFrame& frame, GlesRenderTargetKey target);
     [[nodiscard]] std::string_view name() const;
 
 private:

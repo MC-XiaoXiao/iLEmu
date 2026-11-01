@@ -44,7 +44,7 @@ void OpenGlesHle::commit_texture_deletion(std::span<const std::uint32_t> names)
 
 void OpenGlesHle::delete_names(UserlandHleCall& call)
 {
-    if (!flush_program_draws(call))
+    if (program_flush_failed_)
         return;
     const auto signed_count = static_cast<std::int32_t>(call.argument(0));
     const auto input = call.argument(1);

@@ -891,7 +891,7 @@ bool OpenGlesHle::reload_surface(UserlandHleCall& call, std::uint32_t surface)
 
 bool OpenGlesHle::flush_surface(UserlandHleCall& call, std::uint32_t surface)
 {
-    if (!flush_program_draws(call))
+    if (program_flush_failed_)
         return false;
     const auto found = surfaces_.find(surface);
     if (found == surfaces_.end())
@@ -1754,7 +1754,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
         "EAGLContext", "renderbufferStorage:fromDrawable:",
         "-[EAGLContext renderbufferStorage:fromDrawable:]",
         [this](UserlandHleCall& call) {
-            if (!flush_program_draws(call)) {
+            if (program_flush_failed_) {
                 call.set_return(0U);
                 return;
             }
@@ -1832,7 +1832,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
         "EAGLContext",
         "presentRenderbuffer:", "-[EAGLContext presentRenderbuffer:]",
         [this](UserlandHleCall& call) {
-            if (!flush_program_draws(call)) {
+            if (program_flush_failed_) {
                 call.set_return(0U);
                 return;
             }
@@ -2221,7 +2221,7 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
         call.set_return(context);
     });
     add("_eglDestroyContext", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call)) {
+        if (program_flush_failed_) {
             egl_error_ = egl_bad_surface;
             call.set_return(egl_false);
             return;
@@ -2250,7 +2250,7 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
     add("_eglCreatePbufferSurface", create);
     add("_eglCreatePixmapSurface", create);
     add("_eglDestroySurface", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call)) {
+        if (program_flush_failed_) {
             egl_error_ = egl_bad_surface;
             call.set_return(egl_false);
             return;
@@ -2305,7 +2305,7 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
                                                     : current.draw_surface);
     });
     add("_eglSwapBuffers", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call)) {
+        if (program_flush_failed_) {
             egl_error_ = egl_bad_surface;
             call.set_return(egl_false);
             return;
@@ -2940,7 +2940,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
     });
     add("_glClear", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
+        if (program_flush_failed_)
             return;
         auto* context = current_context(call);
         if (context == nullptr) {
