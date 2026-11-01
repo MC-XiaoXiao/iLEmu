@@ -1249,6 +1249,16 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 cpu, host_fd, std::move(payload), { }, nonblocking));
             return;
         }
+        if (file_descriptors_.contains(host_fd)) {
+            std::vector<GuestReadVector> vectors;
+            vectors.reserve(iovecs.size());
+            for (const auto& vector : iovecs)
+                vectors.push_back({ vector.base, vector.size });
+            if (auto operation = prepare_file_io(cpu, host_fd, FileIoOperation::Kind::Write,
+                    0, payload_size, std::nullopt, std::move(vectors)))
+                wait_for_file_io(cpu, std::move(operation));
+            return;
+        }
         std::uint32_t total = 0;
         for (const auto& iovec : iovecs) {
             registers[0] = fd;

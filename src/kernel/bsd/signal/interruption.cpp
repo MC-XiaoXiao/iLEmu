@@ -112,7 +112,8 @@ bool CompatibilityKernel::interrupt_thread_wait(Cpu& cpu, bool restart)
                    pending_record_locks_.erase(processor) ||
                    pending_polls_.erase(processor) ||
                    pending_selects_.erase(processor) ||
-                   pending_signal_suspends_.erase(processor)) {
+                   pending_signal_suspends_.erase(processor) ||
+                   pending_aio_suspends_.erase(processor)) {
             if (entry) {
                 cpu.registers() = entry->registers;
                 cpu.registers()[15] -= (entry->cpsr & 0x20U) ? 2U : 4U;

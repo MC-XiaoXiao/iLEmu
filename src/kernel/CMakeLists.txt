@@ -161,6 +161,8 @@ target_link_libraries(ilemu_kernel_bsd_filesystem_locking PRIVATE
 
 add_library(ilemu_kernel_bsd_filesystem_persistence STATIC
     bsd/filesystem/persistence.cpp
+    bsd/filesystem/file_io.cpp
+    bsd/filesystem/file_io_queue.cpp
     bsd/filesystem/rename.cpp)
 add_library(iLEmu::kernel_bsd_filesystem_persistence ALIAS
     ilemu_kernel_bsd_filesystem_persistence)

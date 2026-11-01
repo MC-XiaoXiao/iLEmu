@@ -82,271 +82,186 @@ namespace {
             read32(notification_offset), read32(signal_offset) };
     }
 
-    std::string_view operation_name(AioOperation operation)
-    {
-        switch (operation) {
-        case AioOperation::Synchronize:
-            return "fsync";
-        case AioOperation::Read:
-            return "read";
-        case AioOperation::Write:
-            return "write";
-        }
-        return "unknown";
-    }
-
 } // namespace
 
 void CompatibilityKernel::dispatch_bsd_aio(Cpu& cpu, std::uint32_t number)
 {
+    const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
+    service_file_io();
     service_completed_file_renames();
-    if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0 &&
-        defer_filesystem_dispatch(cpu, number))
-        return;
     auto& registers = cpu.registers();
-
-    const auto resolve_descriptor = [&](std::uint32_t descriptor) {
-        for (unsigned depth = 0; depth < 256; ++depth) {
-            const auto duplicate = duplicated_descriptors_.find(descriptor);
-            if (duplicate == duplicated_descriptors_.end())
-                break;
-            descriptor = duplicate->second;
-        }
-        return descriptor;
-    };
-
-    const auto submit = [&](std::uint32_t control_block_address,
-                            AioOperation operation) {
-        if (control_block_address == 0 ||
-            aio_completions_.contains(control_block_address)) {
+    const auto submit = [&](std::uint32_t address, AioOperation kind) {
+        if (address == 0 || aio_completions_.contains(address) ||
+            aio_completions_.size() >= darwin::aio::maximum_requests_per_process) {
             bsd_error(cpu, darwin::error::would_block);
             return;
         }
-        if (aio_completions_.size() >=
-            darwin::aio::maximum_requests_per_process) {
+        const auto block = read_aio_control_block(memory_, address);
+        if (!block) {
             bsd_error(cpu, darwin::error::would_block);
             return;
         }
-        const auto control_block =
-            read_aio_control_block(memory_, control_block_address);
-        if (!control_block) {
-            // XNU reports an aiocb copyin failure as EAGAIN at queue time.
-            bsd_error(cpu, darwin::error::would_block);
-            return;
-        }
-        if (operation != AioOperation::Synchronize &&
-            (control_block->offset < 0 || control_block->buffer == 0 ||
-                control_block->byte_count >
-                    static_cast<std::uint32_t>(bsd_support::maximum_io))) {
+        if (kind != AioOperation::Synchronize &&
+            (block->offset < 0 || block->buffer == 0 ||
+                block->byte_count > bsd_support::maximum_io)) {
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
-        if (control_block->notification != darwin::aio::notify_none &&
-            (control_block->notification != darwin::aio::notify_signal ||
-                control_block->signal == 0 ||
-                control_block->signal >= darwin::signal::count ||
-                control_block->signal == darwin::signal::kill ||
-                control_block->signal == darwin::signal::stop)) {
+        if (block->notification != darwin::aio::notify_none &&
+            (block->notification != darwin::aio::notify_signal ||
+                block->signal == 0 || block->signal >= darwin::signal::count ||
+                block->signal == darwin::signal::kill || block->signal == darwin::signal::stop)) {
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
-
-        const auto descriptor = resolve_descriptor(control_block->descriptor);
-        if (!file_descriptors_.contains(descriptor)) {
-            const auto valid_non_file =
-                virtual_descriptors_.contains(descriptor) ||
-                host_sockets_.contains(descriptor) ||
-                virtual_udp_sockets_.contains(descriptor);
-            bsd_error(cpu, valid_non_file ? darwin::error::illegal_seek
-                                          : darwin::error::bad_file_descriptor);
+        auto fd = block->descriptor;
+        if (const auto duplicate = duplicated_descriptors_.find(fd);
+            duplicate != duplicated_descriptors_.end())
+            fd = duplicate->second;
+        if (!file_descriptors_.contains(fd)) {
+            bsd_error(cpu, descriptor_valid(fd) ? darwin::error::illegal_seek
+                                               : darwin::error::bad_file_descriptor);
             return;
         }
-        const auto flags = file_status_flags_.contains(descriptor)
-                               ? file_status_flags_.at(descriptor)
-                               : darwin::open_flag::read_only;
-        const auto access = flags & darwin::open_flag::access_mode;
-        const auto needs_write = operation != AioOperation::Read;
-        if ((needs_write && access == darwin::open_flag::read_only) ||
-            (!needs_write && access == darwin::open_flag::write_only)) {
-            bsd_error(cpu, darwin::error::bad_file_descriptor);
+        if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0 &&
+            !regular_file_open_descriptions_.contains(fd)) {
+            static_cast<void>(defer_filesystem_dispatch(cpu, number));
             return;
         }
-        const auto description =
-            ensure_regular_file_open_description(descriptor);
-        if (!description) {
-            bsd_error(cpu, darwin::error::bad_file_descriptor);
+        const auto operation_kind = kind == AioOperation::Read ? FileIoOperation::Kind::Read
+            : kind == AioOperation::Write ? FileIoOperation::Kind::Write
+                                         : FileIoOperation::Kind::Synchronize;
+        auto operation = prepare_file_io(cpu, fd, operation_kind, block->buffer,
+            kind == AioOperation::Synchronize ? 0 : block->byte_count,
+            kind == AioOperation::Synchronize ? 0 : static_cast<std::uint64_t>(block->offset), {}, true);
+        if (!operation)
             return;
-        }
-
-        AioCompletion completion { control_block->descriptor, -1, 0 };
-        if (operation == AioOperation::Synchronize) {
-            std::lock_guard filesystem_lock { shared_state_->filesystem_mutex };
-            if (::fsync(description->host_descriptor()) == 0) {
-                completion.result = 0;
-            } else {
-                completion.error = bsd_support::darwin_filesystem_error(
-                    std::error_code { errno, std::generic_category() });
-            }
-        } else if (operation == AioOperation::Write) {
-            const auto bytes = memory_.read_bytes(
-                control_block->buffer, control_block->byte_count);
-            if (!bytes) {
-                completion.error = darwin::error::bad_address;
-            } else {
-                std::lock_guard filesystem_lock {
-                    shared_state_->filesystem_mutex
-                };
-                std::uint64_t position =
-                    static_cast<std::uint64_t>(control_block->offset);
-                if ((flags & darwin::open_flag::append) != 0) {
-                    struct stat status { };
-                    if (::fstat(description->host_descriptor(), &status) != 0) {
-                        completion.error = bsd_support::darwin_filesystem_error(
-                            std::error_code { errno, std::generic_category() });
-                    } else {
-                        position = static_cast<std::uint64_t>(status.st_size);
-                    }
-                }
-                if (completion.error == 0) {
-                    const auto result =
-                        ::pwrite(description->host_descriptor(), bytes->data(),
-                            bytes->size(), static_cast<off_t>(position));
-                    if (result < 0) {
-                        completion.error = bsd_support::darwin_filesystem_error(
-                            std::error_code { errno, std::generic_category() });
-                    } else {
-                        completion.result = static_cast<std::int32_t>(result);
-                        static_cast<void>(
-                            shared_state_->shared_mapping_page_cache
-                                ->reflect_descriptor_write(
-                                    description->host_descriptor(), position,
-                                    std::span<const std::byte> { bytes->data(),
-                                        static_cast<std::size_t>(result) }));
-                        static_cast<void>(
-                            shared_state_->guest_file_generation_registry
-                                ->publish_descriptor(
-                                    file_descriptors_.at(descriptor),
-                                    description->host_descriptor(),
-                                    GuestFileMutationKind::Write));
-                    }
-                }
-            }
-        } else {
-            std::vector<std::byte> bytes(control_block->byte_count);
-            const auto result =
-                ::pread(description->host_descriptor(), bytes.data(),
-                    bytes.size(), static_cast<off_t>(control_block->offset));
-            if (result < 0) {
-                completion.error = bsd_support::darwin_filesystem_error(
-                    std::error_code { errno, std::generic_category() });
-            } else {
-                bytes.resize(static_cast<std::size_t>(result));
-                if (!memory_.copy_in(control_block->buffer, bytes)) {
-                    completion.error = darwin::error::bad_address;
-                } else {
-                    completion.result = static_cast<std::int32_t>(result);
-                }
-            }
-        }
-
-        aio_completions_[control_block_address] = completion;
-        if (completion.error != 0) {
-            output_.write(
-                "[aio] " + std::string { operation_name(operation) } +
-                " pid=" + std::to_string(process_.pid) +
-                " fd=" + std::to_string(control_block->descriptor) +
-                " bytes=" + std::to_string(control_block->byte_count) +
-                " error=" + std::to_string(completion.error) + "\n");
-        }
+        if (block->notification == darwin::aio::notify_signal)
+            operation->notification_signal = block->signal;
+        aio_completions_.emplace(address, AioCompletion { block->descriptor, std::move(operation) });
         bsd_success(cpu, 0);
-
-        if (control_block->notification == darwin::aio::notify_signal) {
-            static_cast<void>(deliver_signal(control_block->signal));
-            if (process_.exited) {
-                cpu.halt(Dynarmic::HaltReason::UserDefined1);
-            }
-        }
     };
-
     switch (number) {
-    case darwin::syscall::aio_synchronize: {
-        const auto operation = registers[0];
-        if (operation != 0 && operation != darwin::aio::synchronize) {
+    case darwin::syscall::aio_synchronize:
+        if (registers[0] != 0 && registers[0] != darwin::aio::synchronize)
             bsd_error(cpu, darwin::error::invalid_argument);
-            return;
-        }
-        submit(registers[1], AioOperation::Synchronize);
+        else
+            submit(registers[1], AioOperation::Synchronize);
         return;
-    }
     case darwin::syscall::aio_read:
         submit(registers[0], AioOperation::Read);
         return;
     case darwin::syscall::aio_write:
         submit(registers[0], AioOperation::Write);
         return;
-    case darwin::syscall::aio_error: {
-        const auto completion = aio_completions_.find(registers[0]);
-        if (completion == aio_completions_.end()) {
-            bsd_error(cpu, darwin::error::invalid_argument);
-        } else {
-            bsd_success(cpu, completion->second.error);
-        }
-        return;
-    }
+    case darwin::syscall::aio_error:
     case darwin::syscall::aio_return: {
-        const auto completion = aio_completions_.find(registers[0]);
-        if (completion == aio_completions_.end()) {
+        const auto found = aio_completions_.find(registers[0]);
+        if (found == aio_completions_.end()) {
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
-        const auto result = completion->second.result;
-        aio_completions_.erase(completion);
-        bsd_success(cpu, static_cast<std::uint32_t>(result));
+        const auto& operation = found->second.operation;
+        if (number == darwin::syscall::aio_error) {
+            bsd_success(cpu, operation->committed ? operation->error
+                                                : darwin::error::operation_in_progress);
+        } else if (!operation->committed) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+        } else {
+            const auto result = operation->result;
+            aio_completions_.erase(found);
+            bsd_success(cpu, static_cast<std::uint32_t>(result));
+        }
         return;
     }
     case darwin::syscall::aio_cancel: {
-        const auto requested_descriptor = registers[0];
-        const auto requested_control_block = registers[1];
-        const auto completion = std::find_if(aio_completions_.begin(),
-            aio_completions_.end(), [&](const auto& candidate) {
-                return (requested_control_block == 0 ||
-                           candidate.first == requested_control_block) &&
-                       candidate.second.descriptor == requested_descriptor;
-            });
-        if (completion == aio_completions_.end()) {
+        const auto fd = registers[0];
+        const auto address = registers[1];
+        if (!descriptor_valid(fd)) {
             bsd_error(cpu, darwin::error::bad_file_descriptor);
-        } else {
-            bsd_success(cpu, darwin::aio::all_done);
+            return;
         }
+        auto resolved = fd;
+        if (const auto duplicate = duplicated_descriptors_.find(resolved);
+            duplicate != duplicated_descriptors_.end())
+            resolved = duplicate->second;
+        const auto description = ensure_regular_file_open_description(resolved);
+        if (!description) {
+            bsd_error(cpu, darwin::error::bad_file_descriptor);
+            return;
+        }
+        bool matched = false, cancelled = false, running = false;
+        std::vector<std::uint32_t> notifications;
+        for (const auto& [candidate, completion] : aio_completions_) {
+            if (completion.descriptor != fd || (address && candidate != address) ||
+                completion.operation->description_identifier != description->identifier())
+                continue;
+            matched = true;
+            const auto& operation = completion.operation;
+            if (operation->committed)
+                continue;
+            if (operation->request || operation->sync_request) {
+                running = true;
+            } else {
+                shared_state_->file_io.cancel(operation);
+                if (operation->notification_signal)
+                    notifications.push_back(operation->notification_signal);
+                cancelled = true;
+            }
+        }
+        if (address && !matched)
+            bsd_error(cpu, darwin::error::invalid_argument);
+        else
+            bsd_success(cpu, running ? darwin::aio::not_canceled
+                : cancelled ? darwin::aio::canceled : darwin::aio::all_done);
+        shared_state_->note_io_event_transition();
+        for (const auto signal : notifications)
+            static_cast<void>(deliver_signal(signal));
+        if (process_.exited)
+            cpu.halt(Dynarmic::HaltReason::UserDefined1);
         return;
     }
     case darwin::syscall::aio_suspend: {
-        const auto list_address = registers[0];
         const auto count = static_cast<std::int32_t>(registers[1]);
-        if (count < 1 ||
-            count > static_cast<std::int32_t>(
-                        darwin::aio::maximum_requests_per_process) ||
-            list_address == 0 || aio_completions_.empty()) {
+        if (count < 1 || count > static_cast<std::int32_t>(darwin::aio::maximum_requests_per_process) ||
+            registers[0] == 0) {
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
-        constexpr std::uint32_t guest_pointer_size = sizeof(std::uint32_t);
-        for (std::int32_t index = 0; index < count; ++index) {
-            const auto control_block = memory_.read32(
-                list_address +
-                static_cast<std::uint32_t>(index) * guest_pointer_size);
-            if (!control_block) {
+        PendingAioSuspend pending;
+        for (std::int32_t i = 0; i < count; ++i) {
+            const auto address = memory_.read32(registers[0] + static_cast<std::uint32_t>(i) * 4U);
+            if (!address) {
                 bsd_error(cpu, darwin::error::would_block);
                 return;
             }
-            if (*control_block != 0 &&
-                aio_completions_.contains(*control_block)) {
-                bsd_success(cpu, 0);
+            if (const auto found = aio_completions_.find(*address); found != aio_completions_.end())
+                pending.operations.push_back(found->second.operation);
+        }
+        if (pending.operations.empty()) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        if (registers[2]) {
+            const auto seconds = memory_.read32(registers[2]);
+            const auto nanos = memory_.read32(registers[2] + 4U);
+            if (!seconds || !nanos) {
+                bsd_error(cpu, darwin::error::bad_address);
                 return;
             }
+            if (*seconds > INT32_MAX || *nanos >= VirtualClock::nanoseconds_per_second) {
+                bsd_error(cpu, darwin::error::invalid_argument);
+                return;
+            }
+            pending.deadline = shared_state_->clock.now() +
+                static_cast<std::uint64_t>(*seconds) * VirtualClock::nanoseconds_per_second + *nanos;
         }
-        // A synchronous backend cannot have a matching request still pending.
-        bsd_error(cpu, darwin::error::invalid_argument);
+        pending_aio_suspends_.insert_or_assign(cpu.processor_id(), std::move(pending));
+        if (!deliver_pending_aio_suspend(cpu)) {
+            record_bsd_sleep();
+            process_.waiting_for_events = true;
+            cpu.halt(Dynarmic::HaltReason::UserDefined5);
+        }
         return;
     }
     default:
@@ -356,4 +271,24 @@ void CompatibilityKernel::dispatch_bsd_aio(Cpu& cpu, std::uint32_t number)
     }
 }
 
+bool CompatibilityKernel::deliver_pending_aio_suspend(Cpu& cpu)
+{
+    service_file_io();
+    const auto found = pending_aio_suspends_.find(cpu.processor_id());
+    if (found == pending_aio_suspends_.end())
+        return false;
+    const auto& pending = found->second;
+    const auto ready = std::any_of(pending.operations.begin(), pending.operations.end(),
+        [](const auto& operation) { return operation->committed; });
+    if (!ready && (!pending.deadline || shared_state_->clock.now() < *pending.deadline))
+        return false;
+    pending_aio_suspends_.erase(found);
+    if (ready)
+        bsd_success(cpu, 0);
+    else
+        bsd_error(cpu, darwin::error::would_block);
+    process_.waiting_for_events = false;
+    cpu.clear_halt();
+    return true;
+}
 } // namespace ilemu

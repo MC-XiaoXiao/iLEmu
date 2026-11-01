@@ -127,6 +127,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
 {
     const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     service_completed_file_renames();
+    if (!shared_state_->file_io.empty() && number != 6 && number != 153 &&
+        number != 154 && number != darwin::syscall::synchronize_file &&
+        defer_filesystem_dispatch(cpu, number))
+        return;
     if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0 &&
         filesystem_dispatch_conflicts_with_rename(cpu, number) &&
         defer_filesystem_dispatch(cpu, number))
@@ -968,96 +972,27 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
             return;
         }
-        const auto found = file_descriptors_.find(registers[0]);
-        if (found == file_descriptors_.end()) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
-            return;
-        }
-        const auto size = static_cast<std::size_t>(registers[2]);
-        if (size > bsd_support::maximum_io) {
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return;
-        }
         const auto offset = static_cast<std::uint64_t>(registers[3]) |
                             (static_cast<std::uint64_t>(registers[4]) << 32U);
-        const auto description =
-            ensure_regular_file_open_description(registers[0]);
-        if (!description) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
-            return;
-        }
-        std::vector<std::byte> bytes(size);
-        const auto result = ::pread(description->host_descriptor(),
-            bytes.data(), bytes.size(), static_cast<off_t>(offset));
-        if (result < 0) {
-            bsd_error(
-                cpu, bsd_support::darwin_filesystem_error(
-                         std::error_code { errno, std::generic_category() }));
-            return;
-        }
-        bytes.resize(static_cast<std::size_t>(result));
-        if (!memory_.copy_to_user(registers[1], bytes)) {
-            bsd_error(cpu, bsd_support::bad_address);
-            return;
-        }
-        bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
+        auto fd = registers[0];
+        if (const auto duplicate = duplicated_descriptors_.find(fd);
+            duplicate != duplicated_descriptors_.end())
+            fd = duplicate->second;
+        if (auto operation = prepare_file_io(cpu, fd, FileIoOperation::Kind::Read,
+                registers[1], registers[2], offset))
+            wait_for_file_io(cpu, std::move(operation));
         return;
     }
     case 154: { // pwrite
         auto fd = registers[0];
         if (const auto duplicate = duplicated_descriptors_.find(fd);
-            duplicate != duplicated_descriptors_.end()) {
+            duplicate != duplicated_descriptors_.end())
             fd = duplicate->second;
-        }
-        const auto file = file_descriptors_.find(fd);
-        if (file == file_descriptors_.end()) {
-            bsd_error(cpu, darwin::error::bad_file_descriptor);
-            return;
-        }
-        const auto flags = file_status_flags_.contains(fd)
-                               ? file_status_flags_.at(fd)
-                               : darwin::open_flag::read_only;
-        if ((flags & darwin::open_flag::access_mode) ==
-            darwin::open_flag::read_only) {
-            bsd_error(cpu, darwin::error::bad_file_descriptor);
-            return;
-        }
-        const auto size = static_cast<std::size_t>(registers[2]);
-        if (size > bsd_support::maximum_io) {
-            bsd_error(cpu, darwin::error::invalid_argument);
-            return;
-        }
-        const auto bytes = memory_.read_bytes(registers[1], size);
-        if (!bytes) {
-            bsd_error(cpu, darwin::error::bad_address);
-            return;
-        }
         const auto offset = static_cast<std::uint64_t>(registers[3]) |
                             (static_cast<std::uint64_t>(registers[4]) << 32U);
-        const auto description = ensure_regular_file_open_description(fd);
-        if (!description) {
-            bsd_error(cpu, bsd_support::bad_file_descriptor);
-            return;
-        }
-        std::lock_guard filesystem_lock { shared_state_->filesystem_mutex };
-        const auto result = ::pwrite(description->host_descriptor(),
-            bytes->data(), bytes->size(), static_cast<off_t>(offset));
-        if (result < 0) {
-            bsd_error(
-                cpu, bsd_support::darwin_filesystem_error(
-                         std::error_code { errno, std::generic_category() }));
-            return;
-        }
-        static_cast<void>(
-            shared_state_->shared_mapping_page_cache->reflect_descriptor_write(
-                description->host_descriptor(), offset,
-                std::span<const std::byte> {
-                    bytes->data(), static_cast<std::size_t>(result) }));
-        static_cast<void>(
-            shared_state_->guest_file_generation_registry->publish_descriptor(
-                file->second, description->host_descriptor(),
-                GuestFileMutationKind::Write));
-        bsd_success(cpu, static_cast<std::uint32_t>(result));
+        if (auto operation = prepare_file_io(cpu, fd, FileIoOperation::Kind::Write,
+                registers[1], registers[2], offset))
+            wait_for_file_io(cpu, std::move(operation));
         return;
     }
     case 157: { // statfs

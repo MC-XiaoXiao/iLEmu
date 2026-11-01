@@ -260,7 +260,7 @@ public:
     }
     [[nodiscard]] bool thread_wait_uninterruptible(std::size_t processor) const
     {
-        return pending_file_syncs_.contains(processor) ||
+        return pending_file_ios_.contains(processor) ||
                pending_file_renames_.contains(processor) ||
                pending_filesystem_dispatches_.contains(processor) ||
                pending_file_mappings_.contains(processor);
@@ -605,8 +605,7 @@ private:
 
     struct AioCompletion {
         std::uint32_t descriptor { };
-        std::int32_t result { };
-        std::uint32_t error { };
+        std::shared_ptr<FileIoOperation> operation;
     };
 
     struct DirectoryEntry {
@@ -884,7 +883,16 @@ private:
         bool waking_blocked_receiver, std::uint32_t data_address = 0U,
         std::uint32_t data_size = 0U);
     bool deliver_pending_io_locked(Cpu& cpu);
-    bool deliver_pending_file_sync(Cpu& cpu);
+    std::shared_ptr<FileIoOperation> prepare_file_io(Cpu& cpu, std::uint32_t fd,
+        FileIoOperation::Kind kind, std::uint32_t address, std::size_t size,
+        std::optional<std::uint64_t> position = std::nullopt,
+        std::vector<GuestReadVector> vectors = {}, bool asynchronous = false);
+    void wait_for_file_io(Cpu& cpu, std::shared_ptr<FileIoOperation> operation);
+    void service_file_io();
+    bool copy_file_io_input(FileIoOperation& operation);
+    bool deliver_pending_file_io(Cpu& cpu);
+    bool deliver_pending_aio_suspend(Cpu& cpu);
+    void abandon_file_io();
     void dispatch_bsd_filesystem_rename(Cpu& cpu);
     bool deliver_pending_file_rename(Cpu& cpu);
     void service_completed_file_renames();
@@ -1211,7 +1219,12 @@ private:
     std::map<std::size_t, PendingHostConnect> pending_host_connects_;
     std::map<std::size_t, PendingHostAccept> pending_host_accepts_;
     std::map<std::size_t, PendingHostWrite> pending_host_writes_;
-    std::map<std::size_t, PendingFileSync> pending_file_syncs_;
+    std::map<std::size_t, std::shared_ptr<FileIoOperation>> pending_file_ios_;
+    struct PendingAioSuspend {
+        std::vector<std::shared_ptr<FileIoOperation>> operations;
+        std::optional<std::uint64_t> deadline;
+    };
+    std::map<std::size_t, PendingAioSuspend> pending_aio_suspends_;
     std::map<std::size_t, std::shared_ptr<PendingFileRename>> pending_file_renames_;
     std::vector<std::shared_ptr<PendingFileRename>> file_rename_effects_;
     std::map<std::size_t, PendingFilesystemDispatch> pending_filesystem_dispatches_;

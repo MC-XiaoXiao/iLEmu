@@ -19,7 +19,7 @@ bool CompatibilityKernel::caught_signal_ready(std::size_t processor) const
         return false;
     // Accepted filesystem work owns its buffers until completion. Defer the
     // user AST without repeatedly polling an uncancellable continuation.
-    if (pending_file_syncs_.contains(processor) ||
+    if (pending_file_ios_.contains(processor) ||
         pending_file_renames_.contains(processor) ||
         pending_filesystem_dispatches_.contains(processor) ||
         pending_file_mappings_.contains(processor))

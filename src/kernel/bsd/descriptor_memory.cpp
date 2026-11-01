@@ -63,6 +63,21 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
 {
     const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     service_completed_file_renames();
+    if (!shared_state_->file_io.empty()) {
+        switch (number) {
+        case darwin::syscall::read:
+        case darwin::syscall::read_vector:
+        case darwin::syscall::write:
+        case 41: // dup
+        case 42: // pipe
+        case darwin::syscall::duplicate_to:
+        case darwin::syscall::get_descriptor_table_size:
+            break;
+        default:
+            static_cast<void>(defer_filesystem_dispatch(cpu, number));
+            return;
+        }
+    }
     if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0) {
         const auto needs_namespace = [&] {
             switch (number) {
@@ -85,7 +100,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 if (const auto duplicate = duplicated_descriptors_.find(fd);
                     duplicate != duplicated_descriptors_.end())
                     fd = duplicate->second;
-                return file_descriptors_.contains(fd);
+                return file_descriptors_.contains(fd) &&
+                       !regular_file_open_descriptions_.contains(fd);
             }
         };
         if (needs_namespace() && defer_filesystem_dispatch(cpu, number))
@@ -254,26 +270,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bytes.clear();
         } else if (const auto file = file_descriptors_.find(fd);
             file != file_descriptors_.end()) {
-            const auto description = ensure_regular_file_open_description(fd);
-            if (!description) {
-                bsd_error(cpu, darwin::error::bad_file_descriptor);
-                return;
-            }
-            read_offset_lock = file_offsets_[fd].lock();
-            const auto result =
-                ::pread(description->host_descriptor(), bytes.data(),
-                    bytes.size(), static_cast<off_t>(file_offsets_[fd]));
-            if (result < 0) {
-                bsd_error(cpu,
-                    bsd_support::darwin_filesystem_error(
-                        std::error_code { errno, std::generic_category() }));
-                return;
-            }
-            bytes.resize(static_cast<std::size_t>(result));
-            if (vectors.empty())
-                file_offsets_[fd] += bytes.size();
-            else
-                advance_vector_offset = true;
+            if (auto operation = prepare_file_io(cpu, fd, FileIoOperation::Kind::Read,
+                    registers[1], size, std::nullopt, std::move(vectors)))
+                wait_for_file_io(cpu, std::move(operation));
+            return;
         } else if (fd == 0) {
             bytes.clear(); // terminal input currently presents non-blocking EOF
         } else {
@@ -671,60 +671,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         }
         if (const auto file = file_descriptors_.find(fd);
             file != file_descriptors_.end()) {
-            const auto flags = file_status_flags_.contains(fd)
-                                   ? file_status_flags_.at(fd)
-                                   : darwin::open_flag::read_only;
-            if ((flags & darwin::open_flag::access_mode) ==
-                darwin::open_flag::read_only) {
-                bsd_error(cpu, darwin::error::bad_file_descriptor);
-                return;
-            }
-            if (size > bsd_support::maximum_io) {
-                bsd_error(cpu, darwin::error::invalid_argument);
-                return;
-            }
-            const auto bytes = memory_.read_bytes(address, size);
-            if (!bytes) {
-                bsd_error(cpu, darwin::error::bad_address);
-                return;
-            }
-            const auto description = ensure_regular_file_open_description(fd);
-            if (!description) {
-                bsd_error(cpu, darwin::error::bad_file_descriptor);
-                return;
-            }
-            std::lock_guard filesystem_lock { shared_state_->filesystem_mutex };
-            const auto offset_lock = file_offsets_[fd].lock();
-            std::uint64_t position = file_offsets_[fd];
-            if ((flags & darwin::open_flag::append) != 0) {
-                struct stat status { };
-                if (::fstat(description->host_descriptor(), &status) != 0) {
-                    bsd_error(cpu,
-                        bsd_support::darwin_filesystem_error(std::error_code {
-                            errno, std::generic_category() }));
-                    return;
-                }
-                position = static_cast<std::uint64_t>(status.st_size);
-            }
-            const auto result = ::pwrite(description->host_descriptor(),
-                bytes->data(), bytes->size(), static_cast<off_t>(position));
-            if (result < 0) {
-                bsd_error(cpu,
-                    bsd_support::darwin_filesystem_error(
-                        std::error_code { errno, std::generic_category() }));
-                return;
-            }
-            static_cast<void>(shared_state_->shared_mapping_page_cache
-                    ->reflect_descriptor_write(description->host_descriptor(),
-                        position,
-                        std::span<const std::byte> {
-                            bytes->data(), static_cast<std::size_t>(result) }));
-            file_offsets_[fd] = position + static_cast<std::size_t>(result);
-            static_cast<void>(shared_state_->guest_file_generation_registry
-                    ->publish_descriptor(file->second,
-                        description->host_descriptor(),
-                        GuestFileMutationKind::Write));
-            bsd_success(cpu, static_cast<std::uint32_t>(result));
+            if (auto operation = prepare_file_io(cpu, fd, FileIoOperation::Kind::Write,
+                    address, size))
+                wait_for_file_io(cpu, std::move(operation));
             return;
         }
         if (fd != 1 && fd != 2) {

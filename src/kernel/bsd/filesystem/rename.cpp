@@ -97,6 +97,9 @@ bool CompatibilityKernel::filesystem_dispatch_conflicts_with_rename(
 {
     bool follow_final_symlink;
     switch (number) {
+    case 153: // pread
+    case 154: // pwrite
+    case darwin::syscall::synchronize_file:
     case 6: // close releases an existing open description, not a pathname.
         // A legacy descriptor without an open description may still resolve
         // its path while releasing advisory locks; keep that fallback ordered.
@@ -157,8 +160,9 @@ bool CompatibilityKernel::defer_filesystem_dispatch(
 bool CompatibilityKernel::deliver_pending_filesystem_dispatch(Cpu& cpu)
 {
     service_completed_file_renames();
+    service_file_io();
     if (shared_state_->filesystem_renames_pending.load(
-            std::memory_order_acquire) != 0)
+            std::memory_order_acquire) != 0 || !shared_state_->file_io.empty())
         return false;
     const auto found = pending_filesystem_dispatches_.find(cpu.processor_id());
     if (found == pending_filesystem_dispatches_.end())

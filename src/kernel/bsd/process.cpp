@@ -125,6 +125,7 @@ void CompatibilityKernel::release_process_mach_rights()
 
 void CompatibilityKernel::release_process_descriptors()
 {
+    abandon_file_io();
     file_descriptors_.clear();
     regular_file_open_descriptions_.clear();
     virtual_block_descriptors_.clear();
@@ -137,7 +138,6 @@ void CompatibilityKernel::release_process_descriptors()
     bpf_descriptors_.clear();
     host_sockets_.clear();
     pending_host_writes_.clear();
-    pending_file_syncs_.clear();
     pending_file_renames_.clear();
     pending_filesystem_dispatches_.clear();
     file_rename_effects_.clear();

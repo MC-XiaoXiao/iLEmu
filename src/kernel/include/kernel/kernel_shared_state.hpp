@@ -15,6 +15,7 @@
 #include <mach/xnu_mig_reference.hpp>
 #include <kernel/credential_groups.hpp>
 #include <kernel/open_file_offset.hpp>
+#include "kernel/file_io.hpp"
 #include <kernel/open_file_status.hpp>
 #include <kernel/semaphore_state.hpp>
 #include <kernel/socket_options.hpp>
@@ -305,11 +306,6 @@ struct PendingFileRename {
     std::filesystem::path destination;
     std::shared_ptr<HostFileRenameRequest> request;
     std::atomic<bool> published { false };
-};
-
-struct PendingFileSync {
-    std::uint32_t fd { };
-    std::shared_ptr<HostFileSyncRequest> request;
 };
 
 struct PendingHostWrite {
@@ -2262,7 +2258,7 @@ struct KernelSharedState {
     std::shared_ptr<bsd::sandbox::Extensions> sandbox_extensions;
     mutable std::mutex socket_mutex;
     // Created on first use under filesystem_mutex; shared across processes.
-    std::shared_ptr<HostFileSynchronizer> file_synchronizer;
+    FileIoQueue file_io;
     mutable std::mutex filesystem_mutex;
     std::shared_ptr<HostFileRenamer> file_renamer;
     std::atomic<std::size_t> filesystem_renames_pending { 0 };

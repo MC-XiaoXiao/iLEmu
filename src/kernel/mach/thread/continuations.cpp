@@ -68,7 +68,13 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     pending_host_writes_.erase(processor);
     // Keep accepted host effects and process-wide descriptors alive.
     // Only retire the syscall continuation, not file_rename_effects_.
-    pending_file_syncs_.erase(processor);
+    if (const auto pending = pending_file_ios_.find(processor); pending != pending_file_ios_.end()) {
+        pending->second->abandoned = true;
+        if (!pending->second->request && !pending->second->sync_request)
+            pending->second->cancelled = true;
+        pending_file_ios_.erase(pending);
+    }
+    pending_aio_suspends_.erase(processor);
     pending_file_renames_.erase(processor);
     pending_filesystem_dispatches_.erase(processor);
     pending_file_mappings_.erase(processor);

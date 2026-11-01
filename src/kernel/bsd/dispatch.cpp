@@ -20,6 +20,7 @@ void CompatibilityKernel::dispatch_bsd_nosys(Cpu& cpu, bool send_sigsys)
 
 void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
 {
+    service_file_io();
     shared_state_->bsd_dispatch_table.dispatch(*this, cpu, number);
 }
 } // namespace ilemu

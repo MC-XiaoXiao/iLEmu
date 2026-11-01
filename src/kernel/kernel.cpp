@@ -862,6 +862,7 @@ bool CompatibilityKernel::owns_display_scanout() const
 
 void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 {
+    abandon_file_io();
     signal_state_.exec(processor_id);
     signal_sender_ = { };
     note_timer_deadline_transition();
@@ -960,7 +961,6 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_host_connects_.clear();
     pending_host_accepts_.clear();
     pending_host_writes_.clear();
-    pending_file_syncs_.clear();
     pending_file_renames_.clear();
     pending_filesystem_dispatches_.clear();
     pending_file_mappings_.clear();
@@ -1605,6 +1605,7 @@ CompatibilityKernel::pending_event_poll_candidates()
 {
     std::lock_guard lock { mutex_ };
     service_completed_file_renames();
+    service_file_io();
     const auto io_generation = shared_state_->io_event_generation_snapshot();
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
@@ -1680,6 +1681,8 @@ std::optional<std::chrono::steady_clock::time_point>
 CompatibilityKernel::next_host_event_poll_deadline()
 {
     std::lock_guard lock { mutex_ };
+    if (shared_state_->file_io.owns(process_.pid))
+        return std::chrono::steady_clock::now() + std::chrono::milliseconds { 1 };
     if (pending_event_processors_.empty())
         return std::nullopt;
     // A syscall or another task can change readiness after the last poll.
@@ -1710,7 +1713,8 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_host_connects_.contains(processor) ||
            pending_host_accepts_.contains(processor) ||
            pending_host_writes_.contains(processor) ||
-           pending_file_syncs_.contains(processor) ||
+           pending_file_ios_.contains(processor) ||
+           pending_aio_suspends_.contains(processor) ||
            pending_file_renames_.contains(processor) ||
            pending_filesystem_dispatches_.contains(processor) ||
            pending_file_mappings_.contains(processor) ||
@@ -1812,6 +1816,9 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
             }
         }
     };
+    if (const auto found = pending_aio_suspends_.find(processor);
+        found != pending_aio_suspends_.end())
+        consider(found->second.deadline);
     if (const auto found = pending_timers_.find(processor);
         found != pending_timers_.end()) {
         consider(found->second.deadline);
@@ -1877,8 +1884,9 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
 bool CompatibilityKernel::pending_io_requires_host_poll_locked(
     std::size_t processor) const
 {
-    if (pending_file_mappings_.contains(processor) ||
-        pending_file_syncs_.contains(processor) ||
+    if (pending_file_ios_.contains(processor) ||
+        pending_aio_suspends_.contains(processor) ||
+        pending_file_mappings_.contains(processor) ||
         pending_file_renames_.contains(processor) ||
         pending_filesystem_dispatches_.contains(processor) ||
         pending_host_connects_.contains(processor) ||
@@ -2059,14 +2067,16 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         cpu.clear_halt();
         return true;
     }
+    if (pending_file_ios_.contains(cpu.processor_id()))
+        return deliver_pending_file_io(cpu);
+    if (pending_aio_suspends_.contains(cpu.processor_id()))
+        return deliver_pending_aio_suspend(cpu);
     if (pending_file_mappings_.contains(cpu.processor_id()))
         return deliver_pending_file_mapping(cpu);
     if (pending_filesystem_dispatches_.contains(cpu.processor_id()))
         return deliver_pending_filesystem_dispatch(cpu);
     if (pending_file_renames_.contains(cpu.processor_id()))
         return deliver_pending_file_rename(cpu);
-    if (pending_file_syncs_.contains(cpu.processor_id()))
-        return deliver_pending_file_sync(cpu);
     if (const auto pending = pending_host_writes_.find(cpu.processor_id());
         pending != pending_host_writes_.end()) {
         const auto options = pending->second.options;
@@ -2434,6 +2444,10 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
 
 std::string CompatibilityKernel::wait_reason(std::size_t processor) const
 {
+    if (const auto pending = pending_file_ios_.find(processor); pending != pending_file_ios_.end())
+        return "file-io(fd=" + std::to_string(pending->second->descriptor) + ")";
+    if (pending_aio_suspends_.contains(processor))
+        return "aio_suspend";
     if (pending_file_renames_.contains(processor))
         return "rename";
     if (pending_filesystem_dispatches_.contains(processor))
@@ -2441,10 +2455,6 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
     if (const auto pending = pending_file_mappings_.find(processor);
         pending != pending_file_mappings_.end()) {
         return "mmap(fd=" + std::to_string(pending->second.arguments[4]) + ")";
-    }
-    if (const auto pending = pending_file_syncs_.find(processor);
-        pending != pending_file_syncs_.end()) {
-        return "fsync(fd=" + std::to_string(pending->second.fd) + ")";
     }
     if (const auto pending = pending_flocks_.find(processor);
         pending != pending_flocks_.end()) {
