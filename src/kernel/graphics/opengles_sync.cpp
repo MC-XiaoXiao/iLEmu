@@ -359,7 +359,8 @@ void OpenGlesHle::submit_renderer_async(UserlandHleCall& call,
 }
 
 void OpenGlesHle::submit_host_work_async(UserlandHleCall& call, std::size_t bytes,
-    std::function<bool(DisplayFrame&)> execute, HostCompletion completed)
+    std::function<bool(DisplayFrame&)> execute, HostCompletion completed,
+    std::function<void()> complete_core)
 {
     std::shared_ptr<SyncLease> lease;
     try {
@@ -367,13 +368,17 @@ void OpenGlesHle::submit_host_work_async(UserlandHleCall& call, std::size_t byte
         auto result = enqueue_gles_host_work(bytes, execute);
         if (!result) {
             call.suspend_until([bytes] { return gles_host_work_capacity(bytes); },
-                [this, lease, bytes, execute, completed](UserlandHleCall& resumed) {
+                [this, lease, bytes, execute, completed, complete_core](
+                    UserlandHleCall& resumed) {
                     lease->consume();
-                    submit_host_work_async(resumed, bytes, execute, completed);
+                    submit_host_work_async(
+                        resumed, bytes, execute, completed, complete_core);
                 });
             return;
         }
         lease->result = result;
+        // Core-only metadata follows real accepted work, including issuer exit.
+        lease->complete_core = std::move(complete_core);
         call.suspend_until([result] { return result->ready(); },
             [result, lease, completed](UserlandHleCall& resumed) {
                 lease->consume();

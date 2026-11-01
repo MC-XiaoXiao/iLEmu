@@ -2080,6 +2080,62 @@ void OpenGlesHle::complete_make_current(UserlandHleCall& call)
     call.set_return(egl_true);
 }
 
+void OpenGlesHle::destroy_surface_after_flush(
+    UserlandHleCall& call, std::uint32_t surface, bool succeeded)
+try {
+    if (!succeeded) {
+        egl_error_ = egl_bad_surface;
+        call.set_return(egl_false);
+        return;
+    }
+    auto erase = [this, surface] {
+        surfaces_.erase(surface);
+        for (auto& [processor, current] : threads_) {
+            static_cast<void>(processor);
+            if (current.draw_surface == surface)
+                current.draw_surface = 0;
+            if (current.read_surface == surface)
+                current.read_surface = 0;
+        }
+    };
+    auto& state = surfaces_.at(surface);
+    if (state.backing_identifier) {
+        erase();
+        egl_error_ = egl_success;
+        call.set_return(egl_true);
+        return;
+    }
+    auto binding = RenderTargetBinding { };
+    binding.kind = RenderTargetKind::Display;
+    binding.key = render_target_key(surface);
+    binding.display_surface = &state;
+    binding.surface_identity = state.identity;
+    const auto owner = renderer_owner_;
+    auto released = std::make_shared<bool>(false);
+    submit_host_work_async(call, 0,
+        [renderer = renderer_, lifetime = renderer_lifetime_,
+            target = binding.key, released](DisplayFrame&) {
+            *released = renderer->release(std::span { &target, 1U });
+            return *released;
+        },
+        [this, surface, owner](UserlandHleCall& resumed,
+            const std::shared_ptr<GlesWorkResult>& result) {
+            // consume() has run the committer in this serial core boundary.
+            const auto deleted = result && result->succeeded() &&
+                                 owner == renderer_owner_ &&
+                                 !surfaces_.contains(surface);
+            egl_error_ = deleted ? egl_success : egl_bad_surface;
+            resumed.set_return(deleted ? egl_true : egl_false);
+        },
+        [this, binding, owner, released, erase] {
+            if (*released && owner == renderer_owner_ && binding_live(binding))
+                erase();
+        });
+} catch (...) {
+    egl_error_ = egl_bad_surface;
+    call.set_return(egl_false);
+}
+
 void OpenGlesHle::publish_created_surface(
     UserlandHleCall& call, std::optional<SurfaceState> state)
 {
@@ -2331,25 +2387,7 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
         }
         flush_surface_async(call, surface,
             [this, surface](UserlandHleCall& resumed, bool succeeded) {
-                if (!succeeded) {
-                    egl_error_ = egl_bad_surface;
-                    resumed.set_return(egl_false);
-                    return;
-                }
-                if (!surfaces_.at(surface).backing_identifier) {
-                    const auto target = render_target_key(surface);
-                    renderer_->release(std::span { &target, 1U });
-                }
-                surfaces_.erase(surface);
-                for (auto& [processor, current] : threads_) {
-                    static_cast<void>(processor);
-                    if (current.draw_surface == surface)
-                        current.draw_surface = 0;
-                    if (current.read_surface == surface)
-                        current.read_surface = 0;
-                }
-                egl_error_ = egl_success;
-                resumed.set_return(egl_true);
+                destroy_surface_after_flush(resumed, surface, succeeded);
             });
     });
     add("_eglMakeCurrent",

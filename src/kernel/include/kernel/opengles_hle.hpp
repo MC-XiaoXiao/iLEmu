@@ -359,7 +359,8 @@ private:
     using HostCompletion = std::function<void(UserlandHleCall&,
         const std::shared_ptr<GlesWorkResult>&)>;
     void submit_host_work_async(UserlandHleCall& call, std::size_t bytes,
-        std::function<bool(DisplayFrame&)> execute, HostCompletion completed);
+        std::function<bool(DisplayFrame&)> execute, HostCompletion completed,
+        std::function<void()> complete_core = { });
     void submit_renderer_async(UserlandHleCall& call, GlesRenderTargetKey key,
         bool finish, std::shared_ptr<void> lifetime,
         std::function<void(UserlandHleCall&, bool)> completed);
@@ -372,6 +373,8 @@ private:
         UserlandHleCall& call, std::shared_ptr<PixmapRead> pending);
     void make_current(UserlandHleCall& call);
     void complete_make_current(UserlandHleCall& call);
+    void destroy_surface_after_flush(
+        UserlandHleCall& call, std::uint32_t surface, bool succeeded);
     struct ReadPixelsOutput;
     [[nodiscard]] std::shared_ptr<ReadPixelsOutput> capture_read_pixels_output(
         UserlandHleCall& call);
