@@ -1271,6 +1271,12 @@ private:
         std::chrono::steady_clock::time_point::min()
     };
     bool pending_event_poll_observed_ { };
+    struct PendingIoDeadlineCache {
+        std::uint64_t generation { };
+        std::optional<std::uint64_t> deadline;
+    };
+    mutable std::vector<PendingIoDeadlineCache> pending_io_deadline_cache_;
+    std::uint64_t local_timer_deadline_generation_ { 1 };
     mutable std::optional<std::uint64_t> local_timer_deadline_cache_;
     mutable bool local_timer_deadline_cache_valid_ { };
     // Scheduler-owned copy of the shared snapshot, populated under mach_mutex.

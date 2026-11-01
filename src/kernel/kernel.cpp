@@ -1856,6 +1856,11 @@ void CompatibilityKernel::remember_pending_io_not_ready_locked(
 std::optional<std::uint64_t>
 CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
 {
+    if (processor >= pending_io_deadline_cache_.size())
+        pending_io_deadline_cache_.resize(processor + 1U);
+    auto& cached = pending_io_deadline_cache_[processor];
+    if (cached.generation == local_timer_deadline_generation_)
+        return cached.deadline;
     std::optional<std::uint64_t> deadline;
     const auto consider = [&deadline](std::optional<std::uint64_t> candidate) {
         if (candidate && (!deadline || *candidate < *deadline))
@@ -1931,6 +1936,7 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
     }
     if (!scheduled_wifi_driver_events_.empty())
         consider(scheduled_wifi_driver_events_.begin()->first);
+    cached = { local_timer_deadline_generation_, deadline };
     return deadline;
 }
 
@@ -2678,6 +2684,7 @@ std::optional<std::uint64_t> CompatibilityKernel::next_timer_deadline() const
 
 void CompatibilityKernel::note_timer_deadline_transition() noexcept
 {
+    ++local_timer_deadline_generation_;
     local_timer_deadline_cache_valid_ = false;
     shared_state_->note_kernel_event_transition();
 }
