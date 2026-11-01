@@ -22,6 +22,7 @@ namespace ilemu {
 
 class DisplayState;
 class GlesRenderer;
+class GlesRendererOwner;
 class PresentationTracker;
 class SceneCoordinator;
 struct KernelSharedState;
@@ -82,7 +83,8 @@ private:
         std::uint32_t producer_process_id,
         std::uint64_t publication_sequence) const;
     [[nodiscard]] SubmissionResult submit_host_layers(UserlandHleCall& call);
-    void ensure_scanout_surface();
+    void reset_composition_targets();
+    [[nodiscard]] bool ensure_scanout_surface();
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_composition_surface();
 
     struct Rectangle {
@@ -118,8 +120,13 @@ private:
     std::function<void(std::uint32_t)> frame_presented_handler_;
     std::function<void(std::uint32_t)> semantic_presentation_handler_;
     std::shared_ptr<GlesRenderer> host_graphics_;
+    std::uint64_t composition_owner_ { };
+    std::shared_ptr<GlesRendererOwner> composition_lifetime_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     std::shared_ptr<HostSurface> scanout_surface_;
+    // This lease owns the exact published image and keeps a forked reader's
+    // snapshot out of the parent's writable ring until its last use.
+    std::shared_ptr<HostSurfacePresentationLease> scanout_lease_;
     // Keep the last published target immutable while the host presenter can
     // still consume it. The ring is independent of guest model/firmware; the
     // software path below continues to compose into DisplayState pixels.

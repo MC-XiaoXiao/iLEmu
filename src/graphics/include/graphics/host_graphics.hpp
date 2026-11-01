@@ -87,9 +87,13 @@ public:
 
 private:
     friend std::shared_ptr<HostSurfacePresentationLease>
-    make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface);
-    explicit HostSurfacePresentationLease(std::shared_ptr<HostSurface> surface);
+    make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface,
+        std::shared_ptr<void> native_lifetime);
+    HostSurfacePresentationLease(std::shared_ptr<HostSurface> surface,
+        std::shared_ptr<void> native_lifetime);
 
+    // Retire the renderer owner after releasing the content lease and surface.
+    std::shared_ptr<void> native_lifetime_;
     std::shared_ptr<HostSurface> surface_;
 };
 
@@ -220,7 +224,8 @@ private:
 };
 
 [[nodiscard]] std::shared_ptr<HostSurfacePresentationLease>
-make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface);
+make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface,
+    std::shared_ptr<void> native_lifetime = { });
 
 class CommandEncoder {
 public:

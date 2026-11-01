@@ -541,8 +541,9 @@ namespace {
 } // namespace
 
 HostSurfacePresentationLease::HostSurfacePresentationLease(
-    std::shared_ptr<HostSurface> surface)
-    : surface_ { std::move(surface) }
+    std::shared_ptr<HostSurface> surface, std::shared_ptr<void> native_lifetime)
+    : native_lifetime_ { std::move(native_lifetime) }
+    , surface_ { std::move(surface) }
 {
     if (surface_)
         surface_->retain_presentation_lease();
@@ -555,12 +556,14 @@ HostSurfacePresentationLease::~HostSurfacePresentationLease()
 }
 
 std::shared_ptr<HostSurfacePresentationLease>
-make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface)
+make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface,
+    std::shared_ptr<void> native_lifetime)
 {
     if (!surface)
         return { };
     return std::shared_ptr<HostSurfacePresentationLease> {
-        new HostSurfacePresentationLease { std::move(surface) }
+        new HostSurfacePresentationLease {
+            std::move(surface), std::move(native_lifetime) }
     };
 }
 

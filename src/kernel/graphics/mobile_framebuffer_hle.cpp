@@ -27,6 +27,7 @@
 #include "foundation/cpu.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "graphics/mobile_framebuffer_abi.hpp"
@@ -77,6 +78,7 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
     , host_graphics_ { shared_gles_renderer() }
     , command_encoder_ { host_graphics_->create_command_encoder() }
 {
+    reset_composition_targets();
     const auto add = [&](std::string symbol,
                          UserlandHleRegistry::Handler handler) {
         registry.register_function(std::string { framebuffer_image },
@@ -191,13 +193,13 @@ void MobileFramebufferHle::reset()
     external_framebuffers_.clear();
     layers_.clear();
     layer_surface_leases_.clear();
-    // The HLE is shared by all guest processes. An exec of a helper process
+    // The panel is shared by all guest processes. An exec of a helper process
     // must not erase the panel's last submitted frame while SpringBoard is
     // being relaunched; preserve scanout until the new owner presents.
     next_swap_id_ = 1;
     background_argb_ = 0xff000000U;
     submitted_background_argb_ = background_argb_;
-    composition_surface_index_ = 0;
+    reset_composition_targets();
     // Keep submitted_layers_ and scanout_contents_valid_ across process exec.
 }
 
@@ -213,11 +215,11 @@ void MobileFramebufferHle::inherit_state(const MobileFramebufferHle& parent)
     background_argb_ = parent.background_argb_;
     submitted_background_argb_ = parent.submitted_background_argb_;
     scanout_surface_ = parent.scanout_surface_;
+    scanout_lease_ = parent.scanout_lease_;
     // The published scanout is read-only from the child's point of view. Do
     // not inherit the writable composition targets: forked kernels can submit
     // concurrently, so each instance must own the targets it may modify.
-    composition_surfaces_.clear();
-    composition_surface_index_ = 0;
+    reset_composition_targets();
     scanout_contents_valid_ = parent.scanout_contents_valid_;
 }
 
@@ -229,8 +231,8 @@ void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display)
         if (descriptor.width != display_->width() ||
             descriptor.height != display_->height()) {
             scanout_surface_.reset();
-            composition_surfaces_.clear();
-            composition_surface_index_ = 0;
+            scanout_lease_.reset();
+            reset_composition_targets();
             submitted_layers_.clear();
             scanout_contents_valid_ = false;
         }
@@ -351,34 +353,53 @@ bool MobileFramebufferHle::application_surface_allowed(
                 .contains({ producer_process_id, publication_sequence });
 }
 
-void MobileFramebufferHle::ensure_scanout_surface()
+void MobileFramebufferHle::reset_composition_targets()
+{
+    const auto owner = allocate_gles_renderer_owner();
+    auto lifetime = std::make_shared<GlesRendererOwner>(host_graphics_, owner);
+    composition_surfaces_.clear();
+    composition_surface_index_ = 0;
+    composition_owner_ = owner;
+    composition_lifetime_ = std::move(lifetime);
+}
+
+bool MobileFramebufferHle::ensure_scanout_surface()
 {
     if (!display_)
-        return;
+        return false;
     if (scanout_surface_) {
         const auto descriptor = scanout_surface_->descriptor();
         if (descriptor.width == display_->width() &&
             descriptor.height == display_->height()) {
-            return;
+            return true;
         }
     }
+    if (!composition_lifetime_->activate())
+        return false;
     const auto pixels =
         static_cast<std::size_t>(display_->width()) * display_->height();
     const std::vector<std::uint32_t> initial(pixels, background_argb_);
-    scanout_surface_ = host_graphics_->create_surface(
-        { 0x4d464253U,
+    auto surface = host_graphics_->create_surface(
+        { composition_owner_,
             next_scanout_surface.fetch_add(1, std::memory_order_relaxed) },
         HostSurfaceDescriptor { display_->width(), display_->height(),
             display_->width() * core_surface_abi::bytes_per_bgra_pixel,
             surface_pixel_format_bgra, PerfSurfaceKind::Scanout },
         initial);
+    auto lease = make_host_surface_presentation_lease(
+        surface, composition_lifetime_);
+    scanout_surface_ = std::move(surface);
+    scanout_lease_ = std::move(lease);
     submitted_layers_.clear();
     submitted_background_argb_ = background_argb_;
     scanout_contents_valid_ = false;
+    return static_cast<bool>(scanout_surface_);
 }
 
 std::shared_ptr<HostSurface> MobileFramebufferHle::acquire_composition_surface()
 {
+    if (!composition_lifetime_->activate())
+        return { };
     constexpr std::size_t composition_ring_size = 8;
     const auto descriptor =
         HostSurfaceDescriptor { display_->width(), display_->height(),
@@ -386,7 +407,7 @@ std::shared_ptr<HostSurface> MobileFramebufferHle::acquire_composition_surface()
             surface_pixel_format_bgra, PerfSurfaceKind::Scanout };
     while (composition_surfaces_.size() < composition_ring_size) {
         auto surface = host_graphics_->create_surface(
-            { 0x434f4d50U,
+            { composition_owner_,
                 next_scanout_surface.fetch_add(1, std::memory_order_relaxed) },
             descriptor);
         composition_surfaces_.push_back(std::move(surface));
@@ -406,7 +427,7 @@ std::shared_ptr<HostSurface> MobileFramebufferHle::acquire_composition_surface()
     // the host-only pool for this submission instead of reusing a mutable
     // surface and changing the pixels of an older queued DisplayFrame.
     auto surface = host_graphics_->create_surface(
-        { 0x434f4d50U,
+        { composition_owner_,
             next_scanout_surface.fetch_add(1, std::memory_order_relaxed) },
         descriptor);
     composition_surfaces_.push_back(surface);
@@ -419,8 +440,7 @@ MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
     constexpr bool debug_submission = false;
     if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
         return SubmissionResult::Failed;
-    ensure_scanout_surface();
-    if (!scanout_surface_)
+    if (!ensure_scanout_surface())
         return SubmissionResult::Failed;
     const auto exact_rectangle =
         [](const Rectangle& rectangle) -> std::optional<HostRectangle> {
@@ -743,6 +763,8 @@ MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         composition_surface = acquire_composition_surface();
         if (!composition_surface)
             return SubmissionResult::Failed;
+        auto lease = make_host_surface_presentation_lease(
+            composition_surface, composition_lifetime_);
         const auto full_display_rectangle =
             HostRectangle { 0, 0, display_->width(), display_->height() };
         if (scanout_contents_valid_ &&
@@ -780,6 +802,7 @@ MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
             return SubmissionResult::Failed;
         }
         scanout_surface_ = composition_surface;
+        scanout_lease_ = std::move(lease);
     }
 
     submitted_layers_.clear();
@@ -806,7 +829,7 @@ MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         [scanout] {
             return std::max(
                 scanout->cpu_generation(), scanout->gpu_generation());
-        });
+        }, scanout_lease_);
     return SubmissionResult::Submitted;
 }
 

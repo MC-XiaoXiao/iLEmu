@@ -67,11 +67,15 @@ void DisplayState::set_orientation_resolver(OrientationResolver resolver)
 
 void DisplayState::clear(std::uint32_t argb)
 {
+    std::function<std::vector<std::uint32_t>()> retired_reader;
+    std::function<std::uint64_t()> retired_revision;
+    std::shared_ptr<HostSurfacePresentationLease> retired_lease;
     std::lock_guard lock { mutex_ };
     std::fill(pixels_.begin(), pixels_.end(), argb);
     host_surface_.reset();
-    surface_reader_ = { };
-    surface_content_revision_reader_ = { };
+    retired_reader = std::move(surface_reader_);
+    retired_revision = std::move(surface_content_revision_reader_);
+    retired_lease = std::move(surface_presentation_lease_);
     surface_content_generation_ = 0;
     content_owner_process_id_ = 0;
     content_orientation_ = DisplayOrientation::Portrait;
@@ -84,6 +88,9 @@ void DisplayState::replace_pixels(
     const auto expected = geometry_.pixel_count();
     if (pixels.size() != expected)
         return;
+    std::function<std::vector<std::uint32_t>()> retired_reader;
+    std::function<std::uint64_t()> retired_revision;
+    std::shared_ptr<HostSurfacePresentationLease> retired_lease;
     std::lock_guard lock { mutex_ };
     const auto owner_changed =
         owner_process_id != 0 && content_owner_process_id_ != owner_process_id;
@@ -95,8 +102,9 @@ void DisplayState::replace_pixels(
                                    next_orientation == content_orientation_;
     pixels_ = std::move(pixels);
     host_surface_.reset();
-    surface_reader_ = { };
-    surface_content_revision_reader_ = { };
+    retired_reader = std::move(surface_reader_);
+    retired_revision = std::move(surface_content_revision_reader_);
+    retired_lease = std::move(surface_presentation_lease_);
     surface_content_generation_ = 0;
     if (owner_process_id != 0) {
         content_owner_process_id_ = owner_process_id;
@@ -109,10 +117,17 @@ void DisplayState::replace_pixels(
 void DisplayState::replace_surface(std::shared_ptr<HostSurface> surface,
     std::function<std::vector<std::uint32_t>()> read_pixels,
     std::uint32_t owner_process_id,
-    std::function<std::uint64_t()> content_revision_reader)
+    std::function<std::uint64_t()> content_revision_reader,
+    std::shared_ptr<HostSurfacePresentationLease> presentation_lease)
 {
     if (!surface || !read_pixels)
         return;
+    if (!presentation_lease)
+        presentation_lease = make_host_surface_presentation_lease(surface);
+    std::function<std::vector<std::uint32_t>()> retired_reader;
+    std::function<std::uint64_t()> retired_revision;
+    std::shared_ptr<HostSurfacePresentationLease> retired_lease;
+
     const auto content_generation =
         content_revision_reader ? content_revision_reader() : 0U;
     std::lock_guard lock { mutex_ };
@@ -123,8 +138,12 @@ void DisplayState::replace_surface(std::shared_ptr<HostSurface> surface,
         !content_revision_reader ||
         surface_content_generation_ != content_generation;
     host_surface_ = std::move(surface);
+    retired_reader = std::move(surface_reader_);
+    retired_revision = std::move(surface_content_revision_reader_);
+    retired_lease = std::move(surface_presentation_lease_);
     surface_reader_ = std::move(read_pixels);
     surface_content_revision_reader_ = std::move(content_revision_reader);
+    surface_presentation_lease_ = std::move(presentation_lease);
     surface_content_generation_ = content_generation;
     if (owner_process_id != 0) {
         content_owner_process_id_ = owner_process_id;
@@ -159,6 +178,8 @@ void DisplayState::set_powered_on(bool powered_on)
                 content_owner_process_id_ };
         }
         frame.orientation = content_orientation_;
+        if (frame.host_surface)
+            frame.presentation_lease = surface_presentation_lease_;
     }
     attach_presentation_leases(frame);
     const PerformanceLatencyScope latency { PerfLatencyKind::DisplayPresent };
@@ -217,6 +238,8 @@ void DisplayState::present(std::uint32_t owner_process_id)
                 content_owner_process_id_ };
         }
         frame.orientation = content_orientation_;
+        if (frame.host_surface)
+            frame.presentation_lease = surface_presentation_lease_;
         if (powered_on_)
             frame.nominal_period = nominal_period_;
     }
@@ -237,14 +260,18 @@ bool DisplayState::clear_if_owner(std::uint32_t owner_process_id)
         return false;
     Presenter presenter;
     DisplayFrame frame;
+    std::function<std::vector<std::uint32_t>()> retired_reader;
+    std::function<std::uint64_t()> retired_revision;
+    std::shared_ptr<HostSurfacePresentationLease> retired_lease;
     {
         std::lock_guard lock { mutex_ };
         if (content_owner_process_id_ != owner_process_id)
             return false;
         std::fill(pixels_.begin(), pixels_.end(), 0xff000000U);
         host_surface_.reset();
-        surface_reader_ = { };
-        surface_content_revision_reader_ = { };
+        retired_reader = std::move(surface_reader_);
+        retired_revision = std::move(surface_content_revision_reader_);
+        retired_lease = std::move(surface_presentation_lease_);
         surface_content_generation_ = 0;
         content_owner_process_id_ = 0;
         content_orientation_ = DisplayOrientation::Portrait;
@@ -280,6 +307,8 @@ DisplayFrame DisplayState::capture_frame() const
             powered_on_ ? host_surface_ : nullptr, { },
             content_owner_process_id_ };
         frame.orientation = content_orientation_;
+        if (frame.host_surface)
+            frame.presentation_lease = surface_presentation_lease_;
     }
     // Match present's lock order: never take a surface lease under DisplayState
     // mutex. This lease prevents a scanout ring from recycling the source while
@@ -292,6 +321,7 @@ DisplayFrame DisplayState::snapshot() const
 {
     std::function<std::vector<std::uint32_t>()> reader;
     std::shared_ptr<HostSurface> surface;
+    std::shared_ptr<HostSurfacePresentationLease> presentation_lease;
     std::vector<std::uint32_t> pixels;
     std::uint64_t sequence { };
     bool powered_on { };
@@ -301,6 +331,7 @@ DisplayFrame DisplayState::snapshot() const
         std::lock_guard lock { mutex_ };
         reader = surface_reader_;
         surface = host_surface_;
+        presentation_lease = surface_presentation_lease_;
         pixels = pixels_;
         sequence = sequence_;
         powered_on = powered_on_;
@@ -318,6 +349,7 @@ DisplayFrame DisplayState::snapshot() const
         std::move(pixels), std::move(surface), std::move(reader),
         owner_process_id };
     frame.orientation = orientation;
+    frame.presentation_lease = std::move(presentation_lease);
     return frame;
 }
 
