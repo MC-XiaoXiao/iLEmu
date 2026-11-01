@@ -1155,10 +1155,21 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
         return false;
     }
 
-    if (const auto surface = host_surface(id))
-        surface->replace_cpu(pixels);
+    if (const auto surface = host_surface(id)) {
+        if (surface_is_packed_555(backing->pixel_format)) {
+            auto mapping = surface->map_cpu(true, PerfCpuMapReason::CoreSurface);
+            std::transform(pixels.begin(), pixels.end(),
+                mapping.frame().pixels.begin(),
+                [format = backing->pixel_format](std::uint32_t pixel) {
+                    return surface_decode_packed_555(
+                        format, surface_encode_packed_555(format, pixel));
+                });
+        } else {
+            surface->replace_cpu(pixels);
+        }
+    }
     update_guest_snapshot(*backing,
-        HostRectangle { 0, 0, backing->width, backing->height }, pixels);
+        HostRectangle { 0, 0, backing->width, backing->height }, pixels, true);
     update_guest_sync_generation(memory, *backing);
     return true;
 }
@@ -1226,8 +1237,18 @@ void SurfaceStore::update_guest_sync_generation(
     sync_state->shared_page_generations = shared_generation->page_generations;
 }
 
-void SurfaceStore::update_guest_snapshot(const Backing& backing,
+bool SurfaceStore::record_cpu_write(const Backing& expected,
     HostRectangle rectangle, std::span<const std::uint32_t> pixels) const
+{
+    const auto current = find(expected.id);
+    return current && current->provenance.publication_sequence ==
+                          expected.provenance.publication_sequence &&
+           update_guest_snapshot(*current, rectangle, pixels, true);
+}
+
+bool SurfaceStore::update_guest_snapshot(const Backing& backing,
+    HostRectangle rectangle, std::span<const std::uint32_t> pixels,
+    bool encode_pixels) const
 {
     const auto pixel_count =
         static_cast<std::size_t>(backing.width) * backing.height;
@@ -1238,17 +1259,19 @@ void SurfaceStore::update_guest_snapshot(const Backing& backing,
             backing.width - rectangle.width ||
         static_cast<std::uint32_t>(rectangle.y) >
             backing.height - rectangle.height ||
-        pixels.size() != pixel_count) {
-        return;
+        pixels.size() !=
+            static_cast<std::size_t>(rectangle.width) * rectangle.height) {
+        return false;
     }
     const auto sync_state = shared_sync_state(backing.id);
     if (!sync_state)
-        return;
+        return false;
     std::lock_guard sync_lock { sync_state->mutex };
     auto& snapshot = sync_state->guest_pixel_snapshot;
     if (snapshot.size() != pixel_count) {
-        snapshot.assign(pixels.begin(), pixels.end());
-        return;
+        if (pixels.size() != pixel_count)
+            return false;
+        snapshot.resize(pixel_count);
     }
     for (std::uint32_t row = 0; row < rectangle.height; ++row) {
         const auto offset =
@@ -1256,10 +1279,19 @@ void SurfaceStore::update_guest_snapshot(const Backing& backing,
                  static_cast<std::uint32_t>(rectangle.y) + row) *
                 backing.width) +
             static_cast<std::uint32_t>(rectangle.x);
-        std::copy_n(pixels.begin() + static_cast<std::ptrdiff_t>(offset),
-            rectangle.width,
-            snapshot.begin() + static_cast<std::ptrdiff_t>(offset));
+        const auto source = static_cast<std::size_t>(row) * rectangle.width;
+        if (encode_pixels && surface_is_packed_555(backing.pixel_format)) {
+            for (std::size_t x = 0; x < rectangle.width; ++x)
+                snapshot[offset + x] = surface_decode_packed_555(
+                    backing.pixel_format, surface_encode_packed_555(
+                        backing.pixel_format, pixels[source + x]));
+        } else {
+            std::copy_n(pixels.begin() + static_cast<std::ptrdiff_t>(source),
+                rectangle.width,
+                snapshot.begin() + static_cast<std::ptrdiff_t>(offset));
+        }
     }
+    return true;
 }
 
 bool SurfaceStore::write_argb_region_to_guest(AddressSpace& memory,

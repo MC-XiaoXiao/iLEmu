@@ -17,6 +17,7 @@
 #include <set>
 #include <vector>
 
+#include "foundation/address_space.hpp"
 #include "foundation/userland_hle.hpp"
 #include "kernel/graphics_call_lease.hpp"
 #include "graphics/host_graphics.hpp"
@@ -154,7 +155,14 @@ private:
     void set_scale_factor(UserlandHleCall& call, bool context_api);
     void set_rotation(UserlandHleCall& call, bool context_api);
     void set_feature(UserlandHleCall& call, bool context_api, bool enabled);
-    void blit_color(UserlandHleCall& call, bool context_api);
+    void blit_color(UserlandHleCall& call, bool context_api,
+        bool native_attempted = false);
+    struct NativeFill;
+    void fill_native(UserlandHleCall& call, bool context_api,
+        ResolvedSurface destination, HostRectangle rectangle,
+        std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha);
+    void await_native_fill(
+        UserlandHleCall& call, std::shared_ptr<NativeFill> pending);
     void blit_copy(UserlandHleCall& call, bool context_api);
     struct CpuDraw;
     using CpuContinuation = std::function<void(UserlandHleCall&,
@@ -173,6 +181,10 @@ private:
         std::optional<std::uint64_t> gpu = std::nullopt);
     [[nodiscard]] bool cpu_draw_live(UserlandHleCall& call,
         const CpuDraw& cpu, bool source) const;
+    [[nodiscard]] static bool surface_binding_live(
+        const ResolvedSurface& expected,
+        const std::optional<ResolvedSurface>& current,
+        const AddressSpace::MappingObservation& mapping);
     [[nodiscard]] static std::shared_ptr<GraphicsCallLease> cpu_draw_lease(
         const std::shared_ptr<CpuDraw>& cpu);
     using SourceContinuation = std::function<void(UserlandHleCall&,

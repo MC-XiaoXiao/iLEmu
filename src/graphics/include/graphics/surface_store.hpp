@@ -228,6 +228,10 @@ public:
         AddressSpace& memory, std::uint32_t id) const;
     [[nodiscard]] bool write_argb(AddressSpace& memory, std::uint32_t id,
         std::span<const std::uint32_t> pixels) const;
+    // Record an actual completed core CPU write without rereading guest
+    // memory or advancing GPU completion. Only the written region changes.
+    [[nodiscard]] bool record_cpu_write(const Backing& expected,
+        HostRectangle rectangle, std::span<const std::uint32_t> pixels) const;
     [[nodiscard]] bool write_bytes(AddressSpace& memory, std::uint32_t id,
         std::span<const std::byte> bytes) const;
     [[nodiscard]] bool transfer_scaled(AddressSpace& memory,
@@ -271,8 +275,8 @@ private:
         std::uint32_t id) const;
     void update_guest_sync_generation(
         AddressSpace& memory, const Backing& backing) const;
-    void update_guest_snapshot(const Backing& backing, HostRectangle rectangle,
-        std::span<const std::uint32_t> pixels) const;
+    bool update_guest_snapshot(const Backing& backing, HostRectangle rectangle,
+        std::span<const std::uint32_t> pixels, bool encode_pixels = false) const;
 
     mutable std::mutex mutex_;
     std::map<std::uint32_t, Backing> backings_;

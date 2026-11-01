@@ -34,6 +34,24 @@ std::shared_ptr<GraphicsCallLease> Mbx2dHle::cpu_draw_lease(
     return cpu ? cpu->lease : nullptr;
 }
 
+bool Mbx2dHle::surface_binding_live(const ResolvedSurface& expected,
+    const std::optional<ResolvedSurface>& current,
+    const AddressSpace::MappingObservation& mapping)
+{
+    if (!current || !mapping.valid() || !expected.backing ||
+        !current->backing || expected.surface_handle != current->surface_handle ||
+        expected.core_surface_id != current->core_surface_id ||
+        (expected.core_surface_id != 0 &&
+            expected.host_surface != current->host_surface) ||
+        expected.width != current->width || expected.height != current->height)
+        return false;
+    const auto& a = *expected.backing;
+    const auto& b = *current->backing;
+    return a.base == b.base && a.allocation_size == b.allocation_size &&
+           a.bytes_per_row == b.bytes_per_row && a.pixel_format == b.pixel_format &&
+           a.provenance.publication_sequence == b.provenance.publication_sequence;
+}
+
 bool Mbx2dHle::cpu_draw_live(
     UserlandHleCall& call, const CpuDraw& cpu, bool check_source) const
 {
@@ -45,27 +63,11 @@ bool Mbx2dHle::cpu_draw_live(
     if (cpu.context_api && state == contexts_.end())
         return false;
     const auto& bindings = cpu.context_api ? state->second : state_;
-    const auto live = [](const ResolvedSurface& expected,
-                          const std::optional<ResolvedSurface>& current,
-                          const AddressSpace::MappingObservation& mapping) {
-        if (!current || !mapping.valid() || !expected.backing ||
-            !current->backing ||
-            expected.surface_handle != current->surface_handle ||
-            expected.core_surface_id != current->core_surface_id ||
-            (expected.core_surface_id != 0 &&
-                expected.host_surface != current->host_surface) ||
-            expected.width != current->width || expected.height != current->height)
-            return false;
-        const auto& a = *expected.backing;
-        const auto& b = *current->backing;
-        return a.base == b.base && a.allocation_size == b.allocation_size &&
-               a.bytes_per_row == b.bytes_per_row && a.pixel_format == b.pixel_format &&
-               a.provenance.publication_sequence == b.provenance.publication_sequence;
-    };
-    return live(cpu.destination, resolve(bindings.destination),
+    return surface_binding_live(cpu.destination, resolve(bindings.destination),
                cpu.destination_mapping) &&
            (!check_source || !cpu.source ||
-               live(*cpu.source, resolve(bindings.source), cpu.source_mapping));
+               surface_binding_live(
+                   *cpu.source, resolve(bindings.source), cpu.source_mapping));
 }
 
 void Mbx2dHle::prepare_cpu_draw(UserlandHleCall& call, bool context_api,
@@ -147,6 +149,21 @@ try {
     if (!cpu_draw_live(call, *cpu, false))
         throw std::runtime_error { "stale MBX CPU output" };
     const auto& target = cpu->destination;
+    // Preparation/readback may have yielded since the call-entry gate. A
+    // full CPU replacement needs no old pixels, but must still follow every
+    // previously accepted reader/writer of this physical image.
+    auto dependency = target.host_surface->writer();
+    if (dependency && dependency->ready() && !dependency->succeeded())
+        throw std::runtime_error { "failed MBX CPU target writer" };
+    if (!dependency || dependency->ready())
+        dependency = target.host_surface->reader();
+    if (dependency && !dependency->ready()) {
+        call.suspend_until([dependency] { return dependency->ready(); },
+            [this, cpu](UserlandHleCall& resumed) {
+                await_cpu_write(resumed, cpu);
+            }, dependency->sequence());
+        return;
+    }
     const auto r = cpu->rectangle;
     const auto full = r.x == 0 && r.y == 0 && r.width == target.width &&
                       r.height == target.height;
@@ -187,9 +204,15 @@ try {
             const auto written = try_write_region(target, r.x, r.y, r.width,
                 r.height, blended ? *blended : cpu->pixels, call, gpu);
             if (written != CpuWriteState::PendingGpu) {
+                // These are completed emulator CPU writes, not newer raw
+                // guest edits to preserve over a subsequent GPU generation.
+                const auto recorded = written == CpuWriteState::Completed &&
+                                      surface_store_->record_cpu_write(
+                                          *target.backing, r,
+                                          blended ? *blended : cpu->pixels);
                 cpu->lease->consume();
-                call.set_return(written == CpuWriteState::Completed
-                                    ? mbx2d_abi::success : mbx2d_abi::failure);
+                call.set_return(recorded ? mbx2d_abi::success
+                                         : mbx2d_abi::failure);
                 return;
             }
         }

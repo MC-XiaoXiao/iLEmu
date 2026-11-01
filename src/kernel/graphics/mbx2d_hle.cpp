@@ -860,6 +860,10 @@ Mbx2dHle::CpuWriteState Mbx2dHle::try_write_region(const ResolvedSurface& surfac
         return CpuWriteState::Failed;
     }
     const auto& backing = *surface.backing;
+    const auto packed_pixel = [format = backing.pixel_format](std::uint32_t pixel) {
+        return surface_decode_packed_555(
+            format, surface_encode_packed_555(format, pixel));
+    };
     const auto replaces_entire_surface =
         x == 0 && y == 0 && width == surface.width && height == surface.height;
     const auto backing_bytes_per_pixel =
@@ -925,10 +929,14 @@ Mbx2dHle::CpuWriteState Mbx2dHle::try_write_region(const ResolvedSurface& surfac
         if (mapping) {
             const auto offset = static_cast<std::size_t>(
                 (y + row) * surface.width + x);
-            std::copy_n(pixels.begin() + static_cast<std::ptrdiff_t>(row * width),
-                static_cast<std::size_t>(width),
-                mapping->frame().pixels.begin() +
-                    static_cast<std::ptrdiff_t>(offset));
+            const auto source =
+                pixels.begin() + static_cast<std::ptrdiff_t>(row * width);
+            const auto output = mapping->frame().pixels.begin() +
+                                static_cast<std::ptrdiff_t>(offset);
+            if (surface_is_packed_555(backing.pixel_format))
+                std::transform(source, source + width, output, packed_pixel);
+            else
+                std::copy_n(source, static_cast<std::size_t>(width), output);
         }
     }
     if (surface.core_surface_id == 0 && surface.surface_handle != 0) {
@@ -941,7 +949,11 @@ Mbx2dHle::CpuWriteState Mbx2dHle::try_write_region(const ResolvedSurface& surfac
         // first, so an allocation failure cannot dirty a stale host shadow.
         auto full = surface.host_surface->map_cpu(
             true, PerfCpuMapReason::SoftwareFallback);
-        std::copy(pixels.begin(), pixels.end(), full.frame().pixels.begin());
+        if (surface_is_packed_555(backing.pixel_format))
+            std::transform(pixels.begin(), pixels.end(),
+                full.frame().pixels.begin(), packed_pixel);
+        else
+            std::copy(pixels.begin(), pixels.end(), full.frame().pixels.begin());
         full.set_damage(damage);
     }
     return CpuWriteState::Completed;
@@ -1168,7 +1180,8 @@ bool Mbx2dHle::submit_host_commands(PerfSubmitReason reason)
     return command_encoder_ && command_encoder_->submit(reason);
 }
 
-void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
+void Mbx2dHle::blit_color(
+    UserlandHleCall& call, bool context_api, bool native_attempted)
 {
     auto* state = select_state(call, context_api);
     if (state == nullptr) {
@@ -1190,7 +1203,8 @@ void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
     }
     const auto color = call.argument(first + 4U);
     const auto composite_mode = host_composite_mode(*state);
-    if (host_graphics_->accelerated() && destination->host_surface &&
+    if (!native_attempted && host_graphics_->accelerated() &&
+        destination->host_surface &&
         destination->backing &&
         destination->backing->pixel_format == surface_pixel_format_bgra &&
         composite_mode &&
@@ -1199,14 +1213,13 @@ void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
         static_cast<std::uint64_t>(region.width) <=
             std::numeric_limits<std::uint32_t>::max() &&
         static_cast<std::uint64_t>(region.height) <=
-            std::numeric_limits<std::uint32_t>::max() &&
-        command_encoder_->fill(destination->host_surface,
+            std::numeric_limits<std::uint32_t>::max()) {
+        fill_native(call, context_api, *destination,
             { static_cast<std::int32_t>(region.destination_x),
                 static_cast<std::int32_t>(region.destination_y),
                 static_cast<std::uint32_t>(region.width),
                 static_cast<std::uint32_t>(region.height) },
-            color, *composite_mode, state->blend.global_alpha)) {
-        call.set_return(mbx_success);
+            color, *composite_mode, state->blend.global_alpha);
         return;
     }
     if (destination->host_surface && destination->core_surface_id != 0) {
