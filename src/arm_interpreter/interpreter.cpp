@@ -537,6 +537,14 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             result.reason = StopReason::SingleStep;
             return result;
         }
+        if (request.stop_at_control_flow &&
+            (state.registers[15] != result.pc + inst.size ||
+                ((state.cpsr & 0x20U) != 0) != thumb ||
+                request.block_end_pc == state.registers[15])) {
+            result.pc = state.registers[15];
+            result.reason = StopReason::BackendSwitch;
+            return result;
+        }
         ++instructions;
     }
 }

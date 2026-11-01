@@ -58,6 +58,8 @@ struct RunRequest {
     std::chrono::steady_clock::time_point deadline =
         std::chrono::steady_clock::time_point::max();
     TranslationObserver* translation_observer = nullptr;
+    std::optional<std::uint32_t> block_end_pc;
+    bool stop_at_control_flow = false;
 };
 struct RunResult {
     StopReason reason = StopReason::None;
