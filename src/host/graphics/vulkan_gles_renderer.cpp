@@ -2761,7 +2761,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             (snapshot->cpu_generation < snapshot->gpu_generation ||
                 (found != targets_.end() &&
                     found->second.direct_read_since_cache));
-        if (found == targets_.end() || !found->second.valid ||
+        // A completed CPU write supersedes the older native image, even if
+        // that image still has unacknowledged damage awaiting a later upload.
+        if ((snapshot && snapshot->cpu_generation > snapshot->gpu_generation) ||
+            found == targets_.end() || !found->second.valid ||
             (!found->second.dirty && !stale_cpu_cache)) {
             return true;
         }

@@ -62,7 +62,7 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
     , renderer_owner_ { allocate_gles_renderer_owner() }
     , host_graphics_ { shared_gles_renderer() }
     , renderer_lifetime_ {
-        std::make_unique<GlesRendererOwner>(host_graphics_, renderer_owner_) }
+        std::make_shared<GlesRendererOwner>(host_graphics_, renderer_owner_) }
     , command_encoder_ { host_graphics_->create_command_encoder() }
 {
     registry.register_call_gate(std::string { mbx2d_image },
@@ -317,7 +317,7 @@ void Mbx2dHle::reset()
     release_core_surface_references();
     renderer_owner_ = allocate_gles_renderer_owner();
     renderer_lifetime_ =
-        std::make_unique<GlesRendererOwner>(host_graphics_, renderer_owner_);
+        std::make_shared<GlesRendererOwner>(host_graphics_, renderer_owner_);
     next_client_host_source_ = 1;
     contexts_.clear();
     next_context_ = first_context_handle;
@@ -337,7 +337,7 @@ void Mbx2dHle::inherit_state(const Mbx2dHle& parent)
     release_core_surface_references();
     renderer_owner_ = allocate_gles_renderer_owner();
     renderer_lifetime_ =
-        std::make_unique<GlesRendererOwner>(host_graphics_, renderer_owner_);
+        std::make_shared<GlesRendererOwner>(host_graphics_, renderer_owner_);
     next_client_host_source_ = 1;
     contexts_ = parent.contexts_;
     next_context_ = parent.next_context_;
@@ -1292,7 +1292,8 @@ try {
 
 void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
     const ResolvedSurface& source_surface,
-    const ResolvedSurface& destination_surface, std::shared_ptr<CpuDraw> cpu)
+    const ResolvedSurface& destination_surface, std::shared_ptr<CpuDraw> cpu,
+    bool native_attempted)
 {
     const auto* source = &source_surface;
     const auto* destination = &destination_surface;
@@ -1310,7 +1311,8 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
     const auto try_host_copy = [&](HostRectangle source_rectangle,
                                    HostRectangle destination_rectangle,
                                    HostRotation rotation) {
-        if (cpu || source->cpu_frame || !host_graphics_->accelerated() ||
+        if (cpu || native_attempted || source->cpu_frame ||
+            !host_graphics_->accelerated() ||
             !source->host_surface || !destination->host_surface ||
             !source->backing || !destination->backing ||
             source->backing->pixel_format != surface_pixel_format_bgra ||
@@ -1318,18 +1320,10 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
             !composite_mode) {
             return false;
         }
-        const auto started = std::chrono::steady_clock::now();
-        const auto encoded = command_encoder_->copy(source->host_surface,
-            destination->host_surface, source_rectangle, destination_rectangle,
-            *composite_mode, state->blend.global_alpha, HostFilter::Nearest,
+        copy_native(call, context_api, *source, *destination, source_rectangle,
+            destination_rectangle, *composite_mode, state->blend.global_alpha,
             rotation);
-        performance_counters().record_diagnostic_graphics_hle(
-            PerfDiagnosticGraphicsHleKind::HostCopyEncode,
-            static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - started)
-                    .count()));
-        return encoded;
+        return true;
     };
     const auto transform_enabled =
         state->scale_x_bits != mbx2d_abi::float_one_bits ||
@@ -1358,7 +1352,6 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
                     static_cast<std::uint32_t>(region.width),
                     static_cast<std::uint32_t>(region.height) },
                 HostRotation::Identity)) {
-            call.set_return(mbx_success);
             return;
         }
         if (!cpu && source->backing &&
@@ -1378,10 +1371,11 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
         if (!source->cpu_frame && source->core_surface_id != 0 &&
             source->host_surface && source->host_surface->gpu_generation() != 0) {
             import_source(call, context_api, *source, *destination,
-                [this, context_api, cpu](UserlandHleCall& resumed,
+                [this, context_api, cpu, native_attempted](UserlandHleCall& resumed,
                     const ResolvedSurface& ready_source,
                     const ResolvedSurface& ready_destination) {
-                    execute_blit_copy(resumed, context_api, ready_source, ready_destination, cpu);
+                    execute_blit_copy(resumed, context_api, ready_source,
+                        ready_destination, cpu, native_attempted);
                 },
                 true, cpu_draw_lease(cpu));
             return;
@@ -1483,7 +1477,6 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
                 static_cast<std::uint32_t>(output_width),
                 static_cast<std::uint32_t>(output_height) },
             *host_rotation)) {
-        call.set_return(mbx_success);
         return;
     }
     if (!cpu && source->backing &&
@@ -1509,10 +1502,11 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
     if (!source->cpu_frame && source->core_surface_id != 0 &&
         source->host_surface && source->host_surface->gpu_generation() != 0) {
         import_source(call, context_api, *source, *destination,
-            [this, context_api, cpu](UserlandHleCall& resumed,
+            [this, context_api, cpu, native_attempted](UserlandHleCall& resumed,
                 const ResolvedSurface& ready_source,
                 const ResolvedSurface& ready_destination) {
-                execute_blit_copy(resumed, context_api, ready_source, ready_destination, cpu);
+                execute_blit_copy(resumed, context_api, ready_source,
+                    ready_destination, cpu, native_attempted);
             },
             true, cpu_draw_lease(cpu));
         return;

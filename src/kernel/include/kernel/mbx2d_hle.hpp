@@ -157,12 +157,21 @@ private:
     void set_feature(UserlandHleCall& call, bool context_api, bool enabled);
     void blit_color(UserlandHleCall& call, bool context_api,
         bool native_attempted = false);
-    struct NativeFill;
+    struct NativeDraw;
+    [[nodiscard]] std::shared_ptr<NativeDraw> prepare_native_draw(
+        UserlandHleCall& call, bool context_api, ResolvedSurface destination,
+        std::optional<ResolvedSurface> source = { });
+    [[nodiscard]] bool native_draw_live(
+        UserlandHleCall& call, const NativeDraw& pending);
     void fill_native(UserlandHleCall& call, bool context_api,
         ResolvedSurface destination, HostRectangle rectangle,
         std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha);
-    void await_native_fill(
-        UserlandHleCall& call, std::shared_ptr<NativeFill> pending);
+    void copy_native(UserlandHleCall& call, bool context_api,
+        const ResolvedSurface& source, const ResolvedSurface& destination,
+        HostRectangle source_rectangle, HostRectangle destination_rectangle,
+        HostCompositeMode mode, std::uint8_t alpha, HostRotation rotation);
+    void await_native_draw(
+        UserlandHleCall& call, std::shared_ptr<NativeDraw> pending);
     void blit_copy(UserlandHleCall& call, bool context_api);
     struct CpuDraw;
     using CpuContinuation = std::function<void(UserlandHleCall&,
@@ -170,7 +179,7 @@ private:
         std::shared_ptr<CpuDraw>)>;
     void execute_blit_copy(UserlandHleCall& call, bool context_api,
         const ResolvedSurface& source, const ResolvedSurface& destination,
-        std::shared_ptr<CpuDraw> cpu = { });
+        std::shared_ptr<CpuDraw> cpu = { }, bool native_attempted = false);
     void prepare_cpu_draw(UserlandHleCall& call, bool context_api,
         std::optional<ResolvedSurface> source, ResolvedSurface destination,
         std::size_t bytes, CpuContinuation continuation);
@@ -266,7 +275,7 @@ private:
     std::uint64_t next_client_host_source_ { 1 };
     std::vector<HostSurfaceKey> retired_client_host_sources_;
     std::shared_ptr<GlesRenderer> host_graphics_;
-    std::unique_ptr<GlesRendererOwner> renderer_lifetime_;
+    std::shared_ptr<GlesRendererOwner> renderer_lifetime_;
     std::shared_ptr<CommandEncoder> command_encoder_;
 };
 
