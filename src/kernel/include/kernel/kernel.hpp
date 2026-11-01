@@ -1017,6 +1017,9 @@ private:
     // name.
     [[nodiscard]] std::optional<std::uint32_t> ready_mach_kevent_name(
         const KeventRegistration& registration) const;
+    [[nodiscard]] bool mach_kevent_observation_current(
+        const KeventRegistration& registration) const;
+    [[nodiscard]] bool kevent_mach_poll_required(std::uint32_t queue_fd) const;
     [[nodiscard]] std::optional<std::uint32_t> socket_pending_byte_count(
         std::uint32_t fd, std::uint32_t& darwin_error) const;
     [[nodiscard]] std::shared_ptr<bsd::baseband_device::OpenDescription>

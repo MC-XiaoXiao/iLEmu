@@ -1538,20 +1538,45 @@ std::uint16_t CompatibilityKernel::descriptor_poll_revents(
     return revents;
 }
 
+bool CompatibilityKernel::mach_kevent_observation_current(
+    const KeventRegistration& registration) const
+{
+    return registration.empty_mach_queue_pid == process_.pid &&
+        registration.empty_mach_queue_object != 0U &&
+        registration.empty_mach_queue_generation ==
+            shared_state_->mach_receive_generation_snapshot(
+                registration.empty_mach_queue_object);
+}
+
+bool CompatibilityKernel::kevent_mach_poll_required(std::uint32_t queue_fd) const
+{
+    const auto queue = kqueues_.find(queue_fd);
+    if (queue == kqueues_.end())
+        return true;
+    for (const auto& registration : queue->second) {
+        if (!registration.enabled)
+            continue;
+        // Descriptor filters can observe nested kqueues. Keep their existing
+        // full readiness walk; direct Mach knotes already retain exact empty
+        // observations, including receive rights and port-set membership.
+        if (registration.filter == darwin::kqueue::filter_read ||
+            registration.filter == darwin::kqueue::filter_write ||
+            (registration.filter == darwin::kqueue::filter_mach_port &&
+                !mach_kevent_observation_current(registration)))
+            return true;
+    }
+    return false;
+}
+
 std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
     const KeventRegistration& registration) const
 {
     using xnu::ipc::Right;
 
     // Check the previously resolved object before taking the IPC lock. Rights
-    // and port-set topology changes invalidate every scoped generation.
-    if (registration.empty_mach_queue_pid == process_.pid &&
-        registration.empty_mach_queue_object != 0U &&
-        registration.empty_mach_queue_generation ==
-            shared_state_->mach_receive_generation_snapshot(
-                registration.empty_mach_queue_object)) {
+    // and port-set topology changes invalidate the corresponding observation.
+    if (mach_kevent_observation_current(registration))
         return std::nullopt;
-    }
 
     std::lock_guard mach_lock { shared_state_->mach_mutex };
     registration.empty_mach_queue_generation = 0;

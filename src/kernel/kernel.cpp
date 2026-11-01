@@ -1856,10 +1856,15 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
     if (cached == pending_io_poll_cache_.end())
         return true;
     if (cached->second.io_generation !=
-            shared_state_->io_event_generation_snapshot() ||
-        cached->second.mach_generation !=
-            shared_state_->mach_queue_generation_snapshot()) {
+        shared_state_->io_event_generation_snapshot()) {
         return true;
+    }
+    if (cached->second.mach_generation !=
+        shared_state_->mach_queue_generation_snapshot()) {
+        const auto kevent = pending_kevents_.find(processor);
+        if (kevent == pending_kevents_.end() ||
+            kevent_mach_poll_required(kevent->second.queue_fd))
+            return true;
     }
     if (const auto deadline = pending_io_deadline_locked(processor);
         deadline && shared_state_->clock.now() >= *deadline) {
