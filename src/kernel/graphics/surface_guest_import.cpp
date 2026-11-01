@@ -199,7 +199,7 @@ try {
         pending->lease->result = ticket;
     call.suspend_until([ticket] { return ticket->ready(); },
         [pending](UserlandHleCall& resumed) { resume(resumed, pending); },
-        ticket->sequence);
+        ticket->sequence());
 } catch (...) {
     pending->finish(call, false);
 }

@@ -46,7 +46,7 @@ void OpenGlesHle::park_program_job(UserlandHleCall& call,
             }
             completion(resumed);
         },
-        result->sequence);
+        result->sequence());
 }
 
 void OpenGlesHle::with_program_renderer(

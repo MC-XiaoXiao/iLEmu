@@ -110,7 +110,7 @@ try {
             [this, pending](UserlandHleCall& resumed) {
                 await_pixmap_read(resumed, pending);
             },
-            host->completion->sequence);
+            host->completion->sequence());
         return;
     }
     const auto& captured = host->value.snapshot;

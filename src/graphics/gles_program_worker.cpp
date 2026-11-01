@@ -208,12 +208,9 @@ namespace {
                         std::vector<std::uint32_t>().swap(result->frame.pixels);
                         success = false;
                     }
-                    result->status.store(success
-                                             ? GlesWorkResult::Status::Completed
-                                             : GlesWorkResult::Status::Failed,
-                        std::memory_order_release);
+                    result->publish(success);
                 } });
-            result->sequence = sequence;
+            result->assign_sequence(sequence);
             ++next_sequence_;
             ++credits_->count;
             credits_->bytes += command_bytes;
@@ -964,7 +961,7 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_draw(
             state_->pending.pop_back();
             return { };
         }
-        state_->pending.back() = { result->sequence, draw->issuer, draw->epoch,
+        state_->pending.back() = { result->sequence(), draw->issuer, draw->epoch,
             result };
         draw->accepted = result;
         return result;

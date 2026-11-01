@@ -196,6 +196,6 @@ void OpenGlesHle::await_texture_target(UserlandHleCall& call,
             }
             await_graphics_call(resumed, handler);
         },
-        pending->result->sequence);
+        pending->result->sequence());
 }
 } // namespace ilemu

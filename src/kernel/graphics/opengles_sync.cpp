@@ -195,7 +195,7 @@ void OpenGlesHle::await_graphics_call(
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
                 await_graphics_call(resumed, handler);
             },
-            lease->result ? lease->result->sequence : 0);
+            lease->result ? lease->result->sequence() : 0);
         return;
     }
     sync_lease_.reset();
@@ -307,7 +307,7 @@ void OpenGlesHle::await_program_flush(
                 fail_program_flush(
                     resumed, handler, gles_abi::invalid_operation);
         },
-        result->sequence);
+        result->sequence());
 }
 
 void OpenGlesHle::fail_program_flush(UserlandHleCall& call,
@@ -357,7 +357,7 @@ void OpenGlesHle::finish_async(UserlandHleCall& call, bool finish)
                 set_gl_error(resumed, gles_abi::invalid_operation);
             lease->consume();
         },
-        result->sequence);
+        result->sequence());
 }
 
 

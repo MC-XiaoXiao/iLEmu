@@ -195,7 +195,7 @@ void CoreSurfaceHle::await_cpu_access(
             complete_cpu_access(
                 resumed, pending, pending->result->completion->succeeded());
         },
-        result->sequence);
+        result->sequence());
 }
 
 void CoreSurfaceHle::complete_cpu_access(UserlandHleCall& call,

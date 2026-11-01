@@ -295,7 +295,7 @@ void OpenGlesHle::prepare_program_inputs(UserlandHleCall& call,
             // already owns attributes/uniforms/textures; do not replay draw().
             submit_program_draw(resumed, binding, dimensions, prepared);
         },
-        result->sequence);
+        result->sequence());
 }
 
 void OpenGlesHle::submit_program_draw(UserlandHleCall& call,

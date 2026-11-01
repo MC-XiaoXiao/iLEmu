@@ -163,7 +163,7 @@ void Mbx2dHle::await_finish(UserlandHleCall& call, bool terminate,
             resumed.set_return(
                 success ? mbx2d_abi::success : mbx2d_abi::failure);
         },
-        result->sequence);
+        result->sequence());
 }
 
 } // namespace ilemu

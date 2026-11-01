@@ -26,7 +26,7 @@ void OpenGlesHle::prepare_fork(UserlandHleCall& call,
                 [this, completion](UserlandHleCall& resumed) {
                     prepare_fork(resumed, completion);
                 },
-                lease->result ? lease->result->sequence : 0);
+                lease->result ? lease->result->sequence() : 0);
             return;
         } else if (pending_program_target_) {
             await_program_flush(

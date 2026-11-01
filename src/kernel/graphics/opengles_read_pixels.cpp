@@ -180,7 +180,7 @@ try {
             }
             lease->consume();
         },
-        result->sequence);
+        result->sequence());
 } catch (const std::bad_alloc&) {
     // An accepted job retains its resources even if saving its observer fails.
     // Canceled observers are consumed at the normal core completion boundary.

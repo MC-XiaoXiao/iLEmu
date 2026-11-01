@@ -132,7 +132,7 @@ try {
             }
             pending->lease->consume();
         },
-        result->sequence);
+        result->sequence());
 } catch (...) {
     // If saving the observer fails after acceptance, keep its ticket in the
     // canceled lease until the normal core poll sees real host completion.

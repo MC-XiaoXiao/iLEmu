@@ -216,7 +216,7 @@ void OpenGlesHle::await_texture_deletion(UserlandHleCall& call,
         deletion->result = result;
         lease->result = result;
         call.suspend_until(
-            std::move(ready), std::move(completed), result->sequence);
+            std::move(ready), std::move(completed), result->sequence());
     } catch (const std::bad_alloc&) {
         lease->consume();
         set_gl_error(call, gles_abi::out_of_memory);

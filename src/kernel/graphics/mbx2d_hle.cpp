@@ -262,7 +262,7 @@ void Mbx2dHle::enter_graphics_call(
         call.suspend_until([lease] { return lease->ready(); },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
                 enter_graphics_call(resumed, handler);
-            }, lease->result ? lease->result->sequence : 0);
+            }, lease->result ? lease->result->sequence() : 0);
         return;
     }
     sync_lease_.reset();

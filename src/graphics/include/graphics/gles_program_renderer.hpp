@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "graphics/gles_work_completion.hpp"
+
 #include "graphics/gles_program_state.hpp"
 #include "graphics/gles_renderer.hpp"
 
@@ -86,9 +88,15 @@ public:
 // A retained host-owned result is also a queue credit: completed readbacks
 // remain accounted until the core consumes or cancels their observer.
 struct GlesWorkResult {
-    enum class Status { Pending, Completed, Failed };
-    std::atomic<Status> status { Status::Pending };
-    std::uint64_t sequence { };
+private:
+    std::shared_ptr<GlesWorkCompletion> completion_ {
+        std::make_shared<GlesWorkCompletion>()
+    };
+
+public:
+    GlesWorkResult() = default;
+    GlesWorkResult(const GlesWorkResult&) = delete;
+    GlesWorkResult& operator=(const GlesWorkResult&) = delete;
     DisplayFrame frame;
     std::function<void()> release_credit;
     ~GlesWorkResult()
@@ -96,13 +104,28 @@ struct GlesWorkResult {
         if (release_credit)
             release_credit();
     }
-    [[nodiscard]] bool ready() const
+    [[nodiscard]] std::uint64_t sequence() const
     {
-        return status.load(std::memory_order_acquire) != Status::Pending;
+        return completion_->sequence();
     }
-    [[nodiscard]] bool succeeded() const
+    [[nodiscard]] bool ready() const { return completion_->ready(); }
+    [[nodiscard]] bool succeeded() const { return completion_->succeeded(); }
+    [[nodiscard]] std::shared_ptr<const GlesWorkCompletion> completion() const
     {
-        return status.load(std::memory_order_acquire) == Status::Completed;
+        return completion_;
+    }
+    // Producer-only. Admission assigns identity before releasing the queue
+    // lock; execution publishes once after writing all owned output.
+    void assign_sequence(std::uint64_t sequence) noexcept
+    {
+        completion_->sequence_ = sequence;
+    }
+    void publish(bool succeeded) noexcept
+    {
+        completion_->status_.store(succeeded
+                                      ? GlesWorkCompletion::Status::Completed
+                                      : GlesWorkCompletion::Status::Failed,
+            std::memory_order_release);
     }
 };
 
