@@ -286,7 +286,8 @@ try {
             std::move(fallback));
         return;
     }
-    if (!cpu && destination->host_surface && destination->core_surface_id) {
+    if (!cpu && (destination->framebuffer ||
+        (destination->host_surface && destination->core_surface_id))) {
         prepare_cpu_draw(call, false, { }, *destination,
             static_cast<std::size_t>(width * height) * sizeof(std::uint32_t),
             [this, positions = *positions](UserlandHleCall& resumed,
@@ -646,8 +647,9 @@ try {
                                               : "QuadCopy.NativeQuadIneligible",
             0);
     }
-    if (!cpu && source->backing && destination->host_surface &&
-        destination->core_surface_id) {
+    if (!cpu && (source->backing || source->framebuffer) &&
+        (source->framebuffer || destination->framebuffer ||
+            (destination->host_surface && destination->core_surface_id))) {
         prepare_cpu_draw(call, context_api, *source, *destination,
             static_cast<std::size_t>(width * height) * sizeof(std::uint32_t),
             [this, context_api, position_values, texture_values, perspective,

@@ -21,6 +21,7 @@ struct Mbx2dHle::CpuDraw {
     // admission.
     struct Framebuffer {
         std::shared_ptr<void> credit;
+        // Null output captures a source without merging a destination.
         std::shared_ptr<const Output> output;
         DisplayFrame source;
         std::shared_ptr<GlesWorkResult> result;

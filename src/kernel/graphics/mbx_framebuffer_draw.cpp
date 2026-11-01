@@ -27,6 +27,8 @@ bool Mbx2dHle::CpuDraw::Framebuffer::execute(
     if (frame.width != width || frame.height != height ||
         frame.pixels.size() != static_cast<std::size_t>(width) * height)
         return false;
+    if (!output)
+        return true; // Source capture; no target merge.
     const auto r = output->rectangle;
     std::optional<std::vector<std::uint32_t>> merged;
     if (output->blend || output->coverage) {
@@ -50,16 +52,17 @@ bool Mbx2dHle::CpuDraw::Framebuffer::execute(
     return true;
 }
 
-void Mbx2dHle::await_framebuffer_write(
-    UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu)
+void Mbx2dHle::await_framebuffer(
+    UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu, bool write)
 try {
-    if (!cpu_draw_live(call, *cpu, false))
-        throw std::runtime_error { "stale MBX framebuffer output" };
+    if (!cpu_draw_live(call, *cpu, !write))
+        throw std::runtime_error { "stale MBX framebuffer binding" };
     auto& paint = *cpu->output;
     const auto r = paint.rectangle;
-    if (paint.pixels.size() != static_cast<std::uint64_t>(r.width) * r.height)
+    if (write &&
+        paint.pixels.size() != static_cast<std::uint64_t>(r.width) * r.height)
         throw std::invalid_argument { "invalid MBX framebuffer pixels" };
-    if (!paint.blend && !paint.coverage && r.x == 0 && r.y == 0 &&
+    if (write && !paint.blend && !paint.coverage && r.x == 0 && r.y == 0 &&
         r.width == cpu->destination.width &&
         r.height == cpu->destination.height) {
         // Full replacement has no dependency on the previous scanout image.
@@ -71,14 +74,16 @@ try {
     if (!cpu->framebuffer) {
         auto frame = std::make_shared<CpuDraw::Framebuffer>();
         frame->credit = cpu->credit;
-        frame->output = cpu->output;
+        if (write)
+            frame->output = cpu->output;
         frame->revision = display_->content_revision();
         frame->source = display_->capture_frame();
         cpu->framebuffer = std::move(frame);
     }
     const auto framebuffer = cpu->framebuffer;
-    const auto bytes = static_cast<std::size_t>(cpu->destination.width) *
-                       cpu->destination.height * sizeof(std::uint32_t);
+    const auto& surface = write ? cpu->destination : *cpu->source;
+    const auto bytes = static_cast<std::size_t>(surface.width) *
+                       surface.height * sizeof(std::uint32_t);
     if (!framebuffer->result) {
         const auto source = framebuffer->source.host_surface;
         framebuffer->result = enqueue_gles_host_work(bytes,
@@ -88,8 +93,8 @@ try {
         if (!framebuffer->result) {
             call.suspend_until(
                 [bytes] { return gles_host_work_capacity(bytes); },
-                [this, cpu](UserlandHleCall& resumed) {
-                    await_framebuffer_write(resumed, cpu);
+                [this, cpu, write](UserlandHleCall& resumed) {
+                    await_framebuffer(resumed, cpu, write);
                 });
             return;
         }
@@ -99,13 +104,21 @@ try {
     }
     const auto result = framebuffer->result;
     call.suspend_until([result] { return result->ready(); },
-        [this, cpu, framebuffer, result](UserlandHleCall& resumed) {
+        [this, cpu, framebuffer, result, write](UserlandHleCall& resumed) {
             try {
-                if (!cpu_draw_live(resumed, *cpu, false) ||
+                if (!cpu_draw_live(resumed, *cpu, !write) ||
                     !result->succeeded())
                     throw std::runtime_error {
                         "MBX framebuffer capture failed"
                     };
+                if (!write) {
+                    cpu->source->cpu_frame =
+                        std::make_shared<DisplayFrame>(std::move(result->frame));
+                    cpu->framebuffer.reset();
+                    cpu->lease->result.reset();
+                    await_cpu_draw(resumed, cpu);
+                    return;
+                }
                 const auto source = framebuffer->source.host_surface;
                 if (framebuffer->revision != display_->content_revision() ||
                     (source && framebuffer->generation !=
@@ -116,7 +129,7 @@ try {
                     // frozen.
                     cpu->framebuffer.reset();
                     cpu->lease->result.reset();
-                    await_framebuffer_write(resumed, cpu);
+                    await_framebuffer(resumed, cpu, true);
                     return;
                 }
                 display_->replace_pixels(

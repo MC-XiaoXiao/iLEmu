@@ -88,31 +88,41 @@ void Mbx2dHle::prepare_cpu_draw(UserlandHleCall& call, bool context_api,
     std::size_t bytes, CpuContinuation continuation)
 try {
     constexpr std::size_t limit = 64U * 1024U * 1024U;
-    if (!bytes || bytes > limit || (source && !source->backing) ||
+    if (!bytes || bytes > limit ||
+        (source && !source->backing && !source->framebuffer) ||
         (!destination.backing && !destination.framebuffer))
         throw std::length_error { "MBX CPU output exceeds its budget" };
     auto cpu = std::make_shared<CpuDraw>();
     cpu->output = std::make_shared<CpuDraw::Output>();
     cpu->output_bytes = bytes;
-    if (destination.framebuffer) {
-        constexpr auto metadata = sizeof(CpuDraw) + sizeof(CpuDraw::Output) +
-                                  sizeof(CpuDraw::Framebuffer);
+    const auto frame_bytes = [limit](const ResolvedSurface& surface) {
         const auto count =
-            static_cast<std::uint64_t>(destination.width) * destination.height;
-        if (count > (limit - metadata) / sizeof(std::uint32_t))
+            static_cast<std::uint64_t>(surface.width) * surface.height;
+        if (count > limit / sizeof(std::uint32_t))
             throw std::length_error { "MBX framebuffer exceeds its budget" };
-        const auto frame =
-            static_cast<std::size_t>(count) * sizeof(std::uint32_t);
-        const auto extra = frame + 2U * std::min(bytes, frame);
-        if (bytes > limit - metadata || extra > limit - metadata - bytes)
-            throw std::length_error {
-                "MBX framebuffer merge exceeds its budget"
-            };
-        bytes += extra + metadata;
+        return static_cast<std::size_t>(count) * sizeof(std::uint32_t);
+    };
+    const auto add_budget = [limit, &bytes](std::size_t extra) {
+        if (extra > limit - bytes)
+            throw std::length_error { "MBX framebuffer exceeds its budget" };
+        bytes += extra;
+    };
+    if (destination.framebuffer || (source && source->framebuffer))
+        add_budget(sizeof(CpuDraw) + sizeof(CpuDraw::Output));
+    if (destination.framebuffer) {
+        const auto frame = frame_bytes(destination);
+        add_budget(frame + 2U * std::min(cpu->output_bytes, frame) +
+                   sizeof(CpuDraw::Framebuffer));
+    }
+    if (source && source->framebuffer) {
+        // Retain the captured input through sampling, plus its ROI copy.
+        add_budget(2U * frame_bytes(*source) + sizeof(CpuDraw::Framebuffer));
+        if (!destination.framebuffer)
+            add_budget(2U * cpu->output_bytes);
     }
     cpu->source = std::move(source);
     cpu->destination = std::move(destination);
-    if (cpu->source)
+    if (cpu->source && cpu->source->backing)
         cpu->source_mapping = call.memory().observe_mapping(
             cpu->source->backing->base, cpu->source->backing->allocation_size);
     if (cpu->destination.backing)
@@ -142,11 +152,16 @@ void Mbx2dHle::await_cpu_draw(
 try {
     if (!cpu_draw_live(call, *cpu, true))
         throw std::runtime_error { "stale MBX CPU inputs" };
-    cpu->credit = reserve_gles_host_preparation(cpu->bytes);
+    if (!cpu->credit)
+        cpu->credit = reserve_gles_host_preparation(cpu->bytes);
     if (!cpu->credit) {
         call.suspend_until(
             [bytes = cpu->bytes] { return gles_host_preparation_capacity(bytes); },
             [this, cpu](UserlandHleCall& resumed) { await_cpu_draw(resumed, cpu); });
+        return;
+    }
+    if (cpu->source && cpu->source->framebuffer && !cpu->source->cpu_frame) {
+        await_framebuffer(call, std::move(cpu), false);
         return;
     }
     auto continuation = std::move(cpu->continuation);
@@ -185,7 +200,27 @@ try {
         throw std::runtime_error { "stale MBX CPU output" };
     const auto& target = cpu->destination;
     if (target.framebuffer) {
-        await_framebuffer_write(call, std::move(cpu));
+        await_framebuffer(call, std::move(cpu), true);
+        return;
+    }
+    if (!target.host_surface) {
+        const auto& paint = *cpu->output;
+        const auto r = paint.rectangle;
+        std::optional<std::vector<std::uint32_t>> merged;
+        if (paint.blend || paint.coverage) {
+            auto destination =
+                read_guest_region(target, r.x, r.y, r.width, r.height, call);
+            if (!destination)
+                throw std::runtime_error { "unreadable MBX CPU target" };
+            merged = paint.merge(std::move(*destination));
+            if (!merged)
+                throw std::runtime_error { "invalid MBX CPU merge" };
+        }
+        const auto written = try_write_region(target, r.x, r.y, r.width,
+            r.height, merged ? *merged : paint.pixels, call);
+        cpu->lease->consume();
+        call.set_return(written == CpuWriteState::Completed
+                            ? mbx2d_abi::success : mbx2d_abi::failure);
         return;
     }
     // Preparation/readback may have yielded since the call-entry gate. A

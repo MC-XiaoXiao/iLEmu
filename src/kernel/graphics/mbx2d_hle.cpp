@@ -697,9 +697,10 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
         x + width > surface.width || y + height > surface.height) {
         return std::nullopt;
     }
-    if (surface.cpu_frame && surface.backing &&
-        (surface.backing->pixel_format == surface_pixel_format_bgra ||
-            surface_is_packed_555(surface.backing->pixel_format))) {
+    if (surface.cpu_frame &&
+        (surface.framebuffer || (surface.backing &&
+            (surface.backing->pixel_format == surface_pixel_format_bgra ||
+                surface_is_packed_555(surface.backing->pixel_format))))) {
         std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
         const auto& frame = *surface.cpu_frame;
         if (frame.width != surface.width || frame.height != surface.height ||
@@ -711,20 +712,6 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
             std::copy_n(frame.pixels.begin() + static_cast<std::ptrdiff_t>(offset),
                 static_cast<std::size_t>(width),
                 pixels.begin() + static_cast<std::ptrdiff_t>(row * width));
-        }
-        return pixels;
-    }
-    if (surface.framebuffer) {
-        if (!display_)
-            return std::nullopt;
-        const auto frame = display_->snapshot();
-        std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
-        for (std::int64_t row = 0; row < height; ++row) {
-            const auto source =
-                static_cast<std::size_t>((y + row) * frame.width + x);
-            const auto destination = static_cast<std::size_t>(row * width);
-            std::copy_n(frame.pixels.begin() + source,
-                static_cast<std::size_t>(width), pixels.begin() + destination);
         }
         return pixels;
     }
@@ -827,21 +814,6 @@ Mbx2dHle::CpuWriteState Mbx2dHle::try_write_region(const ResolvedSurface& surfac
         x + width > surface.width || y + height > surface.height ||
         pixels.size() != static_cast<std::size_t>(width * height)) {
         return CpuWriteState::Failed;
-    }
-    if (surface.framebuffer) {
-        if (!display_)
-            return CpuWriteState::Failed;
-        auto frame = display_->snapshot();
-        for (std::int64_t row = 0; row < height; ++row) {
-            const auto source = static_cast<std::size_t>(row * width);
-            const auto destination =
-                static_cast<std::size_t>((y + row) * frame.width + x);
-            std::copy_n(pixels.begin() + source,
-                static_cast<std::size_t>(width),
-                frame.pixels.begin() + destination);
-        }
-        display_->replace_pixels(std::move(frame.pixels), call.process_id());
-        return CpuWriteState::Completed;
     }
     if (!surface.backing ||
         (surface.backing->pixel_format != surface_pixel_format_bgra &&
@@ -1339,8 +1311,8 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
                 HostRotation::Identity)) {
             return;
         }
-        if (!cpu && source->backing &&
-            (destination->framebuffer ||
+        if (!cpu && (source->backing || source->framebuffer) &&
+            (source->framebuffer || destination->framebuffer ||
                 (destination->host_surface && destination->core_surface_id != 0))) {
             prepare_cpu_draw(call, context_api, *source, *destination,
                 static_cast<std::size_t>(region.width * region.height) *
@@ -1465,8 +1437,8 @@ void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
             *host_rotation)) {
         return;
     }
-    if (!cpu && source->backing &&
-        (destination->framebuffer ||
+    if (!cpu && (source->backing || source->framebuffer) &&
+        (source->framebuffer || destination->framebuffer ||
             (destination->host_surface && destination->core_surface_id != 0))) {
         BlitRegion output { 0, 0, region.destination_x, region.destination_y,
             output_width, output_height };
