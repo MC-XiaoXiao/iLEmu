@@ -122,6 +122,13 @@ try {
         !call.memory().accessible(
             expected.base, expected.allocation_size, MemoryPermission::Read))
         throw std::runtime_error { "guest import backing was replaced" };
+    const auto reader = pending->surface ? pending->surface->reader() : nullptr;
+    if (reader && !reader->ready()) {
+        call.suspend_until([reader] { return reader->ready(); },
+            [pending](UserlandHleCall& resumed) { resume(resumed, pending); },
+            reader->sequence());
+        return;
+    }
     const auto writer = pending->surface ? pending->surface->writer() : nullptr;
     if (writer && !writer->ready()) {
         call.suspend_until([writer] { return writer->ready(); },

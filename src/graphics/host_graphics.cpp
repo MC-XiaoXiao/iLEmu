@@ -610,6 +610,19 @@ std::shared_ptr<const GlesWorkCompletion> HostSurface::writer() const
     return writer_;
 }
 
+std::shared_ptr<const GlesWorkCompletion> HostSurface::reader() const
+{
+    std::lock_guard lock { mutex_ };
+    return reader_;
+}
+
+void HostSurface::record_read(
+    std::shared_ptr<const GlesWorkCompletion> completion)
+{
+    std::lock_guard lock { mutex_ };
+    reader_ = std::move(completion);
+}
+
 bool HostSurface::begin_write(
     std::shared_ptr<const GlesWorkCompletion> completion,
     std::shared_ptr<const GlesWorkCompletion>& previous)
@@ -685,7 +698,8 @@ std::optional<HostSurface::CpuMapping> HostSurface::try_map_current_cpu(
     bool write, PerfCpuMapReason reason)
 {
     CpuMapping mapping { *this, false };
-    if ((writer_ && !writer_->succeeded()) ||
+    if ((write && reader_ && !reader_->ready()) ||
+        (writer_ && !writer_->succeeded()) ||
         gpu_generation_ > cpu_generation_)
         return std::nullopt;
     performance_counters().record_cpu_map(write, reason);

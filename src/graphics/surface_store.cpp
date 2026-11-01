@@ -897,6 +897,9 @@ SurfaceStore::CpuImportResult SurfaceStore::try_synchronize_from_guest(
                         !surface_is_packed_555(backing->pixel_format)))
         return backing ? CpuImportResult::Completed : CpuImportResult::Failed;
     if (const auto surface = host_surface(id)) {
+        const auto reader = surface->reader();
+        if (reader && !reader->ready())
+            return CpuImportResult::PendingGpu;
         const auto writer = surface->writer();
         if (writer && !writer->succeeded())
             return writer->ready() ? CpuImportResult::Failed

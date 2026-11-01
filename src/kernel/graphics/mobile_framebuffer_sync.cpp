@@ -242,7 +242,10 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
             finish_swap(call, lease, false);
             return;
         }
-        if (submit_host_layers(call) != SubmissionResult::Failed) {
+        const auto native = submit_host_layers(call);
+        if (native == SubmissionResult::Pending)
+            return;
+        if (native == SubmissionResult::Submitted) {
             finish_swap(call, lease, true);
             return;
         }

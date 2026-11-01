@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "graphics/gles_renderer_owner.hpp"
@@ -266,6 +267,33 @@ void Mbx2dHle::enter_graphics_call(
         return;
     }
     sync_lease_.reset();
+    const auto symbol = call.symbol();
+    const auto drawing = symbol.ends_with("BlitColor") ||
+                         symbol.ends_with("BlitCopy") ||
+                         symbol.ends_with("QuadColor") ||
+                         symbol.ends_with("QuadCopy") ||
+                         symbol.ends_with("QuadCopyPerspective");
+    if (drawing) {
+        const auto context_api = symbol.starts_with("_mbx2DCtx") ||
+                                 symbol.starts_with("_mbx3DCtx");
+        const auto* state = select_state(call, context_api);
+        const auto destination = state ? resolve(state->destination)
+                                       : std::nullopt;
+        const auto reader = destination && destination->host_surface
+                                ? destination->host_surface->reader() : nullptr;
+        if (reader && !reader->ready()) {
+            auto lease = std::make_shared<GraphicsCallLease>();
+            lease->owner = call.cpu().processor_id();
+            sync_lease_ = lease;
+            call.suspend_until([reader] { return reader->ready(); },
+                [this, lease, handler = std::move(handler)](
+                    UserlandHleCall& resumed) {
+                    lease->consume();
+                    enter_graphics_call(resumed, handler);
+                }, reader->sequence());
+            return;
+        }
+    }
     handler(call);
 }
 

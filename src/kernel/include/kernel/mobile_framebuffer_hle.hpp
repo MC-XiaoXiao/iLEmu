@@ -62,6 +62,7 @@ private:
     enum class SubmissionResult : std::uint8_t {
         Failed,
         Submitted,
+        Pending,
     };
 
     void register_device_functions(UserlandHleRegistry& registry);
@@ -69,6 +70,10 @@ private:
     void set_background_color(UserlandHleCall& call);
     void set_layer(UserlandHleCall& call);
     struct SoftwareSubmission;
+    struct NativeSubmission;
+    void await_native_layers(UserlandHleCall& call,
+        std::shared_ptr<NativeSubmission> pending);
+    void publish_native_scanout(UserlandHleCall& call);
     void enter_swap_call(UserlandHleCall& call,
         std::function<void(UserlandHleCall&)> handler);
     void submit_layers(UserlandHleCall& call);
@@ -122,7 +127,6 @@ private:
     std::shared_ptr<GlesRenderer> host_graphics_;
     std::uint64_t composition_owner_ { };
     std::shared_ptr<GlesRendererOwner> composition_lifetime_;
-    std::unique_ptr<CommandEncoder> command_encoder_;
     std::shared_ptr<HostSurface> scanout_surface_;
     // This lease owns the exact published image and keeps a forked reader's
     // snapshot out of the parent's writable ring until its last use.

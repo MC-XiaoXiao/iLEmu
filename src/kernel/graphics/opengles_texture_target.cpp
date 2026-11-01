@@ -5,6 +5,7 @@
 #include "foundation/userland_hle.hpp"
 #include "graphics/gles_prepared_textures.hpp"
 #include "graphics/gles_primitive_assembler.hpp"
+#include "graphics/surface_store.hpp"
 #include "kernel/opengles_hle.hpp"
 
 #include <algorithm>
@@ -50,6 +51,24 @@ bool OpenGlesHle::prepare_texture_target(
     const auto* context = current_context(call);
     if (!context)
         return false;
+    const auto await_reader = [&](const std::shared_ptr<HostSurface>& surface) {
+        const auto reader = surface ? surface->reader() : nullptr;
+        if (!reader || reader->ready())
+            return false;
+        const auto lease = program_wait(call);
+        call.suspend_until([reader] { return reader->ready(); },
+            [this, lease, handler](UserlandHleCall& resumed) {
+                lease->consume();
+                await_graphics_call(resumed, handler);
+            }, reader->sequence());
+        return true;
+    };
+    if (!context->bound_framebuffer) {
+        const auto* pixmap = current_pixmap_surface(call);
+        return pixmap && pixmap->backing_identifier &&
+               await_reader(surface_store_->host_surface(
+                   *pixmap->backing_identifier));
+    }
     const auto framebuffer =
         context->framebuffers.find(context->bound_framebuffer);
     if (framebuffer == context->framebuffers.end())
@@ -62,7 +81,9 @@ bool OpenGlesHle::prepare_texture_target(
     if (level == texture->levels.end())
         return false;
     const auto& image = level->second;
-    if (image.surface_id || !image.host_surface || !image.native_lifetime)
+    if (image.surface_id)
+        return await_reader(surface_store_->host_surface(*image.surface_id));
+    if (!image.host_surface || !image.native_lifetime)
         return false;
     const auto cpu_clear =
         symbol == "_glClear" &&
