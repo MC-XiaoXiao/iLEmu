@@ -152,6 +152,8 @@ try {
             });
         return;
     }
+    if (surface)
+        surface->record_read(result->completion());
     auto lease = std::make_shared<SyncLease>();
     lease->owner = call.cpu().processor_id();
     lease->result = result;
