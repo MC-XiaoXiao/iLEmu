@@ -98,9 +98,9 @@ void OpenGlesHle::service_graphics_completions(bool process_live)
     }
 }
 
-void OpenGlesHle::cancel_pending_work()
+void OpenGlesHle::cancel_pending_work(std::optional<std::size_t> processor)
 {
-    if (sync_lease_) {
+    if (sync_lease_ && (!processor || sync_lease_->owner == *processor)) {
         sync_lease_->cancelled = true;
         sync_lease_->complete_core = { };
     }
@@ -241,6 +241,10 @@ void OpenGlesHle::await_graphics_call(
 void OpenGlesHle::await_program_flush(
     UserlandHleCall& call, UserlandHleRegistry::Handler handler)
 {
+    // Reserve the existing store gate before queue admission as well as GPU
+    // execution. A snapshot must not race a new target/name while capacity is
+    // unavailable. Only this guest continuation retries its own admission.
+    const auto lease = program_wait(call);
     const auto& pending = *pending_program_target_;
     const auto key = pending.binding.key;
     std::size_t bytes;
@@ -250,24 +254,23 @@ void OpenGlesHle::await_program_flush(
         if (program_renderer_)
             result = program_renderer_->enqueue_readback(key, bytes, renderer_);
     } catch (...) {
+        lease->consume();
         fail_program_flush(call, handler, gles_abi::out_of_memory);
         return;
     }
     if (!program_renderer_) {
+        lease->consume();
         fail_program_flush(call, handler, gles_abi::invalid_operation);
         return;
     }
     if (!result) {
         call.suspend_until([bytes] { return gles_host_work_capacity(bytes); },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
-                await_graphics_call(resumed, handler);
+                await_program_flush(resumed, handler);
             });
         return;
     }
-    auto lease = std::make_shared<SyncLease>();
-    lease->owner = call.cpu().processor_id();
     lease->result = result;
-    sync_lease_ = lease;
     call.suspend_until([result] { return result->ready(); },
         [this, result, lease, key, handler = std::move(handler)](
             UserlandHleCall& resumed) {
@@ -279,9 +282,20 @@ void OpenGlesHle::await_program_flush(
                     resumed, handler, gles_abi::invalid_operation);
                 return;
             }
-            const auto committed = commit_render_target(resumed,
-                pending_program_target_->binding, std::move(result->frame));
-            collect_program_draw_errors();
+            bool committed = false;
+            try {
+                committed = commit_render_target(resumed,
+                    pending_program_target_->binding, std::move(result->frame));
+                collect_program_draw_errors();
+            } catch (const std::bad_alloc&) {
+                lease->consume();
+                fail_program_flush(resumed, handler, gles_abi::out_of_memory);
+                return;
+            } catch (...) {
+                lease->consume();
+                fail_program_flush(resumed, handler, gles_abi::invalid_operation);
+                return;
+            }
             if (committed)
                 pending_program_target_.reset();
             lease->consume();

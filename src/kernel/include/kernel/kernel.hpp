@@ -658,6 +658,8 @@ private:
         std::uint32_t signal, std::optional<std::size_t> processor,
         std::uint32_t sender_pid, std::uint32_t sender_uid);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
+    void dispatch_fork(Cpu& cpu, bool vfork);
+    void complete_fork(Cpu& cpu, bool vfork);
     void dispatch_wait(Cpu& cpu, bool information = false);
     void record_bsd_sleep();
     [[nodiscard]] ProcessResourceUsage collect_resource_usage() const;

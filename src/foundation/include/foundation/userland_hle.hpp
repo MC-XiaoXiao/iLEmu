@@ -163,6 +163,8 @@ private:
     Continuation pending_completion_;
     std::uint64_t pending_sequence_ { };
     std::optional<std::array<std::uint32_t, 16>> saved_arguments_;
+    enum class ReturnBoundary { LinkRegister, SavedProgramCounter };
+    ReturnBoundary return_boundary_ { ReturnBoundary::LinkRegister };
 };
 
 class UserlandHleRegistry {
@@ -284,6 +286,11 @@ public:
         std::size_t processor, Handler completion);
     void unbind_thread_callback(std::size_t processor);
 
+    // Reuse the same lifecycle-checked wait/continuation for a kernel syscall.
+    // Its saved PC is already after SVC; completing it must never BX to LR.
+    // Scalar arguments use the saved syscall register ABI, not the C stack.
+    [[nodiscard]] bool run_kernel_operation(Cpu& cpu, std::uint32_t process_id,
+        std::string_view operation, Handler handler);
     [[nodiscard]] bool pending_call(std::size_t processor) const;
     [[nodiscard]] bool pending_call_ready(std::size_t processor) const;
     [[nodiscard]] std::optional<std::uint64_t> pending_call_sequence(
@@ -475,6 +482,8 @@ private:
         std::uint64_t sequence;
         std::function<bool()> ready;
         Handler completion;
+        UserlandHleCall::ReturnBoundary return_boundary {
+            UserlandHleCall::ReturnBoundary::LinkRegister };
     };
     void park_call(UserlandHleCall& call);
     bool finish_call(UserlandHleCall& call);

@@ -2532,9 +2532,6 @@ bool UserlandHleRegistry::dispatch(
 bool UserlandHleRegistry::finish_call(UserlandHleCall& call)
 {
     auto& cpu = call.cpu_;
-    const auto entry = call.entry_address_;
-    const auto installed = installed_calls_.find(entry);
-    const auto* registration = find_registration(call.registration_id_);
     if (call.pending_ready_) {
         if (call.tail_call_address_ || call.resume_original_ ||
             call.resume_original_persistently_)
@@ -2542,6 +2539,16 @@ bool UserlandHleRegistry::finish_call(UserlandHleCall& call)
         park_call(call);
         return true;
     }
+    if (call.return_boundary_ ==
+        UserlandHleCall::ReturnBoundary::SavedProgramCounter) {
+        if (call.tail_call_address_ || call.resume_original_ ||
+            call.resume_original_persistently_)
+            throw std::logic_error { "kernel operation cannot redirect a function return" };
+        return true;
+    }
+    const auto entry = call.entry_address_;
+    const auto installed = installed_calls_.find(entry);
+    const auto* registration = find_registration(call.registration_id_);
     auto& registers = cpu.registers();
     if (call.tail_call_address_) {
         const auto target = *call.tail_call_address_;

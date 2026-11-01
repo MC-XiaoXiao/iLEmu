@@ -57,7 +57,10 @@ public:
     void reset();
     void retire_thread(std::size_t processor);
     void service_graphics_completions(bool process_live = true);
-    void cancel_pending_work();
+    void cancel_pending_work(std::optional<std::size_t> processor = std::nullopt);
+    [[nodiscard]] bool fork_preparation_required() const;
+    void prepare_fork(UserlandHleCall& call,
+        std::function<void(UserlandHleCall&, bool)> completion);
     void inherit_state(const OpenGlesHle& parent,
         std::uint32_t parent_pid, std::uint32_t child_pid);
     void set_display(std::shared_ptr<DisplayState> display);

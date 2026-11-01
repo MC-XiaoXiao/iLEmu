@@ -76,6 +76,7 @@ add_library(ilemu_kernel_graphics STATIC
     graphics/opengles_dispatch_hle.cpp
     graphics/opengles_programmable.cpp
     graphics/opengles_sync.cpp
+    graphics/opengles_fork.cpp
     graphics/opengles_texture_target.cpp
     graphics/opengles_read_pixels.cpp
     graphics/opengles_surface_sync.cpp
@@ -255,6 +256,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/guarded_file.cpp
     bsd/fileport.cpp
     bsd/process.cpp
+    bsd/process/fork.cpp
     bsd/process/wait.cpp
     bsd/process/resource_usage.cpp
     bsd/posix_semaphore.cpp

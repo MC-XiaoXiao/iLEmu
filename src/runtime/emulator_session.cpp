@@ -3211,7 +3211,12 @@ void EmulatorSession::run()
             hard_stop = true;
             break;
         }
-        for (auto& runtime : runtimes) {
+        // A completed syscall can publish a child runtime. Keep the current
+        // poll batch fixed and retain heap pointers across vector growth.
+        const auto polled_runtime_count = runtimes.size();
+        for (std::size_t runtime_slot = 0; runtime_slot < polled_runtime_count;
+            ++runtime_slot) {
+            auto* runtime = runtimes[runtime_slot].get();
             const auto display_vsync_receiver =
                 display_urgent_process && runtime->kernel->process().pid ==
                                               *display_urgent_process

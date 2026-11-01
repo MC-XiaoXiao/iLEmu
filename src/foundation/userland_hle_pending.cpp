@@ -5,6 +5,7 @@
 #include "foundation/cpu.hpp"
 #include "foundation/userland_hle.hpp"
 
+#include <new>
 #include <stdexcept>
 #include <utility>
 
@@ -21,6 +22,26 @@ void UserlandHleCall::suspend_until(std::function<bool()> ready,
     pending_sequence_ = completion_sequence;
 }
 
+bool UserlandHleRegistry::run_kernel_operation(Cpu& cpu,
+    std::uint32_t process_id, std::string_view operation, Handler handler)
+{
+    if (!handler || pending_call(cpu.processor_id()))
+        throw std::logic_error { "kernel operation already has a continuation" };
+    UserlandHleCall call { *this, cpu, memory_, output_, process_id, operation };
+    call.return_boundary_ = UserlandHleCall::ReturnBoundary::SavedProgramCounter;
+    call.saved_arguments_ = cpu.registers();
+    handler(call);
+    if (!call.pending_ready_)
+        return finish_call(call);
+    try {
+        return finish_call(call);
+    } catch (const std::bad_alloc&) {
+        // No guest return or worker effect is replayed. The owning kernel
+        // service retains/cancels any accepted work if saving its wait fails.
+        return false;
+    }
+}
+
 void UserlandHleRegistry::park_call(UserlandHleCall& call)
 {
     std::array<std::uint32_t, 16> arguments;
@@ -34,7 +55,7 @@ void UserlandHleRegistry::park_call(UserlandHleCall& call)
                   std::string { call.symbol_ }, call.prefix_argument_count_,
                   call.entry_address_, call.registration_id_,
                   call.pending_sequence_, std::move(call.pending_ready_),
-                  std::move(call.pending_completion_) });
+                  std::move(call.pending_completion_), call.return_boundary_ });
     // Even an already completed ticket parks once. The next serial kernel
     // boundary observes its retained level state, so publication cannot race
     // the scheduler's subsequent Block transition and lose a wakeup.
@@ -83,6 +104,7 @@ bool UserlandHleRegistry::complete_pending_call(
     call.saved_arguments_ = pending.arguments;
     call.entry_address_ = pending.entry_address;
     call.registration_id_ = pending.registration_id;
+    call.return_boundary_ = pending.return_boundary;
     pending.completion(call);
     const bool completed = !call.pending_ready_;
     if (!finish_call(call))
