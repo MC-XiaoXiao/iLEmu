@@ -2976,12 +2976,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_operation);
             return;
         }
-        auto frame = render_target(call, *binding);
-        if (!frame) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        const auto target = binding->key;
         const auto clear_argb = binding->premultiplied
                                     ? premultiply_argb(context->clear_argb)
                                     : context->clear_argb;
@@ -2989,6 +2983,18 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             context->color_mask.end(), [](bool enabled) { return enabled; });
         const auto scissor_enabled =
             context->enabled_capabilities.contains(gles_abi::scissor_test);
+        if (!binding->host_surface) {
+            clear_frame_async(call, *binding, clear_argb, context->color_mask,
+                scissor_enabled ? std::optional { context->scissor_box }
+                                : std::nullopt);
+            return;
+        }
+        auto frame = render_target(call, *binding);
+        if (!frame) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        const auto target = binding->key;
         if (all_channels && renderer_->accelerated() && command_encoder_) {
             const auto& surface = binding->host_surface;
             if (surface) {
@@ -3046,53 +3052,11 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 return;
             }
             *frame = mapping->frame();
-        } else if (!renderer_->synchronize(*frame, target)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
         }
-        if (all_channels && !scissor_enabled) {
-            std::fill(frame->pixels.begin(), frame->pixels.end(), clear_argb);
-            if (!commit_render_target(call, *binding, std::move(*frame))) {
-                set_gl_error(call, gles_abi::invalid_operation);
-            } else {
-                renderer_->invalidate(target);
-            }
-            return;
-        }
-        constexpr std::array<std::uint32_t, 4> channel_masks { 0x00ff0000U,
-            0x0000ff00U, 0x000000ffU, 0xff000000U };
-        for (std::uint32_t y = 0; y < frame->height; ++y) {
-            const auto host_y = static_cast<float>(y) + 0.5F;
-            const auto guest_y =
-                binding->inverted_vertical
-                    ? host_y
-                    : static_cast<float>(frame->height) - host_y;
-            for (std::uint32_t x = 0; x < frame->width; ++x) {
-                const auto guest_x = static_cast<float>(x) + 0.5F;
-                if (scissor_enabled &&
-                    (guest_x < static_cast<float>(context->scissor_box[0]) ||
-                        guest_x >=
-                            static_cast<float>(context->scissor_box[0]) +
-                                static_cast<float>(context->scissor_box[2]) ||
-                        guest_y < static_cast<float>(context->scissor_box[1]) ||
-                        guest_y >=
-                            static_cast<float>(context->scissor_box[1]) +
-                                static_cast<float>(context->scissor_box[3]))) {
-                    continue;
-                }
-                const auto offset =
-                    static_cast<std::size_t>(y) * frame->width + x;
-                auto pixel = frame->pixels[offset];
-                for (std::size_t component = 0;
-                    component < context->color_mask.size(); ++component) {
-                    if (!context->color_mask[component])
-                        continue;
-                    pixel = (pixel & ~channel_masks[component]) |
-                            (clear_argb & channel_masks[component]);
-                }
-                frame->pixels[offset] = pixel;
-            }
-        }
+        clear_gles_frame(*frame, clear_argb, context->color_mask,
+            scissor_enabled ? std::optional { context->scissor_box }
+                            : std::nullopt,
+            binding->inverted_vertical);
         if (!commit_render_target(call, *binding, std::move(*frame))) {
             set_gl_error(call, gles_abi::invalid_operation);
         } else {

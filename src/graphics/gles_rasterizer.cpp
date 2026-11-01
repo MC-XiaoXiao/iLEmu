@@ -856,6 +856,42 @@ std::uint32_t premultiply_argb(std::uint32_t pixel)
            (scale((pixel >> 8U) & 0xffU) << 8U) | scale(pixel & 0xffU);
 }
 
+void clear_gles_frame(DisplayFrame& frame, std::uint32_t color,
+    const std::array<bool, 4>& color_mask,
+    const std::optional<std::array<std::int32_t, 4>>& scissor, bool inverted)
+{
+    if (!scissor && std::all_of(color_mask.begin(), color_mask.end(),
+                        [](bool enabled) { return enabled; })) {
+        std::fill(frame.pixels.begin(), frame.pixels.end(), color);
+        return;
+    }
+    constexpr std::array<std::uint32_t, 4> masks { 0x00ff0000U, 0x0000ff00U,
+        0x000000ffU, 0xff000000U };
+    for (std::uint32_t y = 0; y < frame.height; ++y) {
+        const auto host_y = static_cast<float>(y) + 0.5F;
+        const auto guest_y =
+            inverted ? host_y : static_cast<float>(frame.height) - host_y;
+        for (std::uint32_t x = 0; x < frame.width; ++x) {
+            const auto guest_x = static_cast<float>(x) + 0.5F;
+            if (scissor &&
+                (guest_x < static_cast<float>((*scissor)[0]) ||
+                    guest_x >= static_cast<float>((*scissor)[0]) +
+                                   static_cast<float>((*scissor)[2]) ||
+                    guest_y < static_cast<float>((*scissor)[1]) ||
+                    guest_y >= static_cast<float>((*scissor)[1]) +
+                                   static_cast<float>((*scissor)[3])))
+                continue;
+            auto& pixel =
+                frame.pixels[static_cast<std::size_t>(y) * frame.width + x];
+            for (std::size_t component = 0; component < color_mask.size();
+                ++component)
+                if (color_mask[component])
+                    pixel = (pixel & ~masks[component]) |
+                            (color & masks[component]);
+        }
+    }
+}
+
 bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
     std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
     const GlesRasterState& state)

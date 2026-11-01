@@ -5,6 +5,7 @@
 #include "kernel/opengles_hle.hpp"
 
 #include "foundation/address_space.hpp"
+#include "graphics/gles_rasterizer.hpp"
 #include "graphics/surface_store.hpp"
 
 #include <algorithm>
@@ -20,11 +21,24 @@ struct OpenGlesHle::NativeClear {
         std::shared_ptr<GlesRenderer> renderer;
         std::shared_ptr<HostSurface> target;
         HostRectangle rectangle;
+        DisplayFrame frame;
+        GlesRenderTargetKey key;
+        std::array<bool, 4> color_mask { true, true, true, true };
+        std::optional<std::array<std::int32_t, 4>> scissor;
+        bool inverted { };
         std::uint32_t color { };
         bool filled { }, fallback_ready { };
 
-        bool execute()
+        bool execute(DisplayFrame& output)
         {
+            if (!target) {
+                if (!renderer->synchronize(frame, key))
+                    return false;
+                clear_gles_frame(frame, color, color_mask, scissor, inverted);
+                renderer->invalidate(key);
+                output = std::move(frame);
+                return true;
+            }
             const auto encoder = renderer->create_command_encoder();
             filled = encoder && encoder->fill(target, rectangle, color);
             if (!filled) {
@@ -41,10 +55,78 @@ struct OpenGlesHle::NativeClear {
     std::uint64_t owner { };
     AddressSpace::MappingObservation mapping;
     std::uint32_t base { }, size { };
+    std::size_t result_bytes { };
     std::shared_ptr<const GlesWorkCompletion> previous_writer;
     std::shared_ptr<GlesWorkResult> result;
     std::shared_ptr<SyncLease> lease;
 };
+
+void OpenGlesHle::clear_frame_async(UserlandHleCall& call,
+    const RenderTargetBinding& binding, std::uint32_t color,
+    std::array<bool, 4> color_mask,
+    std::optional<std::array<std::int32_t, 4>> scissor)
+try {
+    constexpr std::size_t limit = 64U * 1024U * 1024U;
+    const auto geometry =
+        binding.display_surface
+            ? DisplayGeometry { binding.display_surface->width,
+                  binding.display_surface->height }
+        : binding.pixmap_surface
+            ? DisplayGeometry { binding.pixmap_surface->width,
+                  binding.pixmap_surface->height }
+        : display_ ? display_->geometry()
+                   : DisplayGeometry { };
+    const auto count =
+        static_cast<std::uint64_t>(geometry.width) * geometry.height;
+    constexpr auto metadata = sizeof(NativeClear) + sizeof(NativeClear::Work);
+    if (!count)
+        throw std::runtime_error { "missing CPU clear geometry" };
+    if (count > (limit - metadata) / sizeof(std::uint32_t))
+        throw std::length_error { "CPU clear exceeds frame budget" };
+    const auto bytes = metadata + static_cast<std::size_t>(count) * 4U;
+    auto credit = reserve_gles_host_preparation(bytes);
+    if (!credit) {
+        const auto lease = program_wait(call);
+        call.suspend_until(
+            [bytes] { return gles_host_preparation_capacity(bytes); },
+            [this, lease, binding, owner = renderer_owner_, color, color_mask,
+                scissor](UserlandHleCall& resumed) {
+                lease->consume();
+                if (owner != renderer_owner_ || !binding_live(binding)) {
+                    set_gl_error(resumed, gles_abi::invalid_operation);
+                    return;
+                }
+                clear_frame_async(resumed, binding, color, color_mask, scissor);
+            });
+        return;
+    }
+    auto frame = render_target(call, binding);
+    if (!frame)
+        throw std::runtime_error { "missing CPU clear frame" };
+    auto pending = std::make_shared<NativeClear>();
+    pending->work = std::make_shared<NativeClear::Work>();
+    auto& work = *pending->work;
+    work.credit = std::move(credit);
+    work.lifetime = renderer_lifetime_;
+    work.renderer = renderer_;
+    work.frame = std::move(*frame);
+    work.key = binding.key;
+    work.color = color;
+    work.color_mask = color_mask;
+    work.scissor = scissor;
+    work.inverted = binding.inverted_vertical;
+    pending->binding = binding;
+    pending->owner = renderer_owner_;
+    pending->result_bytes = static_cast<std::size_t>(count) * 4U;
+    pending->lease = program_wait(call);
+    await_native_clear(call, std::move(pending));
+} catch (const std::bad_alloc&) {
+    set_gl_error(call, gles_abi::out_of_memory);
+} catch (const std::length_error&) {
+    set_gl_error(call, gles_abi::out_of_memory);
+} catch (...) {
+    set_gl_error(call, gles_abi::invalid_operation);
+}
 
 void OpenGlesHle::clear_native_async(UserlandHleCall& call,
     const RenderTargetBinding& binding, HostRectangle rectangle,
@@ -112,15 +194,23 @@ try {
                 return;
             }
         }
-        pending->previous_writer = work->target->writer();
-        pending->result = enqueue_gles_surface_write(work->target,
-            [work](DisplayFrame&) { return work->execute(); });
+        auto execute = [work](DisplayFrame& output) {
+            return work->execute(output);
+        };
+        if (work->target) {
+            pending->previous_writer = work->target->writer();
+            pending->result =
+                enqueue_gles_surface_write(work->target, std::move(execute));
+        } else {
+            pending->result = enqueue_gles_host_work(
+                pending->result_bytes, std::move(execute));
+        }
         if (!pending->result) {
             call.suspend_until(
-                [target = work->target] {
-                    const auto writer = target->writer();
+                [target = work->target, bytes = pending->result_bytes] {
+                    const auto writer = target ? target->writer() : nullptr;
                     return (!writer || writer->ready()) &&
-                           gles_host_work_capacity(0);
+                           gles_host_work_capacity(bytes);
                 },
                 [this, pending](UserlandHleCall& resumed) {
                     await_native_clear(resumed, pending);
@@ -137,7 +227,12 @@ try {
                     !binding_live(pending->binding))
                     throw std::runtime_error { "native clear target replaced" };
                 const auto completed = pending->work;
-                if (!pending->result->succeeded()) {
+                if (!completed->target) {
+                    if (!pending->result->succeeded() ||
+                        !commit_render_target(resumed, pending->binding,
+                            std::move(pending->result->frame)))
+                        throw std::runtime_error { "CPU clear commit failed" };
+                } else if (!pending->result->succeeded()) {
                     if (!completed->fallback_ready)
                         throw std::runtime_error { "native clear failed" };
                     if (pending->binding.backing_identifier) {

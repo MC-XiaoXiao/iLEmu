@@ -322,6 +322,10 @@ private:
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
+    void clear_frame_async(UserlandHleCall& call,
+        const RenderTargetBinding& binding, std::uint32_t color,
+        std::array<bool, 4> color_mask,
+        std::optional<std::array<std::int32_t, 4>> scissor);
     struct NativeClear;
     void clear_native_async(UserlandHleCall& call,
         const RenderTargetBinding& binding, HostRectangle rectangle,
