@@ -847,6 +847,7 @@ void OpenGlesHle::flush_surface_frame_async(UserlandHleCall& call,
     std::shared_ptr<SyncLease> lease;
     std::function<bool(DisplayFrame&)> execute;
     HostCompletion ready;
+    std::shared_ptr<HostSurface> read_source;
     try {
         auto credit = reserve_gles_host_preparation(bytes);
         if (!credit) {
@@ -875,6 +876,7 @@ void OpenGlesHle::flush_surface_frame_async(UserlandHleCall& call,
         auto frame = std::make_shared<DisplayFrame>(captured.width, captured.height,
             0, std::move(captured.pixels), std::move(captured.host_surface));
         frame->presentation_lease = std::move(captured.presentation_lease);
+        read_source = frame->host_surface;
         auto binding = RenderTargetBinding { };
         binding.kind = RenderTargetKind::Display;
         binding.key = render_target_key(surface);
@@ -931,7 +933,8 @@ void OpenGlesHle::flush_surface_frame_async(UserlandHleCall& call,
         completed(call, false);
         return;
     }
-    submit_host_work_async(call, bytes, std::move(execute), std::move(ready));
+    submit_host_work_async(call, bytes, std::move(execute), std::move(ready),
+        { }, std::move(read_source));
 }
 
 
