@@ -58,21 +58,27 @@ public:
 private:
     void enter_graphics_call(
         UserlandHleCall& call, UserlandHleRegistry::Handler handler);
-    struct FinishPlan {
+    enum class SubmissionKind { Flush, Swap, Finish, Terminate };
+    struct SubmissionPlan {
         // Credit dies after retained payload storage.
         std::shared_ptr<void> credit;
         std::vector<HostSurfaceKey> retired;
         std::shared_ptr<HostSurface> destination;
+        SubmissionKind kind { };
         std::uint64_t owner { }, publication { };
         std::size_t bytes { };
         std::uint32_t surface_id { }, width { }, height { };
         bool has_destination { }, framebuffer { }, prepared { }, accepted { };
         bool retired_completed { };
+        bool context_api { };
     };
-    void finish(UserlandHleCall& call, bool terminate);
-    void await_finish(UserlandHleCall& call, bool terminate,
-        std::shared_ptr<GraphicsCallLease> lease, std::shared_ptr<FinishPlan> plan);
-    [[nodiscard]] bool finish_destination_live(const FinishPlan& plan) const;
+    void submit(UserlandHleCall& call, SubmissionKind kind,
+        bool context_api = false);
+    void await_submission(UserlandHleCall& call,
+        std::shared_ptr<GraphicsCallLease> lease,
+        std::shared_ptr<SubmissionPlan> plan);
+    [[nodiscard]] bool submission_destination_live(
+        UserlandHleCall& call, const SubmissionPlan& plan);
     std::shared_ptr<GraphicsCallLease> sync_lease_;
     struct Surface {
         std::uint32_t handle { };
@@ -253,7 +259,6 @@ private:
         UserlandHleCall& call);
     [[nodiscard]] std::optional<HostCompositeMode> host_composite_mode(
         const RenderState& state) const;
-    [[nodiscard]] bool submit_host_commands(PerfSubmitReason reason);
     void submit_destination(UserlandHleCall& call, bool context_api);
     void deferred(UserlandHleCall& call);
 

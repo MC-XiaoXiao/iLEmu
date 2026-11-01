@@ -201,33 +201,22 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
     add("_mbx3DCtxQuadCopyPerspective",
         [this](UserlandHleCall& call) { quad_copy(call, true, true); });
 
-    add("_mbx2DFinish", [this](UserlandHleCall& call) { finish(call, false); });
+    add("_mbx2DFinish", [this](UserlandHleCall& call) {
+        submit(call, SubmissionKind::Finish);
+    });
     add("_mbx2DFlush", [this](UserlandHleCall& call) {
-        static_cast<void>(
-            submit_host_commands(PerfSubmitReason::MbxFlush));
-        submit_destination(call, false);
-        call.set_return(mbx_success);
+        submit(call, SubmissionKind::Flush);
     });
     add("_mbx2DFlushSurfaces",
         [this](UserlandHleCall& call) { flush_surfaces(call); });
     add("_mbx2DFlushInvalidateSurfaces",
         [this](UserlandHleCall& call) { flush_surfaces(call); });
     add("_mbx2DCtxFlush", [this](UserlandHleCall& call) {
-        static_cast<void>(
-            submit_host_commands(PerfSubmitReason::MbxFlush));
-        submit_destination(call, true);
-        call.set_return(mbx_success);
+        submit(call, SubmissionKind::Flush, true);
     });
-    const auto present = [this](UserlandHleCall& call) {
-        static_cast<void>(
-            submit_host_commands(PerfSubmitReason::MbxFlush));
-        submit_destination(call, false);
-        if (display_ && (!presentation_tracker_ ||
-                            !presentation_tracker_->has_presented_frame()))
-            display_->present(call.process_id());
-        call.set_return(mbx_success);
-    };
-    add("_mbx2DSwapSurface", present);
+    add("_mbx2DSwapSurface", [this](UserlandHleCall& call) {
+        submit(call, SubmissionKind::Swap);
+    });
     add("_mbx2DSwapNotification", [](UserlandHleCall& call) {
         // This is the completion callback attached to an enclosing
         // IOMobileFramebuffer transaction. SwapEnd owns presentation after
@@ -1175,11 +1164,6 @@ std::optional<HostCompositeMode> Mbx2dHle::host_composite_mode(
     return std::nullopt;
 }
 
-bool Mbx2dHle::submit_host_commands(PerfSubmitReason reason)
-{
-    return command_encoder_ && command_encoder_->submit(reason);
-}
-
 void Mbx2dHle::blit_color(
     UserlandHleCall& call, bool context_api, bool native_attempted)
 {
@@ -1616,7 +1600,7 @@ void Mbx2dHle::terminate(UserlandHleCall& call)
         call.set_return(mbx_failure);
         return;
     }
-    finish(call, true);
+    submit(call, SubmissionKind::Terminate);
 }
 
 void Mbx2dHle::deferred(UserlandHleCall& call)
