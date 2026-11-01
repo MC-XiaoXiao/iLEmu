@@ -52,6 +52,8 @@ struct NativeOutcome {
     // Invocation-local biases; earlier native ABI offsets remain unchanged.
     // An exit reads a slot only after its successful address acquisition.
     std::array<std::uint64_t, 4> address_biases { };
+    // Continuations retain one host frame until the whole invocation returns.
+    std::uint32_t frame_live = 0;
 };
 inline constexpr std::uint32_t exclusive_exit = 1U << 28U;
 inline constexpr std::uint32_t vector_exit = 1U << 29U;

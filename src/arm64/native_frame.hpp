@@ -41,22 +41,25 @@ public:
         }();
         words.insert(words.end(), sequence.begin(), sequence.end());
     }
-    static void tail(std::vector<std::uint32_t>& words)
-    {
-        oaknut::VectorCodeGenerator code(words);
-        emit_leave(code, true);
-    }
 private:
     template<typename Code> static void emit_entry(Code& code)
     {
         using namespace oaknut;
         using namespace oaknut::util;
+        // Specialized traces may dispatch before either prologue. Keep this
+        // decision at the actual frame entry rather than at a fixed code offset.
+        Label ready;
+        code.LDR(W16, X1, offsetof(NativeOutcome, frame_live));
+        code.CBNZ(W16, ready);
         code.STP(X19, X20, SP, PreIndexed { }, -192);
         code.STP(X21, X22, SP, 16);
         code.STP(X23, X24, SP, 32);
         code.STP(X25, X26, SP, 48);
         code.STP(X27, X28, SP, 64);
         code.STP(X29, X30, SP, 80);
+        code.MOV(W16, 1);
+        code.STR(W16, X1, offsetof(NativeOutcome, frame_live));
+        code.l(ready);
         code.MOV(X19, X0);
         code.MOV(X20, X1);
         code.LDP(X25, X26, X20, offsetof(NativeOutcome, memory));
@@ -84,7 +87,7 @@ private:
         code.ORR(W22, W22, W21);
         code.STR(W22, X19, offsetof(CpuThreadState, cpsr));
     }
-    template<typename Code> static void emit_leave(Code& code, bool tail = false)
+    template<typename Code> static void emit_leave(Code& code)
     {
         using namespace oaknut;
         using namespace oaknut::util;
@@ -94,10 +97,7 @@ private:
         code.LDP(X27, X28, SP, 64);
         code.LDP(X29, X30, SP, 80);
         code.LDP(X19, X20, SP, PostIndexed { }, 192);
-        if (tail)
-            code.BR(oaknut::XReg { 16 });
-        else
-            code.RET();
+        code.RET();
     }
 };
 }

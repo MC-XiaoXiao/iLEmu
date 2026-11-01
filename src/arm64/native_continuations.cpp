@@ -137,7 +137,9 @@ NativeContinuations::NativeContinuations(CodeAllocator& allocator)
     code.MOV(X0, X19);
     code.MOV(X1, X20);
     code.LDR(X16, X27, offsetof(NativeContinuation, entry));
-    NativeFrame::tail(words);
+    // The successor borrows the original host frame. Architectural state and
+    // host FP/vector controls were restored before entering this dispatcher.
+    code.BR(X16);
     code.l(leave);
     NativeFrame::leave(words);
     dispatcher_ = allocator.allocate(words.size() * sizeof(std::uint32_t));
