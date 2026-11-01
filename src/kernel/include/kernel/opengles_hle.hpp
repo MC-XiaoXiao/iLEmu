@@ -354,6 +354,9 @@ private:
         const UserlandHleRegistry::Handler& handler, std::uint32_t error);
     bool program_flush_failed_ { };
     void finish_async(UserlandHleCall& call, bool finish);
+    void submit_renderer_async(UserlandHleCall& call, GlesRenderTargetKey key,
+        bool finish, std::shared_ptr<void> lifetime,
+        std::function<void(UserlandHleCall&, bool)> completed);
     void create_surface(UserlandHleCall& call);
     void publish_created_surface(
         UserlandHleCall& call, std::optional<SurfaceState> state);

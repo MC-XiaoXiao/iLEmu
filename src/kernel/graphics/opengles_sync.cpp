@@ -336,28 +336,49 @@ void OpenGlesHle::finish_async(UserlandHleCall& call, bool finish)
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
-    const auto key = binding->key;
-    auto result = enqueue_gles_host_work(
-        0, [renderer = renderer_, key, finish](DisplayFrame&) {
-            return finish ? renderer->finish(key) : renderer->flush(key);
-        });
-    if (!result) {
-        call.suspend_until([] { return gles_host_work_capacity(0); },
-            [this, finish](
-                UserlandHleCall& resumed) { finish_async(resumed, finish); });
-        return;
-    }
-    auto lease = std::make_shared<SyncLease>();
-    lease->owner = call.cpu().processor_id();
-    lease->result = result;
-    sync_lease_ = lease;
-    call.suspend_until([result] { return result->ready(); },
-        [this, result, lease](UserlandHleCall& resumed) {
-            if (!result->succeeded())
+    submit_renderer_async(call, binding->key, finish, renderer_lifetime_,
+        [this, binding = *binding, owner = renderer_owner_](
+            UserlandHleCall& resumed, bool succeeded) {
+            if (!succeeded || owner != renderer_owner_ || !binding_live(binding))
                 set_gl_error(resumed, gles_abi::invalid_operation);
-            lease->consume();
-        },
-        result->sequence());
+        });
+}
+
+void OpenGlesHle::submit_renderer_async(UserlandHleCall& call,
+    GlesRenderTargetKey key, bool finish, std::shared_ptr<void> lifetime,
+    std::function<void(UserlandHleCall&, bool)> completed)
+{
+    std::shared_ptr<SyncLease> lease;
+    try {
+        lease = program_wait(call);
+        auto result = enqueue_gles_host_work(0,
+            [renderer = renderer_, key, finish, lifetime](DisplayFrame&) {
+                return finish ? renderer->finish(key) : renderer->flush(key);
+            });
+        if (!result) {
+            call.suspend_until([] { return gles_host_work_capacity(0); },
+                [this, lease, key, finish, lifetime, completed](
+                    UserlandHleCall& resumed) {
+                    lease->consume();
+                    submit_renderer_async(resumed, key, finish, lifetime, completed);
+                });
+            return;
+        }
+        lease->result = result;
+        call.suspend_until([result] { return result->ready(); },
+            [result, lease, completed](UserlandHleCall& resumed) {
+                const auto succeeded = result->succeeded();
+                lease->consume();
+                completed(resumed, succeeded);
+            }, result->sequence());
+    } catch (...) {
+        if (lease) {
+            lease->cancelled = true;
+            if (lease->ready())
+                lease->consume();
+        }
+        completed(call, false);
+    }
 }
 
 

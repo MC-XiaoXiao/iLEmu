@@ -2319,23 +2319,37 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
         }
         const auto surface = call.argument(1);
         const auto& state = surfaces_.at(surface);
-        const auto committed =
-            state.backing_identifier
-                ? renderer_->flush(render_target_key(surface))
-                : flush_surface(call, surface);
-        if (!committed) {
-            egl_error_ = egl_bad_surface;
-            call.set_return(egl_false);
+        const auto key = render_target_key(surface);
+        auto completed = [this, surface, key, identity = state.identity,
+                             owner = renderer_owner_](
+                             UserlandHleCall& resumed, bool succeeded) {
+            const auto found = surfaces_.find(surface);
+            if (!succeeded || owner != renderer_owner_ ||
+                found == surfaces_.end() || found->second.identity != identity ||
+                render_target_key(surface) != key) {
+                egl_error_ = egl_bad_surface;
+                resumed.set_return(egl_false);
+                return;
+            }
+            ++frame_count_;
+            if (!found->second.backing_identifier && display_ &&
+                display_write_allowed(resumed))
+                display_->present(resumed.process_id());
+            egl_error_ = egl_success;
+            resumed.set_return(egl_true);
+        };
+        if (state.backing_identifier) {
+            auto lifetime = surface_store_->acquire_transport_lease(
+                *state.backing_identifier);
+            if (!lifetime) {
+                completed(call, false);
+                return;
+            }
+            submit_renderer_async(call, key, false,
+                std::move(lifetime), std::move(completed));
             return;
         }
-        ++frame_count_;
-        const auto found = surfaces_.find(surface);
-        if (found != surfaces_.end() && !found->second.backing_identifier &&
-            display_ && display_write_allowed(call)) {
-            display_->present(call.process_id());
-        }
-        egl_error_ = egl_success;
-        call.set_return(egl_true);
+        completed(call, flush_surface(call, surface));
     });
     add("_eglSwapInterval", [this](UserlandHleCall& call) {
         if (!is_valid_display(call.argument(0))) {
