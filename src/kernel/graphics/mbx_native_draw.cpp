@@ -22,6 +22,7 @@ struct Mbx2dHle::NativeDraw {
         std::shared_ptr<CommandEncoder> encoder;
         std::shared_ptr<HostSurface> target, source;
         HostRectangle rectangle { }, source_rectangle { };
+        std::optional<std::array<HostPoint, 4>> positions;
         std::uint32_t color { };
         HostCompositeMode mode { };
         std::uint8_t alpha { };
@@ -29,6 +30,9 @@ struct Mbx2dHle::NativeDraw {
 
         bool execute() const
         {
+            if (!source && positions)
+                return encoder->fill_quad(
+                    target, *positions, rectangle, color, mode, alpha);
             if (!source)
                 return encoder->fill(target, rectangle, color, mode, alpha);
             const auto started = std::chrono::steady_clock::now();
@@ -48,6 +52,7 @@ struct Mbx2dHle::NativeDraw {
     AddressSpace::MappingObservation mapping, source_mapping;
     std::shared_ptr<GraphicsCallLease> lease;
     std::shared_ptr<const GlesWorkCompletion> previous_writer;
+    UserlandHleCall::Continuation fallback;
     std::uint64_t owner { };
     bool context_api { };
 };
@@ -88,7 +93,6 @@ std::shared_ptr<Mbx2dHle::NativeDraw> Mbx2dHle::prepare_native_draw(
     }
     pending->lease = std::make_shared<GraphicsCallLease>();
     pending->lease->owner = call.cpu().processor_id();
-    sync_lease_ = pending->lease;
     return pending;
 }
 
@@ -116,7 +120,8 @@ bool Mbx2dHle::native_draw_live(
 
 void Mbx2dHle::fill_native(UserlandHleCall& call, bool context_api,
     ResolvedSurface destination, HostRectangle rectangle,
-    std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha)
+    std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha,
+    UserlandHleCall::Continuation fallback)
 try {
     auto pending = prepare_native_draw(
         call, context_api, std::move(destination));
@@ -124,6 +129,29 @@ try {
     pending->work->color = color;
     pending->work->mode = mode;
     pending->work->alpha = alpha;
+    if (!fallback) {
+        fallback = [this, context_api](UserlandHleCall& resumed) {
+            blit_color(resumed, context_api, true);
+        };
+    }
+    pending->fallback = std::move(fallback);
+    await_native_draw(call, std::move(pending));
+} catch (...) {
+    call.set_return(mbx2d_abi::failure);
+}
+
+void Mbx2dHle::fill_quad_native(UserlandHleCall& call,
+    ResolvedSurface destination, std::array<HostPoint, 4> positions,
+    HostRectangle rectangle, std::uint32_t color, HostCompositeMode mode,
+    std::uint8_t alpha, UserlandHleCall::Continuation fallback)
+try {
+    auto pending = prepare_native_draw(call, false, std::move(destination));
+    pending->work->positions = std::move(positions);
+    pending->work->rectangle = rectangle;
+    pending->work->color = color;
+    pending->work->mode = mode;
+    pending->work->alpha = alpha;
+    pending->fallback = std::move(fallback);
     await_native_draw(call, std::move(pending));
 } catch (...) {
     call.set_return(mbx2d_abi::failure);
@@ -140,6 +168,10 @@ try {
     pending->work->mode = mode;
     pending->work->alpha = alpha;
     pending->work->rotation = rotation;
+    pending->fallback = [this, context_api, source, destination](
+                            UserlandHleCall& resumed) {
+        execute_blit_copy(resumed, context_api, source, destination, { }, true);
+    };
     await_native_draw(call, std::move(pending));
 } catch (...) {
     call.set_return(mbx2d_abi::failure);
@@ -150,6 +182,8 @@ void Mbx2dHle::await_native_draw(
 try {
     if (!native_draw_live(call, *pending))
         throw std::runtime_error { "stale MBX native binding" };
+    // Publish the gate only after all owned arguments/recovery have been built.
+    sync_lease_ = pending->lease;
     const auto gate = pending->lease;
     const auto work = pending->work;
     if (!gate->result) {
@@ -214,12 +248,9 @@ try {
                 // and store gate. The failed native command is never retried.
                 pending->work->target->abandon_write(
                     lease->result->completion(), pending->previous_writer);
+                auto fallback = std::move(pending->fallback);
                 lease->consume();
-                if (pending->source)
-                    execute_blit_copy(resumed, pending->context_api,
-                        *pending->source, pending->destination, { }, true);
-                else
-                    blit_color(resumed, pending->context_api, true);
+                fallback(resumed);
                 return;
             }
             lease->consume();

@@ -23,6 +23,7 @@ struct Mbx2dHle::CpuDraw {
     CpuContinuation continuation;
     std::optional<BlendState> blend;
     HostRectangle rectangle { };
+    std::optional<std::array<HostPoint, 4>> coverage;
     std::uint64_t owner { };
     std::size_t bytes { };
     bool context_api { };
@@ -129,7 +130,8 @@ try {
 
 void Mbx2dHle::write_cpu_draw(UserlandHleCall& call,
     std::shared_ptr<CpuDraw> cpu, HostRectangle rectangle,
-    std::vector<std::uint32_t> pixels)
+    std::vector<std::uint32_t> pixels,
+    std::optional<std::array<HostPoint, 4>> coverage)
 {
     if (!cpu || pixels.size() > cpu->bytes / sizeof(std::uint32_t)) {
         call.set_return(mbx2d_abi::failure);
@@ -137,6 +139,7 @@ void Mbx2dHle::write_cpu_draw(UserlandHleCall& call,
     }
     cpu->rectangle = rectangle;
     cpu->pixels = std::move(pixels);
+    cpu->coverage = std::move(coverage);
     // The input is now owned output. No later stage rereads guest source bytes
     // or replays the CPU renderer. Only the original target must remain live.
     cpu->continuation = { };
@@ -167,7 +170,7 @@ try {
     const auto r = cpu->rectangle;
     const auto full = r.x == 0 && r.y == 0 && r.width == target.width &&
                       r.height == target.height;
-    if ((!full || cpu->blend) && !gpu) {
+    if ((!full || cpu->blend || cpu->coverage) && !gpu) {
         const auto observed = target.host_surface->gpu_generation();
         const auto required = surface_store_->cpu_sync_required(
             target.core_surface_id, { });
@@ -176,28 +179,43 @@ try {
         if (!*required)
             gpu = observed;
     }
-    if ((full && !cpu->blend) || gpu) {
+    if ((full && !cpu->blend && !cpu->coverage) || gpu) {
         // Source sampling/transformation is already owned. Only the target
         // read/merge may be retried if another producer advances its boundary.
         std::optional<std::vector<std::uint32_t>> blended;
         bool target_current = true;
-        if (cpu->blend) {
+        if (cpu->blend || cpu->coverage) {
+            std::optional<std::vector<std::uint32_t>> destination;
             {
                 auto current = target.host_surface->try_map_current_cpu(
                     false, PerfCpuMapReason::SoftwareFallback);
                 target_current = current && current->gpu_generation() == *gpu;
                 if (target_current) {
-                    blended = read_guest_region(
+                    destination = read_guest_region(
                         target, r.x, r.y, r.width, r.height, call);
-                    if (!blended)
+                    if (!destination)
                         throw std::runtime_error { "unreadable MBX blend target" };
                 }
             }
-            if (blended) {
-                blended = composite_pixels(
-                    *cpu->blend, cpu->pixels, std::move(*blended));
+            if (destination) {
+                blended = cpu->blend
+                    ? composite_pixels(*cpu->blend, cpu->pixels,
+                          cpu->coverage ? *destination : std::move(*destination))
+                    : std::optional { cpu->pixels };
                 if (!blended)
                     throw std::runtime_error { "invalid MBX blend output" };
+                if (cpu->coverage) {
+                    for (std::size_t index = 0; index < blended->size(); ++index) {
+                        const auto x = static_cast<std::int64_t>(r.x) +
+                                       static_cast<std::int64_t>(index % r.width);
+                        const auto y = static_cast<std::int64_t>(r.y) +
+                                       static_cast<std::int64_t>(index / r.width);
+                        if (!quad_contains(*cpu->coverage,
+                                { static_cast<float>(x) + 0.5F,
+                                    static_cast<float>(y) + 0.5F }))
+                            (*blended)[index] = (*destination)[index];
+                    }
+                }
             }
         }
         if (target_current) {

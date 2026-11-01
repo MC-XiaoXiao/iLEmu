@@ -171,7 +171,12 @@ private:
         UserlandHleCall& call, const NativeDraw& pending);
     void fill_native(UserlandHleCall& call, bool context_api,
         ResolvedSurface destination, HostRectangle rectangle,
-        std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha);
+        std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha,
+        UserlandHleCall::Continuation fallback = { });
+    void fill_quad_native(UserlandHleCall& call, ResolvedSurface destination,
+        std::array<HostPoint, 4> positions, HostRectangle rectangle,
+        std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha,
+        UserlandHleCall::Continuation fallback);
     void copy_native(UserlandHleCall& call, bool context_api,
         const ResolvedSurface& source, const ResolvedSurface& destination,
         HostRectangle source_rectangle, HostRectangle destination_rectangle,
@@ -191,7 +196,8 @@ private:
         std::size_t bytes, CpuContinuation continuation);
     void await_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu);
     void write_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
-        HostRectangle rectangle, std::vector<std::uint32_t> pixels);
+        HostRectangle rectangle, std::vector<std::uint32_t> pixels,
+        std::optional<std::array<HostPoint, 4>> coverage = { });
     void await_cpu_write(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
         std::optional<std::uint64_t> gpu = std::nullopt);
     [[nodiscard]] bool cpu_draw_live(UserlandHleCall& call,
@@ -209,6 +215,12 @@ private:
         SourceContinuation continuation, bool capture_pixels = false,
         std::shared_ptr<GraphicsCallLease> lease = { });
     void quad_color(UserlandHleCall& call);
+    void execute_quad_color(UserlandHleCall& call,
+        const ResolvedSurface& destination,
+        const std::array<HostPoint, 4>& positions,
+        std::shared_ptr<CpuDraw> cpu = { }, bool native_attempted = false);
+    [[nodiscard]] static bool quad_contains(
+        const std::array<HostPoint, 4>& positions, HostPoint point);
     void quad_copy(UserlandHleCall& call, bool context_api = false,
         bool perspective_api = false);
     void execute_quad_copy(UserlandHleCall& call, bool context_api,
