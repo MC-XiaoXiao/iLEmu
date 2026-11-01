@@ -1989,16 +1989,29 @@ void OpenGlesHle::make_current(UserlandHleCall& call)
                 [this](UserlandHleCall& resumed) { make_current(resumed); });
             return;
         }
-        const auto committed =
-            previous != surfaces_.end() && previous->second.backing_identifier
-                ? renderer_->flush(render_target_key(current.draw_surface))
-                : flush_surface(call, current.draw_surface);
-        if (!committed) {
-            egl_error_ = egl_bad_surface;
-            call.set_return(egl_false);
-            return;
-        }
+        const auto draw_key = render_target_key(draw);
+        const auto read_key = render_target_key(read);
+        flush_surface_async(call, current.draw_surface,
+            [this, draw_key, read_key](UserlandHleCall& resumed, bool succeeded) {
+                if (!succeeded || render_target_key(resumed.argument(1)) != draw_key ||
+                    render_target_key(resumed.argument(2)) != read_key) {
+                    egl_error_ = egl_bad_surface;
+                    resumed.set_return(egl_false);
+                    return;
+                }
+                complete_make_current(resumed);
+            });
+        return;
     }
+    complete_make_current(call);
+}
+
+void OpenGlesHle::complete_make_current(UserlandHleCall& call)
+{
+    const auto draw = call.argument(1);
+    const auto read = call.argument(2);
+    const auto context = call.argument(3);
+    auto& current = thread(call);
     if (draw != 0 && current.draw_surface != draw &&
         !reload_surface(call, draw)) {
         egl_error_ = egl_bad_surface;
@@ -2266,30 +2279,28 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
             call.set_return(egl_false);
             return;
         }
-        const auto& state = surfaces_.at(surface);
-        const auto committed =
-            state.backing_identifier
-                ? renderer_->flush(render_target_key(surface))
-                : flush_surface(call, surface);
-        if (!committed) {
-            egl_error_ = egl_bad_surface;
-            call.set_return(egl_false);
-            return;
-        }
-        if (!surfaces_.at(surface).backing_identifier) {
-            const auto target = render_target_key(surface);
-            renderer_->release(std::span { &target, 1U });
-        }
-        surfaces_.erase(surface);
-        for (auto& [processor, current] : threads_) {
-            static_cast<void>(processor);
-            if (current.draw_surface == surface)
-                current.draw_surface = 0;
-            if (current.read_surface == surface)
-                current.read_surface = 0;
-        }
-        egl_error_ = egl_success;
-        call.set_return(egl_true);
+        flush_surface_async(call, surface,
+            [this, surface](UserlandHleCall& resumed, bool succeeded) {
+                if (!succeeded) {
+                    egl_error_ = egl_bad_surface;
+                    resumed.set_return(egl_false);
+                    return;
+                }
+                if (!surfaces_.at(surface).backing_identifier) {
+                    const auto target = render_target_key(surface);
+                    renderer_->release(std::span { &target, 1U });
+                }
+                surfaces_.erase(surface);
+                for (auto& [processor, current] : threads_) {
+                    static_cast<void>(processor);
+                    if (current.draw_surface == surface)
+                        current.draw_surface = 0;
+                    if (current.read_surface == surface)
+                        current.read_surface = 0;
+                }
+                egl_error_ = egl_success;
+                resumed.set_return(egl_true);
+            });
     });
     add("_eglMakeCurrent",
         [this](UserlandHleCall& call) { make_current(call); });
@@ -2318,38 +2329,20 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
             return;
         }
         const auto surface = call.argument(1);
-        const auto& state = surfaces_.at(surface);
-        const auto key = render_target_key(surface);
-        auto completed = [this, surface, key, identity = state.identity,
-                             owner = renderer_owner_](
-                             UserlandHleCall& resumed, bool succeeded) {
-            const auto found = surfaces_.find(surface);
-            if (!succeeded || owner != renderer_owner_ ||
-                found == surfaces_.end() || found->second.identity != identity ||
-                render_target_key(surface) != key) {
-                egl_error_ = egl_bad_surface;
-                resumed.set_return(egl_false);
-                return;
-            }
-            ++frame_count_;
-            if (!found->second.backing_identifier && display_ &&
-                display_write_allowed(resumed))
-                display_->present(resumed.process_id());
-            egl_error_ = egl_success;
-            resumed.set_return(egl_true);
-        };
-        if (state.backing_identifier) {
-            auto lifetime = surface_store_->acquire_transport_lease(
-                *state.backing_identifier);
-            if (!lifetime) {
-                completed(call, false);
-                return;
-            }
-            submit_renderer_async(call, key, false,
-                std::move(lifetime), std::move(completed));
-            return;
-        }
-        completed(call, flush_surface(call, surface));
+        flush_surface_async(call, surface,
+            [this, surface](UserlandHleCall& resumed, bool succeeded) {
+                if (!succeeded) {
+                    egl_error_ = egl_bad_surface;
+                    resumed.set_return(egl_false);
+                    return;
+                }
+                ++frame_count_;
+                if (!surfaces_.at(surface).backing_identifier && display_ &&
+                    display_write_allowed(resumed))
+                    display_->present(resumed.process_id());
+                egl_error_ = egl_success;
+                resumed.set_return(egl_true);
+            });
     });
     add("_eglSwapInterval", [this](UserlandHleCall& call) {
         if (!is_valid_display(call.argument(0))) {

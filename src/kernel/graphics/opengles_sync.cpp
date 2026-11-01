@@ -381,5 +381,38 @@ void OpenGlesHle::submit_renderer_async(UserlandHleCall& call,
     }
 }
 
+void OpenGlesHle::flush_surface_async(UserlandHleCall& call,
+    std::uint32_t surface,
+    std::function<void(UserlandHleCall&, bool)> completed)
+{
+    const auto found = surfaces_.find(surface);
+    if (found == surfaces_.end()) {
+        completed(call, false);
+        return;
+    }
+    const auto& state = found->second;
+    const auto key = render_target_key(surface);
+    auto finish = [this, surface, key, identity = state.identity,
+                      owner = renderer_owner_, completed](
+                      UserlandHleCall& resumed, bool succeeded) {
+        const auto current = surfaces_.find(surface);
+        completed(resumed, succeeded && owner == renderer_owner_ &&
+            current != surfaces_.end() && current->second.identity == identity &&
+            render_target_key(surface) == key);
+    };
+    if (state.backing_identifier) {
+        auto lifetime = surface_store_->acquire_transport_lease(
+            *state.backing_identifier);
+        if (!lifetime) {
+            finish(call, false);
+            return;
+        }
+        submit_renderer_async(call, key, false,
+            std::move(lifetime), std::move(finish));
+        return;
+    }
+    finish(call, flush_surface(call, surface));
+}
+
 
 } // namespace ilemu

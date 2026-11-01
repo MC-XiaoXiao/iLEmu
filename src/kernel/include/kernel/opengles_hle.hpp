@@ -308,6 +308,8 @@ private:
         UserlandHleCall& call, std::uint32_t surface);
     [[nodiscard]] bool flush_surface(
         UserlandHleCall& call, std::uint32_t surface);
+    void flush_surface_async(UserlandHleCall& call, std::uint32_t surface,
+        std::function<void(UserlandHleCall&, bool)> completed);
     [[nodiscard]] std::optional<DisplayFrame> render_target(
         UserlandHleCall& call, const RenderTargetBinding& binding);
     [[nodiscard]] bool commit_render_target(UserlandHleCall& call,
@@ -365,6 +367,7 @@ private:
     void await_pixmap_read(
         UserlandHleCall& call, std::shared_ptr<PixmapRead> pending);
     void make_current(UserlandHleCall& call);
+    void complete_make_current(UserlandHleCall& call);
     struct ReadPixelsOutput;
     [[nodiscard]] std::shared_ptr<ReadPixelsOutput> capture_read_pixels_output(
         UserlandHleCall& call);
