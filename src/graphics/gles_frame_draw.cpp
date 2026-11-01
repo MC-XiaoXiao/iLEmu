@@ -28,6 +28,7 @@ namespace {
 struct GlesFrameDraw::State {
     // Credit outlives every owned input container.
     std::shared_ptr<void> credit;
+    std::shared_ptr<void> native_lifetime;
     DisplayFrame frame;
     HostSurfaceKey target;
     std::vector<GlesRasterVertex> vertices;
@@ -45,10 +46,12 @@ GlesFrameDraw::GlesFrameDraw(std::shared_ptr<State> state)
 bool GlesFrameDraw::can_snapshot(
     const DisplayFrame& frame, const GlesRasterState& raster)
 {
-    if (frame.host_surface || frame.read_pixels || !frame.width ||
+    if (frame.read_pixels || !frame.width ||
         !frame.height ||
-        frame.pixels.size() !=
-            static_cast<std::uint64_t>(frame.width) * frame.height)
+        (frame.host_surface
+                ? !frame.pixels.empty()
+                : frame.pixels.size() !=
+                      static_cast<std::uint64_t>(frame.width) * frame.height))
         return false;
     if (!raster.resources)
         return true;
@@ -67,9 +70,12 @@ bool GlesFrameDraw::can_snapshot(
 
 std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     HostSurfaceKey target, std::span<const GlesRasterVertex> vertices,
-    std::uint32_t mode, const GlesRasterState& raster, std::size_t& bytes)
+    std::uint32_t mode, const GlesRasterState& raster, std::size_t& bytes,
+    std::shared_ptr<void> native_lifetime)
 {
-    if (!can_snapshot(frame, raster))
+    if (!can_snapshot(frame, raster) ||
+        (frame.host_surface &&
+            (!native_lifetime || frame.host_surface->key() != target)))
         throw std::invalid_argument {
             "GLES draw requires live surface ordering"
         };
@@ -89,8 +95,11 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
         return { };
     auto state = std::make_shared<State>();
     state->credit = std::move(credit);
-    // No reader, surface, presentation lease or guest-owned view is copied.
-    state->frame = DisplayFrame { frame.width, frame.height, 0, frame.pixels };
+    state->native_lifetime = std::move(native_lifetime);
+    // No reader, presentation lease or guest-owned view crosses the queue.
+    // An isolated native image retains its exact physical owner instead.
+    state->frame = DisplayFrame { frame.width, frame.height, 0, frame.pixels,
+        frame.host_surface };
     state->target = target;
     state->vertices.assign(vertices.begin(), vertices.end());
     if (raster.resources)
@@ -117,6 +126,18 @@ std::shared_ptr<GlesWorkResult> GlesFrameDraw::enqueue(
         throw std::invalid_argument { "GLES frame renderer is unavailable" };
     result_ = enqueue_gles_host_work(state_->result_bytes,
         [state = state_, renderer = std::move(renderer)](DisplayFrame& frame) {
+            if (state->frame.host_surface) {
+                // This path has no software fallback or CPU output. Publish
+                // actual native writes even if the guest observer exits; only
+                // host-owned surface metadata is touched by this worker.
+                if (!renderer->accelerated() ||
+                    renderer->software_fallback_allowed() ||
+                    !renderer->draw(state->frame, state->target, state->vertices,
+                        state->mode, state->raster))
+                    return false;
+                static_cast<void>(state->frame.host_surface->mark_gpu_write());
+                return true;
+            }
             frame = std::move(state->frame);
             renderer->invalidate(state->target);
             return renderer->draw(frame, state->target, state->vertices,
@@ -124,6 +145,16 @@ std::shared_ptr<GlesWorkResult> GlesFrameDraw::enqueue(
                    renderer->synchronize(frame, state->target);
         });
     return result_;
+}
+
+bool GlesFrameDraw::complete()
+{
+    if (!result_ || !result_->ready())
+        return false;
+    // Result publication follows the worker's last access to this field.
+    // The store still owns the image; retirement itself remains worker-owned.
+    state_->native_lifetime.reset();
+    return result_->succeeded();
 }
 
 } // namespace ilemu

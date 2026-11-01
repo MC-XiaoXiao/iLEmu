@@ -18,6 +18,18 @@ struct OpenGlesHle::FrameDraw {
     std::shared_ptr<GlesFrameDraw> host;
     std::shared_ptr<GlesWorkResult> result;
     std::shared_ptr<SyncLease> lease;
+
+    static bool texture_target_live(const GlesResourceStore& resources,
+        const RenderTargetBinding& binding)
+    {
+        const auto* texture = resources.texture(binding.framebuffer_texture);
+        if (!texture)
+            return false;
+        const auto level = texture->levels.find(0U);
+        return level != texture->levels.end() && !level->second.surface_id &&
+               level->second.host_surface == binding.host_surface &&
+               level->second.native_lifetime;
+    }
 };
 
 void OpenGlesHle::draw_frame_async(UserlandHleCall& call,
@@ -26,8 +38,17 @@ void OpenGlesHle::draw_frame_async(UserlandHleCall& call,
     const GlesRasterState& raster, bool indexed)
 try {
     std::size_t bytes = 0;
+    std::shared_ptr<void> native_lifetime;
+    if (binding.host_surface) {
+        if (!FrameDraw::texture_target_live(resources_, binding))
+            throw std::runtime_error { "stale native GLES frame target" };
+        native_lifetime = resources_.texture(binding.framebuffer_texture)
+                              ->levels.at(0U)
+                              .native_lifetime;
+    }
     auto host = GlesFrameDraw::prepare(
-        frame, binding.key, vertices, mode, raster, bytes);
+        frame, binding.key, vertices, mode, raster, bytes,
+        std::move(native_lifetime));
     if (!host) {
         // No command or snapshot was accepted. Only scalar ABI is retained;
         // preparation may restart after capacity returns and store dependencies
@@ -46,7 +67,21 @@ try {
     pending->binding = binding;
     pending->owner = renderer_owner_;
     pending->host = std::move(host);
+    std::function<void()> complete_native;
+    if (binding.host_surface) {
+        // Allocate the core committer before accepting work or taking its
+        // store gate. It survives a thread exit, and process exit/exec clears
+        // it through the existing lease cancellation path.
+        complete_native = [this, binding, owner = pending->owner,
+                              host = pending->host] {
+            if (host->complete() && owner == renderer_owner_ &&
+                FrameDraw::texture_target_live(resources_, binding))
+                resources_.update_texture_render_target_generation(
+                    binding.framebuffer_texture, 0U);
+        };
+    }
     pending->lease = program_wait(call);
+    pending->lease->complete_core = std::move(complete_native);
     await_frame_draw(call, std::move(pending));
 } catch (const std::bad_alloc&) {
     set_gl_error(call, gles_abi::out_of_memory);
@@ -59,8 +94,10 @@ try {
 void OpenGlesHle::await_frame_draw(
     UserlandHleCall& call, std::shared_ptr<FrameDraw> pending)
 try {
-    if (pending->owner != renderer_owner_ || pending->binding.host_surface ||
-        !binding_live(pending->binding))
+    if (pending->owner != renderer_owner_ ||
+        !binding_live(pending->binding) ||
+        (pending->binding.host_surface &&
+            !FrameDraw::texture_target_live(resources_, pending->binding)))
         throw std::runtime_error { "stale GLES frame target" };
     if (!pending->result) {
         pending->result = pending->host->enqueue(renderer_);
@@ -82,8 +119,11 @@ try {
                 if (pending->owner != renderer_owner_ ||
                     !binding_live(pending->binding) ||
                     !pending->result->succeeded() ||
-                    !commit_render_target(resumed, pending->binding,
-                        std::move(pending->result->frame)))
+                    (pending->binding.host_surface
+                            ? !FrameDraw::texture_target_live(
+                                  resources_, pending->binding)
+                            : !commit_render_target(resumed, pending->binding,
+                                  std::move(pending->result->frame))))
                     set_gl_error(resumed, gles_abi::invalid_operation);
             } catch (const std::bad_alloc&) {
                 set_gl_error(resumed, gles_abi::out_of_memory);
