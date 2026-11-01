@@ -252,7 +252,7 @@ index d23dc27..d0002f8 100644
 @@ -106,0 +108 @@ public:
 +    const bool baseline;
 diff --git a/src/dynarmic/backend/arm64/address_space.cpp b/src/dynarmic/backend/arm64/address_space.cpp
-index 2cbfc3e..14b03a4 100644
+index 2cbfc3e..885f32b 100644
 --- a/src/dynarmic/backend/arm64/address_space.cpp
 +++ b/src/dynarmic/backend/arm64/address_space.cpp
 @@ -172 +172 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
@@ -263,7 +263,18 @@ index 2cbfc3e..14b03a4 100644
 +        RelinkForDescriptor(location, Get(location));
 @@ -190,0 +191 @@ const EmittedBlockInfo& AddressSpace::PublishBlock(IR::LocationDescriptor locati
 +    FinishEntryPublication(location, cached_info.entry_point);
-@@ -407,8 +408 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
+@@ -337 +338 @@ void AddressSpace::Link(const EmittedBlockInfo& block_info, std::span<const Relo
+-        block_references.emplace(target_descriptor, block_info.entry_point);
++        block_references[target_descriptor].push_back(block_info.entry_point);
+@@ -395,3 +396,4 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
+-    const auto [first, last] = block_references.equal_range(target_descriptor);
+-    for (auto reference = first; reference != last; ++reference) {
+-        const auto source = reference->second;
++    const auto references = block_references.find(target_descriptor);
++    if (references == block_references.end())
++        return;
++    for (const auto source : references->second) {
+@@ -407,8 +409 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
 -            auto* const patch = reinterpret_cast<u32*>(source + offset);
 -            u32 instruction;
 -            oaknut::CodeGenerator branch{&instruction, patch};
@@ -273,7 +284,7 @@ index 2cbfc3e..14b03a4 100644
 -            std::atomic_ref<u32>{*patch}.store(instruction, std::memory_order_release);
 -            mem.invalidate(patch, sizeof(u32));
 +            PublishBranch(source + offset, target_ptr);
-@@ -423,0 +418,12 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
+@@ -423,0 +419,12 @@ void AddressSpace::RelinkBranchesForDescriptor(IR::LocationDescriptor target_des
 +void AddressSpace::PublishBranch(CodePtr patch, CodePtr target) {
 +    u32 instruction;
 +    auto* word = reinterpret_cast<u32*>(patch);
@@ -286,8 +297,16 @@ index 2cbfc3e..14b03a4 100644
 +    mem.invalidate(word, sizeof(u32));
 +}
 +
+@@ -425,3 +432,4 @@ void AddressSpace::RelinkForDescriptor(IR::LocationDescriptor target_descriptor,
+-    const auto [first, last] = block_references.equal_range(target_descriptor);
+-    for (auto reference = first; reference != last; ++reference) {
+-        const auto code_ptr = reference->second;
++    const auto references = block_references.find(target_descriptor);
++    if (references == block_references.end())
++        return;
++    for (const auto code_ptr : references->second) {
 diff --git a/src/dynarmic/backend/arm64/address_space.h b/src/dynarmic/backend/arm64/address_space.h
-index 73159f1..13feddb 100644
+index 73159f1..ddedb90 100644
 --- a/src/dynarmic/backend/arm64/address_space.h
 +++ b/src/dynarmic/backend/arm64/address_space.h
 @@ -64,0 +65,2 @@ protected:
@@ -295,6 +314,14 @@ index 73159f1..13feddb 100644
 +    virtual void FinishEntryPublication(IR::LocationDescriptor, CodePtr) {}
 @@ -88,0 +91 @@ protected:
 +    void PublishBranch(CodePtr patch, CodePtr target);
+@@ -108,3 +111,4 @@ protected:
+-    // Keep one node per incoming edge. Hash buckets contain pointers rather
+-    // than a full set/vector for every target and every unused bucket.
+-    std::unordered_multimap<IR::LocationDescriptor, CodePtr> block_references;
++    // Append incoming edges without walking the target's existing callers.
++    // Multimap insertion scans all equivalent keys on libc++, making a common
++    // branch target quadratic to compile. Keep its callers contiguous instead.
++    std::unordered_map<IR::LocationDescriptor, boost::container::small_vector<CodePtr, 1>> block_references;
 diff --git a/src/dynarmic/backend/native_code_slab_interface.inc b/src/dynarmic/backend/native_code_slab_interface.inc
 index d55b78b..b43d65a 100644
 --- a/src/dynarmic/backend/native_code_slab_interface.inc
