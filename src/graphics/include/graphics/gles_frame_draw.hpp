@@ -15,9 +15,9 @@ struct HostSurfaceKey;
 struct GlesWorkResult;
 class GlesRenderer;
 
-// Immutable fixed-pipeline input for a CPU frame or an isolated native target.
-// Native targets require their owner's lifetime and a caller-owned store gate.
-// Shared/native sources still require a separate ordered writer dependency.
+// Immutable fixed-pipeline input for a CPU frame or an owned native target.
+// Native targets require their private owner or shared transport lifetime and
+// a caller-owned store gate. Live texture sources still need ordered ownership.
 class GlesFrameDraw final {
 public:
     [[nodiscard]] static bool can_snapshot(

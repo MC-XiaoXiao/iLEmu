@@ -5,6 +5,7 @@
 #include "kernel/opengles_hle.hpp"
 
 #include "graphics/gles_frame_draw.hpp"
+#include "graphics/surface_store.hpp"
 
 #include <new>
 #include <stdexcept>
@@ -19,16 +20,19 @@ struct OpenGlesHle::FrameDraw {
     std::shared_ptr<GlesWorkResult> result;
     std::shared_ptr<SyncLease> lease;
 
-    static bool texture_target_live(const GlesResourceStore& resources,
+    static bool target_live(const GlesResourceStore& resources,
         const RenderTargetBinding& binding)
     {
         const auto* texture = resources.texture(binding.framebuffer_texture);
         if (!texture)
             return false;
         const auto level = texture->levels.find(0U);
-        return level != texture->levels.end() && !level->second.surface_id &&
+        return level != texture->levels.end() &&
                level->second.host_surface == binding.host_surface &&
-               level->second.native_lifetime;
+               (binding.backing_identifier
+                       ? level->second.surface_id == binding.backing_identifier
+                       : !level->second.surface_id &&
+                             level->second.native_lifetime);
     }
 };
 
@@ -40,11 +44,16 @@ try {
     std::size_t bytes = 0;
     std::shared_ptr<void> native_lifetime;
     if (binding.host_surface) {
-        if (!FrameDraw::texture_target_live(resources_, binding))
+        if (!FrameDraw::target_live(resources_, binding))
             throw std::runtime_error { "stale native GLES frame target" };
-        native_lifetime = resources_.texture(binding.framebuffer_texture)
-                              ->levels.at(0U)
-                              .native_lifetime;
+        native_lifetime = binding.backing_identifier
+                              ? surface_store_->acquire_transport_lease(
+                                    *binding.backing_identifier)
+                              : std::shared_ptr<void> {
+                                    resources_.texture(binding.framebuffer_texture)
+                                        ->levels.at(0U).native_lifetime };
+        if (!native_lifetime)
+            throw std::runtime_error { "missing GLES frame target owner" };
     }
     auto host = GlesFrameDraw::prepare(
         frame, binding.key, vertices, mode, raster, bytes,
@@ -75,7 +84,8 @@ try {
         complete_native = [this, binding, owner = pending->owner,
                               host = pending->host] {
             if (host->complete() && owner == renderer_owner_ &&
-                FrameDraw::texture_target_live(resources_, binding))
+                binding_live(binding) &&
+                FrameDraw::target_live(resources_, binding))
                 resources_.update_texture_render_target_generation(
                     binding.framebuffer_texture, 0U);
         };
@@ -97,7 +107,7 @@ try {
     if (pending->owner != renderer_owner_ ||
         !binding_live(pending->binding) ||
         (pending->binding.host_surface &&
-            !FrameDraw::texture_target_live(resources_, pending->binding)))
+            !FrameDraw::target_live(resources_, pending->binding)))
         throw std::runtime_error { "stale GLES frame target" };
     if (!pending->result) {
         pending->result = pending->host->enqueue(renderer_);
@@ -120,7 +130,7 @@ try {
                     !binding_live(pending->binding) ||
                     !pending->result->succeeded() ||
                     (pending->binding.host_surface
-                            ? !FrameDraw::texture_target_live(
+                            ? !FrameDraw::target_live(
                                   resources_, pending->binding)
                             : !commit_render_target(resumed, pending->binding,
                                   std::move(pending->result->frame))))

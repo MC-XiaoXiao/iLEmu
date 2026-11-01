@@ -97,7 +97,7 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     state->credit = std::move(credit);
     state->native_lifetime = std::move(native_lifetime);
     // No reader, presentation lease or guest-owned view crosses the queue.
-    // An isolated native image retains its exact physical owner instead.
+    // A native image retains its private owner or shared transport instead.
     state->frame = DisplayFrame { frame.width, frame.height, 0, frame.pixels,
         frame.host_surface };
     state->target = target;

@@ -1492,12 +1492,11 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
             mode, state, indexed);
         return;
     }
-    const auto isolated_native_target = binding->host_surface &&
-                                        binding->framebuffer_texture != 0U &&
-                                        !binding->backing_identifier &&
-                                        renderer_->accelerated() &&
-                                        !renderer_->software_fallback_allowed();
-    if ((!binding->host_surface || isolated_native_target) &&
+    const auto native_framebuffer = binding->host_surface &&
+                                    binding->framebuffer_texture != 0U &&
+                                    renderer_->accelerated() &&
+                                    !renderer_->software_fallback_allowed();
+    if ((!binding->host_surface || native_framebuffer) &&
         GlesFrameDraw::can_snapshot(*target, state)) {
         draw_frame_async(call, *binding, *target, vertices, mode, state, indexed);
         return;
