@@ -316,9 +316,10 @@ private:
         UserlandHleCall& call, const RenderTargetBinding& binding);
     [[nodiscard]] bool commit_render_target(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayFrame frame);
-    [[nodiscard]] bool publish_display_surface(UserlandHleCall& call,
-        const RenderTargetBinding& binding,
-        std::optional<DisplayViewport> drawable_viewport = std::nullopt);
+    void present_display_surface_async(UserlandHleCall& call,
+        ResourceIdentity context, ResourceIdentity renderbuffer,
+        std::uint32_t renderbuffer_name, const RenderTargetBinding& binding,
+        std::optional<DisplayViewport> drawable_viewport);
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
@@ -366,7 +367,9 @@ private:
         const std::shared_ptr<GlesWorkResult>&)>;
     void submit_host_work_async(UserlandHleCall& call, std::size_t bytes,
         std::function<bool(DisplayFrame&)> execute, HostCompletion completed,
-        std::function<void()> complete_core = { });
+        std::function<void()> complete_core = { },
+        std::shared_ptr<HostSurface> read_source = { },
+        std::shared_ptr<HostSurface> write_target = { });
     void submit_renderer_async(UserlandHleCall& call, GlesRenderTargetKey key,
         bool finish, std::shared_ptr<void> lifetime,
         std::function<void(UserlandHleCall&, bool)> completed);

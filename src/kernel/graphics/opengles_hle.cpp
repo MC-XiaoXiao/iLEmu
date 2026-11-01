@@ -1094,144 +1094,6 @@ std::shared_ptr<HostSurface> OpenGlesHle::acquire_compatibility_surface(
     return surface;
 }
 
-bool OpenGlesHle::publish_display_surface(UserlandHleCall& call,
-    const RenderTargetBinding& binding,
-    std::optional<DisplayViewport> drawable_viewport)
-{
-    const auto& surface = binding.host_surface;
-    if (!surface || !display_ || !display_write_allowed(call))
-        return false;
-    const auto descriptor = surface->descriptor();
-    const auto output_geometry = display_->geometry();
-    const auto profile =
-        application_display_for_process(shared_state_, call.process_id());
-    const auto logical_geometry =
-        profile ? application_display_geometry(*profile, output_geometry)
-                : output_geometry;
-    const auto is_geometry = [&](DisplayGeometry geometry) {
-        return descriptor.width == geometry.width &&
-               descriptor.height == geometry.height;
-    };
-    const auto compatibility =
-        profile && profile->kind != ApplicationDisplayMode::Native;
-    std::optional<DisplayViewport> viewport;
-    auto source_width = descriptor.width;
-    auto source_height = descriptor.height;
-    if (compatibility) {
-        if (!is_geometry(logical_geometry) && !is_geometry(output_geometry))
-            return false;
-        viewport = application_display_viewport(*profile, output_geometry);
-        source_width = std::min(logical_geometry.width, descriptor.width);
-        source_height = std::min(logical_geometry.height, descriptor.height);
-    } else if (drawable_viewport) {
-        viewport = drawable_viewport;
-    } else if (!is_geometry(output_geometry)) {
-        return false;
-    }
-    if (viewport &&
-        (viewport->x < 0 || viewport->y < 0 || viewport->width == 0U ||
-            viewport->height == 0U ||
-            static_cast<std::uint64_t>(viewport->x) + viewport->width >
-                output_geometry.width ||
-            static_cast<std::uint64_t>(viewport->y) + viewport->height >
-                output_geometry.height ||
-            source_width == 0U || source_height == 0U)) {
-        return false;
-    }
-    const auto needs_composition =
-        viewport && (viewport->x != 0 || viewport->y != 0 ||
-                        viewport->width != output_geometry.width ||
-                        viewport->height != output_geometry.height ||
-                        !is_geometry(output_geometry));
-    if (needs_composition && (!renderer_->accelerated() || !command_encoder_)) {
-        if (!renderer_->map_cpu(
-                *surface, true, PerfCpuMapReason::DeferredDisplayRead)) {
-            return false;
-        }
-        const auto mapping =
-            surface->map_cpu(false, PerfCpuMapReason::DeferredDisplayRead);
-        const auto& source = mapping.frame().pixels;
-        if (source.size() !=
-            static_cast<std::size_t>(descriptor.width) * descriptor.height) {
-            return false;
-        }
-        std::vector<std::uint32_t> pixels(
-            output_geometry.pixel_count(), 0xff000000U);
-        for (std::uint32_t y = 0; y < viewport->height; ++y) {
-            const auto source_y =
-                static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) *
-                                           source_height / viewport->height);
-            for (std::uint32_t x = 0; x < viewport->width; ++x) {
-                const auto source_x =
-                    static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) *
-                                               source_width / viewport->width);
-                pixels[static_cast<std::size_t>(viewport->y + y) *
-                           output_geometry.width +
-                       viewport->x + x] =
-                    source[static_cast<std::size_t>(source_y) *
-                               descriptor.width +
-                           source_x];
-            }
-        }
-        display_->replace_pixels(std::move(pixels), call.process_id());
-        return true;
-    }
-    std::shared_ptr<HostSurface> published_surface = surface;
-    if (needs_composition) {
-        const auto destination_descriptor =
-            HostSurfaceDescriptor { output_geometry.width,
-                output_geometry.height,
-                output_geometry.width *
-                    static_cast<std::uint32_t>(sizeof(std::uint32_t)),
-                surface_pixel_format_bgra, PerfSurfaceKind::Scanout };
-        auto compatibility_surface =
-            acquire_compatibility_surface(destination_descriptor);
-        if (!compatibility_surface ||
-            !command_encoder_->fill(compatibility_surface,
-                { 0, 0, output_geometry.width, output_geometry.height },
-                0xff000000U) ||
-            !command_encoder_->copy(surface, compatibility_surface,
-                { 0, 0, source_width, source_height },
-                { viewport->x, viewport->y, viewport->width, viewport->height },
-                HostCompositeMode::Copy, 0xffU, HostFilter::Nearest,
-                HostRotation::Identity) ||
-            !command_encoder_->submit(PerfSubmitReason::Presentation)) {
-            return false;
-        }
-        published_surface = std::move(compatibility_surface);
-    }
-    const auto lifetime = needs_composition
-                              ? std::shared_ptr<void> { renderer_lifetime_ }
-                          : binding.backing_identifier
-                              ? std::shared_ptr<void> {
-                                    surface_store_->acquire_transport_lease(
-                                        *binding.backing_identifier) }
-                              : resources_.texture(binding.framebuffer_texture)
-                                    ->levels.at(0U).native_lifetime;
-    if (!lifetime)
-        return false;
-    auto presentation =
-        make_host_surface_presentation_lease(published_surface, lifetime);
-    auto renderer = renderer_;
-    display_->replace_surface(
-        published_surface,
-        [renderer = std::move(renderer), published_surface] {
-            if (!renderer->map_cpu(*published_surface, true,
-                    PerfCpuMapReason::DeferredDisplayRead)) {
-                return std::vector<std::uint32_t> { };
-            }
-            auto mapping = published_surface->map_cpu(
-                false, PerfCpuMapReason::DeferredDisplayRead);
-            return mapping.frame().pixels;
-        },
-        call.process_id(),
-        [published_surface] {
-            return std::max(published_surface->cpu_generation(),
-                published_surface->gpu_generation());
-        }, std::move(presentation));
-    return true;
-}
-
 void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
 {
     auto* context = current_context(call);
@@ -1871,14 +1733,13 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 present_eagl_window_async(call, *context, *binding);
                 return;
             }
-            if (!binding ||
-                !publish_display_surface(call, *binding,
-                    renderbuffer.drawable_viewport)) {
+            if (!binding) {
                 call.set_return(0U);
                 return;
             }
-            display_->present(call.process_id());
-            call.set_return(1U);
+            present_display_surface_async(call, context->identity,
+                renderbuffer.identity, context->bound_renderbuffer, *binding,
+                renderbuffer.drawable_viewport);
         });
     registry.register_objc_instance_method(std::string { opengles_image },
         "EAGLContext", "attachImage:toCoreSurface:invertedRender:",

@@ -361,23 +361,35 @@ void OpenGlesHle::submit_renderer_async(UserlandHleCall& call,
 
 void OpenGlesHle::submit_host_work_async(UserlandHleCall& call, std::size_t bytes,
     std::function<bool(DisplayFrame&)> execute, HostCompletion completed,
-    std::function<void()> complete_core)
+    std::function<void()> complete_core,
+    std::shared_ptr<HostSurface> read_source,
+    std::shared_ptr<HostSurface> write_target)
 {
     std::shared_ptr<SyncLease> lease;
     try {
         lease = program_wait(call);
-        auto result = enqueue_gles_host_work(bytes, execute);
+        auto result = write_target
+                          ? enqueue_gles_surface_write(write_target, execute)
+                          : enqueue_gles_host_work(bytes, execute);
         if (!result) {
-            call.suspend_until([bytes] { return gles_host_work_capacity(bytes); },
-                [this, lease, bytes, execute, completed, complete_core](
-                    UserlandHleCall& resumed) {
+            call.suspend_until(
+                [bytes, write_target] {
+                    const auto writer =
+                        write_target ? write_target->writer() : nullptr;
+                    return (!writer || writer->ready()) &&
+                           gles_host_work_capacity(bytes);
+                },
+                [this, lease, bytes, execute, completed, complete_core,
+                    read_source, write_target](UserlandHleCall& resumed) {
                     lease->consume();
-                    submit_host_work_async(
-                        resumed, bytes, execute, completed, complete_core);
+                    submit_host_work_async(resumed, bytes, execute, completed,
+                        complete_core, read_source, write_target);
                 });
             return;
         }
         lease->result = result;
+        if (read_source)
+            read_source->record_read(result->completion());
         // Core-only metadata follows real accepted work, including issuer exit.
         lease->complete_core = std::move(complete_core);
         call.suspend_until([result] { return result->ready(); },

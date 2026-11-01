@@ -89,6 +89,7 @@ add_library(ilemu_kernel_graphics STATIC
     graphics/opengles_frame_draw.cpp
     graphics/opengles_native_clear.cpp
     graphics/opengles_framebuffers.cpp
+    graphics/opengles_display_publication.cpp
     graphics/opengles_program_queries.cpp
     graphics/mbx_connect_hle.cpp)
 add_library(iLEmu::kernel_graphics ALIAS ilemu_kernel_graphics)
