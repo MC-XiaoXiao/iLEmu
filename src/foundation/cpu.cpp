@@ -3838,9 +3838,12 @@ public:
                     [this](const CpuThreadState& state) { return tiered_compiling(state); }, service);
             }, {}};
             auto interpreter = std::make_unique<IndependentCpuExecutor>(memory_, cpu_model_, std::move(factory), 0);
-            // Checked interpreter writes revoke native reservations too. Native
-            // writes already participate in AddressSpace exclusive tracking.
-            interpreter->set_backend_write_observer([this](std::uint32_t, unsigned, std::uint32_t) { monitor_.Clear(); });
+            // Physical reservation keys already follow checked writes and the
+            // guarded direct-write table, just as they do for native execution.
+            // Raw-address monitors still need explicit cross-backend revocation.
+            if (!monitor_.HasAddressResolver())
+                interpreter->set_backend_write_observer(
+                    [this](std::uint32_t, unsigned, std::uint32_t) { monitor_.Clear(); });
             tiered_executors_.push_back(std::move(interpreter));
             tiered_run_mutexes_.push_back(std::make_unique<std::mutex>());
         }
