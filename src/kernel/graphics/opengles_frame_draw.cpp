@@ -22,8 +22,12 @@ struct OpenGlesHle::FrameDraw {
     bool indexed { };
 
     static bool target_live(const GlesResourceStore& resources,
-        const RenderTargetBinding& binding)
+        const SurfaceStore& surfaces, const RenderTargetBinding& binding)
     {
+        if (binding.kind == RenderTargetKind::Pixmap)
+            return binding.backing_identifier &&
+                   surfaces.host_surface(*binding.backing_identifier) ==
+                       binding.host_surface;
         const auto* texture = resources.texture(binding.framebuffer_texture);
         if (!texture)
             return false;
@@ -45,7 +49,7 @@ try {
     std::size_t bytes = 0;
     std::shared_ptr<void> native_lifetime;
     if (binding.host_surface) {
-        if (!FrameDraw::target_live(resources_, binding))
+        if (!FrameDraw::target_live(resources_, *surface_store_, binding))
             throw std::runtime_error { "stale native GLES frame target" };
         native_lifetime = binding.backing_identifier
                               ? surface_store_->acquire_transport_lease(
@@ -87,7 +91,8 @@ try {
                               host = pending->host] {
             if (host->complete() && owner == renderer_owner_ &&
                 binding_live(binding) &&
-                FrameDraw::target_live(resources_, binding))
+                FrameDraw::target_live(resources_, *surface_store_, binding) &&
+                binding.framebuffer_texture != 0U)
                 resources_.update_texture_render_target_generation(
                     binding.framebuffer_texture, 0U);
         };
@@ -109,7 +114,7 @@ try {
     if (pending->owner != renderer_owner_ ||
         !binding_live(pending->binding) ||
         (pending->binding.host_surface &&
-            !FrameDraw::target_live(resources_, pending->binding)))
+            !FrameDraw::target_live(resources_, *surface_store_, pending->binding)))
         throw std::runtime_error { "stale GLES frame target" };
     if (!pending->result) {
         pending->result = pending->host->enqueue(renderer_);
@@ -150,7 +155,7 @@ try {
                     !pending->result->succeeded() ||
                     (pending->binding.host_surface
                             ? !FrameDraw::target_live(
-                                  resources_, pending->binding)
+                                  resources_, *surface_store_, pending->binding)
                             : !commit_render_target(resumed, pending->binding,
                                   std::move(pending->result->frame))))
                     set_gl_error(resumed, gles_abi::invalid_operation);

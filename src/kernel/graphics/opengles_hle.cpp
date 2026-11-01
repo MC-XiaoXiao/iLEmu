@@ -964,7 +964,9 @@ std::optional<DisplayFrame> OpenGlesHle::render_target(
         return DisplayFrame { surface.width, surface.height, 0,
             surface.pixels };
     }
-    if (binding.kind == RenderTargetKind::Framebuffer) {
+    if (binding.kind == RenderTargetKind::Framebuffer ||
+        (binding.kind == RenderTargetKind::Pixmap && renderer_->accelerated() &&
+            !renderer_->software_fallback_allowed())) {
         if (!binding.host_surface)
             return std::nullopt;
         const auto descriptor = binding.host_surface->descriptor();
@@ -1516,11 +1518,9 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
             mode, state, indexed);
         return;
     }
-    const auto native_framebuffer = binding->host_surface &&
-                                    binding->framebuffer_texture != 0U &&
-                                    renderer_->accelerated() &&
-                                    !renderer_->software_fallback_allowed();
-    if ((!binding->host_surface || native_framebuffer) &&
+    const auto native_target = binding->host_surface && renderer_->accelerated() &&
+                               !renderer_->software_fallback_allowed();
+    if ((!binding->host_surface || native_target) &&
         GlesFrameDraw::can_snapshot(*target, state)) {
         draw_frame_async(call, *binding, *target, vertices, mode, state, indexed);
         return;
