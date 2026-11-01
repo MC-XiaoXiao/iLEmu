@@ -1682,7 +1682,7 @@ CompatibilityKernel::next_host_event_poll_deadline()
 {
     std::lock_guard lock { mutex_ };
     if (shared_state_->file_io.owns(process_.pid))
-        return std::chrono::steady_clock::now() + std::chrono::milliseconds { 1 };
+        return std::chrono::steady_clock::now() + std::chrono::microseconds { 100 };
     if (pending_event_processors_.empty())
         return std::nullopt;
     // A syscall or another task can change readiness after the last poll.
