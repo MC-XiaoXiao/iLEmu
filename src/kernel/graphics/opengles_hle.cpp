@@ -1540,6 +1540,9 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
 
 void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
 {
+    // Drawable queries call the firmware's Objective-C runtime.
+    for (const auto symbol : { "_sel_registerName", "_objc_msgSend" })
+        registry.register_guest_function("/libobjc.A.dylib", symbol);
     // Resolve the native capability without patching its Objective-C entry.
     registry.register_guest_function(std::string { opengles_image },
         "-[EAGLContext GetMacroContextPrivate]");
