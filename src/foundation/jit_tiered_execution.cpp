@@ -3,7 +3,6 @@
 #include "arm_interpreter/interpreter.hpp"
 #include "foundation/performance.hpp"
 #include <algorithm>
-#include <array>
 
 namespace ilemu {
 std::shared_ptr<HostWorkToken> JitTieredExecution::submit(
@@ -32,6 +31,7 @@ execution::RunResult TieredInterpreter::run(CpuThreadState& state,
 {
     using Clock = std::chrono::steady_clock;
     const auto started = Clock::now();
+    const auto entry = state;
     // Reuse the compile-cost history already maintained for host admission.
     // Pass the local deadline into the interpreter: checking only between
     // 32-instruction batches let memory synchronization overrun the quantum.
@@ -41,21 +41,16 @@ execution::RunResult TieredInterpreter::run(CpuThreadState& state,
     bounded.deadline = std::min(request.deadline, started + quantum);
     execution::RunResult result;
     bool ready = false;
-    std::array<std::uint32_t, 16> observed{};
-    std::size_t observations = 0;
     for (;;) {
         ready = ready_(state);
-        if (ready || Clock::now() >= bounded.deadline) {
+        // Interpret only while the originating block is being compiled. Its
+        // publication ends the overlap even if execution has moved past it.
+        if (ready || Clock::now() >= bounded.deadline ||
+            !compiling_(entry)) {
             result.pc = state.registers[15];
             result.reason = execution::StopReason::BackendSwitch;
             break;
         }
-        const auto count = std::min(observations, observed.size());
-        if (std::find(observed.begin(), observed.begin()+static_cast<std::ptrdiff_t>(count),
-                state.registers[15]) != observed.begin()+static_cast<std::ptrdiff_t>(count))
-            prepare_(state);
-        else
-            observed[observations++ % observed.size()] = state.registers[15];
         result = execution::ArmInterpreter::run_slice(state, source, bounded,
             context_, 32, result.ticks_consumed);
         if (result.reason != execution::StopReason::None)

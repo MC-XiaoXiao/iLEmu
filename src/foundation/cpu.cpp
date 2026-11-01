@@ -3760,7 +3760,7 @@ public:
             execution::ExecutorFactory factory{[this, native, service = tiered_service_](std::size_t) {
                 return std::make_unique<TieredInterpreter>(
                     [native](const CpuThreadState& state) { return native->native_ready(state); },
-                    [this](const CpuThreadState& state) { request_tiered_compile(state); }, service);
+                    [this](const CpuThreadState& state) { return tiered_compiling(state); }, service);
             }, {}};
             auto interpreter = std::make_unique<IndependentCpuExecutor>(memory_, cpu_model_, std::move(factory), 0);
             // Checked interpreter writes revoke native reservations too. Native
@@ -3816,9 +3816,7 @@ public:
 
     bool request_tiered_compile(const CpuThreadState& state)
     {
-        const Dynarmic::A32::LocationDescriptor location{state.registers[15],
-            Dynarmic::A32::PSR{state.cpsr}, Dynarmic::A32::FPSCR{state.fpscr}};
-        add_precompile_entries({static_cast<Dynarmic::IR::LocationDescriptor>(location).Value()},
+        add_precompile_entries({tiered_entry(state).descriptor},
             JitPrecompilePhase::Opportunistic, JitPrecompileSource::ExecutionDemand);
         const std::lock_guard lock{tiered_mutex_};
         if (tiered_task_ && !tiered_task_->finished())
@@ -3830,6 +3828,35 @@ public:
             tiered_service_->compiled(result.native_compiled + result.artifact_imported);
         });
         return bool(tiered_task_);
+    }
+
+    static PrecompileEntry tiered_entry(const CpuThreadState& state)
+    {
+        const Dynarmic::A32::LocationDescriptor location{state.registers[15],
+            Dynarmic::A32::PSR{state.cpsr}, Dynarmic::A32::FPSCR{state.fpscr}};
+        return {static_cast<Dynarmic::IR::LocationDescriptor>(location).Value(),
+            JitPrecompileTarget::NativeCode, JitPrecompileSource::ExecutionDemand};
+    }
+
+    bool tiered_compiling(const CpuThreadState& state)
+    {
+        const std::lock_guard lock{precompile_queue_mutex_};
+        return inflight_precompile_entries_.contains(tiered_entry(state));
+    }
+
+    void withdraw_tiered_compile(const CpuThreadState& state)
+    {
+        const std::lock_guard lock{precompile_queue_mutex_};
+        const auto entry = tiered_entry(state);
+        const auto pending = pending_precompile_phases_.find(entry);
+        if (pending == pending_precompile_phases_.end())
+            return;
+        std::erase(pending_precompile_entries_[phase_index(pending->second)], entry);
+        pending_precompile_phases_.erase(pending);
+        decrement_counter_locked(pending_precompile_entries_by_source_[
+            static_cast<std::size_t>(entry.source)]);
+        update_memory_peaks_locked();
+        assert_queue_counter_invariants_locked();
     }
 
     CpuRunResult run_tiered(Cpu& cpu, std::uint64_t ticks, std::size_t slot,
@@ -3856,6 +3883,7 @@ public:
             bool unsupported = false;
             bool interpret = !force_native && native.can_interpret(state) && !native.native_ready(state);
             if (interpret && !request_tiered_compile(state)) {
+                withdraw_tiered_compile(state);
                 interpret = false;
                 force_native = true;
                 tiered_service_->fallback();
@@ -3865,6 +3893,9 @@ public:
                 part = interpreter.run(cpu, remaining, false, cooperative, budget,
                     execution_context_->process_id());
                 interpreter.clear_exclusive_state();
+                // A queued request has provided no overlap. Let native demand
+                // translation own it rather than compiling it again later.
+                withdraw_tiered_compile(state);
                 // This is a cold translation slice, not a native throughput
                 // sample for scheduler saturation/parallelism calibration.
                 part.translated_code = true;

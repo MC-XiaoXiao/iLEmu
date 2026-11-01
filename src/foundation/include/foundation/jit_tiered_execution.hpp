@@ -32,9 +32,9 @@ private:
 class TieredInterpreter final : public execution::Executor {
 public:
     using Probe = std::function<bool(const CpuThreadState&)>;
-    TieredInterpreter(Probe ready, std::function<void(const CpuThreadState&)> prepare,
+    TieredInterpreter(Probe ready, Probe compiling,
         std::shared_ptr<JitTieredExecution> service)
-        : ready_(std::move(ready)), prepare_(std::move(prepare)), service_(std::move(service)) { }
+        : ready_(std::move(ready)), compiling_(std::move(compiling)), service_(std::move(service)) { }
     execution::RunResult run(CpuThreadState&, execution::InstructionSource&,
         const execution::RunRequest&) override;
     void request_stop(execution::StopReason reason) noexcept override { context_.stops.request(reason); }
@@ -42,7 +42,7 @@ public:
     void clear_exclusive_state() override { context_.clear_exclusive_state(); }
 private:
     Probe ready_;
-    std::function<void(const CpuThreadState&)> prepare_;
+    Probe compiling_;
     std::shared_ptr<JitTieredExecution> service_;
     execution::ExecutorContext context_;
 };
