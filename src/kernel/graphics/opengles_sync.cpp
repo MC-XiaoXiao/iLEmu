@@ -348,28 +348,36 @@ void OpenGlesHle::submit_renderer_async(UserlandHleCall& call,
     GlesRenderTargetKey key, bool finish, std::shared_ptr<void> lifetime,
     std::function<void(UserlandHleCall&, bool)> completed)
 {
+    submit_host_work_async(call, 0,
+        [renderer = renderer_, key, finish, lifetime](DisplayFrame&) {
+            return finish ? renderer->finish(key) : renderer->flush(key);
+        },
+        [completed](UserlandHleCall& resumed,
+            const std::shared_ptr<GlesWorkResult>& result) {
+            completed(resumed, result && result->succeeded());
+        });
+}
+
+void OpenGlesHle::submit_host_work_async(UserlandHleCall& call, std::size_t bytes,
+    std::function<bool(DisplayFrame&)> execute, HostCompletion completed)
+{
     std::shared_ptr<SyncLease> lease;
     try {
         lease = program_wait(call);
-        auto result = enqueue_gles_host_work(0,
-            [renderer = renderer_, key, finish, lifetime](DisplayFrame&) {
-                return finish ? renderer->finish(key) : renderer->flush(key);
-            });
+        auto result = enqueue_gles_host_work(bytes, execute);
         if (!result) {
-            call.suspend_until([] { return gles_host_work_capacity(0); },
-                [this, lease, key, finish, lifetime, completed](
-                    UserlandHleCall& resumed) {
+            call.suspend_until([bytes] { return gles_host_work_capacity(bytes); },
+                [this, lease, bytes, execute, completed](UserlandHleCall& resumed) {
                     lease->consume();
-                    submit_renderer_async(resumed, key, finish, lifetime, completed);
+                    submit_host_work_async(resumed, bytes, execute, completed);
                 });
             return;
         }
         lease->result = result;
         call.suspend_until([result] { return result->ready(); },
             [result, lease, completed](UserlandHleCall& resumed) {
-                const auto succeeded = result->succeeded();
                 lease->consume();
-                completed(resumed, succeeded);
+                completed(resumed, result);
             }, result->sequence());
     } catch (...) {
         if (lease) {
@@ -377,7 +385,7 @@ void OpenGlesHle::submit_renderer_async(UserlandHleCall& call,
             if (lease->ready())
                 lease->consume();
         }
-        completed(call, false);
+        completed(call, { });
     }
 }
 
@@ -391,6 +399,10 @@ void OpenGlesHle::flush_surface_async(UserlandHleCall& call,
         return;
     }
     const auto& state = found->second;
+    if (!state.backing_identifier) {
+        flush_surface_frame_async(call, surface, std::move(completed));
+        return;
+    }
     const auto key = render_target_key(surface);
     auto finish = [this, surface, key, identity = state.identity,
                       owner = renderer_owner_, completed](
@@ -400,18 +412,14 @@ void OpenGlesHle::flush_surface_async(UserlandHleCall& call,
             current != surfaces_.end() && current->second.identity == identity &&
             render_target_key(surface) == key);
     };
-    if (state.backing_identifier) {
-        auto lifetime = surface_store_->acquire_transport_lease(
-            *state.backing_identifier);
-        if (!lifetime) {
-            finish(call, false);
-            return;
-        }
-        submit_renderer_async(call, key, false,
-            std::move(lifetime), std::move(finish));
+    auto lifetime = surface_store_->acquire_transport_lease(
+        *state.backing_identifier);
+    if (!lifetime) {
+        finish(call, false);
         return;
     }
-    finish(call, flush_surface(call, surface));
+    submit_renderer_async(call, key, false,
+        std::move(lifetime), std::move(finish));
 }
 
 

@@ -306,8 +306,8 @@ private:
     void release_renderer_resources();
     [[nodiscard]] bool reload_surface(
         UserlandHleCall& call, std::uint32_t surface);
-    [[nodiscard]] bool flush_surface(
-        UserlandHleCall& call, std::uint32_t surface);
+    void flush_surface_frame_async(UserlandHleCall& call, std::uint32_t surface,
+        std::function<void(UserlandHleCall&, bool)> completed);
     void flush_surface_async(UserlandHleCall& call, std::uint32_t surface,
         std::function<void(UserlandHleCall&, bool)> completed);
     [[nodiscard]] std::optional<DisplayFrame> render_target(
@@ -356,6 +356,10 @@ private:
         const UserlandHleRegistry::Handler& handler, std::uint32_t error);
     bool program_flush_failed_ { };
     void finish_async(UserlandHleCall& call, bool finish);
+    using HostCompletion = std::function<void(UserlandHleCall&,
+        const std::shared_ptr<GlesWorkResult>&)>;
+    void submit_host_work_async(UserlandHleCall& call, std::size_t bytes,
+        std::function<bool(DisplayFrame&)> execute, HostCompletion completed);
     void submit_renderer_async(UserlandHleCall& call, GlesRenderTargetKey key,
         bool finish, std::shared_ptr<void> lifetime,
         std::function<void(UserlandHleCall&, bool)> completed);

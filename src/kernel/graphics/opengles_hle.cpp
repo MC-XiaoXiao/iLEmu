@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -889,65 +890,114 @@ bool OpenGlesHle::reload_surface(UserlandHleCall& call, std::uint32_t surface)
     return true;
 }
 
-bool OpenGlesHle::flush_surface(UserlandHleCall& call, std::uint32_t surface)
+void OpenGlesHle::flush_surface_frame_async(UserlandHleCall& call,
+    std::uint32_t surface,
+    std::function<void(UserlandHleCall&, bool)> completed)
 {
-    if (program_flush_failed_)
-        return false;
-    const auto found = surfaces_.find(surface);
-    if (found == surfaces_.end())
-        return false;
-    auto& state = found->second;
-    const auto profile =
-        application_display_for_process(shared_state_, call.process_id());
-    const auto compatibility_surface =
-        profile && profile->kind != ApplicationDisplayMode::Native &&
-        !state.backing_identifier;
-    if (compatibility_surface &&
-        state.pixels.size() !=
-            static_cast<std::size_t>(state.width) * state.height) {
-        state.pixels.assign(
-            static_cast<std::size_t>(state.width) * state.height, 0xff000000U);
+    if (program_flush_failed_) {
+        completed(call, false);
+        return;
     }
-    auto frame =
-        state.backing_identifier
-            ? DisplayFrame { state.width, state.height, 0, state.pixels }
-        : compatibility_surface
-            ? DisplayFrame { state.width, state.height, 0, state.pixels }
-        : display_ ? display_->snapshot()
-                   : DisplayFrame { };
-    if (frame.width == 0 || frame.height == 0 ||
-        !renderer_->synchronize(frame, render_target_key(surface))) {
-        return false;
+    auto& state = surfaces_.at(surface);
+    constexpr std::size_t limit = 64U * 1024U * 1024U;
+    const auto count = std::max<std::uint64_t>(
+        static_cast<std::uint64_t>(state.width) * state.height,
+        display_ ? display_->geometry().pixel_count() : 0);
+    if (!count || count > limit / sizeof(std::uint32_t)) {
+        completed(call, false);
+        return;
     }
-    if (!state.backing_identifier) {
-        if (display_ && display_write_allowed(call)) {
-            auto pixels = std::move(frame.pixels);
-            if (profile && profile->kind != ApplicationDisplayMode::Native) {
-                pixels = compose_application_display_pixels(*profile,
-                    { frame.width, frame.height }, display_->geometry(),
-                    pixels);
-                if (pixels.empty())
-                    return false;
-            }
-            display_->replace_pixels(std::move(pixels), call.process_id());
+    const auto bytes = static_cast<std::size_t>(count) * sizeof(std::uint32_t);
+    std::shared_ptr<SyncLease> lease;
+    std::function<bool(DisplayFrame&)> execute;
+    HostCompletion ready;
+    try {
+        auto credit = reserve_gles_host_preparation(bytes);
+        if (!credit) {
+            lease = program_wait(call);
+            call.suspend_until(
+                [bytes] { return gles_host_preparation_capacity(bytes); },
+                [this, lease, surface, completed](UserlandHleCall& resumed) {
+                    lease->consume();
+                    flush_surface_frame_async(resumed, surface, completed);
+                });
+            return;
         }
-        state.refreshed_textures.clear();
-        return true;
+        const auto profile =
+            application_display_for_process(shared_state_, call.process_id());
+        const auto compatibility =
+            profile && profile->kind != ApplicationDisplayMode::Native;
+        if (compatibility && state.pixels.size() !=
+                static_cast<std::size_t>(state.width) * state.height)
+            state.pixels.assign(
+                static_cast<std::size_t>(state.width) * state.height, 0xff000000U);
+        auto captured = compatibility
+            ? DisplayFrame { state.width, state.height, 0, state.pixels }
+            : display_ ? display_->capture_frame() : DisplayFrame { };
+        if (!captured.width || !captured.height)
+            throw std::runtime_error { "empty EGL readback source" };
+        auto frame = std::make_shared<DisplayFrame>(captured.width, captured.height,
+            0, std::move(captured.pixels), std::move(captured.host_surface));
+        frame->presentation_lease = std::move(captured.presentation_lease);
+        auto binding = RenderTargetBinding { };
+        binding.kind = RenderTargetKind::Display;
+        binding.key = render_target_key(surface);
+        binding.display_surface = &state;
+        binding.surface_identity = state.identity;
+        // Only owned host data/leases cross. Match snapshot()+synchronize,
+        // without invoking the display materializer on the core.
+        execute = [renderer = renderer_, frame, credit,
+                      lifetime = renderer_lifetime_, key = binding.key](
+                      DisplayFrame& output) {
+            if (frame->host_surface) {
+                if (!renderer->read_surface(*frame->host_surface, output))
+                    return false;
+            } else {
+                output = std::move(*frame);
+            }
+            return renderer->synchronize(output, key);
+        };
+        ready = [this, binding, owner = renderer_owner_, profile, completed](
+                    UserlandHleCall& resumed,
+                    const std::shared_ptr<GlesWorkResult>& result) {
+            bool succeeded = false;
+            try {
+                if (result && result->succeeded() && owner == renderer_owner_ &&
+                    binding_live(binding)) {
+                    succeeded = true;
+                    if (display_ && display_write_allowed(resumed)) {
+                        auto pixels = std::move(result->frame.pixels);
+                        if (profile && profile->kind != ApplicationDisplayMode::Native) {
+                            pixels = compose_application_display_pixels(*profile,
+                                { result->frame.width, result->frame.height },
+                                display_->geometry(), pixels);
+                            if (pixels.empty())
+                                succeeded = false;
+                        }
+                        if (succeeded)
+                            display_->replace_pixels(
+                                std::move(pixels), resumed.process_id());
+                    }
+                    if (succeeded)
+                        binding.display_surface->refreshed_textures.clear();
+                }
+            } catch (...) {
+                succeeded = false;
+            }
+            completed(resumed, succeeded);
+        };
+    } catch (...) {
+        if (lease) {
+            lease->cancelled = true;
+            if (lease->ready())
+                lease->consume();
+        }
+        completed(call, false);
+        return;
     }
-    state.pixels = std::move(frame.pixels);
-    state.dirty = true;
-    if (!surface_store_->write_argb(
-            call.memory(), *state.backing_identifier, state.pixels)) {
-        return false;
-    }
-    state.dirty = false;
-    if (const auto host_surface =
-            surface_store_->host_surface(*state.backing_identifier)) {
-        state.backing_cpu_generation = host_surface->cpu_generation();
-    }
-    state.refreshed_textures.clear();
-    return true;
+    submit_host_work_async(call, bytes, std::move(execute), std::move(ready));
 }
+
 
 std::optional<DisplayFrame> OpenGlesHle::render_target(
     UserlandHleCall& call, const RenderTargetBinding& binding)
