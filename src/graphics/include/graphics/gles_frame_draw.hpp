@@ -22,8 +22,7 @@ class SurfaceStore;
 // read dependencies before the core yields.
 class GlesFrameDraw final {
 public:
-    [[nodiscard]] static bool can_snapshot(
-        const DisplayFrame& frame, const GlesRasterState& raster);
+    [[nodiscard]] static bool can_snapshot(const DisplayFrame& frame);
     [[nodiscard]] static std::shared_ptr<GlesFrameDraw> prepare(
         const DisplayFrame& frame, HostSurfaceKey target,
         std::span<const GlesRasterVertex> vertices, std::uint32_t mode,

@@ -45,29 +45,13 @@ GlesFrameDraw::GlesFrameDraw(std::shared_ptr<State> state)
 {
 }
 
-bool GlesFrameDraw::can_snapshot(
-    const DisplayFrame& frame, const GlesRasterState& raster)
+bool GlesFrameDraw::can_snapshot(const DisplayFrame& frame)
 {
-    if (frame.read_pixels || !frame.width ||
-        !frame.height ||
-        (frame.host_surface
-                ? !frame.pixels.empty()
-                : frame.pixels.size() !=
-                      static_cast<std::uint64_t>(frame.width) * frame.height))
-        return false;
-    if (!raster.resources)
-        return true;
-    for (const auto name : textures(raster)) {
-        const auto* texture = raster.resources->texture(name);
-        if (!texture)
-            continue;
-        for (const auto& [level, image] : texture->levels) {
-            static_cast<void>(level);
-            if ((image.host_surface || image.surface_id) && !frame.host_surface)
-                return false;
-        }
-    }
-    return true;
+    return !frame.read_pixels && frame.width && frame.height &&
+           (frame.host_surface
+                   ? frame.pixels.empty()
+                   : frame.pixels.size() ==
+                         static_cast<std::uint64_t>(frame.width) * frame.height);
 }
 
 std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
@@ -76,7 +60,7 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     const SurfaceStore& surfaces, std::size_t& bytes,
     std::shared_ptr<void> native_lifetime)
 {
-    if (!can_snapshot(frame, raster) ||
+    if (!can_snapshot(frame) ||
         (frame.host_surface &&
             (!native_lifetime || frame.host_surface->key() != target)))
         throw std::invalid_argument {
@@ -91,9 +75,9 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     add(sizeof(std::uint32_t), frame.pixels.size());
     add(sizeof(GlesRasterVertex), vertices.size());
     const auto names = textures(raster);
-    const auto content = frame.host_surface
-                             ? GlesResourceStore::TextureSnapshot::NativeImages
-                             : GlesResourceStore::TextureSnapshot::CpuPixels;
+    // Input image ownership and reader ordering are independent of whether
+    // the destination is a native surface or an owned CPU result frame.
+    constexpr auto content = GlesResourceStore::TextureSnapshot::NativeImages;
     std::size_t transports = 0;
     if (raster.resources)
         add(1, raster.resources->texture_snapshot_bytes(

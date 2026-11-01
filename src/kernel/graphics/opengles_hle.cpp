@@ -1507,7 +1507,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     const auto native_target = binding->host_surface && renderer_->accelerated() &&
                                !renderer_->software_fallback_allowed();
     if ((!binding->host_surface || native_target) &&
-        GlesFrameDraw::can_snapshot(*target, state)) {
+        GlesFrameDraw::can_snapshot(*target)) {
         draw_frame_async(call, *binding, *target, vertices, mode, state, indexed);
         return;
     }
