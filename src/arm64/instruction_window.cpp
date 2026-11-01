@@ -280,6 +280,7 @@ FloatingRegisterPlan InstructionWindow::floating_registers(std::uint32_t start,
             switch (inst.kind) {
             case Kind::VectorDuplicate:
             case Kind::VectorBitwise:
+            case Kind::VectorReverse:
             case Kind::VectorExtract:
             case Kind::VectorImmediate:
             case Kind::VectorIntegerArithmetic:

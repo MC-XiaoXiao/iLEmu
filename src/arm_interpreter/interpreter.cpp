@@ -431,6 +431,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 extract_vector(state,
                     std::get<arm::VectorExtractOperands>(inst.vector));
                 break;
+            case arm::InstructionKind::VectorReverse:
+                reverse_vector(state,
+                    std::get<arm::VectorReverseOperands>(inst.vector));
+                break;
             case arm::InstructionKind::WideImmediate:
                 state.registers[inst.rd] =
                     inst.opcode != 0 ? (state.registers[inst.rd] & 0xffffU) |

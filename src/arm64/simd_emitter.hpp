@@ -16,6 +16,7 @@ public:
     void immediate(const arm::VectorImmediateOperands&);
     void bitwise(const arm::VectorBitwiseOperands&);
     void extract(const arm::VectorExtractOperands&);
+    void reverse(const arm::VectorReverseOperands&);
     void core_move(const arm::VectorCoreMoveOperands&);
     void floating(const arm::VectorFloatingArithmeticOperands&);
     void integer(const arm::VectorIntegerOperands&);

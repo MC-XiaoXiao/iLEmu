@@ -1165,6 +1165,10 @@ static CompiledTrace compile_trace(InstructionSource& source,
                     SimdEmitter { emit.code(), emit.vectors() }.extract(
                         std::get<arm::VectorExtractOperands>(inst.vector));
                     break;
+                case arm::InstructionKind::VectorReverse:
+                    SimdEmitter { emit.code(), emit.vectors() }.reverse(
+                        std::get<arm::VectorReverseOperands>(inst.vector));
+                    break;
                 case arm::InstructionKind::DataProcessing:
                     if (writes_pc) {
                         if (!fast_indirect)

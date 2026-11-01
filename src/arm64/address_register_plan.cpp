@@ -74,6 +74,7 @@ void AddressRegisterPlan::Builder::observe(
     case Kind::VectorFloatingArithmetic:
     case Kind::VectorIntegerArithmetic:
     case Kind::VectorBitwise:
+    case Kind::VectorReverse:
     case Kind::VectorExtract:
     case Kind::VectorImmediate:
     case Kind::Nop:
