@@ -30,10 +30,11 @@ bool decode_simd_floating(Instruction& out, std::uint32_t word, bool thumb,
     default:
         // Two registers and an F32 scalar. Q occupies the ARM U bit;
         // bit M selects the scalar lane rather than a high D register.
-        switch (word & 0xfe800f50U) {
-        case 0xf2800140U: v.operation = Op::MultiplyAdd; break;
-        case 0xf2800540U: v.operation = Op::MultiplySubtract; break;
-        case 0xf2800940U: v.operation = Op::Multiply; break;
+        // The F32 size field distinguishes scalar arithmetic from VEXT.
+        switch (word & 0xfeb00f50U) {
+        case 0xf2a00140U: v.operation = Op::MultiplyAdd; break;
+        case 0xf2a00540U: v.operation = Op::MultiplySubtract; break;
+        case 0xf2a00940U: v.operation = Op::Multiply; break;
         default: return false;
         }
         scalar = true;
