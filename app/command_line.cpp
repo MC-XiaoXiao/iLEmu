@@ -122,6 +122,7 @@ std::string usage()
            "[--perf-summary] [--jit-observer-only] [--perf-frame-content] "
            "[--perf-cpu-phases] "
            "[--perf-jit-native-lookups] [--executor dynarmic|interpreter|arm64] "
+           "[--jit-tiered] "
            "[--jit-compile-mode optimized|baseline] "
            "[--jit-profile-mode "
            "adaptive|off|record-only|load-only|idle|startup] "
@@ -134,7 +135,7 @@ std::string usage()
            "[--jit-compile-mode optimized|baseline] "
            "[--perf-summary] [--output FILE]\n"
            "  ilemu benchmark arm [--iterations N] [--executor dynarmic|interpreter|arm64] "
-           "[--jit-cache-mib 8..512] [--perf-summary] "
+           "[--jit-cache-mib 8..512] [--jit-tiered] [--perf-summary] "
            "[--output FILE]\n"
            "\nBoot/ABI selection reads SystemVersion.plist by default.\n"
            "  GLES auto/vulkan prefer hardware; software selects a CPU Vulkan ICD.\n"
@@ -1020,7 +1021,7 @@ void benchmark(const std::vector<std::string>& args, Output& output)
     const auto iterations = static_cast<std::uint32_t>(parsed);
 
     run_arm_benchmark(iterations, jit_code_cache_size(args),
-        option(args, "--executor").value_or("dynarmic"), output);
+        option(args, "--executor").value_or("dynarmic"), output, flag(args, "--jit-tiered"));
 }
 
 void boot(const std::vector<std::string>& args,
@@ -1091,6 +1092,9 @@ void boot(const std::vector<std::string>& args,
         options.artifact_disk_bytes = static_cast<std::size_t>(
             parse_mib_value(*value, "--jit-artifact-disk-mib", 0U, 4096U));
     options.jit_compilation_mode = jit_compilation_mode(args);
+    options.jit_tiered_execution = flag(args, "--jit-tiered");
+    if (options.jit_tiered_execution && options.executor_backend != "dynarmic")
+        throw std::runtime_error("--jit-tiered requires the dynarmic executor");
     options.jit_profile_mode = parse_jit_profile_mode(args);
     options.jit_catalog_warming = parse_jit_catalog_warming_mode(args);
     options.startup_profile_blocks =

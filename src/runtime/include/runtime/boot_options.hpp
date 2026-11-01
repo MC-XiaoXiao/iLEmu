@@ -69,6 +69,7 @@ struct BootOptions {
     // ordinary demand execution does not consume the saved location list.
     JitProfileMode jit_profile_mode { JitProfileMode::Off };
     JitCompilationMode jit_compilation_mode { JitCompilationMode::Optimized };
+    bool jit_tiered_execution { false };
     JitCatalogWarmingMode jit_catalog_warming {
         JitCatalogWarmingMode::NoEnqueue
     };

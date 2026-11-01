@@ -22,6 +22,8 @@ namespace ilemu::runtime_detail {
         return "ExecutableCatalog";
     case JitPrecompileSource::Other:
         return "Other";
+    case JitPrecompileSource::ExecutionDemand:
+        return "ExecutionDemand";
     }
     return "Unknown";
 }

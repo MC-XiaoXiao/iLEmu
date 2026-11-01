@@ -70,6 +70,7 @@
 #include "foundation/firmware_prepare.hpp"
 #include "foundation/guest_execution_coordinator.hpp"
 #include "foundation/host_resource_controller.hpp"
+#include "foundation/jit_tiered_execution.hpp"
 #include "foundation/jit_artifact.hpp"
 #include "foundation/jit_code_cache_governor.hpp"
 #include "foundation/jit_translation_profile.hpp"
@@ -640,6 +641,20 @@ void EmulatorSession::run()
         " host-concurrency=" + std::to_string(host_concurrency) +
         " guest-workers-reserved=" + std::to_string(reserved_guest_workers));
     HostResourceController host_resources { host_resource_budget };
+    auto tiered_execution = options.jit_tiered_execution
+        ? std::make_shared<JitTieredExecution>(host_resources) : nullptr;
+    output.line(std::string{"[jit-tiered] mode="} + (tiered_execution ? "enabled" : "disabled"));
+    const auto report_tiered_statistics = [&] {
+        if (!tiered_execution)
+            return;
+        const auto stats = tiered_execution->statistics();
+        output.marker("[jit-tiered] requests=" + std::to_string(stats.requests) +
+            " compiled=" + std::to_string(stats.compiled) +
+            " ready=" + std::to_string(stats.ready) +
+            " interpreted-ticks=" + std::to_string(stats.interpreted_ticks) +
+            " interpretation-ns=" + std::to_string(stats.interpretation_nanoseconds) +
+            " synchronous-fallbacks=" + std::to_string(stats.synchronous_fallbacks));
+    };
     std::unique_ptr<JitTranslationProfileStore> translation_profiles;
     if (profile_enabled) {
         translation_profiles = std::make_unique<JitTranslationProfileStore>(
@@ -1210,6 +1225,8 @@ void EmulatorSession::run()
         initial->jit_cache_reservation->shared_slab_bytes());
     if (options.executor_factory)
         initial->cpus->set_executor_factory(options.executor_factory);
+    if (tiered_execution && !options.executor_factory)
+        initial->cpus->set_tiered_execution(tiered_execution);
     output.line("[execution] backend=" + options.executor_backend);
     initial->cpus->set_jit_work_signal(jit_work_signal);
     initial->cpus->set_jit_artifact_retention(
@@ -1753,6 +1770,8 @@ void EmulatorSession::run()
                     child->jit_cache_reservation->shared_slab_bytes());
                 if (options.executor_factory)
                     child->cpus->set_executor_factory(options.executor_factory);
+                if (tiered_execution && !options.executor_factory)
+                    child->cpus->set_tiered_execution(tiered_execution);
                 child->cpus->set_jit_work_signal(jit_work_signal);
             }
             {
@@ -3056,6 +3075,7 @@ void EmulatorSession::run()
                         }
                         if (frame_file_presenter)
                             frame_file_presenter->set_enabled(true);
+                        report_tiered_statistics();
                         display_clock_window.reset();
                         display_performance_window.reset();
                     }
@@ -4967,6 +4987,7 @@ void EmulatorSession::run()
     catalog_maintenance.poll(*initial_runtime->kernel, true, false);
     catalog_maintenance.publish_stable(*initial_runtime->kernel);
     host_resources.wait_idle();
+    report_tiered_statistics();
     if (artifact_compaction_task && artifact_compaction_record &&
         artifact_compaction_record->state() ==
             ArtifactCompactionTaskState::Queued &&
