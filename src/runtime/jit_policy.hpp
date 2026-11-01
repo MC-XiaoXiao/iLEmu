@@ -24,6 +24,8 @@ namespace ilemu::runtime_detail {
         return "Other";
     case JitPrecompileSource::ExecutionDemand:
         return "ExecutionDemand";
+    case JitPrecompileSource::HotOptimization:
+        return "HotOptimization";
     }
     return "Unknown";
 }

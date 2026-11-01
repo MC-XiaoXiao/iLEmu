@@ -10,6 +10,11 @@ namespace ilemu {
 // Capabilities of the pinned Dynarmic backend, independent of guest firmware.
 // Other backends use executor-local caches and the normal demand compiler.
 struct JitBackendCapabilities {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    static constexpr bool native_code_versions = true;
+#else
+    static constexpr bool native_code_versions = false;
+#endif
 #if defined(__x86_64__) || defined(_M_X64)
     static constexpr bool shared_native_cache = true;
     static constexpr bool portable_ir = true;

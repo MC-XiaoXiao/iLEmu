@@ -59,10 +59,11 @@ enum class JitPrecompileSource : std::uint8_t {
     ExecutableCatalog,
     Other,
     ExecutionDemand,
+    HotOptimization,
 };
 
 inline constexpr std::size_t jit_precompile_source_count =
-    static_cast<std::size_t>(JitPrecompileSource::ExecutionDemand) + 1U;
+    static_cast<std::size_t>(JitPrecompileSource::HotOptimization) + 1U;
 
 struct JitPrecompileBatchResult {
     std::uint64_t elapsed_nanoseconds { };

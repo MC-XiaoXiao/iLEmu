@@ -642,6 +642,12 @@ public:
     }
 
     bool tiered_execution = false;
+    std::function<bool(Dynarmic::IR::Block&, std::uint64_t, std::uint64_t)> deferred_emission;
+    bool DeferCodeEmission(Dynarmic::IR::Block& block,
+        std::uint64_t generation, std::uint64_t revision) override
+    {
+        return deferred_emission && deferred_emission(block, generation, revision);
+    }
     bool DeferCodeTranslation(std::uint64_t descriptor) noexcept override
     {
         const Dynarmic::A32::LocationDescriptor location{Dynarmic::IR::LocationDescriptor{descriptor}};
@@ -2610,6 +2616,22 @@ public:
     }
 
     void set_tiered_execution(bool enabled) { callbacks_->tiered_execution = enabled; }
+    void set_native_code_versions(bool baseline,
+        decltype(JitCallbacks::deferred_emission) emission = {})
+    {
+        native_code_versions_ = true;
+        callbacks_->set_compilation_mode(baseline
+            ? JitCompilationMode::Baseline : JitCompilationMode::Optimized);
+        callbacks_->deferred_emission = std::move(emission);
+    }
+    bool emit_prepared_block(Dynarmic::IR::Block block,
+        std::uint64_t generation, std::uint64_t revision)
+    {
+        const std::lock_guard lock{execution_mutex_};
+        ensure_jit();
+        return jit_->EmitPreparedBlock(std::move(block), generation, revision) ==
+            Dynarmic::A32::Jit::PortableIREmitOutcome::NativeEmitted;
+    }
     bool can_interpret(const CpuThreadState& state) const
     {
         return callbacks_->DeferCodeTranslation(state.registers[15]);
@@ -2726,7 +2748,8 @@ public:
     }
 
     PrecompileDisposition precompile_descriptor(std::uint64_t descriptor,
-        JitPrecompileTarget target, bool profile_derived, bool execution_demand = false)
+        JitPrecompileTarget target, bool profile_derived, bool execution_demand = false,
+        bool optimize = false)
     {
         if constexpr (!JitBackendCapabilities::precompile)
             return PrecompileDisposition::Failed;
@@ -2741,7 +2764,7 @@ public:
         ensure_jit();
         service_pending_shared_invalidation();
         observe_shared_cache_state();
-        if (target == JitPrecompileTarget::NativeCode && !execution_demand) {
+        if (target == JitPrecompileTarget::NativeCode && !execution_demand && !optimize) {
             const auto policy =
                 JitWorkPolicy::native_prediction_policy(code_cache_size_);
             const auto demand_floor =
@@ -2772,7 +2795,7 @@ public:
         }
         if (!memory_.translation_profile_stable(
                 code_address, sizeof(std::uint32_t)) ||
-            (execution_demand && memory_.accessible(code_address, 4, MemoryPermission::Write))) {
+            ((execution_demand || optimize) && memory_.accessible(code_address, 4, MemoryPermission::Write))) {
             callbacks_->discard_translation_location(descriptor);
             return PrecompileDisposition::Unstable;
         }
@@ -2783,9 +2806,22 @@ public:
             auto* const slab = execution_context_->native_code_slab();
             Dynarmic::A32::NativeCodeSlab::BlockDescriptor block;
             if (slab->find_block(
-                    descriptor, slab->generation_snapshot(), block)) {
+                    descriptor, slab->generation_snapshot(), block) &&
+                (!optimize || !block.baseline)) {
                 return PrecompileDisposition::SharedSlabHit;
             }
+        }
+        if (optimize) {
+            if (jit_code_cache_used(*jit_) >= code_cache_size_ - code_cache_size_ / 8U)
+                return PrecompileDisposition::CacheFull;
+            const auto started = std::chrono::steady_clock::now();
+            callbacks_->begin(0);
+            const bool emitted = jit_->OptimizeBlock(descriptor);
+            performance_counters().record_jit_block_compile(
+                static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started).count()));
+            return emitted ? PrecompileDisposition::NativeCompiled
+                           : PrecompileDisposition::SharedSlabHit;
         }
         const auto key = callbacks_->artifact_key(descriptor);
         const auto probe =
@@ -3283,8 +3319,11 @@ private:
         Dynarmic::A32::UserConfig config { callbacks_.get() };
         config.fast_compilation =
             callbacks_->compilation_mode() == JitCompilationMode::Baseline;
+        config.tiered_compilation = native_code_versions_;
+        config.maximum_block_instructions = native_code_versions_
+            ? (config.fast_compilation ? 64U : 256U) : 0U;
         config.native_code_slab = execution_context_->native_code_slab();
-        config.enable_native_code_templates = callbacks_->native_template_reuse_enabled();
+        config.enable_native_code_templates = native_code_versions_ || callbacks_->native_template_reuse_enabled();
         config.callbacks_link = runtime_link_cell_address_;
         if (performance_counters().native_lookup_diagnostics_enabled()) {
             config.native_code_block_lookup_callback =
@@ -3614,6 +3653,7 @@ private:
     std::optional<std::uint64_t> native_prediction_baseline_bytes_;
     std::uint64_t native_lookup_sequence_ { };
     bool demand_artifact_enabled_ { };
+    bool native_code_versions_ { };
     bool portable_demand_provider_installed_ { };
     bool guest_preemption_requested_ { };
     std::optional<std::chrono::steady_clock::time_point>
@@ -3763,10 +3803,36 @@ public:
     void set_tiered_execution(std::shared_ptr<JitTieredExecution> service)
     {
         tiered_service_ = std::move(service);
+        if constexpr (JitBackendCapabilities::native_code_versions) {
+            tiered_emission_ = std::make_unique<JitEmissionQueue>(tiered_service_,
+                [this](Dynarmic::IR::Block block, std::uint64_t generation, std::uint64_t revision) {
+                    return precompile_executors_.front()->emit_prepared_block(
+                        std::move(block), generation, revision);
+                });
+            for (auto& compiler : precompile_executors_)
+                compiler->set_native_code_versions(false);
+        }
         for (std::size_t slot = 0; slot < executors_.size(); ++slot) {
             auto* native = executors_[slot].get();
-            native->set_tiered_execution(true);
+            if constexpr (JitBackendCapabilities::native_code_versions) {
+                native->set_native_code_versions(true,
+                    [this](Dynarmic::IR::Block& block, std::uint64_t generation, std::uint64_t revision) {
+                        return tiered_emission_->defer(block, generation, revision);
+                    });
+            } else {
+                native->set_tiered_execution(true);
+            }
             execution::ExecutorFactory factory{[this, native, service = tiered_service_](std::size_t) {
+                if constexpr (JitBackendCapabilities::native_code_versions) {
+                    return std::make_unique<TieredInterpreter>(
+                        [native](const CpuThreadState& state) { return native->native_ready(state); },
+                        [this](const CpuThreadState& state) {
+                            return tiered_emission_->block_end(tiered_entry(state).descriptor).has_value();
+                        }, service,
+                        [this](const CpuThreadState& state) {
+                            return tiered_emission_->block_end(tiered_entry(state).descriptor);
+                        });
+                }
                 return std::make_unique<TieredInterpreter>(
                     [native](const CpuThreadState& state) { return native->native_ready(state); },
                     [this](const CpuThreadState& state) { return tiered_compiling(state); }, service);
@@ -3778,6 +3844,8 @@ public:
             tiered_executors_.push_back(std::move(interpreter));
             tiered_run_mutexes_.push_back(std::make_unique<std::mutex>());
         }
+        if constexpr (JitBackendCapabilities::native_code_versions)
+            return;
         // Build the compiler lane's private dispatch state while the process
         // is being prepared, before its first cold execution request.
         tiered_task_ = tiered_service_->submit([this](const HostWorkToken& token) {
@@ -3820,7 +3888,97 @@ public:
                 execution_context_->process_id());
         if (!tiered_service_ || single_step)
             return executor(slot).run(cpu, ticks, single_step, cooperative, host_budget);
+        if constexpr (JitBackendCapabilities::native_code_versions)
+            return run_native_tiered(cpu, ticks, slot, cooperative, host_budget);
         return run_tiered(cpu, ticks, slot, cooperative, host_budget);
+    }
+
+    static void accumulate(CpuRunResult& total, CpuRunResult part)
+    {
+        total.ticks_consumed += part.ticks_consumed;
+        total.svc_calls += part.svc_calls;
+        total.host_execution_ns += part.host_execution_ns;
+        total.host_yield_checks += part.host_yield_checks;
+        total.translated_code |= part.translated_code;
+        total.host_yielded |= part.host_yielded;
+        total.reason = total.reason | part.reason;
+        total.svc = part.svc;
+        total.fault = std::move(part.fault);
+        total.exception = std::move(part.exception);
+        total.architectural_exception = part.architectural_exception;
+        total.debug_breakpoint = part.debug_breakpoint;
+    }
+
+    CpuRunResult run_native_tiered(Cpu& cpu, std::uint64_t ticks, std::size_t slot,
+        bool cooperative, std::chrono::nanoseconds host_budget)
+    {
+        const std::lock_guard slot_lock{*tiered_run_mutexes_[slot]};
+        const auto started = std::chrono::steady_clock::now();
+        auto& native = executor(slot);
+        CpuRunResult total;
+        while (total.ticks_consumed < ticks) {
+            auto budget = host_budget;
+            if (cooperative) {
+                budget -= std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started);
+                if (budget <= std::chrono::nanoseconds::zero()) {
+                    total.host_yielded = true;
+                    break;
+                }
+            }
+            const auto state = cpu.capture_thread_state();
+            const auto descriptor = tiered_entry(state).descriptor;
+            const auto end = tiered_emission_->block_end(descriptor);
+            CpuRunResult part;
+            if (end && !native.native_ready(state)) {
+                native.clear_exclusive_state();
+                part = tiered_executors_[slot]->run(cpu, ticks - total.ticks_consumed,
+                    false, cooperative, budget, execution_context_->process_id());
+                tiered_executors_[slot]->clear_exclusive_state();
+                part.translated_code = true;
+                if (!part.exception.empty() && !part.fault) {
+                    // Unsupported interpretation retires no instruction. Let
+                    // the one admitted compiler finish rather than duplicate it.
+                    tiered_emission_->wait();
+                    part.exception.clear();
+                    part.reason = {};
+                    part.backend_switch = true;
+                }
+            } else {
+                part = native.run(cpu, ticks - total.ticks_consumed, false, cooperative, budget);
+                if (!part.translated_code && part.ticks_consumed && part.host_execution_ns >= 100'000) {
+                    bool hot;
+                    {
+                        const std::lock_guard lock{tiered_mutex_};
+                        hot = hot_blocks_.observe(descriptor,
+                            execution_context_->cache_invalidation_epoch(),
+                            execution_context_->native_code_slab()->generation_snapshot());
+                    }
+                    if (hot) {
+                        add_precompile_entries({descriptor}, JitPrecompilePhase::Opportunistic,
+                            JitPrecompileSource::HotOptimization);
+                    }
+                }
+            }
+            const bool boundary = part.backend_switch;
+            accumulate(total, std::move(part));
+            if (total.reason != Dynarmic::HaltReason{} || total.host_yielded || !boundary)
+                break;
+        }
+        {
+            const std::lock_guard lock{tiered_mutex_};
+            if ((!tiered_task_ || tiered_task_->finished()) &&
+                next_precompile_phase(JitPrecompileTarget::NativeCode,
+                    JitPrecompileSource::HotOptimization)) {
+                tiered_task_ = tiered_service_->submit([this](const HostWorkToken& token) {
+                    const auto result = precompile_pending(16, 2'000'000,
+                        JitPrecompileTarget::NativeCode, [&token] { return token.cancelled(); },
+                        JitPrecompileSource::HotOptimization);
+                    tiered_service_->optimized(result.native_compiled);
+                });
+            }
+        }
+        return total;
     }
 
     bool request_tiered_compile(const CpuThreadState& state)
@@ -3925,18 +4083,7 @@ public:
                 force_native = false;
             }
             const auto boundary = part.backend_switch;
-            total.ticks_consumed += part.ticks_consumed;
-            total.svc_calls += part.svc_calls;
-            total.host_execution_ns += part.host_execution_ns;
-            total.host_yield_checks += part.host_yield_checks;
-            total.translated_code |= part.translated_code;
-            total.host_yielded |= part.host_yielded;
-            total.reason = total.reason | part.reason;
-            total.svc = part.svc;
-            total.fault = std::move(part.fault);
-            total.exception = std::move(part.exception);
-            total.architectural_exception = part.architectural_exception;
-            total.debug_breakpoint = part.debug_breakpoint;
+            accumulate(total, std::move(part));
             if (total.reason != Dynarmic::HaltReason{} || total.host_yielded ||
                 (!boundary && !unsupported))
                 break;
@@ -4313,7 +4460,7 @@ public:
                     break;
                 }
             }
-            if (source == JitPrecompileSource::ExecutionDemand)
+            if (source == JitPrecompileSource::ExecutionDemand || source == JitPrecompileSource::HotOptimization)
                 continue;
             if (enqueue_precompile_entry_locked(
                     PrecompileEntry {
@@ -4441,7 +4588,8 @@ public:
                 try {
                     disposition = precompile_executor->precompile_descriptor(
                         descriptor, target, profile_derived,
-                        precompile_entry.source == JitPrecompileSource::ExecutionDemand);
+                        precompile_entry.source == JitPrecompileSource::ExecutionDemand,
+                        precompile_entry.source == JitPrecompileSource::HotOptimization);
                 } catch (...) {
                     const auto cancelled = stop_requested();
                     const std::lock_guard queue_lock {
@@ -4589,6 +4737,8 @@ public:
 
     void quiesce_precompilation()
     {
+        if (tiered_emission_)
+            tiered_emission_->cancel();
         {
             const std::lock_guard lock{tiered_mutex_};
             if (tiered_task_ && !tiered_task_->finished()) {
@@ -5131,6 +5281,7 @@ private:
         case JitPrecompileSource::ExecutableCatalog:
             return jit_catalog_precompile_queue_entry_capacity;
         case JitPrecompileSource::ExecutionDemand:
+        case JitPrecompileSource::HotOptimization:
             return 64;
         case JitPrecompileSource::Other:
             return jit_translation_profile_maximum_locations *
@@ -5490,6 +5641,8 @@ private:
     }
 
     std::shared_ptr<JitTieredExecution> tiered_service_;
+    std::unique_ptr<JitEmissionQueue> tiered_emission_;
+    JitHotBlockPolicy hot_blocks_;
     std::vector<std::unique_ptr<IndependentCpuExecutor>> tiered_executors_;
     std::vector<std::unique_ptr<std::mutex>> tiered_run_mutexes_;
     std::mutex tiered_mutex_;

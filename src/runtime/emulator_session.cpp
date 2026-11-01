@@ -650,7 +650,9 @@ void EmulatorSession::run()
             " ready=" + std::to_string(stats.ready) +
             " interpreted-ticks=" + std::to_string(stats.interpreted_ticks) +
             " interpretation-ns=" + std::to_string(stats.interpretation_nanoseconds) +
-            " synchronous-fallbacks=" + std::to_string(stats.synchronous_fallbacks));
+            " synchronous-fallbacks=" + std::to_string(stats.synchronous_fallbacks) +
+            " demand-jobs=" + std::to_string(stats.demand_requests) +
+            " optimized=" + std::to_string(stats.optimized_blocks));
     };
     std::unique_ptr<JitTranslationProfileStore> translation_profiles;
     if (profile_enabled) {
