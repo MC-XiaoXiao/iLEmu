@@ -12,6 +12,7 @@
 #include "simd_integer_decode.hpp"
 #include "simd_extract.hpp"
 #include "simd_reverse.hpp"
+#include "simd_shift_immediate.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
 #include "program_status_decode.hpp"
@@ -102,6 +103,7 @@ Instruction decode_t32(std::uint16_t first, std::optional<std::uint16_t> second,
             decode_simd_bitwise(out, (word << 16U) | tail, true) ||
             decode_simd_extract(out, (word << 16U) | tail, true) ||
             decode_simd_reverse(out, (word << 16U) | tail, true, vfp, architecture, simd) ||
+            decode_simd_shift_immediate(out, (word << 16U) | tail, true, vfp, architecture, simd) ||
             decode_simd_transfer(out, (word << 16U) | tail, true))
             return out;
         if ((word & 0xfff0U) == 0xe8d0U && (tail & 0xffe0U) == 0xf000U) {

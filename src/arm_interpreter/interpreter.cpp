@@ -431,6 +431,10 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 extract_vector(state,
                     std::get<arm::VectorExtractOperands>(inst.vector));
                 break;
+            case arm::InstructionKind::VectorShiftImmediate:
+                shift_vector(state,
+                    std::get<arm::VectorShiftImmediateOperands>(inst.vector));
+                break;
             case arm::InstructionKind::VectorReverse:
                 reverse_vector(state,
                     std::get<arm::VectorReverseOperands>(inst.vector));

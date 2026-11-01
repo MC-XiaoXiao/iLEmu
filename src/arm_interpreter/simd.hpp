@@ -11,5 +11,6 @@ void immediate_vector(CpuThreadState&, const arm::VectorImmediateOperands&);
 void bitwise_vector(CpuThreadState&, const arm::VectorBitwiseOperands&);
 void extract_vector(CpuThreadState&, const arm::VectorExtractOperands&);
 void reverse_vector(CpuThreadState&, const arm::VectorReverseOperands&);
+void shift_vector(CpuThreadState&, const arm::VectorShiftImmediateOperands&);
 void move_core_vector(CpuThreadState&, const arm::VectorCoreMoveOperands&);
 }

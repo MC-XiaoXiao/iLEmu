@@ -1165,6 +1165,10 @@ static CompiledTrace compile_trace(InstructionSource& source,
                     SimdEmitter { emit.code(), emit.vectors() }.extract(
                         std::get<arm::VectorExtractOperands>(inst.vector));
                     break;
+                case arm::InstructionKind::VectorShiftImmediate:
+                    SimdEmitter { emit.code(), emit.vectors() }.shift(
+                        std::get<arm::VectorShiftImmediateOperands>(inst.vector));
+                    break;
                 case arm::InstructionKind::VectorReverse:
                     SimdEmitter { emit.code(), emit.vectors() }.reverse(
                         std::get<arm::VectorReverseOperands>(inst.vector));

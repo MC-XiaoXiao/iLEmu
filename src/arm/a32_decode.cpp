@@ -7,6 +7,7 @@
 #include "simd_integer_decode.hpp"
 #include "simd_extract.hpp"
 #include "simd_reverse.hpp"
+#include "simd_shift_immediate.hpp"
 #include "simd_transfer.hpp"
 #include "system_control.hpp"
 #include "program_status_decode.hpp"
@@ -61,7 +62,8 @@ Instruction decode_a32(std::uint32_t word, execution::VfpRegisterProfile vfp,
             decode_simd_duplicate(out, word, false) ||
             decode_simd_bitwise(out, word, false) ||
             decode_simd_extract(out, word, false) ||
-            decode_simd_reverse(out, word, false, vfp, architecture, simd))
+            decode_simd_reverse(out, word, false, vfp, architecture, simd) ||
+            decode_simd_shift_immediate(out, word, false, vfp, architecture, simd))
             return out;
         break;
     case 2:
