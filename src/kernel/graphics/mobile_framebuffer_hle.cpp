@@ -27,6 +27,7 @@
 #include "foundation/cpu.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "graphics/mobile_framebuffer_abi.hpp"
@@ -75,12 +76,20 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
                                   ? std::move(presentations)
                                   : std::make_shared<PresentationTracker>() }
     , host_graphics_ { shared_gles_renderer() }
-    , command_encoder_ { host_graphics_->create_command_encoder() }
 {
+    reset_composition_targets();
     const auto add = [&](std::string symbol,
                          UserlandHleRegistry::Handler handler) {
         registry.register_function(std::string { framebuffer_image },
-            std::move(symbol), std::move(handler));
+            std::move(symbol),
+            [this, handler = std::move(handler)](UserlandHleCall& call) {
+                const auto entry_symbol = call.symbol();
+                if (entry_symbol.starts_with("_IOMobileFramebufferSwap") ||
+                    entry_symbol == "_IOMobileFramebufferWaitSurface")
+                    enter_swap_call(call, handler);
+                else
+                    handler(call);
+            });
     };
     register_device_functions(registry);
     // Observe the firmware callback before it coalesces received notifications.
@@ -144,17 +153,8 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
             performance_counters().record_vsync_swap_end(call.process_id(),
                 call.argument(0),
                 static_cast<std::uint32_t>(call.cpu().processor_id()));
-            static_cast<void>(submit_layers(call));
-            const auto semantic_process_id = record_presentation(call);
-            if (display_) {
-                display_->present(call.process_id());
-                performance_counters().record_vsync_guest_submit(
-                    call.process_id(), call.argument(0));
-                if (frame_presented_handler_)
-                    frame_presented_handler_(call.process_id());
-                if (semantic_process_id && semantic_presentation_handler_)
-                    semantic_presentation_handler_(*semantic_process_id);
-            }
+            submit_layers(call);
+            return;
         }
         call.set_return(iokit_abi::success);
     });
@@ -187,21 +187,25 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
 
 void MobileFramebufferHle::reset()
 {
+    cancel_pending_work();
+    sync_lease_.reset();
     external_framebuffers_.clear();
     layers_.clear();
     layer_surface_leases_.clear();
-    // The HLE is shared by all guest processes. An exec of a helper process
+    // The panel is shared by all guest processes. An exec of a helper process
     // must not erase the panel's last submitted frame while SpringBoard is
     // being relaunched; preserve scanout until the new owner presents.
     next_swap_id_ = 1;
     background_argb_ = 0xff000000U;
     submitted_background_argb_ = background_argb_;
-    composition_surface_index_ = 0;
+    reset_composition_targets();
     // Keep submitted_layers_ and scanout_contents_valid_ across process exec.
 }
 
 void MobileFramebufferHle::inherit_state(const MobileFramebufferHle& parent)
 {
+    cancel_pending_work();
+    sync_lease_.reset();
     external_framebuffers_ = parent.external_framebuffers_;
     layers_ = parent.layers_;
     layer_surface_leases_ = parent.layer_surface_leases_;
@@ -210,11 +214,11 @@ void MobileFramebufferHle::inherit_state(const MobileFramebufferHle& parent)
     background_argb_ = parent.background_argb_;
     submitted_background_argb_ = parent.submitted_background_argb_;
     scanout_surface_ = parent.scanout_surface_;
+    scanout_lease_ = parent.scanout_lease_;
     // The published scanout is read-only from the child's point of view. Do
     // not inherit the writable composition targets: forked kernels can submit
     // concurrently, so each instance must own the targets it may modify.
-    composition_surfaces_.clear();
-    composition_surface_index_ = 0;
+    reset_composition_targets();
     scanout_contents_valid_ = parent.scanout_contents_valid_;
 }
 
@@ -226,8 +230,8 @@ void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display)
         if (descriptor.width != display_->width() ||
             descriptor.height != display_->height()) {
             scanout_surface_.reset();
-            composition_surfaces_.clear();
-            composition_surface_index_ = 0;
+            scanout_lease_.reset();
+            reset_composition_targets();
             submitted_layers_.clear();
             scanout_contents_valid_ = false;
         }
@@ -348,34 +352,53 @@ bool MobileFramebufferHle::application_surface_allowed(
                 .contains({ producer_process_id, publication_sequence });
 }
 
-void MobileFramebufferHle::ensure_scanout_surface()
+void MobileFramebufferHle::reset_composition_targets()
+{
+    const auto owner = allocate_gles_renderer_owner();
+    auto lifetime = std::make_shared<GlesRendererOwner>(host_graphics_, owner);
+    composition_surfaces_.clear();
+    composition_surface_index_ = 0;
+    composition_owner_ = owner;
+    composition_lifetime_ = std::move(lifetime);
+}
+
+bool MobileFramebufferHle::ensure_scanout_surface()
 {
     if (!display_)
-        return;
+        return false;
     if (scanout_surface_) {
         const auto descriptor = scanout_surface_->descriptor();
         if (descriptor.width == display_->width() &&
             descriptor.height == display_->height()) {
-            return;
+            return true;
         }
     }
+    if (!composition_lifetime_->activate())
+        return false;
     const auto pixels =
         static_cast<std::size_t>(display_->width()) * display_->height();
     const std::vector<std::uint32_t> initial(pixels, background_argb_);
-    scanout_surface_ = host_graphics_->create_surface(
-        { 0x4d464253U,
+    auto surface = host_graphics_->create_surface(
+        { composition_owner_,
             next_scanout_surface.fetch_add(1, std::memory_order_relaxed) },
         HostSurfaceDescriptor { display_->width(), display_->height(),
             display_->width() * core_surface_abi::bytes_per_bgra_pixel,
             surface_pixel_format_bgra, PerfSurfaceKind::Scanout },
         initial);
+    auto lease = make_host_surface_presentation_lease(
+        surface, composition_lifetime_);
+    scanout_surface_ = std::move(surface);
+    scanout_lease_ = std::move(lease);
     submitted_layers_.clear();
     submitted_background_argb_ = background_argb_;
     scanout_contents_valid_ = false;
+    return static_cast<bool>(scanout_surface_);
 }
 
 std::shared_ptr<HostSurface> MobileFramebufferHle::acquire_composition_surface()
 {
+    if (!composition_lifetime_->activate())
+        return { };
     constexpr std::size_t composition_ring_size = 8;
     const auto descriptor =
         HostSurfaceDescriptor { display_->width(), display_->height(),
@@ -383,7 +406,7 @@ std::shared_ptr<HostSurface> MobileFramebufferHle::acquire_composition_surface()
             surface_pixel_format_bgra, PerfSurfaceKind::Scanout };
     while (composition_surfaces_.size() < composition_ring_size) {
         auto surface = host_graphics_->create_surface(
-            { 0x434f4d50U,
+            { composition_owner_,
                 next_scanout_surface.fetch_add(1, std::memory_order_relaxed) },
             descriptor);
         composition_surfaces_.push_back(std::move(surface));
@@ -403,406 +426,13 @@ std::shared_ptr<HostSurface> MobileFramebufferHle::acquire_composition_surface()
     // the host-only pool for this submission instead of reusing a mutable
     // surface and changing the pixels of an older queued DisplayFrame.
     auto surface = host_graphics_->create_surface(
-        { 0x434f4d50U,
+        { composition_owner_,
             next_scanout_surface.fetch_add(1, std::memory_order_relaxed) },
         descriptor);
     composition_surfaces_.push_back(surface);
     return surface;
 }
 
-MobileFramebufferHle::SubmissionResult
-MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
-{
-    constexpr bool debug_submission = false;
-    if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
-        return SubmissionResult::Failed;
-    ensure_scanout_surface();
-    if (!scanout_surface_)
-        return SubmissionResult::Failed;
-    const auto exact_rectangle =
-        [](const Rectangle& rectangle) -> std::optional<HostRectangle> {
-        const auto exact = [](float value) {
-            return std::isfinite(value) && std::trunc(value) == value;
-        };
-        if (!exact(rectangle.x) || !exact(rectangle.y) ||
-            !exact(rectangle.width) || !exact(rectangle.height) ||
-            rectangle.x < 0.0F || rectangle.y < 0.0F ||
-            rectangle.width <= 0.0F || rectangle.height <= 0.0F ||
-            static_cast<double>(rectangle.x) >
-                static_cast<double>(std::numeric_limits<std::int32_t>::max()) ||
-            static_cast<double>(rectangle.y) >
-                static_cast<double>(std::numeric_limits<std::int32_t>::max()) ||
-            static_cast<double>(rectangle.width) >
-                static_cast<double>(
-                    std::numeric_limits<std::uint32_t>::max()) ||
-            static_cast<double>(rectangle.height) >
-                static_cast<double>(
-                    std::numeric_limits<std::uint32_t>::max())) {
-            return std::nullopt;
-        }
-        return HostRectangle { static_cast<std::int32_t>(rectangle.x),
-            static_cast<std::int32_t>(rectangle.y),
-            static_cast<std::uint32_t>(rectangle.width),
-            static_cast<std::uint32_t>(rectangle.height) };
-    };
-
-    struct PreparedLayer {
-        std::uint32_t order { };
-        LayerState state;
-        std::shared_ptr<HostSurface> source;
-        HostRectangle source_rectangle;
-        HostRectangle destination_rectangle;
-        std::uint64_t generation { };
-    };
-    std::vector<PreparedLayer> prepared_layers;
-    prepared_layers.reserve(layers_.size());
-    for (const auto& [layer, state] : layers_) {
-        const auto backing = surface_store_->find(state.surface_id);
-        const auto allowed =
-            !backing || application_surface_allowed(
-                            backing->provenance.producer_process_id,
-                            backing->provenance.publication_sequence);
-        if (!allowed) {
-            continue;
-        }
-        auto effective_state = state;
-        if (backing) {
-            apply_application_display(effective_state,
-                backing->provenance.producer_process_id, backing->width,
-                backing->height);
-        }
-        const auto source =
-            surface_store_->host_surface(effective_state.surface_id);
-        if (debug_submission) {
-            std::string message =
-                "[mfb-debug] layer pid=" + std::to_string(call.process_id()) +
-                " order=" + std::to_string(layer) +
-                " id=" + std::to_string(state.surface_id) +
-                " allowed=" + (allowed ? "1" : "0") +
-                " src=" + std::to_string(state.source.x) + "," +
-                std::to_string(state.source.y) + "," +
-                std::to_string(state.source.width) + "," +
-                std::to_string(state.source.height) +
-                " dst=" + std::to_string(state.destination.x) + "," +
-                std::to_string(state.destination.y) + "," +
-                std::to_string(state.destination.width) + "," +
-                std::to_string(state.destination.height);
-            if (backing) {
-                message += " backing=" + std::to_string(backing->width) +
-                           "x" + std::to_string(backing->height) +
-                           " pitch=" + std::to_string(backing->bytes_per_row) +
-                           " fmt=" + std::to_string(backing->pixel_format) +
-                           " producer=" +
-                           std::to_string(backing->provenance.producer_process_id) +
-                           " publication=" +
-                           std::to_string(backing->provenance.publication_sequence);
-            } else {
-                message += " backing=missing";
-            }
-            if (source) {
-                const auto descriptor = source->descriptor();
-                message += " host=" + std::to_string(descriptor.width) + "x" +
-                           std::to_string(descriptor.height) +
-                           " hostfmt=" + std::to_string(descriptor.pixel_format) +
-                           " cpu=" + std::to_string(source->cpu_generation()) +
-                           " gpu=" + std::to_string(source->gpu_generation()) +
-                           " damage=" +
-                           std::to_string(source->cpu_damage_rectangles().size());
-            } else {
-                message += " host=missing";
-            }
-            call.output().write(message + "\n");
-        }
-        // Page-granular guest dirtiness cannot be merged safely into a surface
-        // whose complete contents are newer on the GPU. CPU-owned layers still
-        // need their direct mapped writes imported before presentation.
-        if (source && source->gpu_generation() <= source->cpu_generation() &&
-            !surface_store_->synchronize_from_guest(
-                call.memory(), effective_state.surface_id)) {
-            return SubmissionResult::Failed;
-        }
-        const auto source_rectangle = exact_rectangle(effective_state.source);
-        const auto destination_rectangle =
-            exact_rectangle(effective_state.destination);
-        if (!backing ||
-            (backing->pixel_format != surface_pixel_format_bgra &&
-                !surface_is_packed_555(backing->pixel_format)) ||
-            !source || !source_rectangle || !destination_rectangle ||
-            static_cast<std::uint32_t>(source_rectangle->x) >
-                backing->width -
-                    std::min(backing->width, source_rectangle->width) ||
-            source_rectangle->width > backing->width ||
-            static_cast<std::uint32_t>(source_rectangle->y) >
-                backing->height -
-                    std::min(backing->height, source_rectangle->height) ||
-            source_rectangle->height > backing->height ||
-            static_cast<std::uint32_t>(destination_rectangle->x) >
-                display_->width() -
-                    std::min(display_->width(), destination_rectangle->width) ||
-            destination_rectangle->width > display_->width() ||
-            static_cast<std::uint32_t>(destination_rectangle->y) >
-                display_->height() - std::min(display_->height(),
-                                         destination_rectangle->height) ||
-            destination_rectangle->height > display_->height()) {
-            return SubmissionResult::Failed;
-        }
-        prepared_layers.push_back(
-            { layer, effective_state, source, *source_rectangle,
-                *destination_rectangle,
-                std::max(source->cpu_generation(), source->gpu_generation()) });
-    }
-
-    if (debug_submission) {
-        call.output().write(
-            "[mfb-debug] submit pid=" + std::to_string(call.process_id()) +
-            " layers=" + std::to_string(layers_.size()) +
-            " prepared=" + std::to_string(prepared_layers.size()) +
-            " scanout-valid=" + (scanout_contents_valid_ ? "1" : "0") +
-            " background=" + std::to_string(background_argb_) + "\n");
-    }
-
-    const auto right = [](const HostRectangle& rectangle) {
-        return static_cast<std::int64_t>(rectangle.x) + rectangle.width;
-    };
-    const auto bottom = [](const HostRectangle& rectangle) {
-        return static_cast<std::int64_t>(rectangle.y) + rectangle.height;
-    };
-    const auto intersection = [&](const HostRectangle& left,
-                                  const HostRectangle& right_rectangle)
-        -> std::optional<HostRectangle> {
-        const auto x = std::max(left.x, right_rectangle.x);
-        const auto y = std::max(left.y, right_rectangle.y);
-        const auto x_end = std::min(right(left), right(right_rectangle));
-        const auto y_end = std::min(bottom(left), bottom(right_rectangle));
-        if (x_end <= x || y_end <= y)
-            return std::nullopt;
-        return HostRectangle { x, y, static_cast<std::uint32_t>(x_end - x),
-            static_cast<std::uint32_t>(y_end - y) };
-    };
-    const auto full_display =
-        HostRectangle { 0, 0, display_->width(), display_->height() };
-
-    for (const auto& layer : prepared_layers)
-        layer.source->mark_scanout_presentation();
-
-    std::vector<HostRectangle> damage;
-    const auto add_damage = [&](HostRectangle rectangle) {
-        const auto clipped = intersection(rectangle, full_display);
-        if (!clipped)
-            return;
-        rectangle = *clipped;
-        for (std::size_t index = 0; index < damage.size();) {
-            const auto touches =
-                static_cast<std::int64_t>(rectangle.x) <=
-                    right(damage[index]) &&
-                static_cast<std::int64_t>(damage[index].x) <=
-                    right(rectangle) &&
-                static_cast<std::int64_t>(rectangle.y) <=
-                    bottom(damage[index]) &&
-                static_cast<std::int64_t>(damage[index].y) <= bottom(rectangle);
-            if (!touches) {
-                ++index;
-                continue;
-            }
-            const auto x = std::min(rectangle.x, damage[index].x);
-            const auto y = std::min(rectangle.y, damage[index].y);
-            const auto x_end = std::max(right(rectangle), right(damage[index]));
-            const auto y_end =
-                std::max(bottom(rectangle), bottom(damage[index]));
-            rectangle = { x, y, static_cast<std::uint32_t>(x_end - x),
-                static_cast<std::uint32_t>(y_end - y) };
-            damage.erase(damage.begin() + static_cast<std::ptrdiff_t>(index));
-            index = 0;
-        }
-        damage.push_back(rectangle);
-        // Keep command growth bounded if a pathological producer updates many
-        // isolated regions in one SwapEnd. The fallback remains a conservative
-        // union, not a layer-driven full-screen expansion.
-        constexpr std::size_t maximum_damage_rectangles = 32;
-        if (damage.size() > maximum_damage_rectangles) {
-            auto merged = damage.front();
-            for (std::size_t index = 1; index < damage.size(); ++index) {
-                const auto x = std::min(merged.x, damage[index].x);
-                const auto y = std::min(merged.y, damage[index].y);
-                const auto x_end =
-                    std::max(right(merged), right(damage[index]));
-                const auto y_end =
-                    std::max(bottom(merged), bottom(damage[index]));
-                merged = { x, y, static_cast<std::uint32_t>(x_end - x),
-                    static_cast<std::uint32_t>(y_end - y) };
-            }
-            damage.assign(1, merged);
-        }
-    };
-    const auto propagate_source_damage =
-        [&](HostRectangle source_damage, HostRectangle source_rectangle,
-            HostRectangle destination_rectangle)
-        -> std::optional<HostRectangle> {
-        const auto affected = intersection(source_damage, source_rectangle);
-        if (!affected)
-            return std::nullopt;
-        const auto relative_left =
-            static_cast<std::uint64_t>(affected->x - source_rectangle.x);
-        const auto relative_top =
-            static_cast<std::uint64_t>(affected->y - source_rectangle.y);
-        const auto relative_right =
-            static_cast<std::uint64_t>(right(*affected) - source_rectangle.x);
-        const auto relative_bottom =
-            static_cast<std::uint64_t>(bottom(*affected) - source_rectangle.y);
-        const auto scale_floor =
-            [](std::uint64_t value, std::uint32_t destination,
-                std::uint32_t source) { return value * destination / source; };
-        const auto scale_ceil = [](std::uint64_t value,
-                                    std::uint32_t destination,
-                                    std::uint32_t source) {
-            return (value * destination + source - 1U) / source;
-        };
-        const auto x =
-            static_cast<std::int64_t>(destination_rectangle.x) +
-            static_cast<std::int64_t>(scale_floor(relative_left,
-                destination_rectangle.width, source_rectangle.width));
-        const auto y =
-            static_cast<std::int64_t>(destination_rectangle.y) +
-            static_cast<std::int64_t>(scale_floor(relative_top,
-                destination_rectangle.height, source_rectangle.height));
-        const auto x_end =
-            static_cast<std::int64_t>(destination_rectangle.x) +
-            static_cast<std::int64_t>(scale_ceil(relative_right,
-                destination_rectangle.width, source_rectangle.width));
-        const auto y_end =
-            static_cast<std::int64_t>(destination_rectangle.y) +
-            static_cast<std::int64_t>(scale_ceil(relative_bottom,
-                destination_rectangle.height, source_rectangle.height));
-        if (x_end <= x || y_end <= y ||
-            x < std::numeric_limits<std::int32_t>::min() ||
-            y < std::numeric_limits<std::int32_t>::min() ||
-            x > std::numeric_limits<std::int32_t>::max() ||
-            y > std::numeric_limits<std::int32_t>::max()) {
-            return std::nullopt;
-        }
-        return HostRectangle { static_cast<std::int32_t>(x),
-            static_cast<std::int32_t>(y), static_cast<std::uint32_t>(x_end - x),
-            static_cast<std::uint32_t>(y_end - y) };
-    };
-    if (!scanout_contents_valid_ ||
-        submitted_background_argb_ != background_argb_) {
-        add_damage(full_display);
-    } else {
-        for (const auto& [order, submitted] : submitted_layers_) {
-            const auto current = std::find_if(prepared_layers.begin(),
-                prepared_layers.end(), [order](const PreparedLayer& layer) {
-                    return layer.order == order;
-                });
-            if (current == prepared_layers.end()) {
-                if (const auto old_destination =
-                        exact_rectangle(submitted.state.destination)) {
-                    add_damage(*old_destination);
-                }
-                continue;
-            }
-            if (current->state != submitted.state ||
-                current->source->key() != submitted.surface_key) {
-                if (const auto old_destination =
-                        exact_rectangle(submitted.state.destination)) {
-                    add_damage(*old_destination);
-                }
-                add_damage(current->destination_rectangle);
-            } else if (current->generation != submitted.generation) {
-                const auto source_damage =
-                    current->source->damage_since(submitted.generation);
-                for (const auto rectangle : source_damage) {
-                    if (const auto transformed = propagate_source_damage(
-                            rectangle, current->source_rectangle,
-                            current->destination_rectangle)) {
-                        add_damage(*transformed);
-                    }
-                }
-            }
-        }
-        for (const auto& current : prepared_layers) {
-            if (!submitted_layers_.contains(current.order))
-                add_damage(current.destination_rectangle);
-        }
-    }
-
-    if (debug_submission) {
-        call.output().write(
-            "[mfb-debug] damage pid=" + std::to_string(call.process_id()) +
-            " rects=" + std::to_string(damage.size()) +
-            " submitted=" + std::to_string(submitted_layers_.size()) + "\n");
-    }
-
-    auto composition_surface = scanout_surface_;
-    if (!damage.empty()) {
-        composition_surface = acquire_composition_surface();
-        if (!composition_surface)
-            return SubmissionResult::Failed;
-        const auto full_display_rectangle =
-            HostRectangle { 0, 0, display_->width(), display_->height() };
-        if (scanout_contents_valid_ &&
-            !command_encoder_->copy(scanout_surface_, composition_surface,
-                full_display_rectangle, full_display_rectangle,
-                HostCompositeMode::Copy, 0xffU, HostFilter::Nearest,
-                HostRotation::Identity)) {
-            scanout_contents_valid_ = false;
-            return SubmissionResult::Failed;
-        }
-        for (const auto rectangle : damage) {
-            if (!command_encoder_->fill(
-                    composition_surface, rectangle, background_argb_)) {
-                scanout_contents_valid_ = false;
-                return SubmissionResult::Failed;
-            }
-        }
-        for (const auto& layer : prepared_layers) {
-            for (const auto rectangle : damage) {
-                const auto clip =
-                    intersection(rectangle, layer.destination_rectangle);
-                if (!clip)
-                    continue;
-                if (!command_encoder_->copy(layer.source, composition_surface,
-                        layer.source_rectangle, layer.destination_rectangle,
-                        HostCompositeMode::PremultipliedSourceOver, 0xffU,
-                        HostFilter::Nearest, HostRotation::Identity, *clip)) {
-                    scanout_contents_valid_ = false;
-                    return SubmissionResult::Failed;
-                }
-            }
-        }
-        if (!command_encoder_->submit(PerfSubmitReason::Compositor)) {
-            scanout_contents_valid_ = false;
-            return SubmissionResult::Failed;
-        }
-        scanout_surface_ = composition_surface;
-    }
-
-    submitted_layers_.clear();
-    for (const auto& layer : prepared_layers) {
-        submitted_layers_.emplace(
-            layer.order, SubmittedLayer { layer.state, layer.source->key(),
-                             layer.generation });
-    }
-    submitted_background_argb_ = background_argb_;
-    scanout_contents_valid_ = true;
-    auto graphics = host_graphics_;
-    auto scanout = scanout_surface_;
-    display_->replace_surface(
-        scanout,
-        [graphics, scanout] {
-            if (!graphics->map_cpu(
-                    *scanout, true, PerfCpuMapReason::DeferredDisplayRead))
-                return std::vector<std::uint32_t> { };
-            auto mapping = scanout->map_cpu(
-                false, PerfCpuMapReason::DeferredDisplayRead);
-            return mapping.frame().pixels;
-        },
-        call.process_id(),
-        [scanout] {
-            return std::max(
-                scanout->cpu_generation(), scanout->gpu_generation());
-        });
-    return SubmissionResult::Submitted;
-}
 
 void MobileFramebufferHle::set_layer(UserlandHleCall& call)
 {
@@ -863,150 +493,6 @@ void MobileFramebufferHle::set_layer(UserlandHleCall& call)
                    call.argument(mobile_framebuffer_abi::flags_argument) });
     layer_surface_leases_.insert_or_assign(layer, surface_lease);
     call.set_return(iokit_abi::success);
-}
-
-MobileFramebufferHle::SubmissionResult
-MobileFramebufferHle::submit_layers(UserlandHleCall& call)
-{
-    if (display_ == nullptr)
-        return SubmissionResult::Failed;
-    const auto host_submission = submit_host_layers(call);
-    if (host_submission != SubmissionResult::Failed)
-        return host_submission;
-    scanout_contents_valid_ = false;
-    submitted_layers_.clear();
-    const auto geometry = display_->geometry();
-    std::vector<std::uint32_t> composed(
-        geometry.pixel_count(), background_argb_);
-    const auto blend_channel = [](std::uint32_t source,
-                                   std::uint32_t destination,
-                                   std::uint32_t inverse_alpha) {
-        return std::min(
-            255U, source + (destination * inverse_alpha + 127U) / 255U);
-    };
-    for (const auto& [layer, state] : layers_) {
-        static_cast<void>(layer);
-        const auto backing = surface_store_->find(state.surface_id);
-        if (backing && !application_surface_allowed(
-                           backing->provenance.producer_process_id,
-                           backing->provenance.publication_sequence)) {
-            continue;
-        }
-        auto effective_state = state;
-        if (backing) {
-            apply_application_display(effective_state,
-                backing->provenance.producer_process_id, backing->width,
-                backing->height);
-        }
-        const auto source_surface =
-            surface_store_->host_surface(effective_state.surface_id);
-        if (source_surface)
-            source_surface->mark_scanout_presentation();
-        auto source_pixels =
-            surface_store_->read_argb(call.memory(), effective_state.surface_id);
-        if (!backing || !source_pixels || backing->width == 0 ||
-            backing->height == 0) {
-            continue;
-        }
-        const auto clipped_edge = [](double value, std::uint32_t maximum) {
-            return static_cast<int>(std::clamp(
-                std::floor(value + 0.5), 0.0, static_cast<double>(maximum)));
-        };
-        const auto destination_left =
-            clipped_edge(effective_state.destination.x, geometry.width);
-        const auto destination_top =
-            clipped_edge(effective_state.destination.y, geometry.height);
-        const auto destination_right = clipped_edge(
-            static_cast<double>(effective_state.destination.x) +
-                effective_state.destination.width,
-            geometry.width);
-        const auto destination_bottom = clipped_edge(
-            static_cast<double>(effective_state.destination.y) +
-                effective_state.destination.height,
-            geometry.height);
-        if (destination_right <= destination_left ||
-            destination_bottom <= destination_top) {
-            continue;
-        }
-        const auto full_surface_copy =
-            destination_left == 0 && destination_top == 0 &&
-            destination_right == static_cast<int>(geometry.width) &&
-            destination_bottom == static_cast<int>(geometry.height) &&
-            effective_state.destination.x == 0.0F &&
-            effective_state.destination.y == 0.0F &&
-            effective_state.destination.width ==
-                static_cast<float>(geometry.width) &&
-            effective_state.destination.height ==
-                static_cast<float>(geometry.height) &&
-            effective_state.source.x == 0.0F &&
-            effective_state.source.y == 0.0F &&
-            effective_state.source.width == static_cast<float>(backing->width) &&
-            effective_state.source.height ==
-                static_cast<float>(backing->height) &&
-            backing->width == geometry.width &&
-            backing->height == geometry.height &&
-            std::all_of(source_pixels->begin(), source_pixels->end(),
-                [](std::uint32_t pixel) { return (pixel >> 24U) == 255U; });
-        if (full_surface_copy) {
-            composed = std::move(*source_pixels);
-            continue;
-        }
-        std::vector<std::uint32_t> source_columns(
-            static_cast<std::size_t>(destination_right - destination_left));
-        for (auto x = destination_left; x < destination_right; ++x) {
-            const auto horizontal =
-                (static_cast<float>(x) + 0.5F - effective_state.destination.x) /
-                effective_state.destination.width;
-            source_columns[static_cast<std::size_t>(x - destination_left)] =
-                static_cast<std::uint32_t>(
-                    std::floor(std::clamp(
-                        static_cast<double>(effective_state.source.x) +
-                            horizontal * effective_state.source.width,
-                        0.0, static_cast<double>(backing->width - 1U))));
-        }
-        for (auto y = destination_top; y < destination_bottom; ++y) {
-            const auto vertical =
-                (static_cast<float>(y) + 0.5F - effective_state.destination.y) /
-                effective_state.destination.height;
-            const auto source_y = static_cast<std::uint32_t>(
-                std::floor(std::clamp(
-                    static_cast<double>(effective_state.source.y) +
-                        vertical * effective_state.source.height,
-                    0.0, static_cast<double>(backing->height - 1U))));
-            for (auto x = destination_left; x < destination_right; ++x) {
-                const auto source_x = source_columns[static_cast<std::size_t>(
-                    x - destination_left)];
-                const auto source_pixel =
-                    (*source_pixels)[static_cast<std::size_t>(source_y) *
-                                         backing->width +
-                                     static_cast<std::size_t>(source_x)];
-                auto& destination_pixel =
-                    composed[static_cast<std::size_t>(y) * geometry.width +
-                             static_cast<std::size_t>(x)];
-                const auto alpha = source_pixel >> 24U;
-                if (alpha == 255U) {
-                    destination_pixel = source_pixel;
-                    continue;
-                }
-                const auto inverse_alpha = 255U - alpha;
-                const auto output_alpha = blend_channel(
-                    alpha, destination_pixel >> 24U, inverse_alpha);
-                const auto output_red =
-                    blend_channel((source_pixel >> 16U) & 0xffU,
-                        (destination_pixel >> 16U) & 0xffU, inverse_alpha);
-                const auto output_green =
-                    blend_channel((source_pixel >> 8U) & 0xffU,
-                        (destination_pixel >> 8U) & 0xffU, inverse_alpha);
-                const auto output_blue = blend_channel(source_pixel & 0xffU,
-                    destination_pixel & 0xffU, inverse_alpha);
-                destination_pixel = (output_alpha << 24U) |
-                                    (output_red << 16U) | (output_green << 8U) |
-                                    output_blue;
-            }
-        }
-    }
-    display_->replace_pixels(std::move(composed), call.process_id());
-    return SubmissionResult::Submitted;
 }
 
 std::optional<std::uint32_t> MobileFramebufferHle::record_presentation(

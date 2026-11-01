@@ -7,6 +7,7 @@ add_library(ilemu_graphics STATIC
     display.cpp
     core_animation_remote_abi.cpp
     gles_renderer.cpp
+    gles_frame_draw.cpp
     gles_primitive_assembler.cpp
     gles_resources.cpp
     gles_rasterizer.cpp
@@ -19,6 +20,8 @@ add_library(ilemu_graphics STATIC
     gles_filter_profile.cpp
     gles_program_state.cpp
     gles_program_renderer.cpp
+    gles_program_worker.cpp
+    gles_prepared_textures.cpp
     presentation_tracker.cpp
     surface_store.cpp)
 target_sources(ilemu_graphics PRIVATE touch_replay.cpp)
@@ -36,4 +39,4 @@ add_library(iLEmu::graphics ALIAS ilemu_graphics)
 ilemu_configure_module(ilemu_graphics)
 target_link_libraries(ilemu_graphics
     PUBLIC iLEmu::foundation
-    PRIVATE PNG::PNG)
+    PRIVATE PNG::PNG Threads::Threads)

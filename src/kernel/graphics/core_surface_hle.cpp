@@ -160,6 +160,9 @@ void CoreSurfaceHle::reset()
     free_client_buffers_.clear();
     free_imported_mappings_.clear();
     unsupported_trace_count_ = 0;
+    discard_default_scanout();
+    last_scanout_publication_ = 0;
+    last_scanout_gpu_generation_ = 0;
     last_scanout_generation_.reset();
     last_scanout_pixels_.clear();
     surfaces_->reset();
@@ -168,9 +171,16 @@ void CoreSurfaceHle::reset()
 void CoreSurfaceHle::inherit_state(const CoreSurfaceHle& parent)
 {
     buffers_ = parent.buffers_;
+    for (auto& [client, buffer] : buffers_) {
+        static_cast<void>(client);
+        buffer.identity = std::make_shared<BufferLifetime>();
+    }
     clients_by_id_ = parent.clients_by_id_;
     free_client_buffers_ = parent.free_client_buffers_;
     free_imported_mappings_ = parent.free_imported_mappings_;
+    discard_default_scanout();
+    last_scanout_publication_ = parent.last_scanout_publication_;
+    last_scanout_gpu_generation_ = parent.last_scanout_gpu_generation_;
     last_scanout_generation_ = parent.last_scanout_generation_;
     last_scanout_pixels_ = parent.last_scanout_pixels_;
     presentation_tracker_ = parent.presentation_tracker_;
@@ -179,6 +189,10 @@ void CoreSurfaceHle::inherit_state(const CoreSurfaceHle& parent)
 
 void CoreSurfaceHle::set_display(std::shared_ptr<DisplayState> display)
 {
+    if (display_ != display) {
+        discard_default_scanout();
+        last_scanout_generation_.reset();
+    }
     display_ = std::move(display);
 }
 
@@ -205,59 +219,6 @@ void CoreSurfaceHle::set_surface_port_handlers(
 {
     create_surface_port_ = std::move(create);
     lookup_surface_port_ = std::move(lookup);
-}
-
-bool CoreSurfaceHle::refresh_default_scanout(
-    AddressSpace& memory, std::uint32_t owner_process_id)
-{
-    if (!display_)
-        return false;
-    const auto backing =
-        surfaces_->find(iokit_abi::mobile_framebuffer_default_surface_id);
-    if (!backing)
-        return false;
-    const auto generation =
-        memory.range_write_generation(backing->base, backing->allocation_size);
-    if (!generation || generation == last_scanout_generation_)
-        return false;
-    last_scanout_generation_ = generation;
-    const auto pixels = surfaces_->read_argb(
-        memory, iokit_abi::mobile_framebuffer_default_surface_id);
-    if (!pixels || pixels->empty() || *pixels == last_scanout_pixels_) {
-        return false;
-    }
-
-    // A freshly allocated CoreSurface is zero-filled.  Do not replace the
-    // display's opaque-black power-on frame until the firmware has actually
-    // rendered something into the LCD backing store.
-    if (std::none_of(pixels->begin(), pixels->end(),
-            [](std::uint32_t pixel) { return pixel != 0; })) {
-        last_scanout_pixels_ = *pixels;
-        return false;
-    }
-
-    std::optional<ApplicationDisplay> profile;
-    if (shared_state_) {
-        std::lock_guard lock { shared_state_->mach_mutex };
-        const auto process = shared_state_->processes.find(owner_process_id);
-        if (process != shared_state_->processes.end() &&
-            process->second.application_display.kind !=
-                ApplicationDisplayMode::Native) {
-            profile = process->second.application_display;
-        }
-    }
-    auto display_pixels = *pixels;
-    if (profile) {
-        display_pixels = compose_application_display_pixels(*profile,
-            { backing->width, backing->height }, display_->geometry(),
-            display_pixels);
-        if (display_pixels.empty())
-            return false;
-    }
-    last_scanout_pixels_ = *pixels;
-    display_->replace_pixels(std::move(display_pixels), owner_process_id);
-    display_->present(owner_process_id);
-    return true;
 }
 
 CoreSurfaceHle::Buffer* CoreSurfaceHle::find(std::uint32_t client)
@@ -974,39 +935,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
             buffer->references));
         call.set_return(argument);
     } else if (operation == "Release") {
-        if (buffer->references != 0)
-            --buffer->references;
-        static_cast<void>(call.memory().write32(
-            buffer->client + buffer_abi.reference_count_offset,
-            buffer->references));
-        if (buffer->references == 0) {
-            // A caller-owned pixel buffer remains live after the surface
-            // wrapper is released. Publish completed GPU writes before that
-            // caller reads its own memory again.
-            if (!buffer->owns_memory) {
-                static_cast<void>(surfaces_->synchronize_for_cpu(call.memory(),
-                    buffer->id,
-                    SurfaceStore::CpuSynchronizationOptions {
-                        .read_only = true,
-                    }));
-            }
-            const auto client = buffer->client;
-            const auto id = buffer->id;
-            const auto imported_mapping_base = buffer->imported_mapping_base;
-            const auto imported_mapping_size = buffer->imported_mapping_size;
-            const auto imported_mapping_lease_token =
-                buffer->imported_mapping_lease_token;
-            const auto indexed = clients_by_id_.find({ id, buffer->transport });
-            if (indexed != clients_by_id_.end() && indexed->second == client) {
-                clients_by_id_.erase(indexed);
-            }
-            buffers_.erase(client);
-            surfaces_->release(id);
-            release_imported_mapping(call.memory(), imported_mapping_base,
-                imported_mapping_size, imported_mapping_lease_token);
-            recycle_client_buffer(client, buffer_abi);
-        }
-        call.set_return(0);
+        release_buffer(call, *buffer);
     } else if (operation == "GetPlaneCount") {
         call.set_return(static_cast<std::uint32_t>(buffer->planes.size()));
     } else if (!buffer->planes.empty() &&
@@ -1083,46 +1012,11 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
     } else if (operation == "IsGlobal") {
         call.set_return(1);
     } else if (operation == "Lock" || operation == "LockPlane") {
-        const auto options = call.argument(1);
-        const auto synchronized = surfaces_->synchronize_for_cpu(call.memory(),
-            buffer->id,
-            SurfaceStore::CpuSynchronizationOptions {
-                .avoid_sync =
-                    (options & core_surface_abi::lock_avoid_sync) != 0,
-                .read_only = (options & core_surface_abi::lock_read_only) != 0,
-            });
-        if (synchronized)
-            buffer->lock_options.push_back(options);
-        if (synchronized && buffer_abi.lock_seed_output &&
-            call.argument(2) != 0) {
-            static_cast<void>(
-                call.memory().write32(call.argument(2), buffer->seed));
-        }
-        call.set_return(synchronized ? success : 1U);
+        synchronize_buffer(call, *buffer, false);
     } else if (operation == "FlushProcessorCaches") {
-        static_cast<void>(
-            surfaces_->synchronize_from_guest(call.memory(), buffer->id));
-        call.set_return(success);
+        import_buffer(call, *buffer, true);
     } else if (operation == "Unlock" || operation == "UnlockPlane") {
-        // A matching explicit Lock is authoritative. WrapClientImage also
-        // owns an implicit lock and later calls Unlock with its options in r1,
-        // so preserve that firmware argument when no explicit Lock was seen.
-        auto options = call.argument(1);
-        if (!buffer->lock_options.empty()) {
-            options = buffer->lock_options.back();
-            buffer->lock_options.pop_back();
-        }
-        if ((options & core_surface_abi::lock_read_only) == 0) {
-            static_cast<void>(
-                surfaces_->synchronize_from_guest(call.memory(), buffer->id));
-            ++buffer->seed;
-            submit(*buffer, call);
-        }
-        if (buffer_abi.lock_seed_output && call.argument(2) != 0) {
-            static_cast<void>(
-                call.memory().write32(call.argument(2), buffer->seed));
-        }
-        call.set_return(success);
+        import_buffer(call, *buffer, false);
     } else if (operation == "CopyAllValues") {
         // The transport has no stored attachments yet. Return a retained,
         // empty firmware CFDictionary so native CoreVideo can enumerate it.

@@ -179,6 +179,11 @@ void CompatibilityKernel::exit_process(
 {
     if (process_.exited)
         return;
+    opengles_hle_.cancel_pending_work();
+    mbx2d_hle_.cancel_pending_work();
+    mobile_framebuffer_hle_.cancel_pending_work();
+    core_surface_hle_.discard_default_scanout();
+    userland_hle_.cancel_pending_calls();
     const auto usage = collect_resource_usage();
     note_timer_deadline_transition();
     hid_event_system_hle_.reset(process_.pid);
@@ -295,52 +300,12 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         bsd_success(cpu, 0);
         cpu.halt(Dynarmic::HaltReason::UserDefined1);
         return;
-    case 2: { // fork
-        const auto child = fork_handler_ ? fork_handler_(cpu) : std::nullopt;
-        if (!child) {
-            bsd_error(cpu, 11); // EAGAIN
-            return;
-        }
-        performance_counters().record_fork();
-        output_.write("[process] fork parent=" + std::to_string(process_.pid) +
-                      " child=" + std::to_string(*child) + " bootstrap=" +
-                      std::to_string(process_.bootstrap_port) + "\n");
-        bsd_success(cpu, *child);
-        if (scheduler_preemption_query_ &&
-            scheduler_preemption_query_(cpu.processor_id())) {
-            // fork publishes a runnable child before the parent resumes in
-            // Guest code. Preserve the parent's current quantum and stop at the
-            // normal semantic-preemption boundary if the child should run
-            // first.
-            cpu.request_guest_preemption();
-        }
+    case 2: // fork
+        dispatch_fork(cpu, false);
         return;
-    }
-    case 66: { // vfork
-        // The child receives a private snapshot rather than temporarily
-        // sharing the parent's memory. This is stricter isolation but keeps
-        // the observable fork/exec ABI while the parent and child are
-        // scheduled.
-        const auto child = fork_handler_ ? fork_handler_(cpu) : std::nullopt;
-        if (!child) {
-            bsd_error(cpu, 11);
-            return;
-        }
-        performance_counters().record_fork();
-        {
-            const std::lock_guard mach_lock { shared_state_->mach_mutex };
-            shared_state_->processes.at(*child).in_vfork = true;
-        }
-        output_.write("[process] vfork parent=" + std::to_string(process_.pid) +
-                      " child=" + std::to_string(*child) + " bootstrap=" +
-                      std::to_string(process_.bootstrap_port) + "\n");
-        bsd_success(cpu, *child);
-        if (scheduler_preemption_query_ &&
-            scheduler_preemption_query_(cpu.processor_id())) {
-            cpu.request_guest_preemption();
-        }
+    case 66: // vfork
+        dispatch_fork(cpu, true);
         return;
-    }
     case 7: // wait4
         dispatch_wait(cpu);
         return;

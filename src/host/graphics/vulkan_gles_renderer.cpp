@@ -5,8 +5,11 @@
 // Render guest GLES state and shared surfaces through Vulkan.
 
 #include "vulkan_gles_renderer.hpp"
+#include "graphics/gles_program_renderer.hpp"
 #include "vulkan_memory_allocator.hpp"
+#include "vulkan_image_allocation.hpp"
 #include "vulkan_present_timing.hpp"
+#include "vulkan_submission_fence.hpp"
 
 #include <algorithm>
 #include <array>
@@ -39,6 +42,7 @@
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_primitive_assembler.hpp"
 #include "graphics/gles_resources.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "graphics/gles_sampler_state.hpp"
 #include "graphics/gles_texture_mip_chain.hpp"
 
@@ -343,10 +347,17 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         bool flush(GlesRenderTargetKey target) override;
         bool finish(GlesRenderTargetKey target) override;
         bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target,
+            std::optional<HostRectangle>* readback_damage,
+            ReadbackStamp* stamp) override;
+        bool capture_readback(HostSurface& surface,
+            HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
+            PerfCpuMapReason reason,
             std::optional<HostRectangle>* readback_damage) override;
+        void acknowledge_readback(GlesRenderTargetKey target,
+            const ReadbackStamp& stamp) override;
         void invalidate(GlesRenderTargetKey target) override;
-        void release(std::span<const GlesRenderTargetKey> targets) override;
-        void release_owner(std::uint64_t owner) override;
+        bool release(std::span<const GlesRenderTargetKey> targets) override;
+        bool release_owner(std::uint64_t owner) override;
         [[nodiscard]] std::string_view name() const override
         {
             return renderer_name_;
@@ -382,6 +393,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         [[nodiscard]] bool refresh_presentation_surface() override;
 
     private:
+        bool retire_resources(std::uint64_t owner,
+            std::span<const GlesRenderTargetKey> selected);
+        bool finish_commands(PerfSubmitReason reason,
+            std::optional<GlesRenderTargetKey> target = std::nullopt);
+        void acknowledge_target_readback(GlesRenderTargetKey target,
+            const ReadbackStamp& stamp, bool cache_committed);
+        bool synchronize_impl(DisplayFrame& frame, GlesRenderTargetKey target,
+            std::optional<HostRectangle>* readback_damage, ReadbackStamp* stamp,
+            HostSurface* source, HostSurface::CpuSnapshot* snapshot,
+            PerfCpuMapReason reason);
         bool draw_batch(DisplayFrame& frame, GlesRenderTargetKey target,
             std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
             const GlesRasterState& state);
@@ -403,6 +424,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         };
 
         struct Image {
+            std::shared_ptr<VulkanImageAllocation> allocation_owner;
             VmaAllocator allocator { };
             VmaAllocation allocation { };
             VkDevice device { };
@@ -425,6 +447,28 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             void reset() noexcept;
         };
 
+        struct ReadbackTransfer {
+            Buffer download;
+            std::shared_ptr<VulkanImageAllocation> source;
+            std::shared_ptr<VulkanSubmissionFence> completion;
+            VkDeviceSize bytes { };
+            VkDeviceSize source_bytes { };
+        };
+
+        // Only complete, unobserved transfers are retired. Failed/unsubmitted
+        // transfers stay quarantined until renderer shutdown reconciles GPU use.
+        void collect_readbacks()
+        {
+            std::erase_if(readbacks_, [this](const auto& transfer) {
+                if (transfer.use_count() != 1 || !transfer->completion ||
+                    transfer->completion->status() != VK_SUCCESS)
+                    return false;
+                readback_bytes_ -= transfer->bytes;
+                readback_source_bytes_ -= transfer->source_bytes;
+                return true;
+            });
+        }
+
         struct TextureKey {
             std::uint64_t owner { };
             HostSurfaceKey surface { };
@@ -439,18 +483,33 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             Image image;
             Image render_target_snapshot;
             Image stencil;
-            Buffer download;
             VkFramebuffer framebuffer { };
             VkFramebuffer stencil_framebuffer { };
             VkImageLayout layout { VK_IMAGE_LAYOUT_UNDEFINED };
             VkImageLayout render_target_snapshot_layout {
                 VK_IMAGE_LAYOUT_UNDEFINED
             };
+            std::uint64_t incarnation { };
+            std::uint64_t revision { 1 };
             std::uint64_t cpu_generation { };
             PerfSurfaceKind kind { PerfSurfaceKind::GlesRenderTarget };
             bool valid { };
+            bool direct_read_since_cache { };
             std::optional<HostRectangle> dirty;
         };
+
+        static void advance_revision(Target& target)
+        {
+            if (target.revision == std::numeric_limits<std::uint64_t>::max())
+                throw std::overflow_error("Vulkan target revision exhausted");
+            ++target.revision;
+        }
+
+        static void record_damage(Target& target, HostRectangle rectangle)
+        {
+            advance_revision(target);
+            add_damage(target.dirty, rectangle);
+        }
 
         struct PooledTarget {
             Target target;
@@ -473,9 +532,17 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::uint64_t last_draw_batch { };
         };
 
+        struct RetiredResources {
+            std::uint64_t owner { };
+            VkDeviceSize bytes { };
+            std::map<GlesRenderTargetKey, Target> targets;
+            std::map<TextureKey, CachedTexture> textures;
+            std::shared_ptr<VulkanSubmissionFence> completion;
+        };
+
         struct CommandSlot {
             VkCommandBuffer command { };
-            VkFence fence { };
+            std::shared_ptr<VulkanSubmissionFence> fence;
             VkSemaphore image_available { };
             std::array<VkDescriptorSet, maximum_batch_draws> descriptors { };
             Buffer staging;
@@ -627,7 +694,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkShaderModule vertex_shader_ { };
         VkShaderModule fragment_shader_ { };
         std::map<PipelineKey, VkPipeline> pipelines_;
+        const std::uint64_t renderer_incarnation_ {
+            allocate_gles_renderer_owner()
+        };
+        std::uint64_t next_target_incarnation_ { 1 };
         std::map<GlesRenderTargetKey, Target> targets_;
+        std::vector<std::shared_ptr<RetiredResources>> retired_resources_;
+        std::vector<std::shared_ptr<ReadbackTransfer>> readbacks_;
+        VkDeviceSize readback_bytes_ { };
+        VkDeviceSize readback_source_bytes_ { };
         std::multimap<std::pair<std::uint32_t, std::uint32_t>, PooledTarget>
             target_pool_;
         VkDeviceSize target_pool_bytes_ { };
@@ -643,6 +718,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkDeviceSize uniform_stride_ { };
         std::array<CommandSlot, command_ring_size> command_slots_;
         std::size_t command_slot_index_ { };
+        std::shared_ptr<VulkanSubmissionFence> last_submission_;
         bool command_recording_ { };
         bool render_pass_open_ { };
         std::optional<GlesRenderTargetKey> render_pass_target_;
@@ -700,7 +776,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     }
 
     VulkanGlesRenderer::Image::Image(Image&& other) noexcept
-        : allocator { std::exchange(other.allocator, nullptr) }
+        : allocation_owner { std::move(other.allocation_owner) }
+        , allocator { std::exchange(other.allocator, nullptr) }
         , allocation { std::exchange(other.allocation, nullptr) }
         , device { std::exchange(other.device, VK_NULL_HANDLE) }
         , image { std::exchange(other.image, VK_NULL_HANDLE) }
@@ -720,6 +797,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         if (this == &other)
             return *this;
         reset();
+        allocation_owner = std::move(other.allocation_owner);
         allocator = std::exchange(other.allocator, nullptr);
         allocation = std::exchange(other.allocation, nullptr);
         device = std::exchange(other.device, VK_NULL_HANDLE);
@@ -738,12 +816,18 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     void VulkanGlesRenderer::Image::reset() noexcept
     {
-        if (sampler != VK_NULL_HANDLE)
-            vkDestroySampler(device, sampler, nullptr);
-        if (view != VK_NULL_HANDLE)
-            vkDestroyImageView(device, view, nullptr);
-        if (allocator != nullptr)
-            vmaDestroyImage(allocator, image, allocation);
+        if (allocation_owner) {
+            allocation_owner.reset();
+        } else {
+            // Partial construction still owns raw handles until the shared
+            // allocation owner is successfully installed at create_image end.
+            if (sampler != VK_NULL_HANDLE)
+                vkDestroySampler(device, sampler, nullptr);
+            if (view != VK_NULL_HANDLE)
+                vkDestroyImageView(device, view, nullptr);
+            if (allocator != nullptr)
+                vmaDestroyImage(allocator, image, allocation);
+        }
         allocator = nullptr;
         allocation = nullptr;
         device = VK_NULL_HANDLE;
@@ -874,18 +958,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
         bool finish(PerfSubmitReason reason) override
         {
-            std::lock_guard lock { renderer_.mutex_ };
-            try {
-                renderer_.submit_commands(true, reason);
-                return true;
-            } catch (...) {
-                renderer_.last_failure_reason_.store(
-                    PerfFallbackReason::BackendFailure,
-                    std::memory_order_relaxed);
-                static_cast<void>(vkDeviceWaitIdle(renderer_.device_));
-                renderer_.discard_commands();
-                return false;
-            }
+            return renderer_.finish_commands(reason);
         }
 
     private:
@@ -1178,17 +1251,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             require_success(vkAllocateCommandBuffers(
                                 device_, &command_info, command_buffers.data()),
                 "vkAllocateCommandBuffers");
-            auto fence_info = make_vulkan_structure<VkFenceCreateInfo>(
-                VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
             auto semaphore_info = make_vulkan_structure<VkSemaphoreCreateInfo>(
                 VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
             for (std::size_t index = 0; index < command_slots_.size();
                 ++index) {
                 auto& slot = command_slots_[index];
                 slot.command = command_buffers[index];
-                require_success(
-                    vkCreateFence(device_, &fence_info, nullptr, &slot.fence),
-                    "vkCreateFence");
+                slot.fence =
+                    std::make_shared<VulkanSubmissionFence>(device_);
                 require_success(vkCreateSemaphore(device_, &semaphore_info,
                                     nullptr, &slot.image_available),
                     "vkCreateSemaphore(image available)");
@@ -1534,6 +1604,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         if (device_ != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device_);
+            readbacks_.clear();
+            readback_bytes_ = 0;
+            readback_source_bytes_ = 0;
+            for (auto& owner : retired_resources_)
+                for (auto& [key, target] : owner->targets) {
+                    static_cast<void>(key);
+                    destroy_target_framebuffers(target);
+                }
+            retired_resources_.clear();
             destroy_presentation_swapchain();
             if (pipeline_cache_ != VK_NULL_HANDLE &&
                 !pipeline_cache_path_.empty()) {
@@ -1623,11 +1702,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     vkDestroySemaphore(device_, slot.image_available, nullptr);
                     slot.image_available = VK_NULL_HANDLE;
                 }
-                if (slot.fence != VK_NULL_HANDLE) {
-                    vkDestroyFence(device_, slot.fence, nullptr);
-                    slot.fence = VK_NULL_HANDLE;
-                }
+                slot.fence.reset();
             }
+            last_submission_.reset();
             if (command_pool_ != VK_NULL_HANDLE) {
                 vkDestroyCommandPool(device_, command_pool_, nullptr);
             }
@@ -1807,6 +1884,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                 &result.sampler),
                 "vkCreateSampler");
         }
+        result.allocation_owner = std::make_shared<VulkanImageAllocation>(
+            result.allocator, result.allocation, result.device, result.image,
+            result.view, result.sampler);
         return result;
     }
 
@@ -1895,10 +1975,19 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             targets_.erase(found);
         }
 
+        // This is a binding incarnation, including reuse of a physical image.
+        // Check before creating a framebuffer so exhaustion cannot leak it.
+        if (next_target_incarnation_ ==
+            std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("Vulkan target incarnation exhausted");
+        const auto incarnation = next_target_incarnation_++;
         if (auto pooled = take_pooled_target(width, height)) {
+            pooled->incarnation = incarnation;
+            pooled->revision = 1;
             pooled->cpu_generation = 0;
             pooled->kind = PerfSurfaceKind::GlesRenderTarget;
             pooled->valid = false;
+            pooled->direct_read_since_cache = false;
             pooled->dirty.reset();
             const auto [reused, inserted] =
                 targets_.emplace(key, std::move(*pooled));
@@ -1907,6 +1996,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         }
 
         Target target;
+        target.incarnation = incarnation;
         target.image = create_image(width, height,
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -1966,10 +2056,25 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         }
         const auto dimensions =
             std::pair { target.image.width, target.image.height };
+        // Allocate the pool node before transferring native handles. Failure
+        // merely disables reuse; it must not leak a framebuffer or corrupt the
+        // byte counter after an otherwise completed resource retirement.
+        decltype(target_pool_)::iterator pooled;
+        try {
+            pooled = target_pool_.emplace(dimensions, PooledTarget { });
+        } catch (...) {
+            destroy_target_framebuffers(target);
+            return;
+        }
+        const auto framebuffer = std::exchange(target.framebuffer, VK_NULL_HANDLE);
+        const auto stencil_framebuffer =
+            std::exchange(target.stencil_framebuffer, VK_NULL_HANDLE);
+        pooled->second.target = std::move(target);
+        pooled->second.target.framebuffer = framebuffer;
+        pooled->second.target.stencil_framebuffer = stencil_framebuffer;
+        pooled->second.allocation_size = allocation_size;
+        pooled->second.last_used = ++target_pool_use_sequence_;
         target_pool_bytes_ += allocation_size;
-        target_pool_.emplace(
-            dimensions, PooledTarget { std::move(target), allocation_size,
-                            ++target_pool_use_sequence_ });
         trim_target_pool();
     }
 
@@ -2019,9 +2124,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             render_images > maximum - target.stencil.allocation_size
                 ? maximum
                 : render_images + target.stencil.allocation_size;
-        return images > maximum - target.download.size
-                   ? maximum
-                   : images + target.download.size;
+        return images;
     }
 
     std::uint64_t VulkanGlesRenderer::resource_bytes() const noexcept
@@ -2039,6 +2142,32 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         for (const auto& [key, target] : targets_) {
             static_cast<void>(key);
             add(target_allocation_size(target));
+        }
+        for (const auto& owner : retired_resources_)
+            add(owner->bytes);
+        for (auto transfer = readbacks_.begin(); transfer != readbacks_.end();
+            ++transfer) {
+            add((*transfer)->download.size);
+            const auto& source = (*transfer)->source;
+            const auto active = std::ranges::any_of(targets_,
+                [&source](const auto& entry) {
+                    return entry.second.image.allocation_owner == source;
+                });
+            const auto pooled = std::ranges::any_of(target_pool_,
+                [&source](const auto& entry) {
+                    return entry.second.target.image.allocation_owner == source;
+                });
+            const auto retiring = std::ranges::any_of(retired_resources_,
+                [&source](const auto& owner) {
+                    return std::ranges::any_of(owner->targets,
+                        [&source](const auto& entry) {
+                            return entry.second.image.allocation_owner == source;
+                        });
+                });
+            const auto counted = std::any_of(readbacks_.begin(), transfer,
+                [&source](const auto& prior) { return prior->source == source; });
+            if (!active && !pooled && !retiring && !counted)
+                add((*transfer)->source_bytes);
         }
         for (const auto& slot : command_slots_) {
             add(slot.staging.size);
@@ -2115,6 +2244,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     void VulkanGlesRenderer::begin_commands()
     {
+        collect_readbacks();
         if (command_recording_)
             return;
         auto& slot = command_slot();
@@ -2134,18 +2264,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         if (!slot.in_flight)
             return;
-        const auto measure_wait = performance_counters().enabled();
-        const auto wait_start = measure_wait
-                                    ? std::chrono::steady_clock::now()
-                                    : std::chrono::steady_clock::time_point { };
-        const auto wait_result = vkWaitForFences(
-            device_, 1, &slot.fence, VK_TRUE, fence_timeout_nanoseconds);
-        if (measure_wait) {
-            const auto elapsed = std::chrono::steady_clock::now() - wait_start;
-            performance_counters().record_fence_wait(static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
-                    .count()));
-        }
+        const auto wait_result = slot.fence->wait(fence_timeout_nanoseconds);
         require_success(wait_result, "vkWaitForFences");
         slot.in_flight = false;
     }
@@ -2179,8 +2298,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         require_success(
             vkEndCommandBuffer(submitted.command), "vkEndCommandBuffer");
         command_recording_ = false;
-        require_success(
-            vkResetFences(device_, 1, &submitted.fence), "vkResetFences");
+        VulkanSubmissionFence::prepare_for_submit(submitted.fence, device_);
         auto submit =
             make_vulkan_structure<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
         if (wait_semaphore != VK_NULL_HANDLE) {
@@ -2194,9 +2312,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             submit.signalSemaphoreCount = 1;
             submit.pSignalSemaphores = &signal_semaphore;
         }
-        require_success(vkQueueSubmit(queue_, 1, &submit, submitted.fence),
+        require_success(
+            vkQueueSubmit(queue_, 1, &submit, submitted.fence->handle()),
             "vkQueueSubmit");
         submitted.in_flight = true;
+        last_submission_ = submitted.fence;
         performance_counters().record_submit(reason);
         submitted.draw_count = 0;
         submitted.staging_bytes_used = 0;
@@ -2213,8 +2333,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         for (auto& slot : command_slots_) {
             if (slot.in_flight) {
-                static_cast<void>(vkWaitForFences(device_, 1, &slot.fence,
-                    VK_TRUE, fence_timeout_nanoseconds));
+                static_cast<void>(slot.fence->wait(fence_timeout_nanoseconds));
                 slot.in_flight = false;
             }
         }
@@ -2602,16 +2721,51 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
         GlesRenderTargetKey target,
-        std::optional<HostRectangle>* readback_damage)
+        std::optional<HostRectangle>* readback_damage, ReadbackStamp* stamp)
     {
+        return synchronize_impl(frame, target, readback_damage, stamp,
+            nullptr, nullptr, PerfCpuMapReason::GpuReadback);
+    }
+
+    bool VulkanGlesRenderer::capture_readback(HostSurface& surface,
+        HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
+        PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
+    {
+        if (!surface.work_succeeded(gles_executing_work_sequence()))
+            return false;
+        return synchronize_impl(snapshot.frame, surface.key(), readback_damage,
+            &stamp, &surface, &snapshot, reason);
+    }
+
+    bool VulkanGlesRenderer::synchronize_impl(DisplayFrame& frame,
+        GlesRenderTargetKey target,
+        std::optional<HostRectangle>* readback_damage, ReadbackStamp* stamp,
+        HostSurface* source, HostSurface::CpuSnapshot* snapshot,
+        PerfCpuMapReason reason)
+    {
+        if (stamp)
+            *stamp = { };
         if (readback_damage != nullptr)
             readback_damage->reset();
-        std::lock_guard lock { mutex_ };
+        std::unique_lock lock { mutex_ };
+        // Match the native dirty baseline to the CPU pixels atomically with
+        // respect to other native readback acknowledgements. The established
+        // order is renderer -> short surface lock; neither spans a GPU wait.
+        if (source)
+            *snapshot = source->snapshot_cpu(reason);
+        collect_readbacks();
         last_failure_reason_.store(
             PerfFallbackReason::None, std::memory_order_relaxed);
         const auto found = targets_.find(target);
-        if (found == targets_.end() || !found->second.valid ||
-            !found->second.dirty) {
+        const auto stale_cpu_cache = snapshot &&
+            (snapshot->cpu_generation < snapshot->gpu_generation ||
+                (found != targets_.end() &&
+                    found->second.direct_read_since_cache));
+        // A completed CPU write supersedes the older native image, even if
+        // that image still has unacknowledged damage awaiting a later upload.
+        if ((snapshot && snapshot->cpu_generation > snapshot->gpu_generation) ||
+            found == targets_.end() || !found->second.valid ||
+            (!found->second.dirty && !stale_cpu_cache)) {
             return true;
         }
         auto& surface = found->second;
@@ -2624,16 +2778,52 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             return false;
         }
 
+        const ReadbackStamp captured {
+            renderer_incarnation_, surface.incarnation, surface.revision
+        };
+        std::shared_ptr<ReadbackTransfer> transfer;
         try {
-            const auto damage = *surface.dirty;
+            // A direct-frame consumer may have acknowledged native damage
+            // without refreshing this HostSurface cache. If its generations
+            // still lag and dirty is empty, materialize the complete image.
+            const auto full_damage = HostRectangle {
+                0, 0, surface.image.width, surface.image.height };
+            const auto damage = snapshot && surface.direct_read_since_cache
+                                    ? full_damage
+                                    : surface.dirty.value_or(full_damage);
             if (readback_damage != nullptr)
                 *readback_damage = damage;
             const auto damage_pixels =
                 static_cast<std::size_t>(damage.width) * damage.height;
             const auto damage_bytes = static_cast<VkDeviceSize>(damage_pixels) *
                                       sizeof(std::uint32_t);
-            ensure_buffer(surface.download, damage_bytes,
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            constexpr VkDeviceSize readback_budget = 64U * mebibyte;
+            constexpr VkDeviceSize source_budget = 128U * mebibyte;
+            constexpr std::size_t maximum_readbacks = 64;
+            const auto capacity = std::max<VkDeviceSize>(damage_bytes, 4096U);
+            const auto source_bytes = surface.image.allocation_size;
+            if (readbacks_.size() >= maximum_readbacks ||
+                capacity > readback_budget ||
+                readback_bytes_ > readback_budget - capacity ||
+                source_bytes > source_budget ||
+                readback_source_bytes_ > source_budget - source_bytes) {
+                last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                    std::memory_order_relaxed);
+                return false;
+            }
+            transfer = std::make_shared<ReadbackTransfer>();
+            transfer->download = create_buffer(capacity,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            transfer->source = surface.image.allocation_owner;
+            transfer->bytes = capacity;
+            transfer->source_bytes = source_bytes;
+            // Register ownership before recording any GPU use. Cancellation or
+            // a failed wait cannot free a GPU-visible buffer/image prematurely.
+            readbacks_.push_back(transfer);
+            readback_bytes_ += capacity;
+            readback_source_bytes_ += source_bytes;
             begin_commands();
             end_render_pass();
             auto& commands = command_slot();
@@ -2672,7 +2862,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             copy.imageOffset = { damage.x, damage.y, 0 };
             copy.imageExtent = { damage.width, damage.height, 1 };
             vkCmdCopyImageToBuffer(commands.command, surface.image.image,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, surface.download.buffer,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, transfer->download.buffer,
                 1, &copy);
             auto host_barrier = make_vulkan_structure<VkBufferMemoryBarrier>(
                 VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER);
@@ -2680,40 +2870,94 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
             host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            host_barrier.buffer = surface.download.buffer;
+            host_barrier.buffer = transfer->download.buffer;
             host_barrier.size = VK_WHOLE_SIZE;
             vkCmdPipelineBarrier(commands.command,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
                 0, nullptr, 1, &host_barrier, 0, nullptr);
-            submit_commands(true, PerfSubmitReason::CpuReadback);
-            std::vector<std::uint32_t> pixels(damage_pixels);
-            download(surface.download, pixels.data(),
-                static_cast<std::size_t>(damage_bytes), surface.kind);
-            for (std::uint32_t row = 0; row < damage.height; ++row) {
-                std::copy_n(pixels.begin() +
-                                static_cast<std::size_t>(row) * damage.width,
-                    damage.width,
-                    frame.pixels.begin() +
-                        static_cast<std::size_t>(
-                            static_cast<std::uint32_t>(damage.y) + row) *
-                            frame.width +
-                        static_cast<std::uint32_t>(damage.x));
-            }
             surface.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            surface.dirty.reset();
+            const auto kind = surface.kind;
+            submit_commands(false, PerfSubmitReason::CpuReadback);
+            transfer->completion = last_submission_;
+            lock.unlock();
+            require_success(transfer->completion->wait(fence_timeout_nanoseconds),
+                "vkWaitForFences(readback)");
+            if (damage.x == 0 && damage.width == frame.width) {
+                // Full rows have the same packed layout in the download
+                // buffer and CPU frame; no intermediate pixel copy is needed.
+                download(transfer->download,
+                    frame.pixels.data() +
+                        static_cast<std::size_t>(damage.y) * frame.width,
+                    static_cast<std::size_t>(damage_bytes), kind);
+            } else {
+                std::vector<std::uint32_t> pixels(damage_pixels);
+                download(transfer->download, pixels.data(),
+                    static_cast<std::size_t>(damage_bytes), kind);
+                for (std::uint32_t row = 0; row < damage.height; ++row) {
+                    std::copy_n(pixels.begin() + static_cast<std::size_t>(row) *
+                                                     damage.width,
+                        damage.width,
+                        frame.pixels.begin() +
+                            static_cast<std::size_t>(
+                                static_cast<std::uint32_t>(damage.y) + row) *
+                                frame.width +
+                            static_cast<std::uint32_t>(damage.x));
+                }
+            }
+            if (stamp)
+                *stamp = captured;
+            else
+                acknowledge_target_readback(target, captured, false);
             return true;
         } catch (...) {
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
+            // After submission, the transfer registry owns actual resources
+            // until the exact fence signals. Do not wait on the renderer lock,
+            // reset later commands, or touch a Target that may now be reused.
+            if (!lock.owns_lock())
+                return false;
             vkDeviceWaitIdle(device_);
             discard_commands();
             for (auto& [key, texture] : texture_cache_) {
                 static_cast<void>(key);
                 texture.revision = 0;
             }
-            surface.valid = false;
-            surface.dirty.reset();
+            const auto current = targets_.find(target);
+            if (current != targets_.end() &&
+                current->second.incarnation == captured.target &&
+                current->second.revision == captured.revision) {
+                current->second.valid = false;
+                current->second.dirty.reset();
+            }
             return false;
+        }
+    }
+
+    void VulkanGlesRenderer::acknowledge_readback(
+        GlesRenderTargetKey target, const ReadbackStamp& stamp)
+    {
+        acknowledge_target_readback(target, stamp, true);
+    }
+
+    void VulkanGlesRenderer::acknowledge_target_readback(
+        GlesRenderTargetKey target, const ReadbackStamp& stamp,
+        bool cache_committed)
+    {
+        if (stamp.renderer != renderer_incarnation_)
+            return;
+        // This is advisory cache/dirty bookkeeping, including core result
+        // consumption. Do not wait behind legacy driver work holding this
+        // mutex across a GPU slot wait; retaining dirty is safe and retryable.
+        std::unique_lock lock { mutex_, std::try_to_lock };
+        if (!lock.owns_lock())
+            return;
+        const auto found = targets_.find(target);
+        if (found != targets_.end() &&
+            found->second.incarnation == stamp.target &&
+            found->second.revision == stamp.revision) {
+            found->second.dirty.reset();
+            found->second.direct_read_since_cache = !cache_committed;
         }
     }
 
@@ -2743,17 +2987,37 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     bool VulkanGlesRenderer::finish(GlesRenderTargetKey target)
     {
-        std::lock_guard lock { mutex_ };
+        return finish_commands(PerfSubmitReason::GlesSync, target);
+    }
+
+    bool VulkanGlesRenderer::finish_commands(PerfSubmitReason reason,
+        std::optional<GlesRenderTargetKey> target)
+    {
+        std::unique_lock lock { mutex_ };
         last_failure_reason_.store(
             PerfFallbackReason::None, std::memory_order_relaxed);
-        if (!targets_.contains(target))
+        if (target && !targets_.contains(*target))
             return true;
         try {
-            submit_commands(true, PerfSubmitReason::GlesSync);
+            submit_commands(false, reason);
+            // All submissions use one serialized queue. Its last fence covers
+            // commands earlier in submission order, not an arbitrary observed
+            // completion maximum. The shared owner prevents slot reuse from
+            // resetting this exact boundary while the worker waits unlocked.
+            const auto completion = last_submission_;
+            lock.unlock();
+            if (completion)
+                require_success(completion->wait(fence_timeout_nanoseconds),
+                    "vkWaitForFences");
             return true;
         } catch (...) {
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
+            // Accepted submissions still own their slot/resources. A failed
+            // outside-lock wait must not reset newer commands or stall core
+            // callers by reacquiring the mutex for device-idle recovery.
+            if (!lock.owns_lock())
+                return false;
             static_cast<void>(vkDeviceWaitIdle(device_));
             discard_commands();
             return false;
@@ -2768,91 +3032,122 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             return;
         if (command_recording_)
             submit_commands(false, PerfSubmitReason::ResourceLifetime);
-        wait_for_all_slots();
+        // Invalidation retires no allocation or command-slot storage. The next
+        // CPU upload uses the tracked image layout and queue-ordered barriers;
+        // it need not wait for unrelated submissions before marking this cache
+        // invalid. Slot reuse and actual resource retirement wait separately.
         found->second.valid = false;
         found->second.dirty.reset();
     }
 
-    void VulkanGlesRenderer::release(
+    bool VulkanGlesRenderer::release(
         std::span<const GlesRenderTargetKey> targets)
     {
-        const PerformanceLatencyScope latency {
-            PerfLatencyKind::GlesTargetRelease
-        };
-        std::lock_guard lock { mutex_ };
-        const auto has_target = std::ranges::any_of(targets,
-            [this](const auto target) { return targets_.contains(target); });
-        if (!has_target)
-            return;
-        if (command_recording_)
-            submit_commands(false, PerfSubmitReason::ResourceLifetime);
-        wait_for_all_slots();
-        for (const auto target : targets) {
-            const auto found = targets_.find(target);
-            if (found == targets_.end())
-                continue;
-            auto retired = std::move(found->second);
-            targets_.erase(found);
-            pool_target(std::move(retired));
-        }
+        return retire_resources(0, targets);
     }
 
-    void VulkanGlesRenderer::release_owner(std::uint64_t owner)
+    bool VulkanGlesRenderer::release_owner(std::uint64_t owner)
     {
-        if (owner == 0)
-            return;
+        return owner == 0 || retire_resources(owner, { });
+    }
+
+    bool VulkanGlesRenderer::retire_resources(std::uint64_t owner,
+        std::span<const GlesRenderTargetKey> selected)
+    {
         const PerformanceLatencyScope latency {
             PerfLatencyKind::GlesTargetRelease
         };
-        std::lock_guard lock { mutex_ };
-        const auto owns_target = [owner](const auto& entry) {
+        std::unique_lock lock { mutex_ };
+        if (owner != 0 && std::ranges::any_of(retired_resources_,
+                [owner](const auto& entry) {
+                    return entry->owner == owner ||
+                           std::ranges::any_of(entry->targets,
+                               [owner](const auto& target) {
+                                   return target.first.owner == owner;
+                               });
+                }))
+            return false;
+        const auto owns = [owner](const auto& entry) {
             return entry.first.owner == owner;
         };
-        const auto owns_texture = [owner](const auto& entry) {
-            return entry.first.owner == owner;
-        };
-        const auto has_target = std::ranges::any_of(targets_, owns_target);
-        const auto has_texture =
-            std::ranges::any_of(texture_cache_, owns_texture);
-        if (!has_target && !has_texture) {
-            return;
-        }
-        // Recorded descriptors and render passes can still reference both maps.
-        // Submit once and wait once before retiring the complete process batch.
+        const auto has_target = owner != 0
+                                    ? std::ranges::any_of(targets_, owns)
+                                    : std::ranges::any_of(selected,
+                                          [this](const auto key) {
+                                              return targets_.contains(key);
+                                          });
+        if (!has_target &&
+            (owner == 0 || !std::ranges::any_of(texture_cache_, owns)))
+            return true;
+        if (retired_resources_.size() >= GlesRendererOwner::maximum_namespaces)
+            return false;
+
+        std::shared_ptr<RetiredResources> retired;
         try {
-            if (command_recording_)
-                submit_commands(false, PerfSubmitReason::ResourceLifetime);
-            wait_for_all_slots();
+            retired = std::make_shared<RetiredResources>();
+            retired->owner = owner;
+            // Install retention before submission or detachment. A failed wait
+            // keeps the real native resources, not just their old names.
+            retired_resources_.push_back(retired);
+            submit_commands(false, PerfSubmitReason::ResourceLifetime);
+            retired->completion = last_submission_;
+            const auto add_bytes = [&retired](VkDeviceSize bytes) {
+                constexpr auto maximum =
+                    std::numeric_limits<VkDeviceSize>::max();
+                retired->bytes = bytes > maximum - retired->bytes
+                                     ? maximum
+                                     : retired->bytes + bytes;
+            };
+            const auto detach_target = [&](auto entry) {
+                add_bytes(target_allocation_size(entry->second));
+                retired->targets.insert(targets_.extract(entry));
+            };
+            if (owner != 0) {
+                for (auto entry = targets_.begin(); entry != targets_.end();) {
+                    if (entry->first.owner == owner)
+                        detach_target(entry++);
+                    else
+                        ++entry;
+                }
+                for (auto entry = texture_cache_.begin();
+                    entry != texture_cache_.end();) {
+                    if (entry->first.owner != owner) {
+                        ++entry;
+                        continue;
+                    }
+                    const auto bytes = entry->second.image.allocation_size;
+                    add_bytes(bytes);
+                    texture_cache_bytes_ -= std::min(texture_cache_bytes_, bytes);
+                    retired->textures.insert(texture_cache_.extract(entry++));
+                }
+            } else {
+                for (const auto key : selected) {
+                    const auto entry = targets_.find(key);
+                    if (entry != targets_.end())
+                        detach_target(entry);
+                }
+            }
+            lock.unlock();
+            if (retired->completion)
+                require_success(
+                    retired->completion->wait(fence_timeout_nanoseconds),
+                    "vkWaitForFences(resource retirement)");
+            lock.lock();
+            for (auto& [key, target] : retired->targets) {
+                static_cast<void>(key);
+                pool_target(std::move(target));
+            }
+            retired->targets.clear();
+            retired->textures.clear();
+            std::erase(retired_resources_, retired);
+            return true;
         } catch (...) {
-            // Resource release is reached from process teardown and OpenGLES
-            // reset paths, both of which are noexcept from the guest's point of
-            // view. Leave the owner entries for the renderer-wide destructor
-            // after recording has been discarded rather than terminating the
-            // emulator while unwinding an exiting task.
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
-            static_cast<void>(vkDeviceWaitIdle(device_));
-            discard_commands();
-            return;
-        }
-        for (auto target = targets_.begin(); target != targets_.end();) {
-            if (target->first.owner != owner) {
-                ++target;
-                continue;
-            }
-            auto retired = std::move(target->second);
-            target = targets_.erase(target);
-            pool_target(std::move(retired));
-        }
-        for (auto texture = texture_cache_.begin();
-            texture != texture_cache_.end();) {
-            if (texture->first.owner != owner) {
-                ++texture;
-                continue;
-            }
-            texture_cache_bytes_ -= std::min(
-                texture_cache_bytes_, texture->second.image.allocation_size);
-            texture = texture_cache_.erase(texture);
+            // The installed record or original maps retain resources on every
+            // failure. Do not reset later commands, wait idle under the mutex,
+            // recycle names, or release the caller's quarantine credit.
+            return false;
         }
     }
 
@@ -3140,22 +3435,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
         begin_commands();
         end_render_pass();
-        VkPipelineStageFlags source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        VkAccessFlags source_access { };
-        if (target.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-            source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            source_access = VK_ACCESS_TRANSFER_READ_BIT;
-        } else if (target.layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-            source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            source_access = VK_ACCESS_TRANSFER_WRITE_BIT;
-        } else if (target.layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-            source_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            source_access = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        }
+        // CPU replacement can follow an invalidation without a host fence
+        // wait. Include earlier sampling as well as transfer/attachment use,
+        // across submissions on this queue, before overwriting this image.
         transition_image(commands.command, target.image.image, target.layout,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, source_stage,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, source_access,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
             VK_ACCESS_TRANSFER_WRITE_BIT);
         std::vector<VkBufferImageCopy> copies;
         copies.reserve(upload_rectangles.size());
@@ -3175,14 +3462,17 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             target.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             static_cast<std::uint32_t>(copies.size()), copies.data());
         target.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        advance_revision(target);
         target.cpu_generation = cpu_generation;
         target.valid = true;
         // A partial CPU upload preserves newer GPU pixels outside the uploaded
         // rectangle. Keep their conservative damage so a later CPU map can
         // still refresh the shadow; a full upload makes the CPU frame
         // authoritative.
-        if (full_upload)
+        if (full_upload) {
             target.dirty.reset();
+            target.direct_read_since_cache = false;
+        }
         return target;
     }
 
@@ -3316,7 +3606,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 clear.layerCount = 1;
                 vkCmdClearAttachments(
                     command_slot().command, 1, &attachment, 1, &clear);
-                add_damage(target.dirty, rectangle);
+                record_damage(target, rectangle);
             }
             destination.mark_gpu_synchronized(
                 destination_preparation.cpu_generation);
@@ -3511,7 +3801,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         mode, global_alpha, true)) {
                     return false;
                 }
-                add_damage(destination_target.dirty, scissor);
+                record_damage(destination_target, scissor);
             }
             quad_white_surface_->mark_gpu_synchronized(
                 white_preparation.cpu_generation);
@@ -3653,7 +3943,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                     : std::optional { source_rectangle })) {
                     return false;
                 }
-                add_damage(destination_target.dirty, scissor);
+                record_damage(destination_target, scissor);
             }
             source.mark_gpu_synchronized(source_preparation.cpu_generation);
             destination.mark_gpu_synchronized(
@@ -4332,7 +4622,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                                          : VK_FILTER_NEAREST);
                     }
                 }
-                add_damage(destination_target.dirty, scissor_rectangle);
+                record_damage(destination_target, scissor_rectangle);
             }
             source.mark_gpu_synchronized(source_preparation.cpu_generation);
             destination.mark_gpu_synchronized(
@@ -4438,7 +4728,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         scissor, mode, global_alpha)) {
                     return false;
                 }
-                add_damage(destination_target.dirty, scissor);
+                record_damage(destination_target, scissor);
             }
             source.mark_gpu_synchronized(source_preparation.cpu_generation);
             destination.mark_gpu_synchronized(
@@ -4487,6 +4777,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         if (!surface)
             return PresentResult::Failed;
+        if (const auto writer = surface->writer(); writer && !writer->succeeded())
+            return writer->ready() ? PresentResult::Failed : PresentResult::Skipped;
         last_failure_reason_.store(
             PerfFallbackReason::None, std::memory_order_relaxed);
         const auto cpu_generation = surface->cpu_generation();
@@ -4641,7 +4933,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 continue;
             }
             const auto& surface = *level->second.host_surface;
-            if (surface.gpu_generation() > surface.cpu_generation())
+            // An owned native input has no CPU pixels. An earlier readback
+            // may publish the surface cache after that input was prepared;
+            // it does not change which image this draw must sample.
+            if (level->second.argb.empty() ||
+                surface.gpu_generation() > surface.cpu_generation())
                 gpu_newer_host_surfaces[index] = level->second.host_surface;
         }
         std::lock_guard lock { mutex_ };
@@ -5144,20 +5440,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 end_render_pass();
             }
             if (!gpu_target.valid) {
-                auto source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-                VkAccessFlags source_access { };
-                if (gpu_target.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-                    source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-                    source_access = VK_ACCESS_TRANSFER_READ_BIT;
-                } else if (gpu_target.layout ==
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-                    source_stage =
-                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-                    source_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                }
+                // Invalidation retains the allocation while earlier GPU work
+                // is in flight. Order all its reads/writes before CPU upload,
+                // including shader sampling and transfer destinations.
                 transition_image(commands.command, gpu_target.image.image,
                     gpu_target.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    source_stage, VK_PIPELINE_STAGE_TRANSFER_BIT, source_access,
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT);
                 VkBufferImageCopy target_copy { };
                 target_copy.bufferOffset = target_upload_offset;
@@ -5354,7 +5644,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 commands.command, state.blend_constant.data());
             vkCmdDraw(commands.command,
                 static_cast<std::uint32_t>(expanded.size()), 1, 0, 0);
-            add_damage(gpu_target.dirty,
+            record_damage(gpu_target,
                 HostRectangle { static_cast<std::int32_t>(scissor_left),
                     static_cast<std::int32_t>(
                         state.render_target_inverted_vertical

@@ -1630,6 +1630,15 @@ bool SdlDisplay::poll_events()
     return impl_->running;
 }
 
+void SdlDisplay::wake_event_wait() noexcept
+{
+#if defined(ILEMU_HAS_SDL2)
+    SDL_Event event { };
+    event.type = SDL_USEREVENT;
+    SDL_PushEvent(&event);
+#endif
+}
+
 bool SdlDisplay::wait_for_event(std::chrono::nanoseconds timeout)
 {
     performance_counters().record_sdl_idle_wait();

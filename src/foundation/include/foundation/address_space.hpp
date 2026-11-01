@@ -317,6 +317,21 @@ public:
     // release cannot erase unrelated pages remapped at the same virtual
     // address.
     bool unmap_mapping_lease(std::uint64_t mapping_lease_token);
+    // Observe the same range invalidation protocol without owning an unmap.
+    // A handle never retains an AddressSpace or calls it from its destructor.
+    class MappingObservation {
+    public:
+        [[nodiscard]] bool valid() const
+        {
+            return live_ && live_->load(std::memory_order_acquire);
+        }
+
+    private:
+        friend class AddressSpace;
+        std::shared_ptr<std::atomic_bool> live_;
+    };
+    [[nodiscard]] MappingObservation observe_mapping(
+        std::uint32_t address, std::size_t size);
     [[nodiscard]] std::optional<std::vector<std::byte>> read_bytes(
         std::uint32_t address, std::size_t size) const;
     [[nodiscard]] std::optional<std::string> read_c_string(
@@ -510,6 +525,8 @@ private:
     struct MappingLease {
         std::uint32_t begin { };
         std::uint64_t end { };
+        bool observation_only { };
+        std::weak_ptr<std::atomic_bool> observation { };
     };
     static constexpr std::size_t page_lookup_chunk_size = 1024;
     static constexpr std::size_t page_lookup_chunk_count =

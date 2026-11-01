@@ -135,6 +135,7 @@ AddressSpace::AddressSpace()
 AddressSpace::~AddressSpace()
 {
     auto lock = write_lock();
+    invalidate_mapping_leases_locked(0, std::uint64_t { 1 } << 32U);
     flush_shared_file_pages_locked(0,
         static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) +
             1U);
@@ -758,8 +759,15 @@ void AddressSpace::invalidate_mapping_leases_locked(
     std::uint32_t address, std::uint64_t end)
 {
     std::erase_if(mapping_leases_, [address, end](const auto& entry) {
-        return static_cast<std::uint64_t>(entry.second.begin) < end &&
-               entry.second.end > address;
+        const auto overlaps =
+            static_cast<std::uint64_t>(entry.second.begin) < end &&
+            entry.second.end > address;
+        if (overlaps) {
+            if (const auto live = entry.second.observation.lock())
+                live->store(false, std::memory_order_release);
+        }
+        return overlaps || (entry.second.observation_only &&
+                               entry.second.observation.expired());
     });
 }
 
@@ -787,7 +795,7 @@ void AddressSpace::clear()
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
     tracked_write_ranges_.clear();
     write_tracked_pages_.clear();
-    mapping_leases_.clear();
+    invalidate_mapping_leases_locked(0, std::uint64_t { 1 } << 32U);
     bump_executable_content_generation_locked();
 }
 
@@ -1260,13 +1268,36 @@ bool AddressSpace::unmap_mapping_lease(std::uint64_t mapping_lease_token)
         return false;
     auto lock = write_lock();
     const auto lease = mapping_leases_.find(mapping_lease_token);
-    if (lease == mapping_leases_.end())
+    if (lease == mapping_leases_.end() || lease->second.observation_only)
         return false;
     const auto range = lease->second;
     mapping_leases_.erase(lease);
     invalidate_mapping_leases_locked(range.begin, range.end);
     unmap_range_locked(range.begin, range.end);
     return true;
+}
+
+AddressSpace::MappingObservation AddressSpace::observe_mapping(
+    std::uint32_t address, std::size_t size)
+{
+    MappingObservation result;
+    if (size == 0 || range_overflows(address, size))
+        return result;
+    auto lock = write_lock();
+    if (!range_accessible_locked(address, size, MemoryPermission::None))
+        return result;
+    std::erase_if(mapping_leases_, [](const auto& entry) {
+        return entry.second.observation_only &&
+               entry.second.observation.expired();
+    });
+    result.live_ = std::make_shared<std::atomic_bool>(true);
+    auto token = next_mapping_lease_token_++;
+    while (token == 0 || mapping_leases_.contains(token))
+        token = next_mapping_lease_token_++;
+    mapping_leases_.emplace(
+        token, MappingLease { page_base(address), page_range_end(address, size),
+                   true, result.live_ });
+    return result;
 }
 
 std::optional<std::vector<std::byte>> AddressSpace::read_bytes(
@@ -2822,6 +2853,11 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
             std::memory_order_acquire),
         std::memory_order_release);
     result->mapping_leases_ = mapping_leases_;
+    // Pending host observers belong to the original address space. A child
+    // unmap must not invalidate a parent's suspended call (or inherit it).
+    std::erase_if(result->mapping_leases_, [](const auto& entry) {
+        return entry.second.observation_only;
+    });
     result->next_mapping_lease_token_ = next_mapping_lease_token_;
     result->file_page_cache_ = file_page_cache_;
     result->exclusive_write_tracked_pages_ = exclusive_write_tracked_pages_;

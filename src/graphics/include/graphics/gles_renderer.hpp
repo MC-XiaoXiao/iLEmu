@@ -44,6 +44,10 @@ using GlesRenderTargetKey = HostSurfaceKey;
 // EGL, CoreSurface, LayerKit, or any guest process details.
 class GlesRenderer : public HostGraphicsDevice {
 public:
+    struct ReadbackStamp {
+        // Zero renderer means no native pixels were materialized.
+        std::uint64_t renderer { }, target { }, revision { };
+    };
     virtual ~GlesRenderer() = default;
 
     [[nodiscard]] std::shared_ptr<HostSurface> create_surface(
@@ -54,6 +58,13 @@ public:
     [[nodiscard]] bool map_cpu(HostSurface& surface, bool read,
         PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback,
         std::optional<HostRectangle>* readback_damage = nullptr) override;
+    // Materialize into owned output, without holding HostSurface's lock over
+    // GPU work. Cache publication may lose a generation race; output remains
+    // the actual captured readback rather than a newer CPU cache substitute.
+    [[nodiscard]] bool read_surface(HostSurface& surface, DisplayFrame& output,
+        PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback,
+        bool* cache_committed = nullptr,
+        std::optional<HostRectangle>* readback_damage = nullptr);
     [[nodiscard]] HostNativeImage native_image(
         const HostSurface& surface) const override;
     [[nodiscard]] PresentResult present(
@@ -73,18 +84,33 @@ public:
     // implement this as a no-op.
     [[nodiscard]] virtual bool synchronize(DisplayFrame& frame,
         GlesRenderTargetKey target,
-        std::optional<HostRectangle>* readback_damage = nullptr) = 0;
+        std::optional<HostRectangle>* readback_damage = nullptr,
+        ReadbackStamp* stamp = nullptr) = 0;
+    // A stamped read keeps dirty state until its corresponding CPU cache
+    // commit succeeds. Backends reject acknowledgement of a replaced target
+    // or newer native write, including reuse with identical damage bounds.
+    virtual void acknowledge_readback(
+        GlesRenderTargetKey, const ReadbackStamp&)
+    {
+    }
+    // Backends with partial readback serialize CPU-baseline capture with their
+    // dirty-state capture. No surface mapping may stay locked over GPU work.
+    [[nodiscard]] virtual bool capture_readback(HostSurface& surface,
+        HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
+        PerfCpuMapReason reason,
+        std::optional<HostRectangle>* readback_damage);
     // Marks a CPU-side clear or another writer as authoritative for the target.
     virtual void invalidate(GlesRenderTargetKey target) = 0;
     // Releases a lifecycle batch behind one backend synchronization boundary.
     // Guest-facing stores already know the complete retiring set; preserving
     // that batch prevents a host fence wait per individual surface.
-    virtual void release(std::span<const GlesRenderTargetKey> targets) = 0;
+    virtual bool release(std::span<const GlesRenderTargetKey> targets) = 0;
     // Drops every process-local target and sampled texture associated with an
     // OpenGLES resource owner. The renderer is shared across guest processes,
     // so retiring only render targets would otherwise leave per-process
     // texture cache entries resident until the global LRU budget is reached.
-    virtual void release_owner(std::uint64_t owner) = 0;
+    // False retains ownership/quarantine credit until renderer shutdown.
+    [[nodiscard]] virtual bool release_owner(std::uint64_t owner) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
     [[nodiscard]] virtual bool accelerated() const = 0;
     // Native queue rendering also works with a CPU Vulkan ICD. Keep physical

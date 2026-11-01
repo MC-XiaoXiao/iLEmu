@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -17,8 +18,10 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "foundation/userland_hle.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_math.hpp"
@@ -26,8 +29,10 @@
 #include "graphics/gles_program_state.hpp"
 #include "graphics/gles_rasterizer.hpp"
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "graphics/gles_resources.hpp"
 #include "graphics/opengles_guest_capabilities.hpp"
+#include "kernel/graphics_call_lease.hpp"
 
 namespace ilemu {
 
@@ -35,6 +40,7 @@ class UserlandHleCall;
 class UserlandHleRegistry;
 class SceneCoordinator;
 class OpenGlesDispatchHle;
+class GlesFrameDraw;
 class SurfaceStore;
 struct KernelSharedState;
 
@@ -49,7 +55,15 @@ public:
     ~OpenGlesHle();
 
     void reset();
-    void inherit_state(const OpenGlesHle& parent);
+    void retire_thread(std::size_t processor);
+    void service_graphics_completions(bool process_live = true);
+    void cancel_pending_work(std::optional<std::size_t> processor = std::nullopt);
+    [[nodiscard]] bool fork_preparation_required() const;
+    void prepare_fork(UserlandHleCall& call,
+        std::function<void(UserlandHleCall&, bool)> completion);
+    void inherit_state(const OpenGlesHle& parent,
+        std::uint32_t parent_pid, std::uint32_t child_pid,
+        std::size_t parent_processor);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_guest_capabilities(OpenGlesGuestCapabilitySet profile);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
@@ -61,6 +75,10 @@ public:
 
 private:
     friend class OpenGlesDispatchHle;
+    // Retaining identity does not retain the guest object. A replacement with
+    // the same numeric name gets a different token; fork copies no observers.
+    struct ResourceLifetime { };
+    using ResourceIdentity = std::shared_ptr<const ResourceLifetime>;
     struct ThreadState {
         std::uint32_t display { };
         std::uint32_t draw_surface { };
@@ -69,6 +87,7 @@ private:
         std::uint32_t gl_error { };
     };
     struct SurfaceState {
+        ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
         std::optional<std::uint32_t> backing_identifier;
         std::uint32_t width { };
         std::uint32_t height { };
@@ -78,6 +97,7 @@ private:
         bool dirty { };
     };
     struct ContextState {
+        ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
         std::uint32_t client_api { 1U };
         struct FramebufferState {
             std::uint32_t color_texture_target { };
@@ -87,6 +107,7 @@ private:
             std::uint32_t stencil_renderbuffer { };
         };
         struct RenderbufferState {
+            ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
             std::uint32_t width { };
             std::uint32_t height { };
             std::uint32_t internal_format { };
@@ -222,13 +243,24 @@ private:
         bool inverted_vertical { };
         bool premultiplied { };
         SurfaceState* display_surface { };
+        ResourceIdentity surface_identity { };
     };
 
     struct PendingProgramTarget {
         RenderTargetBinding binding;
         DisplayFrame frame;
     };
-    [[nodiscard]] bool flush_program_draws(UserlandHleCall& call);
+    [[nodiscard]] bool program_draw_needs_flush(
+        const RenderTargetBinding& binding,
+        std::span<const std::uint32_t> textures) const;
+    void present_eagl_window_async(UserlandHleCall& call,
+        const ContextState& context, const RenderTargetBinding& binding);
+    void complete_drawable_storage(UserlandHleCall& call,
+        ResourceIdentity context, ResourceIdentity renderbuffer,
+        std::uint32_t name, DisplayGeometry pixels,
+        std::optional<DisplayViewport> viewport, std::uint32_t window,
+        std::uint32_t surface, std::uint64_t publication);
+    void collect_program_draw_errors();
 
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
     [[nodiscard]] ContextState* current_context(UserlandHleCall& call);
@@ -252,8 +284,8 @@ private:
     [[nodiscard]] std::optional<std::uint32_t> core_surface_identifier(
         UserlandHleCall& call, std::uint32_t surface) const;
     [[nodiscard]] SurfaceState* current_pixmap_surface(UserlandHleCall& call);
-    [[nodiscard]] bool refresh_pixmap_surface(
-        UserlandHleCall& call, std::uint32_t surface);
+    [[nodiscard]] bool prepare_pixmap_surface(UserlandHleCall& call,
+        const UserlandHleRegistry::Handler& handler);
     [[nodiscard]] const GlesResourceStore::TextureLevel*
     current_framebuffer_level(const ContextState& context) const;
     [[nodiscard]] std::uint32_t ensure_renderbuffer_storage(
@@ -262,33 +294,123 @@ private:
     [[nodiscard]] bool attach_eagl_window_surface(UserlandHleCall& call,
         ContextState& context, std::uint32_t renderbuffer, std::uint32_t window,
         std::uint32_t surface);
+    [[nodiscard]] bool needs_target_allocation(UserlandHleCall& call);
+    struct TextureTargetInput;
+    [[nodiscard]] bool prepare_texture_target(UserlandHleCall& call,
+        const UserlandHleRegistry::Handler& handler);
+    void await_texture_target(UserlandHleCall& call,
+        std::shared_ptr<TextureTargetInput> pending,
+        UserlandHleRegistry::Handler handler);
     [[nodiscard]] std::optional<RenderTargetBinding> resolve_render_target(
-        UserlandHleCall& call, ContextState& context);
+        UserlandHleCall& call, ContextState& context, bool writable = false);
     [[nodiscard]] GlesRenderTargetKey render_target_key(
         std::uint32_t surface) const;
     void release_renderer_resources();
-    [[nodiscard]] bool reload_surface(
-        UserlandHleCall& call, std::uint32_t surface);
-    [[nodiscard]] bool flush_surface(
-        UserlandHleCall& call, std::uint32_t surface);
+    void reload_surface_async(UserlandHleCall& call, std::uint32_t surface,
+        std::function<void(UserlandHleCall&, bool)> completed);
+    void flush_surface_frame_async(UserlandHleCall& call, std::uint32_t surface,
+        std::function<void(UserlandHleCall&, bool)> completed);
+    void flush_surface_async(UserlandHleCall& call, std::uint32_t surface,
+        std::function<void(UserlandHleCall&, bool)> completed);
     [[nodiscard]] std::optional<DisplayFrame> render_target(
         UserlandHleCall& call, const RenderTargetBinding& binding);
     [[nodiscard]] bool commit_render_target(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayFrame frame);
-    [[nodiscard]] bool publish_display_surface(UserlandHleCall& call,
-        const std::shared_ptr<HostSurface>& surface,
-        std::optional<DisplayViewport> drawable_viewport = std::nullopt);
+    void present_display_surface_async(UserlandHleCall& call,
+        ResourceIdentity context, ResourceIdentity renderbuffer,
+        std::uint32_t renderbuffer_name, const RenderTargetBinding& binding,
+        std::optional<DisplayViewport> drawable_viewport);
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
+    void clear_frame_async(UserlandHleCall& call,
+        const RenderTargetBinding& binding, std::uint32_t color,
+        std::array<bool, 4> color_mask,
+        std::optional<std::array<std::int32_t, 4>> scissor);
+    struct NativeClear;
+    void clear_native_async(UserlandHleCall& call,
+        const RenderTargetBinding& binding, HostRectangle rectangle,
+        std::uint32_t color);
+    void await_native_clear(
+        UserlandHleCall& call, std::shared_ptr<NativeClear> pending);
+    void draw_frame_async(UserlandHleCall& call,
+        const RenderTargetBinding& binding, const DisplayFrame& frame,
+        std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
+        const GlesRasterState& raster, bool indexed);
+    struct FrameDraw;
+    void await_frame_draw(
+        UserlandHleCall& call, std::shared_ptr<FrameDraw> pending);
     [[nodiscard]] bool prepare_program_attributes(UserlandHleCall& call,
         const ContextState& context, std::uint32_t first,
         GlesProgramDraw& draw) const;
     void execute_program_draw(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayFrame frame,
         const GlesProgramDraw& draw, std::uint32_t mode,
-        const GlesRasterState& state);
-    void read_pixels(UserlandHleCall& call);
+        const GlesRasterState& state, bool indexed);
+    void prepare_program_inputs(UserlandHleCall& call,
+        const RenderTargetBinding& binding, DisplayGeometry dimensions,
+        std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared);
+    void submit_program_draw(UserlandHleCall& call,
+        const RenderTargetBinding& binding, DisplayGeometry dimensions,
+        std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared);
+    void enter_graphics_call(
+        UserlandHleCall& call, UserlandHleRegistry::Handler handler);
+    void await_graphics_call(
+        UserlandHleCall& call, UserlandHleRegistry::Handler handler);
+    void await_program_flush(
+        UserlandHleCall& call, UserlandHleRegistry::Handler handler);
+    void fail_program_flush(UserlandHleCall& call,
+        const UserlandHleRegistry::Handler& handler, std::uint32_t error);
+    bool program_flush_failed_ { };
+    void finish_async(UserlandHleCall& call, bool finish);
+    using HostCompletion = std::function<void(UserlandHleCall&,
+        const std::shared_ptr<GlesWorkResult>&)>;
+    void submit_host_work_async(UserlandHleCall& call, std::size_t bytes,
+        std::function<bool(DisplayFrame&)> execute, HostCompletion completed,
+        std::function<void()> complete_core = { },
+        std::shared_ptr<HostSurface> read_source = { },
+        std::shared_ptr<HostSurface> write_target = { });
+    void submit_renderer_async(UserlandHleCall& call, GlesRenderTargetKey key,
+        bool finish, std::shared_ptr<void> lifetime,
+        std::function<void(UserlandHleCall&, bool)> completed);
+    void create_surface(UserlandHleCall& call);
+    void publish_created_surface(
+        UserlandHleCall& call, std::optional<SurfaceState> state);
+    void create_pixmap_surface(UserlandHleCall& call, std::uint32_t id);
+    void make_current(UserlandHleCall& call);
+    void complete_make_current(UserlandHleCall& call);
+    void destroy_surface_after_flush(
+        UserlandHleCall& call, std::uint32_t surface, bool succeeded);
+    struct ReadPixelsOutput;
+    [[nodiscard]] std::shared_ptr<ReadPixelsOutput> capture_read_pixels_output(
+        UserlandHleCall& call);
+    void read_pixels(
+        UserlandHleCall& call, std::shared_ptr<ReadPixelsOutput> output = { });
+    void write_read_pixels(UserlandHleCall& call, const DisplayFrame& frame,
+        bool inverted, const ReadPixelsOutput& output);
+    [[nodiscard]] bool binding_live(const RenderTargetBinding& binding) const;
+    using SyncLease = GraphicsCallLease;
+    void delete_names(UserlandHleCall& call);
+    void commit_texture_deletion(std::span<const std::uint32_t> names);
+    std::shared_ptr<SyncLease> sync_lease_;
+    using ProgramCompletion = std::function<void(UserlandHleCall&, bool)>;
+    [[nodiscard]] std::shared_ptr<SyncLease> program_wait(
+        UserlandHleCall& call);
+    void park_program_job(UserlandHleCall& call,
+        std::shared_ptr<SyncLease> lease,
+        UserlandHleRegistry::Handler completion);
+    void with_program_renderer(
+        UserlandHleCall& call, ProgramCompletion completion);
+    void with_program_limits(
+        UserlandHleCall& call, ProgramCompletion completion);
+    void enqueue_program_link(UserlandHleCall& call, std::uint32_t name,
+        bool restore, ProgramCompletion completion);
+    void link_program(UserlandHleCall& call);
+    void delete_program(UserlandHleCall& call, bool prepared = false);
+    void shader_precision(UserlandHleCall& call);
+    void restore_program_for_draw(UserlandHleCall& call, bool indexed);
+    std::string program_renderer_error_;
+
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     void register_eagl(UserlandHleRegistry& registry);
     void register_egl(UserlandHleRegistry& registry);
@@ -296,10 +418,8 @@ private:
     void register_framebuffers(UserlandHleRegistry& registry);
     void register_programmable_gles(UserlandHleRegistry& registry);
     void register_program_queries(UserlandHleRegistry& registry);
-    [[nodiscard]] bool ensure_program_renderer(
-        UserlandHleCall& call, std::string* error = nullptr);
     [[nodiscard]] std::optional<std::uint32_t> program_integer_limit(
-        UserlandHleCall& call, std::uint32_t parameter);
+        std::uint32_t parameter) const;
     void unsupported(UserlandHleCall& call);
 
     std::map<std::size_t, ThreadState> threads_;
@@ -313,7 +433,7 @@ private:
     std::uint32_t compatibility_display_process_id_ { };
     GlesResourceStore resources_;
     GlesProgramState programs_;
-    std::unique_ptr<GlesProgramRenderer> program_renderer_;
+    std::unique_ptr<GlesProgramWorker> program_renderer_;
     std::optional<GlesProgramRenderer::Limits> program_limits_;
     std::optional<PendingProgramTarget> pending_program_target_;
     std::uint32_t next_context_ { 0x00010001U };
@@ -328,6 +448,7 @@ private:
     std::size_t compatibility_surface_index_ { };
     std::uint64_t next_compatibility_surface_ { };
     std::shared_ptr<GlesRenderer> renderer_;
+    std::shared_ptr<GlesRendererOwner> renderer_lifetime_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     OpenGlesGuestCapabilitySet default_guest_capabilities_ {
         OpenGlesGuestCapabilitySet::MbxLiteLegacy

@@ -266,7 +266,8 @@ public:
     }
     [[nodiscard]] bool thread_wait_uninterruptible(std::size_t processor) const
     {
-        return pending_file_ios_.contains(processor) ||
+        return userland_hle_.pending_call(processor) ||
+               pending_file_ios_.contains(processor) ||
                pending_file_renames_.contains(processor) ||
                pending_filesystem_dispatches_.contains(processor) ||
                pending_file_mappings_.contains(processor);
@@ -371,9 +372,9 @@ public:
     {
         audio_service_->set_decoder(std::move(decoder));
     }
-    [[nodiscard]] DisplayFrame display_snapshot() const
+    [[nodiscard]] DisplayFrame capture_display_frame() const
     {
-        return display_state_->snapshot();
+        return display_state_->capture_frame();
     }
     [[nodiscard]] std::uint64_t display_submitted_frames() const
     {
@@ -668,6 +669,8 @@ private:
         std::uint32_t signal, std::optional<std::size_t> processor,
         std::uint32_t sender_pid, std::uint32_t sender_uid);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
+    void dispatch_fork(Cpu& cpu, bool vfork);
+    void complete_fork(Cpu& cpu, bool vfork);
     void dispatch_wait(Cpu& cpu, bool information = false);
     void record_bsd_sleep();
     [[nodiscard]] ProcessResourceUsage collect_resource_usage() const;
@@ -1277,6 +1280,7 @@ private:
     };
     mutable std::vector<PendingIoDeadlineCache> pending_io_deadline_cache_;
     std::uint64_t local_timer_deadline_generation_ { 1 };
+    std::uint64_t pending_graphics_generation_ { };
     mutable std::optional<std::uint64_t> local_timer_deadline_cache_;
     mutable bool local_timer_deadline_cache_valid_ { };
     // Scheduler-owned copy of the shared snapshot, populated under mach_mutex.

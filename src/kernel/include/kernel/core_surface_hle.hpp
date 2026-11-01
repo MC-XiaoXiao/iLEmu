@@ -61,7 +61,16 @@ public:
     bool refresh_default_scanout(
         AddressSpace& memory, std::uint32_t owner_process_id = 0);
 
+    [[nodiscard]] bool default_scanout_pending() const;
+    [[nodiscard]] bool default_scanout_ready() const;
+    void discard_default_scanout();
+
 private:
+    struct ScanoutRead;
+    std::shared_ptr<ScanoutRead> pending_scanout_;
+    std::uint64_t last_scanout_publication_ { }, last_scanout_gpu_generation_ { };
+    struct BufferLifetime { };
+    struct CpuAccess;
     struct Buffer {
         std::uint32_t client { };
         std::uint32_t id { };
@@ -85,6 +94,8 @@ private:
         std::uint64_t imported_mapping_lease_token { };
         std::vector<std::uint32_t> lock_options;
         std::vector<SurfacePlane> planes;
+        std::shared_ptr<const BufferLifetime> identity {
+            std::make_shared<BufferLifetime>() };
     };
     struct CreateRequest {
         std::uint32_t dictionary { };
@@ -98,6 +109,16 @@ private:
     };
 
     void dispatch(UserlandHleCall& call);
+    void import_buffer(UserlandHleCall& call, Buffer& buffer, bool flushing);
+    void synchronize_buffer(UserlandHleCall& call, Buffer& buffer, bool releasing);
+    void release_buffer(UserlandHleCall& call, Buffer& buffer);
+    void complete_buffer_release(
+        UserlandHleCall& call, Buffer& buffer, bool client_mapping_live = true);
+    void await_cpu_access(UserlandHleCall& call, std::shared_ptr<CpuAccess> pending);
+    void complete_cpu_access(UserlandHleCall& call,
+        const std::shared_ptr<CpuAccess>& pending, bool host_succeeded);
+    void complete_buffer_lock(UserlandHleCall& call, Buffer& buffer,
+        bool synchronized, bool seed_mapping_live = true);
     void create_from_dictionary(UserlandHleCall& call, std::uint32_t dictionary,
         surface_transport::Kind transport);
     void read_next_create_property(

@@ -6,6 +6,7 @@
 // rendering implementations.
 
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_program_renderer.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -37,9 +38,12 @@ namespace {
         }
 
         bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target,
-            std::optional<HostRectangle>* readback_damage) override
+            std::optional<HostRectangle>* readback_damage,
+            ReadbackStamp* stamp) override
         {
             static_cast<void>(target);
+            if (stamp)
+                *stamp = { };
             if (readback_damage != nullptr) {
                 *readback_damage =
                     HostRectangle { 0, 0, frame.width, frame.height };
@@ -64,14 +68,16 @@ namespace {
             static_cast<void>(target);
         }
 
-        void release(std::span<const GlesRenderTargetKey> targets) override
+        bool release(std::span<const GlesRenderTargetKey> targets) override
         {
             static_cast<void>(targets);
+            return true;
         }
 
-        void release_owner(std::uint64_t owner) override
+        bool release_owner(std::uint64_t owner) override
         {
             static_cast<void>(owner);
+            return true;
         }
 
         [[nodiscard]] std::string_view name() const override
@@ -157,21 +163,61 @@ std::unique_ptr<CommandEncoder> GlesRenderer::create_command_encoder()
     return make_cpu_command_encoder();
 }
 
+bool GlesRenderer::capture_readback(HostSurface& surface,
+    HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
+    PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
+{
+    if (!surface.work_succeeded(gles_executing_work_sequence()))
+        return false;
+    snapshot = surface.snapshot_cpu(reason);
+    return synchronize(snapshot.frame, surface.key(), readback_damage, &stamp);
+}
+
+bool GlesRenderer::read_surface(HostSurface& surface, DisplayFrame& output,
+    PerfCpuMapReason reason, bool* cache_committed,
+    std::optional<HostRectangle>* readback_damage)
+{
+    if (cache_committed)
+        *cache_committed = false;
+    if (readback_damage)
+        readback_damage->reset();
+    // A second reader may publish its cache after our snapshot but before our
+    // native check. If that check copies no pixels, our stale CPU snapshot is
+    // not a captured GPU result. Retry instead of returning it as successful.
+    constexpr unsigned maximum_cache_attempts = 3;
+    for (unsigned attempt = 0; attempt < maximum_cache_attempts; ++attempt) {
+        HostSurface::CpuSnapshot snapshot { };
+        ReadbackStamp stamp;
+        if (!capture_readback(surface, snapshot, stamp, reason, readback_damage))
+            return false;
+        const auto committed = surface.commit_cpu_readback(snapshot);
+        // A CPU-current snapshot is already a captured boundary. A later
+        // admitted writer can prevent publishing its cache without making
+        // those captured pixels stale. GPU-newer unstamped shadows still retry.
+        if (!committed && stamp.renderer == 0 &&
+            snapshot.gpu_generation > snapshot.cpu_generation)
+            continue;
+        if (committed)
+            acknowledge_readback(surface.key(), stamp);
+        if (cache_committed)
+            *cache_committed = committed;
+        output = std::move(snapshot.frame);
+        return true;
+    }
+    return false;
+}
+
 bool GlesRenderer::map_cpu(HostSurface& surface, bool read,
     PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
 {
-    if (readback_damage != nullptr)
+    if (readback_damage)
         readback_damage->reset();
     if (!read)
         return true;
-    const auto generation = surface.gpu_generation();
-    {
-        auto mapping = surface.map_cpu(false, reason);
-        if (!synchronize(mapping.frame(), surface.key(), readback_damage))
-            return false;
-    }
-    surface.mark_cpu_synchronized(generation);
-    return true;
+    bool committed = false;
+    DisplayFrame output;
+    return read_surface(surface, output, reason, &committed, readback_damage) &&
+           committed;
 }
 
 HostNativeImage GlesRenderer::native_image(const HostSurface& surface) const
@@ -294,6 +340,7 @@ void release_gles_render_targets(std::span<const GlesRenderTargetKey> targets)
 
 void shutdown_gles_renderer()
 {
+    shutdown_gles_program_worker();
     auto& state = shared_renderer_state();
     std::lock_guard lock { state.mutex };
     if (state.renderer != nullptr)

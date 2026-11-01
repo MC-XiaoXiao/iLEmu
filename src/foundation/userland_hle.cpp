@@ -686,6 +686,8 @@ UserlandHleCall::UserlandHleCall(UserlandHleRegistry& registry, Cpu& cpu,
 
 std::uint32_t UserlandHleCall::argument(std::size_t index) const
 {
+    if (saved_arguments_ && index < saved_arguments_->size())
+        return (*saved_arguments_)[index];
     if (index > std::numeric_limits<std::size_t>::max() -
                     prefix_argument_count_)
         return 0U;
@@ -2450,6 +2452,11 @@ bool UserlandHleRegistry::dispatch(
         UserlandHleCall call { *this, cpu, memory_, output_, process_id,
             continuation_symbol };
         continuation.handler(call);
+        if (call.pending_ready_) {
+            call.entry_address_ = entry;
+            park_call(call);
+            return true;
+        }
         if (call.tail_call_address_) {
             const auto target = *call.tail_call_address_;
             registers[15] = target & ~1U;
@@ -2503,7 +2510,13 @@ bool UserlandHleRegistry::dispatch(
     const auto hle_start = measure_hle
                                ? std::chrono::steady_clock::now()
                                : std::chrono::steady_clock::time_point { };
-    registration->handler(call);
+    call.entry_address_ = entry;
+    call.registration_id_ = id;
+    if (const auto gate = call_gates_.find(registration->image_suffix);
+        gate != call_gates_.end())
+        gate->second(call, registration->handler);
+    else
+        registration->handler(call);
     if (measure_hle) {
         const auto elapsed = std::chrono::steady_clock::now() - hle_start;
         performance_counters().record_hle(
@@ -2513,6 +2526,29 @@ bool UserlandHleRegistry::dispatch(
                     .count()));
     }
 
+    return finish_call(call);
+}
+
+bool UserlandHleRegistry::finish_call(UserlandHleCall& call)
+{
+    auto& cpu = call.cpu_;
+    if (call.pending_ready_) {
+        if (call.tail_call_address_ || call.resume_original_ ||
+            call.resume_original_persistently_)
+            throw std::logic_error { "pending HLE cannot also redirect guest execution" };
+        park_call(call);
+        return true;
+    }
+    if (call.return_boundary_ ==
+        UserlandHleCall::ReturnBoundary::SavedProgramCounter) {
+        if (call.tail_call_address_ || call.resume_original_ ||
+            call.resume_original_persistently_)
+            throw std::logic_error { "kernel operation cannot redirect a function return" };
+        return true;
+    }
+    const auto entry = call.entry_address_;
+    const auto installed = installed_calls_.find(entry);
+    const auto* registration = find_registration(call.registration_id_);
     auto& registers = cpu.registers();
     if (call.tail_call_address_) {
         const auto target = *call.tail_call_address_;
@@ -2604,7 +2640,7 @@ bool UserlandHleRegistry::dispatch(
             original_entry, installed->second.original
         };
         const bool restored =
-            registration->patch == EntryPatch::InstructionFetch
+            registration && registration->patch == EntryPatch::InstructionFetch
                 ? memory_.overlay_instructions({ &original, 1U })
                 : memory_.copy_in(original_entry, installed->second.original);
         if (!restored)
@@ -2965,6 +3001,7 @@ void UserlandHleRegistry::record_loaded_image(std::string image_path)
 
 void UserlandHleRegistry::reset_mappings()
 {
+    cancel_pending_calls();
     installed_calls_.clear();
     callable_aliases_.clear();
     installed_symbols_.clear();
@@ -2989,6 +3026,8 @@ void UserlandHleRegistry::reset_mappings()
 
 void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry& parent)
 {
+    // A fork inherits mapped HLE code, never another thread's in-flight call.
+    cancel_pending_calls();
     installed_calls_ = parent.installed_calls_;
     callable_aliases_ = parent.callable_aliases_;
     installed_symbols_ = parent.installed_symbols_;

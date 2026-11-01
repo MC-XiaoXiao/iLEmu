@@ -10,8 +10,10 @@
 #include "debug/control_channel.hpp"
 #include "foundation/host_file_mapping.hpp"
 #include "foundation/host_memory.hpp"
-#include "graphics/display_presenter.hpp"
+#include "foundation/sensor_input.hpp"
 #include "graphics/boot_logo.hpp"
+#include "graphics/display_presenter.hpp"
+#include "graphics/gles_program_renderer.hpp"
 #include "guest_timing.hpp"
 #include "jit_diagnostics.hpp"
 #include "jit_policy.hpp"
@@ -22,10 +24,10 @@
 #include "runtime/realtime_pacer.hpp"
 #include "runtime/session_host.hpp"
 #include "sensor_control.hpp"
-#include "foundation/sensor_input.hpp"
 #include "session_catalog.hpp"
 #include "session_debugger.hpp"
 #include "session_diagnostics.hpp"
+#include "session_snapshots.hpp"
 
 #include <algorithm>
 #include <array>
@@ -457,6 +459,18 @@ void EmulatorSession::run()
             };
         output.marker("[control] ready; use help for commands");
     }
+    // The callback is host-only and is unregistered before either adapter is
+    // destroyed. Its mutex serializes unregister with an in-flight publisher.
+    set_gles_completion_wake(
+        [display = display_presenter.get(), control = live_control.get()] {
+            if (display)
+                display->wake_event_wait();
+            if (control)
+                control->wake_event_wait();
+        });
+    struct CompletionWakeLifetime {
+        ~CompletionWakeLifetime() { set_gles_completion_wake({ }); }
+    } completion_wake_lifetime;
     const auto gdb_port = options.gdb_port;
     const bool gdb_enabled = gdb_port.has_value() || options.gdb_socket.has_value();
     const auto watch_address = options.watch_address;
@@ -2193,6 +2207,8 @@ void EmulatorSession::run()
     std::vector<
         std::pair<std::chrono::steady_clock::time_point, std::filesystem::path>>
         scheduled_snapshots;
+    SessionSnapshots snapshots { gles_renderer, output };
+    bool quit_after_snapshots = false;
     enum class HostDeadlineSource : std::uint8_t {
         TouchReplay,
         LiveButton,
@@ -2229,12 +2245,16 @@ void EmulatorSession::run()
         refresh_host_deadlines();
         return host_deadlines.next_deadline();
     };
+    auto polled_graphics_generation = gles_completion_generation();
     const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
+        // Sample before the serial readiness scan, not after it. Headless
+        // sessions have no retained SDL/control event to cover that window.
+        const auto graphics_generation = polled_graphics_generation;
         if (delay <= std::chrono::nanoseconds::zero())
             return;
-        // Host workers do not post window/control events. Keep the existing
-        // bounded completion polling alive without advancing guest clocks or
-        // waking idle tasks that have no host work.
+        // Preserve deadlines for host sources which still require probes.
+        // Graphics completion separately interrupts the native idle wait;
+        // neither path advances guest clocks or wakes unrelated guest tasks.
         const auto now = std::chrono::steady_clock::now();
         for (const auto& runtime : runtimes) {
             if (runtime->kernel->process().exited)
@@ -2258,6 +2278,11 @@ void EmulatorSession::run()
         const auto waitable_window_session =
             display_presenter && (!live_control || live_control->closed()) &&
             !gdb_server;
+        // Native wake events are level retained by SDL/the control pipe. A
+        // completion before this comparison returns immediately; one after it
+        // interrupts the impending wait, including before wait entry.
+        if (gles_completion_generation() != graphics_generation)
+            return;
         if (waitable_window_session) {
             static_cast<void>(display_presenter->wait_for_event(delay));
         } else if (display_presenter) {
@@ -2268,7 +2293,7 @@ void EmulatorSession::run()
         if (live_control && !live_control->closed()) {
             live_control->wait_for(delay);
         } else {
-            std::this_thread::sleep_for(delay);
+            wait_gles_host_activity(graphics_generation, delay);
         }
     };
     std::optional<std::string> display_performance_window;
@@ -2800,7 +2825,7 @@ void EmulatorSession::run()
             mark_transition_input_complete(*pending_button_input_completion);
             pending_button_input_completion.reset();
         }
-        if (live_control) {
+        if (live_control && !quit_after_snapshots) {
             auto commands = std::move(pending_control_commands);
             pending_control_commands.clear();
             for (auto& command : live_control->poll())
@@ -2935,15 +2960,17 @@ void EmulatorSession::run()
                     break;
                 }
                 case LiveControlCommandKind::Snapshot: {
-                    FrameFilePresenter snapshot_writer { command.path };
-                    const auto frame =
-                        initial_runtime->kernel->display_snapshot();
-                    snapshot_writer.present(frame);
-                    output.marker("[control] snapshot=" + command.path.string() +
-                                " frame=" + std::to_string(frame.sequence));
+                    snapshots.submit(command.path,
+                        initial_runtime->kernel->capture_display_frame());
                     break;
                 }
                 case LiveControlCommandKind::SnapshotSequence: {
+                    if (command.snapshot_count >
+                        SessionSnapshots::maximum_scheduled -
+                            scheduled_snapshots.size()) {
+                        output.marker("[control] error: snapshot schedule is full");
+                        break;
+                    }
                     const auto start = std::chrono::steady_clock::now();
                     for (std::size_t index = 0; index < command.snapshot_count;
                         ++index) {
@@ -3107,12 +3134,15 @@ void EmulatorSession::run()
                     break;
                 case LiveControlCommandKind::Quit:
                     output.marker("[control] quit requested");
-                    hard_stop = true;
+                    scheduled_snapshots.clear();
+                    quit_after_snapshots = true;
                     break;
                 case LiveControlCommandKind::Error:
                     output.marker("[control] error: " + command.message);
                     break;
                 }
+                if (quit_after_snapshots)
+                    break;
             }
             if (hard_stop)
                 break;
@@ -3120,13 +3150,8 @@ void EmulatorSession::run()
         while (!scheduled_snapshots.empty() &&
                std::chrono::steady_clock::now() >=
                    scheduled_snapshots.front().first) {
-            FrameFilePresenter snapshot_writer {
-                scheduled_snapshots.front().second
-            };
-            snapshot_writer.present(
-                initial_runtime->kernel->display_snapshot());
-            output.marker("[control] snapshot-sequence frame=" +
-                        scheduled_snapshots.front().second.string());
+            snapshots.submit(scheduled_snapshots.front().second,
+                initial_runtime->kernel->capture_display_frame(), true);
             scheduled_snapshots.erase(scheduled_snapshots.begin());
         }
         bool display_receive_pending = false;
@@ -3199,7 +3224,18 @@ void EmulatorSession::run()
         // execute while the guest is ahead.
         const auto polled_mach_generation =
             initial_runtime->kernel->mach_message_generation();
-        for (auto& runtime : runtimes) {
+        polled_graphics_generation = gles_completion_generation();
+        snapshots.poll();
+        if (quit_after_snapshots && snapshots.empty()) {
+            hard_stop = true;
+            break;
+        }
+        // A completed syscall can publish a child runtime. Keep the current
+        // poll batch fixed and retain heap pointers across vector growth.
+        const auto polled_runtime_count = runtimes.size();
+        for (std::size_t runtime_slot = 0; runtime_slot < polled_runtime_count;
+            ++runtime_slot) {
+            auto* runtime = runtimes[runtime_slot].get();
             const auto display_vsync_receiver =
                 display_urgent_process && runtime->kernel->process().pid ==
                                               *display_urgent_process
@@ -4933,8 +4969,25 @@ void EmulatorSession::run()
                 }
                 continue;
             }
-            if (bounded_execution)
-                break;
+            if (bounded_execution) {
+                // A host-backed syscall/HLE can be the last runnable thread.
+                // Finish its existing wait protocol before declaring the
+                // finite guest run idle; do not invent instruction ticks.
+                const auto host_call_pending =
+                    std::ranges::any_of(runtimes, [](const auto& runtime) {
+                        if (runtime->kernel->process().exited)
+                            return false;
+                        for (std::size_t slot = 0;
+                            slot < runtime->allocated.size(); ++slot)
+                            if (runtime->allocated[slot] &&
+                                runtime->kernel->thread_wait_uninterruptible(
+                                    slot))
+                                return true;
+                        return false;
+                    });
+                if (!host_call_pending)
+                    break;
+            }
             // An interactive emulator remains alive while every guest thread
             // is blocked: wait for the next automation deadline or control
             // input. Standalone window sessions block on host events; GDB
@@ -4961,6 +5014,7 @@ void EmulatorSession::run()
             wait_for_host_activity(delay);
         }
     }
+    snapshots.cancel();
     output.line(
         "[display-attribution] vsync-pulses=" +
         std::to_string(initial_runtime->kernel->display_vsync_pulse_count()) +

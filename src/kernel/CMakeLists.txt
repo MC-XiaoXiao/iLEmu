@@ -74,19 +74,40 @@ ilemu_configure_module(ilemu_kernel)
 
 add_library(ilemu_kernel_graphics STATIC
     graphics/core_surface_hle.cpp
+    graphics/core_surface_sync.cpp
+    graphics/core_surface_import.cpp
+    graphics/surface_guest_import.cpp
+    graphics/core_surface_scanout.cpp
     graphics/surface_plane_reader.cpp
     graphics/guest_drawable_geometry.cpp
     graphics/guest_eagl_window.cpp
     graphics/mbx2d_hle.cpp
     graphics/mbx3d_quad_hle.cpp
     graphics/mbx_client_surface.cpp
+    graphics/mbx_cpu_draw.cpp
+    graphics/mbx_framebuffer_draw.cpp
+    graphics/mbx_native_draw.cpp
+    graphics/mbx_surface_import.cpp
+    graphics/mbx_sync.cpp
     graphics/mobile_framebuffer_hle.cpp
+    graphics/mobile_framebuffer_native.cpp
+    graphics/mobile_framebuffer_sync.cpp
     graphics/mobile_framebuffer_devices.cpp
     graphics/opengles_hle.cpp
     graphics/opengles_dispatch_hle.cpp
     graphics/opengles_programmable.cpp
+    graphics/opengles_sync.cpp
+    graphics/opengles_fork.cpp
+    graphics/opengles_texture_target.cpp
+    graphics/opengles_read_pixels.cpp
+    graphics/opengles_surface_sync.cpp
+    graphics/opengles_retirement.cpp
+    graphics/opengles_program_sync.cpp
     graphics/opengles_program_draw.cpp
+    graphics/opengles_frame_draw.cpp
+    graphics/opengles_native_clear.cpp
     graphics/opengles_framebuffers.cpp
+    graphics/opengles_display_publication.cpp
     graphics/opengles_program_queries.cpp
     graphics/mbx_connect_hle.cpp)
 add_library(iLEmu::kernel_graphics ALIAS ilemu_kernel_graphics)
@@ -260,6 +281,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/guarded_file.cpp
     bsd/fileport.cpp
     bsd/process.cpp
+    bsd/process/fork.cpp
     bsd/process/wait.cpp
     bsd/process/resource_usage.cpp
     bsd/posix_semaphore.cpp

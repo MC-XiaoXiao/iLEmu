@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include "graphics/gles_abi.hpp"
@@ -99,6 +100,10 @@ struct GlesRasterState {
 };
 
 [[nodiscard]] std::uint32_t premultiply_argb(std::uint32_t pixel);
+
+void clear_gles_frame(DisplayFrame& frame, std::uint32_t color,
+    const std::array<bool, 4>& color_mask,
+    const std::optional<std::array<std::int32_t, 4>>& scissor, bool inverted);
 
 class GlesSoftwareRasterizer {
 public:

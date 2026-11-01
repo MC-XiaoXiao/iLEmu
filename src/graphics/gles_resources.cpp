@@ -12,15 +12,34 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "foundation/address_space.hpp"
 #include "graphics/gles_abi.hpp"
+#include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "graphics/host_graphics.hpp"
 #include "graphics/surface_store.hpp"
 
 namespace ilemu {
+// Both retirements use the existing bounded owner lane. Retain the process
+// owner while any image survives; renderer caches retain neither owner.
+class GlesTextureTarget {
+public:
+    GlesTextureTarget(std::shared_ptr<GlesRenderer> renderer,
+        std::shared_ptr<GlesRendererOwner> owner, HostSurfaceKey key)
+        : owner_ { std::move(owner) }, target_ { std::move(renderer), key }
+    {
+    }
+    [[nodiscard]] bool activate() { return target_.activate(); }
+
+private:
+    std::shared_ptr<GlesRendererOwner> owner_;
+    GlesRendererOwner target_;
+};
+
 namespace {
 
     struct PixelLayout {
@@ -749,6 +768,82 @@ bool GlesResourceStore::has_buffer(std::uint32_t name) const
     return buffers_.contains(name);
 }
 
+std::size_t GlesResourceStore::texture_snapshot_bytes(
+    std::span<const std::uint32_t> names, std::size_t limit,
+    TextureSnapshot content) const
+{
+    std::size_t bytes = 0;
+    const auto add = [&](std::size_t size, std::size_t count = 1) {
+        if (size && count > (limit - bytes) / size)
+            throw std::length_error { "GLES texture snapshot exceeds budget" };
+        bytes += size * count;
+    };
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        if (std::find(names.begin(), names.begin() + index, names[index]) !=
+            names.begin() + index)
+            continue;
+        const auto* source = texture(names[index]);
+        if (!source)
+            continue;
+        add(sizeof(*source) + 4 * sizeof(void*));
+        add(2 * sizeof(std::uint32_t) + 4 * sizeof(void*),
+            source->parameters.size());
+        for (const auto& [level, image] : source->levels) {
+            static_cast<void>(level);
+            add(sizeof(image) + 4 * sizeof(void*));
+            if (content != TextureSnapshot::NativeImages || !image.host_surface ||
+                image.host_surface->gpu_generation() <=
+                    image.host_surface->cpu_generation())
+                add(sizeof(std::uint32_t), image.argb.size());
+        }
+    }
+    return bytes;
+}
+
+GlesResourceStore GlesResourceStore::snapshot_textures(
+    std::span<const std::uint32_t> names, TextureSnapshot content) const
+{
+    GlesResourceStore snapshot;
+    for (const auto name : names) {
+        if (snapshot.has_texture(name))
+            continue;
+        const auto* source = texture(name);
+        if (!source)
+            continue;
+        snapshot.ensure_texture(name);
+        auto& copied = *snapshot.texture(name);
+        copied.parameters = source->parameters;
+        for (const auto& [level, image] : source->levels) {
+            const auto native = content == TextureSnapshot::NativeImages;
+            if (native && image.host_surface &&
+                image.host_surface->gpu_generation() >
+                    image.host_surface->cpu_generation()) {
+                copied.levels.emplace(level, TextureLevel {
+                    .width = image.width,
+                    .height = image.height,
+                    .internal_format = image.internal_format,
+                    .argb = { },
+                    .surface_id = image.surface_id,
+                    .revision = image.revision,
+                    .host_surface = image.host_surface,
+                    .host_generation = image.host_generation,
+                    .render_target_inverted_vertical =
+                        image.render_target_inverted_vertical,
+                    .argb_generation = 0,
+                    .native_lifetime = image.native_lifetime });
+                continue;
+            }
+            auto& cloned = copied.levels.emplace(level, image).first->second;
+            if (!native) {
+                cloned.host_surface.reset();
+                cloned.native_lifetime.reset();
+                cloned.surface_id.reset();
+            }
+        }
+    }
+    return snapshot;
+}
+
 std::uint32_t GlesResourceStore::upload_texture_2d(AddressSpace& memory,
     std::uint32_t name, std::uint32_t level, std::uint32_t internal_format,
     std::uint32_t width, std::uint32_t height, std::uint32_t format,
@@ -988,12 +1083,30 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
     return gles_abi::no_error;
 }
 
+bool GlesResourceStore::needs_texture_render_target(std::uint32_t name,
+    std::uint32_t level, bool writable) const
+{
+    const auto* object = texture(name);
+    if (!object)
+        return false;
+    const auto found = object->levels.find(level);
+    if (found == object->levels.end())
+        return false;
+    const auto& image = found->second;
+    return !image.host_surface || !image.native_lifetime ||
+           image.host_surface->descriptor().width != image.width ||
+           image.host_surface->descriptor().height != image.height ||
+           (writable && image.native_lifetime.use_count() > 1);
+}
+
 std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
-    std::uint32_t name, std::uint32_t level_index, HostGraphicsDevice& graphics,
-    std::uint64_t owner, std::uint64_t surface)
+    std::uint32_t name, std::uint32_t level_index,
+    std::shared_ptr<GlesRenderer> renderer,
+    std::shared_ptr<GlesRendererOwner> lifetime,
+    std::uint64_t owner, std::uint64_t target_namespace, bool writable)
 {
     auto texture = textures_.find(name);
-    if (name == 0U || texture == textures_.end())
+    if (!renderer || !lifetime || name == 0U || texture == textures_.end())
         return nullptr;
     auto level = texture->second.levels.find(level_index);
     if (level == texture->second.levels.end() || level->second.width == 0U ||
@@ -1003,18 +1116,31 @@ std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
                 level->second.height) {
         return nullptr;
     }
-    const auto key = HostSurfaceKey { owner, surface };
     const auto descriptor = HostSurfaceDescriptor { level->second.width,
         level->second.height, level->second.width * 4U,
         surface_pixel_format_bgra, PerfSurfaceKind::GlesRenderTarget };
-    if (!level->second.host_surface ||
-        level->second.host_surface->key() != key ||
-        level->second.host_surface->descriptor().width != descriptor.width ||
-        level->second.host_surface->descriptor().height != descriptor.height) {
-        level->second.host_surface =
-            graphics.create_surface(key, descriptor, level->second.argb);
-        if (!level->second.host_surface)
+    if (needs_texture_render_target(name, level_index, writable)) {
+        if (level->second.host_surface &&
+            level->second.argb_generation !=
+                std::max(level->second.host_surface->cpu_generation(),
+                    level->second.host_surface->gpu_generation()))
+            return nullptr; // The guest preparation boundary must capture first.
+        // Names may be reused while another fork or host packet still owns
+        // the old image. Reserve a new identity from the existing revision
+        // sequence rather than deriving physical identity from the GL name.
+        const auto identity = allocate_texture_revision();
+        if (identity >= target_namespace)
             return nullptr;
+        const auto key = HostSurfaceKey { owner, target_namespace | identity };
+        auto native = std::make_shared<GlesTextureTarget>(
+            renderer, std::move(lifetime), key);
+        if (!native->activate())
+            return nullptr;
+        auto surface = renderer->create_surface(key, descriptor, level->second.argb);
+        if (!surface)
+            return nullptr;
+        level->second.host_surface = std::move(surface);
+        level->second.native_lifetime = std::move(native);
         level->second.host_generation =
             level->second.host_surface->cpu_generation();
         level->second.argb_generation = level->second.host_generation;
@@ -1060,52 +1186,6 @@ void GlesResourceStore::update_texture_render_target_generation(
     level->second.host_generation =
         std::max(level->second.host_surface->cpu_generation(),
             level->second.host_surface->gpu_generation());
-}
-
-bool GlesResourceStore::materialize_surface_textures(
-    HostGraphicsDevice& graphics, std::span<const std::uint32_t> textures)
-{
-    for (const auto name : textures) {
-        const auto found = textures_.find(name);
-        if (found == textures_.end())
-            continue;
-        for (auto& [index, level] : found->second.levels) {
-            static_cast<void>(index);
-            if (!level.host_surface)
-                continue;
-            const auto generation =
-                std::max(level.host_surface->cpu_generation(),
-                    level.host_surface->gpu_generation());
-            if (level.argb.size() ==
-                    static_cast<std::size_t>(level.width) * level.height &&
-                level.argb_generation == generation) {
-                continue;
-            }
-            if (level.host_surface->gpu_generation() >
-                    level.host_surface->cpu_generation() &&
-                graphics.native_image(*level.host_surface).api ==
-                    HostNativeImage::Api::None) {
-                return false;
-            }
-            if (!graphics.map_cpu(*level.host_surface, true,
-                    PerfCpuMapReason::SoftwareFallback)) {
-                return false;
-            }
-            auto mapping = level.host_surface->map_cpu(
-                false, PerfCpuMapReason::SoftwareFallback);
-            const auto& frame = mapping.frame();
-            if (frame.width != level.width || frame.height != level.height ||
-                frame.pixels.size() !=
-                    static_cast<std::size_t>(level.width) * level.height) {
-                return false;
-            }
-            level.argb = frame.pixels;
-            level.host_generation = mapping.generation();
-            level.argb_generation = mapping.generation();
-            level.revision = allocate_texture_revision();
-        }
-    }
-    return true;
 }
 
 std::uint32_t GlesResourceStore::upload_buffer(AddressSpace& memory,

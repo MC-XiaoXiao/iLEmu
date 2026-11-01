@@ -23,8 +23,10 @@
 #include <vector>
 
 #include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
+#include "graphics/gles_renderer_owner.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "graphics/mbx2d_abi.hpp"
 #include "foundation/output.hpp"
@@ -59,8 +61,14 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
     , presentation_tracker_ { std::move(presentations) }
     , renderer_owner_ { allocate_gles_renderer_owner() }
     , host_graphics_ { shared_gles_renderer() }
+    , renderer_lifetime_ {
+        std::make_shared<GlesRendererOwner>(host_graphics_, renderer_owner_) }
     , command_encoder_ { host_graphics_->create_command_encoder() }
 {
+    registry.register_call_gate(std::string { mbx2d_image },
+        [this](UserlandHleCall& call, UserlandHleRegistry::Handler handler) {
+            enter_graphics_call(call, std::move(handler));
+        });
     const auto add = [&](std::string symbol,
                          UserlandHleRegistry::Handler handler) {
         registry.register_function(
@@ -194,38 +202,21 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
         [this](UserlandHleCall& call) { quad_copy(call, true, true); });
 
     add("_mbx2DFinish", [this](UserlandHleCall& call) {
-        static_cast<void>(
-            submit_host_commands(true, PerfSubmitReason::MbxFinish));
-        release_retired_client_host_sources();
-        submit_destination(call, false);
-        call.set_return(mbx_success);
+        submit(call, SubmissionKind::Finish);
     });
     add("_mbx2DFlush", [this](UserlandHleCall& call) {
-        static_cast<void>(
-            submit_host_commands(false, PerfSubmitReason::MbxFlush));
-        submit_destination(call, false);
-        call.set_return(mbx_success);
+        submit(call, SubmissionKind::Flush);
     });
     add("_mbx2DFlushSurfaces",
         [this](UserlandHleCall& call) { flush_surfaces(call); });
     add("_mbx2DFlushInvalidateSurfaces",
         [this](UserlandHleCall& call) { flush_surfaces(call); });
     add("_mbx2DCtxFlush", [this](UserlandHleCall& call) {
-        static_cast<void>(
-            submit_host_commands(false, PerfSubmitReason::MbxFlush));
-        submit_destination(call, true);
-        call.set_return(mbx_success);
+        submit(call, SubmissionKind::Flush, true);
     });
-    const auto present = [this](UserlandHleCall& call) {
-        static_cast<void>(
-            submit_host_commands(false, PerfSubmitReason::MbxFlush));
-        submit_destination(call, false);
-        if (display_ && (!presentation_tracker_ ||
-                            !presentation_tracker_->has_presented_frame()))
-            display_->present(call.process_id());
-        call.set_return(mbx_success);
-    };
-    add("_mbx2DSwapSurface", present);
+    add("_mbx2DSwapSurface", [this](UserlandHleCall& call) {
+        submit(call, SubmissionKind::Swap);
+    });
     add("_mbx2DSwapNotification", [](UserlandHleCall& call) {
         // This is the completion callback attached to an enclosing
         // IOMobileFramebuffer transaction. SwapEnd owns presentation after
@@ -241,6 +232,66 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
         [this](UserlandHleCall& call) { deferred(call); });
 }
 
+void Mbx2dHle::enter_graphics_call(
+    UserlandHleCall& call, UserlandHleRegistry::Handler handler)
+{
+    if (!renderer_lifetime_->activate()) {
+        call.suspend_until(
+            [this] {
+                return renderer_lifetime_->active() ||
+                       GlesRendererOwner::capacity();
+            },
+            [this, handler = std::move(handler)](UserlandHleCall& resumed) {
+                enter_graphics_call(resumed, handler);
+            });
+        return;
+    }
+    service_graphics_completions();
+    if (sync_lease_ && !sync_lease_->consumed) {
+        const auto lease = sync_lease_;
+        call.suspend_until([lease] { return lease->ready(); },
+            [this, handler = std::move(handler)](UserlandHleCall& resumed) {
+                enter_graphics_call(resumed, handler);
+            }, lease->result ? lease->result->sequence() : 0);
+        return;
+    }
+    sync_lease_.reset();
+    const auto symbol = call.symbol();
+    const auto drawing = symbol.ends_with("BlitColor") ||
+                         symbol.ends_with("BlitCopy") ||
+                         symbol.ends_with("QuadColor") ||
+                         symbol.ends_with("QuadCopy") ||
+                         symbol.ends_with("QuadCopyPerspective");
+    if (drawing) {
+        const auto context_api = symbol.starts_with("_mbx2DCtx") ||
+                                 symbol.starts_with("_mbx3DCtx");
+        const auto* state = select_state(call, context_api);
+        const auto destination = state ? resolve(state->destination)
+                                       : std::nullopt;
+        const auto surface = destination ? destination->host_surface : nullptr;
+        auto dependency = surface ? surface->writer() : nullptr;
+        if (dependency && dependency->ready() && !dependency->succeeded()) {
+            call.set_return(mbx_failure);
+            return;
+        }
+        if (!dependency || dependency->ready())
+            dependency = surface ? surface->reader() : nullptr;
+        if (dependency && !dependency->ready()) {
+            auto lease = std::make_shared<GraphicsCallLease>();
+            lease->owner = call.cpu().processor_id();
+            sync_lease_ = lease;
+            call.suspend_until([dependency] { return dependency->ready(); },
+                [this, lease, handler = std::move(handler)](
+                    UserlandHleCall& resumed) {
+                    lease->consume();
+                    enter_graphics_call(resumed, handler);
+                }, dependency->sequence());
+            return;
+        }
+    }
+    handler(call);
+}
+
 Mbx2dHle::~Mbx2dHle()
 {
     release_client_renderer_resources();
@@ -249,9 +300,13 @@ Mbx2dHle::~Mbx2dHle()
 
 void Mbx2dHle::reset()
 {
+    cancel_pending_work();
+    sync_lease_.reset();
     release_client_renderer_resources();
     release_core_surface_references();
     renderer_owner_ = allocate_gles_renderer_owner();
+    renderer_lifetime_ =
+        std::make_shared<GlesRendererOwner>(host_graphics_, renderer_owner_);
     next_client_host_source_ = 1;
     contexts_.clear();
     next_context_ = first_context_handle;
@@ -265,9 +320,13 @@ void Mbx2dHle::reset()
 
 void Mbx2dHle::inherit_state(const Mbx2dHle& parent)
 {
+    cancel_pending_work();
+    sync_lease_.reset();
     release_client_renderer_resources();
     release_core_surface_references();
     renderer_owner_ = allocate_gles_renderer_owner();
+    renderer_lifetime_ =
+        std::make_shared<GlesRendererOwner>(host_graphics_, renderer_owner_);
     next_client_host_source_ = 1;
     contexts_ = parent.contexts_;
     next_context_ = parent.next_context_;
@@ -527,16 +586,16 @@ std::optional<Mbx2dHle::ResolvedSurface> Mbx2dHle::resolve(
         backing->width, backing->height, binding->surface };
 }
 
-bool Mbx2dHle::synchronize_host_source(
+SurfaceStore::CpuImportResult Mbx2dHle::synchronize_host_source(
     UserlandHleCall& call, const ResolvedSurface& surface) const
 {
     if (!surface.host_surface || surface.core_surface_id == 0)
-        return true;
+        return SurfaceStore::CpuImportResult::Completed;
     // LayerKit can retain an MBX handle across multiple guest-side revisions
     // without issuing another FlushSurfaces call. Publish exact guest changes
     // when that handle is consumed, preserving unrelated GPU-owned pixels.
     const auto started = std::chrono::steady_clock::now();
-    const auto synchronized = surface_store_->synchronize_from_guest(
+    const auto synchronized = surface_store_->try_synchronize_from_guest(
         call.memory(), surface.core_surface_id);
     performance_counters().record_diagnostic_graphics_hle(
         PerfDiagnosticGraphicsHleKind::SynchronizeHostSource,
@@ -638,34 +697,41 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
         x + width > surface.width || y + height > surface.height) {
         return std::nullopt;
     }
-    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
-    if (surface.framebuffer) {
-        if (!display_)
+    if (surface.cpu_frame &&
+        (surface.framebuffer || (surface.backing &&
+            (surface.backing->pixel_format == surface_pixel_format_bgra ||
+                surface_is_packed_555(surface.backing->pixel_format))))) {
+        std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
+        const auto& frame = *surface.cpu_frame;
+        if (frame.width != surface.width || frame.height != surface.height ||
+            frame.pixels.size() !=
+                static_cast<std::uint64_t>(frame.width) * frame.height)
             return std::nullopt;
-        const auto frame = display_->snapshot();
         for (std::int64_t row = 0; row < height; ++row) {
-            const auto source =
-                static_cast<std::size_t>((y + row) * frame.width + x);
-            const auto destination = static_cast<std::size_t>(row * width);
-            std::copy_n(frame.pixels.begin() + source,
-                static_cast<std::size_t>(width), pixels.begin() + destination);
+            const auto offset = static_cast<std::size_t>((y + row) * frame.width + x);
+            std::copy_n(frame.pixels.begin() + static_cast<std::ptrdiff_t>(offset),
+                static_cast<std::size_t>(width),
+                pixels.begin() + static_cast<std::ptrdiff_t>(row * width));
         }
         return pixels;
     }
-    if (!surface.backing ||
+    // GPU sources are captured by import_source or CpuDraw before sampling.
+    return read_guest_region(surface, x, y, width, height, call);
+}
+
+std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_guest_region(
+    const ResolvedSurface& surface, std::int64_t x, std::int64_t y,
+    std::int64_t width, std::int64_t height, UserlandHleCall& call) const
+{
+    // Reads only guest backing. A caller needing GPU visibility must first
+    // establish it; CpuDraw holds a current-generation mapping while reading.
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
+        x + width > surface.width || y + height > surface.height ||
+        !surface.backing ||
         (surface.backing->pixel_format != surface_pixel_format_bgra &&
-            !surface_is_packed_555(surface.backing->pixel_format))) {
+            !surface_is_packed_555(surface.backing->pixel_format)))
         return std::nullopt;
-    }
-    if (surface.host_surface &&
-        (surface.backing->pixel_format == surface_pixel_format_bgra ||
-            surface_is_packed_555(surface.backing->pixel_format)) &&
-        surface.host_surface->gpu_generation() >
-            surface.host_surface->cpu_generation() &&
-        !surface_store_->synchronize_for_cpu(
-            call.memory(), surface.core_surface_id, { })) {
-        return std::nullopt;
-    }
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
     const auto& backing = *surface.backing;
     const auto backing_bytes_per_pixel =
         surface_bytes_per_pixel(backing.pixel_format);
@@ -720,53 +786,56 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
     std::int64_t y, std::int64_t width, std::int64_t height,
     const std::vector<std::uint32_t>& pixels, UserlandHleCall& call)
 {
+    return try_write_region(surface, x, y, width, height, pixels, call) ==
+           CpuWriteState::Completed;
+}
+
+Mbx2dHle::CpuWriteState Mbx2dHle::try_write_region(const ResolvedSurface& surface, std::int64_t x,
+    std::int64_t y, std::int64_t width, std::int64_t height,
+    const std::vector<std::uint32_t>& pixels, UserlandHleCall& call,
+    std::optional<std::uint64_t> gpu)
+{
     if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
         x + width > surface.width || y + height > surface.height ||
         pixels.size() != static_cast<std::size_t>(width * height)) {
-        return false;
-    }
-    if (surface.framebuffer) {
-        if (!display_)
-            return false;
-        auto frame = display_->snapshot();
-        for (std::int64_t row = 0; row < height; ++row) {
-            const auto source = static_cast<std::size_t>(row * width);
-            const auto destination =
-                static_cast<std::size_t>((y + row) * frame.width + x);
-            std::copy_n(pixels.begin() + source,
-                static_cast<std::size_t>(width),
-                frame.pixels.begin() + destination);
-        }
-        display_->replace_pixels(std::move(frame.pixels), call.process_id());
-        return true;
+        return CpuWriteState::Failed;
     }
     if (!surface.backing ||
         (surface.backing->pixel_format != surface_pixel_format_bgra &&
             !surface_is_packed_555(surface.backing->pixel_format))) {
-        return false;
+        return CpuWriteState::Failed;
     }
     const auto& backing = *surface.backing;
+    const auto packed_pixel = [format = backing.pixel_format](std::uint32_t pixel) {
+        return surface_decode_packed_555(
+            format, surface_encode_packed_555(format, pixel));
+    };
     const auto replaces_entire_surface =
         x == 0 && y == 0 && width == surface.width && height == surface.height;
-    if (!replaces_entire_surface && surface.host_surface &&
-        backing.pixel_format == surface_pixel_format_bgra &&
-        surface.host_surface->gpu_generation() >
-            surface.host_surface->cpu_generation() &&
-        !surface_store_->synchronize_for_cpu(
-            call.memory(), surface.core_surface_id, { })) {
-        return false;
-    }
     const auto backing_bytes_per_pixel =
         surface_bytes_per_pixel(backing.pixel_format);
     if (backing.bytes_per_row < surface.width * backing_bytes_per_pixel)
-        return false;
+        return CpuWriteState::Failed;
     const auto final_byte =
         static_cast<std::uint64_t>(y + height - 1) * backing.bytes_per_row +
         static_cast<std::uint64_t>(x + width) * backing_bytes_per_pixel;
     if (final_byte > backing.allocation_size)
-        return false;
+        return CpuWriteState::Failed;
     std::vector<std::byte> encoded(
         static_cast<std::size_t>(width) * backing_bytes_per_pixel);
+    const auto needs_current = !replaces_entire_surface || gpu.has_value();
+    auto mapping = needs_current && surface.host_surface
+                       ? surface.host_surface->try_map_current_cpu(
+                             true, PerfCpuMapReason::SoftwareFallback)
+                       : std::optional<HostSurface::CpuMapping> { };
+    const auto damage = HostRectangle { static_cast<std::int32_t>(x),
+        static_cast<std::int32_t>(y), static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height) };
+    if (needs_current && surface.host_surface) {
+        if (!mapping || (gpu && mapping->gpu_generation() != *gpu))
+            return CpuWriteState::PendingGpu;
+        mapping->set_damage(damage);
+    }
     for (std::int64_t row = 0; row < height; ++row) {
         if (surface_is_packed_555(backing.pixel_format)) {
             for (std::int64_t column = 0; column < width; ++column) {
@@ -802,23 +871,38 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
             static_cast<std::uint32_t>((y + row) * backing.bytes_per_row +
                                        x * backing_bytes_per_pixel);
         if (!call.memory().copy_in(address, encoded))
-            return false;
+            return CpuWriteState::Failed;
+        if (mapping) {
+            const auto offset = static_cast<std::size_t>(
+                (y + row) * surface.width + x);
+            const auto source =
+                pixels.begin() + static_cast<std::ptrdiff_t>(row * width);
+            const auto output = mapping->frame().pixels.begin() +
+                                static_cast<std::ptrdiff_t>(offset);
+            if (surface_is_packed_555(backing.pixel_format))
+                std::transform(source, source + width, output, packed_pixel);
+            else
+                std::copy_n(source, static_cast<std::size_t>(width), output);
+        }
     }
     if (surface.core_surface_id == 0 && surface.surface_handle != 0) {
         const auto client = surfaces_.find(surface.surface_handle);
         if (client != surfaces_.end() && client->second.client_backing)
             client->second.client_host_source_dirty = true;
     }
-    if (surface.host_surface &&
-        (backing.pixel_format == surface_pixel_format_bgra ||
-            surface_is_packed_555(backing.pixel_format))) {
-        surface.host_surface->replace_cpu_region(
-            HostRectangle { static_cast<std::int32_t>(x),
-                static_cast<std::int32_t>(y), static_cast<std::uint32_t>(width),
-                static_cast<std::uint32_t>(height) },
-            pixels);
+    if (surface.host_surface && !mapping) {
+        // A full replacement needs no old GPU contents. Guest rows are written
+        // first, so an allocation failure cannot dirty a stale host shadow.
+        auto full = surface.host_surface->map_cpu(
+            true, PerfCpuMapReason::SoftwareFallback);
+        if (surface_is_packed_555(backing.pixel_format))
+            std::transform(pixels.begin(), pixels.end(),
+                full.frame().pixels.begin(), packed_pixel);
+        else
+            std::copy(pixels.begin(), pixels.end(), full.frame().pixels.begin());
+        full.set_damage(damage);
     }
-    return true;
+    return CpuWriteState::Completed;
 }
 
 std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite(
@@ -831,28 +915,36 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite(
     }
     auto destination_pixels =
         read_region(destination, x, y, width, height, call);
-    if (!destination_pixels || destination_pixels->size() != source.size()) {
+    if (!destination_pixels)
         return std::nullopt;
-    }
+    return composite_pixels(state.blend, source, std::move(*destination_pixels));
+}
+
+std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite_pixels(
+    const BlendState& blend, const std::vector<std::uint32_t>& source,
+    std::vector<std::uint32_t> destination_pixels)
+{
+    if (destination_pixels.size() != source.size())
+        return std::nullopt;
     const auto scale_byte = [](std::uint32_t value, std::uint32_t factor) {
         return (value * factor + 127U) / 255U;
     };
-    const auto alpha = static_cast<std::uint32_t>(state.blend.global_alpha);
+    const auto alpha = static_cast<std::uint32_t>(blend.global_alpha);
     const auto is_constant_alpha_crossfade =
-        !state.blend.complex &&
-        state.blend.source_factor ==
+        !blend.complex &&
+        blend.source_factor ==
             mbx2d_abi::layerkit_crossfade_source_word &&
-        state.blend.destination_factor ==
+        blend.destination_factor ==
             mbx2d_abi::layerkit_crossfade_destination_word;
     const auto is_straight_alpha_source_over =
-        state.blend.complex &&
-        state.blend.source_factor == mbx2d_abi::layerkit_mask_source_word &&
-        state.blend.destination_factor ==
+        blend.complex &&
+        blend.source_factor == mbx2d_abi::layerkit_mask_source_word &&
+        blend.destination_factor ==
             mbx2d_abi::layerkit_mask_destination_word &&
-        state.blend.operation == mbx2d_abi::layerkit_mask_operation_word;
+        blend.operation == mbx2d_abi::layerkit_mask_operation_word;
     for (std::size_t index = 0; index < source.size(); ++index) {
         const auto source_pixel = source[index];
-        const auto destination_pixel = (*destination_pixels)[index];
+        const auto destination_pixel = destination_pixels[index];
         if (is_constant_alpha_crossfade) {
             const auto inverse_alpha = 255U - alpha;
             std::uint32_t result { };
@@ -864,7 +956,7 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite(
                 result |= std::min(255U, source_channel + destination_channel)
                           << shift;
             }
-            (*destination_pixels)[index] = result;
+            destination_pixels[index] = result;
             continue;
         }
         const auto source_alpha = scale_byte(source_pixel >> 24U, alpha);
@@ -883,7 +975,7 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::composite(
         const auto destination_alpha =
             scale_byte(destination_pixel >> 24U, inverse_alpha);
         result |= std::min(255U, source_alpha + destination_alpha) << 24U;
-        (*destination_pixels)[index] = result;
+        destination_pixels[index] = result;
     }
     return destination_pixels;
 }
@@ -1029,15 +1121,8 @@ std::optional<HostCompositeMode> Mbx2dHle::host_composite_mode(
     return std::nullopt;
 }
 
-bool Mbx2dHle::submit_host_commands(bool wait, PerfSubmitReason reason)
-{
-    if (!command_encoder_)
-        return false;
-    return wait ? command_encoder_->finish(reason)
-                : command_encoder_->submit(reason);
-}
-
-void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
+void Mbx2dHle::blit_color(
+    UserlandHleCall& call, bool context_api, bool native_attempted)
 {
     auto* state = select_state(call, context_api);
     if (state == nullptr) {
@@ -1059,7 +1144,8 @@ void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
     }
     const auto color = call.argument(first + 4U);
     const auto composite_mode = host_composite_mode(*state);
-    if (host_graphics_->accelerated() && destination->host_surface &&
+    if (!native_attempted && host_graphics_->accelerated() &&
+        destination->host_surface &&
         destination->backing &&
         destination->backing->pixel_format == surface_pixel_format_bgra &&
         composite_mode &&
@@ -1068,14 +1154,34 @@ void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
         static_cast<std::uint64_t>(region.width) <=
             std::numeric_limits<std::uint32_t>::max() &&
         static_cast<std::uint64_t>(region.height) <=
-            std::numeric_limits<std::uint32_t>::max() &&
-        command_encoder_->fill(destination->host_surface,
+            std::numeric_limits<std::uint32_t>::max()) {
+        fill_native(call, context_api, *destination,
             { static_cast<std::int32_t>(region.destination_x),
                 static_cast<std::int32_t>(region.destination_y),
                 static_cast<std::uint32_t>(region.width),
                 static_cast<std::uint32_t>(region.height) },
-            color, *composite_mode, state->blend.global_alpha)) {
-        call.set_return(mbx_success);
+            color, *composite_mode, state->blend.global_alpha);
+        return;
+    }
+    if (destination->framebuffer ||
+        (destination->host_surface && destination->core_surface_id != 0)) {
+        // A fill owns no source binding. Admit its output before allocating
+        // pixels that may remain alive across the target visibility wait.
+        prepare_cpu_draw(call, context_api, std::nullopt, *destination,
+            static_cast<std::size_t>(region.width * region.height) *
+                sizeof(std::uint32_t),
+            [this, region, color](UserlandHleCall& resumed,
+                const std::optional<ResolvedSurface>&, const ResolvedSurface&,
+                std::shared_ptr<CpuDraw> cpu) {
+                std::vector<std::uint32_t> pixels(
+                    static_cast<std::size_t>(region.width * region.height), color);
+                write_cpu_draw(resumed, std::move(cpu),
+                    { static_cast<std::int32_t>(region.destination_x),
+                        static_cast<std::int32_t>(region.destination_y),
+                        static_cast<std::uint32_t>(region.width),
+                        static_cast<std::uint32_t>(region.height) },
+                    std::move(pixels));
+            });
         return;
     }
     const std::vector<std::uint32_t> source_pixels(
@@ -1090,13 +1196,12 @@ void Mbx2dHle::blit_color(UserlandHleCall& call, bool context_api)
 }
 
 void Mbx2dHle::blit_copy(UserlandHleCall& call, bool context_api)
-{
+try {
     auto* state = select_state(call, context_api);
     if (state == nullptr) {
         call.set_return(mbx_failure);
         return;
     }
-    const auto first = context_api ? 1U : 0U;
     const auto source = resolve_source(call, state->source);
     const auto destination = resolve(state->destination);
     if (!source || !destination) {
@@ -1107,16 +1212,49 @@ void Mbx2dHle::blit_copy(UserlandHleCall& call, bool context_api)
         call.set_return(mbx_success);
         return;
     }
+    const auto imported = synchronize_host_source(call, *source);
+    if (imported == SurfaceStore::CpuImportResult::PendingGpu) {
+        import_source(call, context_api, *source, *destination,
+            [this, context_api](UserlandHleCall& resumed,
+                const ResolvedSurface& ready_source,
+                const ResolvedSurface& ready_destination) {
+                execute_blit_copy(
+                    resumed, context_api, ready_source, ready_destination);
+            });
+        return;
+    }
+    if (imported != SurfaceStore::CpuImportResult::Completed) {
+        call.set_return(mbx_failure);
+        return;
+    }
+    execute_blit_copy(call, context_api, *source, *destination);
+} catch (...) {
+    call.set_return(mbx_failure);
+}
+
+void Mbx2dHle::execute_blit_copy(UserlandHleCall& call, bool context_api,
+    const ResolvedSurface& source_surface,
+    const ResolvedSurface& destination_surface, std::shared_ptr<CpuDraw> cpu,
+    bool native_attempted)
+{
+    const auto* source = &source_surface;
+    const auto* destination = &destination_surface;
+    const auto* state = select_state(call, context_api);
+    if (!state) {
+        call.set_return(mbx_failure);
+        return;
+    }
+    const auto first = context_api ? 1U : 0U;
     BlitRegion region { signed_argument(call, first),
         signed_argument(call, first + 1U), signed_argument(call, first + 2U),
         signed_argument(call, first + 3U), signed_argument(call, first + 4U),
         signed_argument(call, first + 5U) };
     const auto composite_mode = host_composite_mode(*state);
-    const auto host_source_current = synchronize_host_source(call, *source);
     const auto try_host_copy = [&](HostRectangle source_rectangle,
                                    HostRectangle destination_rectangle,
                                    HostRotation rotation) {
-        if (!host_graphics_->accelerated() || !host_source_current ||
+        if (cpu || native_attempted || source->cpu_frame ||
+            !host_graphics_->accelerated() ||
             !source->host_surface || !destination->host_surface ||
             !source->backing || !destination->backing ||
             source->backing->pixel_format != surface_pixel_format_bgra ||
@@ -1124,18 +1262,10 @@ void Mbx2dHle::blit_copy(UserlandHleCall& call, bool context_api)
             !composite_mode) {
             return false;
         }
-        const auto started = std::chrono::steady_clock::now();
-        const auto encoded = command_encoder_->copy(source->host_surface,
-            destination->host_surface, source_rectangle, destination_rectangle,
-            *composite_mode, state->blend.global_alpha, HostFilter::Nearest,
+        copy_native(call, context_api, *source, *destination, source_rectangle,
+            destination_rectangle, *composite_mode, state->blend.global_alpha,
             rotation);
-        performance_counters().record_diagnostic_graphics_hle(
-            PerfDiagnosticGraphicsHleKind::HostCopyEncode,
-            static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - started)
-                    .count()));
-        return encoded;
+        return true;
     };
     const auto transform_enabled =
         state->scale_x_bits != mbx2d_abi::float_one_bits ||
@@ -1164,11 +1294,46 @@ void Mbx2dHle::blit_copy(UserlandHleCall& call, bool context_api)
                     static_cast<std::uint32_t>(region.width),
                     static_cast<std::uint32_t>(region.height) },
                 HostRotation::Identity)) {
-            call.set_return(mbx_success);
             return;
         }
-        const auto source_pixels = read_region(*source, region.source_x,
+        if (!cpu && (source->backing || source->framebuffer) &&
+            (source->framebuffer || destination->framebuffer ||
+                (destination->host_surface && destination->core_surface_id != 0))) {
+            prepare_cpu_draw(call, context_api, *source, *destination,
+                static_cast<std::size_t>(region.width * region.height) *
+                    sizeof(std::uint32_t),
+                [this, context_api](UserlandHleCall& resumed,
+                    const std::optional<ResolvedSurface>& ready_source,
+                    const ResolvedSurface& ready_destination,
+                    std::shared_ptr<CpuDraw> ready) {
+                    execute_blit_copy(resumed, context_api, *ready_source,
+                        ready_destination, std::move(ready));
+                });
+            return;
+        }
+        if (!source->cpu_frame && source->core_surface_id != 0 &&
+            source->host_surface && source->host_surface->gpu_generation() != 0) {
+            import_source(call, context_api, *source, *destination,
+                [this, context_api, cpu, native_attempted](UserlandHleCall& resumed,
+                    const ResolvedSurface& ready_source,
+                    const ResolvedSurface& ready_destination) {
+                    execute_blit_copy(resumed, context_api, ready_source,
+                        ready_destination, cpu, native_attempted);
+                },
+                true, cpu_draw_lease(cpu));
+            return;
+        }
+        auto source_pixels = read_region(*source, region.source_x,
             region.source_y, region.width, region.height, call);
+        if (cpu && source_pixels) {
+            write_cpu_draw(call, std::move(cpu),
+                { static_cast<std::int32_t>(region.destination_x),
+                    static_cast<std::int32_t>(region.destination_y),
+                    static_cast<std::uint32_t>(region.width),
+                    static_cast<std::uint32_t>(region.height) },
+                std::move(*source_pixels));
+            return;
+        }
         const auto pixels =
             source_pixels
                 ? composite(*state, *destination, region.destination_x,
@@ -1255,7 +1420,39 @@ void Mbx2dHle::blit_copy(UserlandHleCall& call, bool context_api)
                 static_cast<std::uint32_t>(output_width),
                 static_cast<std::uint32_t>(output_height) },
             *host_rotation)) {
-        call.set_return(mbx_success);
+        return;
+    }
+    if (!cpu && (source->backing || source->framebuffer) &&
+        (source->framebuffer || destination->framebuffer ||
+            (destination->host_surface && destination->core_surface_id != 0))) {
+        BlitRegion output { 0, 0, region.destination_x, region.destination_y,
+            output_width, output_height };
+        if (!clip_region(output, nullptr, *destination, state->scissor)) {
+            call.set_return(mbx_success);
+            return;
+        }
+        prepare_cpu_draw(call, context_api, *source, *destination,
+            static_cast<std::size_t>(output.width * output.height) *
+                sizeof(std::uint32_t),
+            [this, context_api](UserlandHleCall& resumed,
+                const std::optional<ResolvedSurface>& ready_source,
+                const ResolvedSurface& ready_destination,
+                std::shared_ptr<CpuDraw> ready) {
+                execute_blit_copy(resumed, context_api, *ready_source,
+                    ready_destination, std::move(ready));
+            });
+        return;
+    }
+    if (!source->cpu_frame && source->core_surface_id != 0 &&
+        source->host_surface && source->host_surface->gpu_generation() != 0) {
+        import_source(call, context_api, *source, *destination,
+            [this, context_api, cpu, native_attempted](UserlandHleCall& resumed,
+                const ResolvedSurface& ready_source,
+                const ResolvedSurface& ready_destination) {
+                execute_blit_copy(resumed, context_api, ready_source,
+                    ready_destination, cpu, native_attempted);
+            },
+            true, cpu_draw_lease(cpu));
         return;
     }
     const auto source_pixels = read_region(*source, region.source_x,
@@ -1290,6 +1487,15 @@ void Mbx2dHle::blit_copy(UserlandHleCall& call, bool context_api)
             static_cast<std::size_t>(transformed_region.width),
             clipped.begin() + destination_offset);
     }
+    if (cpu) {
+        write_cpu_draw(call, std::move(cpu),
+            { static_cast<std::int32_t>(transformed_region.destination_x),
+                static_cast<std::int32_t>(transformed_region.destination_y),
+                static_cast<std::uint32_t>(transformed_region.width),
+                static_cast<std::uint32_t>(transformed_region.height) },
+            std::move(clipped));
+        return;
+    }
     const auto pixels = composite(*state, *destination,
         transformed_region.destination_x, transformed_region.destination_y,
         transformed_region.width, transformed_region.height, clipped, call);
@@ -1323,6 +1529,11 @@ void Mbx2dHle::submit_destination(UserlandHleCall& call, bool context_api)
     if (host_graphics_->accelerated() && destination->host_surface) {
         auto graphics = host_graphics_;
         auto surface = destination->host_surface;
+        auto transport = surface_store_->acquire_transport_lease(
+            destination->core_surface_id);
+        if (!transport)
+            return;
+        auto presentation = make_host_surface_presentation_lease(surface, transport);
         display_->replace_surface(
             surface,
             [graphics, surface] {
@@ -1337,7 +1548,7 @@ void Mbx2dHle::submit_destination(UserlandHleCall& call, bool context_api)
             [surface] {
                 return std::max(
                     surface->cpu_generation(), surface->gpu_generation());
-            });
+            }, std::move(presentation));
         return;
     }
     const auto pixels = read_region(
@@ -1347,52 +1558,6 @@ void Mbx2dHle::submit_destination(UserlandHleCall& call, bool context_api)
     }
 }
 
-void Mbx2dHle::flush_surfaces(UserlandHleCall& call)
-{
-    const auto array = call.argument(0);
-    const auto count = call.argument(1);
-    if (count == 0) {
-        call.set_return(mbx_success);
-        return;
-    }
-    if (array == 0 || count > mbx2d_abi::maximum_flush_surface_count) {
-        call.set_return(mbx_failure);
-        return;
-    }
-    for (std::uint32_t index = 0; index < count; ++index) {
-        const auto address =
-            static_cast<std::uint64_t>(array) +
-            static_cast<std::uint64_t>(index) * sizeof(std::uint32_t);
-        if (address > std::numeric_limits<std::uint32_t>::max()) {
-            call.set_return(mbx_failure);
-            return;
-        }
-        const auto surface =
-            call.memory().read32(static_cast<std::uint32_t>(address));
-        const auto found = surface ? surfaces_.find(*surface) : surfaces_.end();
-        if (found == surfaces_.end()) {
-            call.set_return(mbx_failure);
-            return;
-        }
-        const auto core_surface_id = found->second.core_surface_id;
-        if (found->second.client_backing)
-            found->second.client_host_source_dirty = true;
-        // Both lists are unified-memory visibility barriers. Source publication
-        // makes CPU-rendered pixels available to a retained handle; destination
-        // invalidation does the same before GPU commands consume prior
-        // contents. Exact merging preserves unrelated native pixels in either
-        // direction.
-        if (core_surface_id != 0 && !surface_store_->synchronize_from_guest(
-                                        call.memory(), core_surface_id)) {
-            call.set_return(mbx_failure);
-            return;
-        }
-    }
-    // FlushSurfaces publishes unified-memory changes; it is not a command
-    // queue flush. Pending GPU work remains ordered until mbx2DFlush,
-    // mbx2DFinish, or a host consumer submits it.
-    call.set_return(mbx_success);
-}
 
 void Mbx2dHle::terminate(UserlandHleCall& call)
 {
@@ -1400,9 +1565,7 @@ void Mbx2dHle::terminate(UserlandHleCall& call)
         call.set_return(mbx_failure);
         return;
     }
-    static_cast<void>(submit_host_commands(true, PerfSubmitReason::MbxFinish));
-    reset();
-    call.set_return(mbx_success);
+    submit(call, SubmissionKind::Terminate);
 }
 
 void Mbx2dHle::deferred(UserlandHleCall& call)

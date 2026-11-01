@@ -349,12 +349,14 @@ namespace {
             result.linked = true;
             return result;
         }
-        void erase(std::uint32_t name) override
+        bool erase(std::uint32_t name) override
         {
             std::lock_guard lock { mutex_ };
             Binding binding { *this };
-            if (binding)
-                erase_bound(name);
+            if (!binding)
+                return false;
+            erase_bound(name);
+            return glGetError() == GL_NO_ERROR;
         }
         bool contains(std::uint32_t name) const override
         {
@@ -399,7 +401,7 @@ namespace {
             return Limits { values[0], values[1], values[2], values[3],
                 values[4], values[5] };
         }
-        bool draw(DisplayFrame& frame, GlesRenderTargetKey key,
+        bool draw(const DisplayFrame& frame, GlesRenderTargetKey key,
             const GlesProgramDraw& draw, std::uint32_t mode,
             const GlesRasterState& state) override
         {

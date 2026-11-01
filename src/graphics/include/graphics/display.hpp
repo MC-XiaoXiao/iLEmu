@@ -98,7 +98,8 @@ public:
     void replace_surface(std::shared_ptr<HostSurface> surface,
         std::function<std::vector<std::uint32_t>()> read_pixels,
         std::uint32_t owner_process_id = 0,
-        std::function<std::uint64_t()> content_revision_reader = { });
+        std::function<std::uint64_t()> content_revision_reader = { },
+        std::shared_ptr<HostSurfacePresentationLease> presentation_lease = { });
     // The framebuffer keeps its last scanout contents while the LCD is off.
     // Presenters and snapshots expose a black panel until power is restored.
     void set_powered_on(bool powered_on);
@@ -107,6 +108,9 @@ public:
     // boundary. Returns false when a newer process already owns the scanout.
     bool clear_if_owner(std::uint32_t owner_process_id);
 
+    // Capture a stable host source without invoking a CPU materializer. Native
+    // surfaces retain the existing content lease until the caller reads them.
+    [[nodiscard]] DisplayFrame capture_frame() const;
     [[nodiscard]] DisplayFrame snapshot() const;
     [[nodiscard]] std::uint64_t presented_frames() const;
     [[nodiscard]] std::uint64_t content_revision() const;
@@ -124,6 +128,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<std::uint32_t> pixels_;
     std::shared_ptr<HostSurface> host_surface_;
+    std::shared_ptr<HostSurfacePresentationLease> surface_presentation_lease_;
     std::function<std::vector<std::uint32_t>()> surface_reader_;
     std::function<std::uint64_t()> surface_content_revision_reader_;
     std::uint64_t surface_content_generation_ { };

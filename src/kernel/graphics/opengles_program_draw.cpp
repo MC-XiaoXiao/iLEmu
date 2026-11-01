@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 #include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
 #include "foundation/output.hpp"
 #include "foundation/userland_hle.hpp"
 #include "graphics/surface_store.hpp"
@@ -10,6 +11,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
+#include <stdexcept>
 
 namespace ilemu {
 
@@ -96,77 +99,63 @@ bool OpenGlesHle::prepare_program_attributes(UserlandHleCall& call,
     return true;
 }
 
-bool OpenGlesHle::flush_program_draws(UserlandHleCall& call)
+void OpenGlesHle::retire_thread(std::size_t processor)
+{
+    // Cancel only the observer. Accepted host work retains its snapshots and
+    // host resource references through execution; late results have no copyout.
+    if (sync_lease_ && sync_lease_->owner == processor)
+        sync_lease_->cancelled = true;
+    if (program_renderer_)
+        program_renderer_->retire_issuer(processor);
+    threads_.erase(processor);
+}
+
+void OpenGlesHle::collect_program_draw_errors()
+{
+    if (!program_renderer_)
+        return;
+    for (const auto issuer : program_renderer_->collect_errors()) {
+        auto& error = threads_[issuer].gl_error;
+        if (error == gles_abi::no_error)
+            error = gles_abi::invalid_operation;
+    }
+}
+
+bool OpenGlesHle::program_draw_needs_flush(const RenderTargetBinding& binding,
+    std::span<const std::uint32_t> textures) const
 {
     if (!pending_program_target_)
+        return false;
+    const auto& pending = pending_program_target_->binding;
+    if (pending.key != binding.key)
         return true;
-    auto& target = *pending_program_target_;
-    if (!program_renderer_ ||
-        !program_renderer_->readback(target.frame, target.binding.key)) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return false;
+    for (const auto name : textures) {
+        if (name == 0U)
+            continue;
+        if (name == pending.framebuffer_texture)
+            return true;
+        const auto* texture = resources_.texture(name);
+        if (texture && pending.backing_identifier)
+            for (const auto& [level, image] : texture->levels) {
+                static_cast<void>(level);
+                if (image.surface_id == pending.backing_identifier)
+                    return true;
+            }
     }
-    renderer_->invalidate(target.binding.key);
-    if (!commit_render_target(call, target.binding, std::move(target.frame))) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return false;
-    }
-    pending_program_target_.reset();
-    return true;
+    return false;
 }
 
 void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     const RenderTargetBinding& binding, DisplayFrame frame,
     const GlesProgramDraw& draw, std::uint32_t mode,
-    const GlesRasterState& state)
+    const GlesRasterState& state, bool indexed)
 {
-    // Forked guest contexts inherit declarations, but never host EGL objects.
-    if (!program_renderer_) {
-        std::string error;
-        program_renderer_ = create_gles_program_renderer(&error);
-        if (!program_renderer_) {
-            call.output().marker(
-                "[gles] cannot restore GLSL executor: " + error);
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-    }
-    if (!program_renderer_->contains(draw.program)) {
-        const auto linked = program_renderer_->link(draw.program,
-            programs_.shader_source(draw.program, gles_abi::vertex_shader),
-            programs_.shader_source(draw.program, gles_abi::fragment_shader),
-            draw.state->attributes);
-        if (!linked.linked) {
-            call.output().marker(
-                "[gles] cannot restore GLSL program: " + linked.log);
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-    }
-    const auto samples_pending = [&] {
-        if (!pending_program_target_)
-            return false;
-        const auto& pending = pending_program_target_->binding;
-        for (const auto name : draw.textures) {
-            if (name == 0U)
-                continue;
-            if (name == pending.framebuffer_texture)
-                return true;
-            const auto* texture = resources_.texture(name);
-            if (texture && pending.backing_identifier)
-                for (const auto& [level, image] : texture->levels) {
-                    static_cast<void>(level);
-                    if (image.surface_id == pending.backing_identifier)
-                        return true;
-                }
-        }
-        return false;
-    };
-    if (pending_program_target_ &&
-        (pending_program_target_->binding.key != binding.key ||
-            samples_pending()) &&
-        !flush_program_draws(call))
+    // Host initialization/restoration was completed before draw preparation.
+    if (!program_renderer_ || !program_renderer_->initialized() ||
+        !program_renderer_->contains(draw.program)) {
+        set_gl_error(call, gles_abi::invalid_operation);
         return;
+    }
     for (auto texture : draw.textures) {
         if (texture == 0U)
             continue;
@@ -179,38 +168,147 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     }
     if (pending_program_target_) {
         frame.pixels.clear();
-    } else {
-        // Switching targets can publish a preceding render into the same
-        // backing texture. Reacquire the frame after that synchronization.
-        const auto refreshed = render_target(call, binding);
-        if (!refreshed) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        frame = *refreshed;
-        if (binding.host_surface) {
-            if (!renderer_->map_cpu(*binding.host_surface, true)) {
-                set_gl_error(call, gles_abi::invalid_operation);
-                return;
-            }
-            auto mapping = binding.host_surface->map_cpu(false);
-            frame = mapping.frame();
-        } else if (!renderer_->synchronize(frame, binding.key)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
     }
-    if (!resources_.materialize_surface_textures(*renderer_, draw.textures) ||
-        !program_renderer_->draw(frame, binding.key, draw, mode, state)) {
+    collect_program_draw_errors();
+    std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared;
+    std::size_t bytes = 0;
+    try {
+        prepared = program_renderer_->prepare_draw(frame, binding.key, draw,
+            mode, state, call.cpu().processor_id(), bytes,
+            !pending_program_target_, binding.host_surface != nullptr,
+            *surface_store_);
+    } catch (const std::bad_alloc&) {
+        set_gl_error(call, gles_abi::out_of_memory);
+        return;
+    } catch (const std::length_error&) {
+        set_gl_error(call, gles_abi::out_of_memory);
+        return;
+    } catch (const std::exception&) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
-    performance_counters().record_draw();
-    if (!pending_program_target_) {
-        frame.pixels.clear();
-        pending_program_target_ =
-            PendingProgramTarget { binding, std::move(frame) };
+    if (!prepared) {
+        // No immutable payload or command was accepted. Release temporary
+        // attribute views/frame data on return; preparation may safely restart
+        // from frozen scalar ABI after credit becomes available.
+        const auto lease = program_wait(call);
+        call.suspend_until(
+            [bytes] { return gles_draw_preparation_capacity(bytes); },
+            [this, lease, indexed](UserlandHleCall& resumed) {
+                lease->consume();
+                this->draw(resumed, indexed);
+            });
+        return;
     }
+    const DisplayGeometry dimensions { frame.width, frame.height };
+    if (!program_renderer_->inputs_ready(prepared)) {
+        prepare_program_inputs(call, binding, dimensions, std::move(prepared));
+        return;
+    }
+    submit_program_draw(call, binding, dimensions, std::move(prepared));
+}
+
+void OpenGlesHle::prepare_program_inputs(UserlandHleCall& call,
+    const RenderTargetBinding& binding, DisplayGeometry dimensions,
+    std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared)
+{
+    const auto lease = program_wait(call);
+    if (!program_renderer_ || !binding_live(binding)) {
+        lease->consume();
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    std::shared_ptr<GlesWorkResult> result;
+    try {
+        result = program_renderer_->enqueue_input_readback(
+            prepared, renderer_, binding.host_surface);
+    } catch (const std::bad_alloc&) {
+        lease->consume();
+        set_gl_error(call, gles_abi::out_of_memory);
+        return;
+    } catch (...) {
+        lease->consume();
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    if (!result) {
+        call.suspend_until(
+            [this, prepared] {
+                return !program_renderer_ ||
+                       program_renderer_->draw_capacity(prepared);
+            },
+            [this, binding, dimensions, prepared](UserlandHleCall& resumed) {
+                prepare_program_inputs(resumed, binding, dimensions, prepared);
+            });
+        return;
+    }
+    lease->result = result;
+    call.suspend_until([result] { return result->ready(); },
+        [this, binding, dimensions, prepared, lease](UserlandHleCall& resumed) {
+            try {
+                if (!program_renderer_ || !binding_live(binding))
+                    throw std::invalid_argument { "stale GLES input binding" };
+                program_renderer_->complete_inputs(prepared, resources_);
+                lease->result.reset();
+            } catch (const std::bad_alloc&) {
+                lease->consume();
+                set_gl_error(resumed, gles_abi::out_of_memory);
+                return;
+            } catch (...) {
+                lease->consume();
+                set_gl_error(resumed, gles_abi::invalid_operation);
+                return;
+            }
+            // Keep the process graphics gate until draw admission. The packet
+            // already owns attributes/uniforms/textures; do not replay draw().
+            submit_program_draw(resumed, binding, dimensions, prepared);
+        },
+        result->sequence());
+}
+
+void OpenGlesHle::submit_program_draw(UserlandHleCall& call,
+    const RenderTargetBinding& binding, DisplayGeometry dimensions,
+    std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared)
+{
+    const auto release_admission = [&] {
+        if (sync_lease_ && !sync_lease_->consumed &&
+            sync_lease_->owner == call.cpu().processor_id())
+            sync_lease_->consume();
+    };
+    if (!program_renderer_ || !binding_live(binding)) {
+        release_admission();
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    std::shared_ptr<GlesWorkResult> result;
+    try {
+        result = program_renderer_->enqueue_draw(prepared);
+    } catch (const std::bad_alloc&) {
+        release_admission();
+        set_gl_error(call, gles_abi::out_of_memory);
+        return;
+    } catch (const std::exception&) {
+        release_admission();
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    if (!result) {
+        static_cast<void>(program_wait(call));
+        call.suspend_until(
+            [this, prepared] {
+                return !program_renderer_ ||
+                       program_renderer_->draw_capacity(prepared);
+            },
+            [this, binding, dimensions, prepared](UserlandHleCall& resumed) {
+                submit_program_draw(resumed, binding, dimensions, prepared);
+            });
+        return;
+    }
+    performance_counters().record_draw();
+    if (!pending_program_target_)
+        pending_program_target_ = PendingProgramTarget { binding,
+            DisplayFrame { dimensions.width, dimensions.height, 0, { } } };
+    release_admission();
 }
 
 } // namespace ilemu

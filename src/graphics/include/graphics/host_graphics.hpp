@@ -78,6 +78,7 @@ enum class HostRotation : std::uint8_t {
     Clockwise270,
 };
 
+class GlesWorkCompletion;
 class HostSurface;
 
 class HostSurfacePresentationLease {
@@ -86,9 +87,13 @@ public:
 
 private:
     friend std::shared_ptr<HostSurfacePresentationLease>
-    make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface);
-    explicit HostSurfacePresentationLease(std::shared_ptr<HostSurface> surface);
+    make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface,
+        std::shared_ptr<void> native_lifetime);
+    HostSurfacePresentationLease(std::shared_ptr<HostSurface> surface,
+        std::shared_ptr<void> native_lifetime);
 
+    // Retire the renderer owner after releasing the content lease and surface.
+    std::shared_ptr<void> native_lifetime_;
     std::shared_ptr<HostSurface> surface_;
 };
 
@@ -111,6 +116,10 @@ public:
         [[nodiscard]] std::uint64_t generation() const
         {
             return surface_->cpu_generation_;
+        }
+        [[nodiscard]] std::uint64_t gpu_generation() const
+        {
+            return surface_->gpu_generation_;
         }
         // Narrows a write mapping to the pixels actually modified. Omitting
         // this keeps the conservative full-surface damage used by callers
@@ -135,6 +144,22 @@ public:
     {
         return descriptor_;
     }
+    // Exact host work dependency, independent of CPU/GPU pixel generations.
+    [[nodiscard]] std::shared_ptr<const GlesWorkCompletion> writer() const;
+    // The serial core records an accepted FIFO read before yielding to another
+    // guest. Legacy core writers must await this observer before mutation.
+    [[nodiscard]] std::shared_ptr<const GlesWorkCompletion> reader() const;
+    void record_read(std::shared_ptr<const GlesWorkCompletion> completion);
+    // Queue admission only: no GPU/guest work while this short lock is held.
+    // A previous failed write quarantines the image; a pending write retries.
+    [[nodiscard]] bool begin_write(
+        std::shared_ptr<const GlesWorkCompletion> completion,
+        std::shared_ptr<const GlesWorkCompletion>& previous);
+    void abandon_write(const std::shared_ptr<const GlesWorkCompletion>& completion,
+        std::shared_ptr<const GlesWorkCompletion> previous);
+    // A queued reader ignores writers admitted after its own FIFO position.
+    // Outside that FIFO, zero means all currently accepted writers matter.
+    [[nodiscard]] bool work_succeeded(std::uint64_t through = 0) const;
     [[nodiscard]] std::uint64_t cpu_generation() const;
     [[nodiscard]] std::uint64_t gpu_generation() const;
     [[nodiscard]] bool presentation_leased() const;
@@ -142,6 +167,18 @@ public:
     [[nodiscard]] std::uint64_t scanout_presentation_sequence() const;
     [[nodiscard]] CpuMapping map_cpu(
         bool write, PerfCpuMapReason reason = PerfCpuMapReason::Internal);
+    // No driver work: return empty if a GPU readback is needed. The check and
+    // mapping share the same lock, so later GPU writes cannot race a CPU merge.
+    [[nodiscard]] std::optional<CpuMapping> try_map_current_cpu(
+        bool write, PerfCpuMapReason reason = PerfCpuMapReason::Internal);
+    struct CpuSnapshot {
+        DisplayFrame frame;
+        std::uint64_t cpu_generation, gpu_generation;
+    };
+    // Copies host-owned pixels while locked; callers must release the lock
+    // before driver/GPU work. A stale snapshot never overwrites newer pixels.
+    [[nodiscard]] CpuSnapshot snapshot_cpu(PerfCpuMapReason reason) const;
+    [[nodiscard]] bool commit_cpu_readback(const CpuSnapshot& snapshot);
     void replace_cpu(std::span<const std::uint32_t> pixels);
     void replace_cpu_region(
         HostRectangle rectangle, std::span<const std::uint32_t> pixels);
@@ -179,6 +216,8 @@ private:
     HostSurfaceDescriptor descriptor_;
     mutable std::mutex mutex_;
     DisplayFrame cpu_frame_;
+    std::shared_ptr<const GlesWorkCompletion> writer_;
+    std::shared_ptr<const GlesWorkCompletion> reader_;
     std::uint64_t next_generation_ { 1 };
     std::uint64_t cpu_generation_ { 1 };
     std::uint64_t gpu_generation_ { };
@@ -190,7 +229,8 @@ private:
 };
 
 [[nodiscard]] std::shared_ptr<HostSurfacePresentationLease>
-make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface);
+make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface,
+    std::shared_ptr<void> native_lifetime = { });
 
 class CommandEncoder {
 public:

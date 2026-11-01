@@ -24,6 +24,8 @@ namespace ilemu {
 
 class AddressSpace;
 class HostSurface;
+class GlesRendererOwner;
+struct SurfaceCpuReadback;
 class SurfaceTransportLease;
 struct HostRectangle;
 
@@ -195,16 +197,41 @@ public:
         std::uint32_t id) const;
     [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_argb(
         AddressSpace& memory, std::uint32_t id) const;
+    struct CpuReadResult {
+        enum class State { Completed, PendingGpu, Failed };
+        State state { State::Failed };
+        std::vector<std::uint32_t> pixels;
+        std::uint64_t gpu_generation { };
+    };
+    // Core-only CPU path. PendingGpu requests a separate owned host capture;
+    // this function never waits for the driver or accesses a stale CPU shadow.
+    [[nodiscard]] CpuReadResult try_read_argb(
+        AddressSpace& memory, std::uint32_t id) const;
     // CPU map is the explicit GPU completion/readback boundary. The resulting
     // pixels are copied into the guest mapping for firmware access.
     [[nodiscard]] bool synchronize_for_cpu(AddressSpace& memory,
         std::uint32_t id, CpuSynchronizationOptions options) const;
+    [[nodiscard]] std::optional<bool> cpu_sync_required(
+        std::uint32_t id, CpuSynchronizationOptions options) const;
+    // Core-only publication of a separately captured host result. Preserve
+    // guest writes not yet imported by synchronize_from_guest.
+    [[nodiscard]] bool complete_cpu_readback(AddressSpace& memory,
+        const Backing& expected, const SurfaceCpuReadback& readback) const;
     // Imports guest CPU writes even when a newer GPU generation exists. This
     // is the unlock/flush direction, not a GPU readback request.
+    enum class CpuImportResult { Completed, PendingGpu, Failed };
+    // Core-only import. PendingGpu changes neither the guest baseline nor the
+    // CPU shadow; retry after an owned capture has populated the current cache.
+    [[nodiscard]] CpuImportResult try_synchronize_from_guest(
+        AddressSpace& memory, std::uint32_t id) const;
     [[nodiscard]] bool synchronize_from_guest(
         AddressSpace& memory, std::uint32_t id) const;
     [[nodiscard]] bool write_argb(AddressSpace& memory, std::uint32_t id,
         std::span<const std::uint32_t> pixels) const;
+    // Record an actual completed core CPU write without rereading guest
+    // memory or advancing GPU completion. Only the written region changes.
+    [[nodiscard]] bool record_cpu_write(const Backing& expected,
+        HostRectangle rectangle, std::span<const std::uint32_t> pixels) const;
     [[nodiscard]] bool write_bytes(AddressSpace& memory, std::uint32_t id,
         std::span<const std::byte> bytes) const;
     [[nodiscard]] bool transfer_scaled(AddressSpace& memory,
@@ -216,6 +243,7 @@ private:
         std::mutex mutex;
         std::vector<std::uint64_t> shared_page_generations;
         std::vector<std::uint32_t> guest_pixel_snapshot;
+        std::uint64_t guest_gpu_generation { };
     };
     struct SharedObject {
         Backing metadata;
@@ -223,6 +251,7 @@ private:
         std::uint32_t mapping_size { };
         std::vector<std::shared_ptr<GuestPageBacking>> pages;
         std::shared_ptr<HostSurface> host_surface;
+        std::shared_ptr<GlesRendererOwner> renderer_lifetime;
         std::shared_ptr<SyncState> sync_state;
         std::size_t store_references { };
     };
@@ -246,8 +275,8 @@ private:
         std::uint32_t id) const;
     void update_guest_sync_generation(
         AddressSpace& memory, const Backing& backing) const;
-    void update_guest_snapshot(const Backing& backing, HostRectangle rectangle,
-        std::span<const std::uint32_t> pixels) const;
+    bool update_guest_snapshot(const Backing& backing, HostRectangle rectangle,
+        std::span<const std::uint32_t> pixels, bool encode_pixels = false) const;
 
     mutable std::mutex mutex_;
     std::map<std::uint32_t, Backing> backings_;

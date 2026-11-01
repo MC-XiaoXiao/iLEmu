@@ -10,6 +10,7 @@
 #include "guest_drawable_geometry.hpp"
 #include "guest_eagl_window.hpp"
 #include "opengles_dispatch_hle.hpp"
+#include "graphics/gles_frame_draw.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -79,7 +81,7 @@ namespace {
     constexpr std::uint32_t egl_pbuffer_bit = 0x0001;
     constexpr std::uint32_t egl_pixmap_bit = 0x0002;
     constexpr std::uint32_t egl_opengl_es_bit = 0x0001;
-    constexpr std::uint64_t texture_render_target_namespace = 1ULL << 32U;
+    constexpr std::uint64_t texture_render_target_namespace = 1ULL << 63U;
     constexpr std::uint64_t compatibility_surface_namespace = 2ULL << 32U;
     constexpr std::size_t compatibility_surface_ring_size = 4;
 
@@ -193,8 +195,22 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
                                 : std::make_shared<SurfaceStore>() }
     , renderer_owner_ { allocate_gles_renderer_owner() }
     , renderer_ { shared_gles_renderer() }
+    , renderer_lifetime_ {
+        std::make_shared<GlesRendererOwner>(renderer_, renderer_owner_) }
     , command_encoder_ { renderer_->create_command_encoder() }
 {
+    registry.register_call_gate(std::string { opengles_image },
+        [this](UserlandHleCall& call, UserlandHleRegistry::Handler handler) {
+            enter_graphics_call(call, std::move(handler));
+        });
+    registry.register_call_gate("/GLEngine.bundle/GLEngine",
+        [this](UserlandHleCall& call, UserlandHleRegistry::Handler handler) {
+            enter_graphics_call(call, std::move(handler));
+        });
+    registry.register_call_gate("/OpenGLES.framework/libGFXShared.dylib",
+        [this](UserlandHleCall& call, UserlandHleRegistry::Handler handler) {
+            enter_graphics_call(call, std::move(handler));
+        });
     register_eagl(registry);
     register_egl(registry);
     register_gles(registry);
@@ -208,6 +224,7 @@ OpenGlesHle::~OpenGlesHle() { release_renderer_resources(); }
 
 void OpenGlesHle::reset()
 {
+    sync_lease_.reset();
     release_renderer_resources();
     threads_.clear();
     contexts_.clear();
@@ -225,6 +242,8 @@ void OpenGlesHle::reset()
     pending_program_target_.reset();
     program_renderer_.reset();
     renderer_owner_ = allocate_gles_renderer_owner();
+    renderer_lifetime_ =
+        std::make_shared<GlesRendererOwner>(renderer_, renderer_owner_);
     next_context_ = 0x00010001U;
     next_surface_ = 0x00020001U;
     egl_error_ = egl_success;
@@ -232,12 +251,28 @@ void OpenGlesHle::reset()
     unsupported_trace_count_ = 0;
 }
 
-void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
+void OpenGlesHle::inherit_state(const OpenGlesHle& parent,
+    std::uint32_t parent_pid, std::uint32_t child_pid,
+    std::size_t parent_processor)
 {
+    sync_lease_.reset();
     release_renderer_resources();
-    threads_ = parent.threads_;
+    // Runtime fork preserves only its calling uthread, rebased to child slot
+    // zero. Graphics TLS follows that same identity, including EGL bindings
+    // and pending GL errors; other parent uthreads do not exist in the child.
+    threads_.clear();
+    if (const auto caller = parent.threads_.find(parent_processor);
+        caller != parent.threads_.end())
+        threads_.emplace(0U, caller->second);
     contexts_ = parent.contexts_;
-    eagl_contexts_ = parent.eagl_contexts_;
+    eagl_contexts_.clear();
+    // Guest object addresses survive fork, while their process namespace
+    // changes. Public EAGL calls and the inherited driver handles must resolve
+    // the same copied context, including framebuffer and thread-local state.
+    for (const auto& [object, context] : parent.eagl_contexts_)
+        if (object.first == parent_pid)
+            eagl_contexts_.emplace(
+                std::pair { child_pid, object.second }, context);
     eagl_context_abi_ = parent.eagl_context_abi_;
     dispatch_hle_->inherit_state(*parent.dispatch_hle_);
     surfaces_ = parent.surfaces_;
@@ -251,6 +286,8 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
     pending_program_target_.reset();
     program_renderer_.reset();
     renderer_owner_ = allocate_gles_renderer_owner();
+    renderer_lifetime_ =
+        std::make_shared<GlesRendererOwner>(renderer_, renderer_owner_);
     default_guest_capabilities_ = parent.default_guest_capabilities_;
     next_context_ = parent.next_context_;
     next_surface_ = parent.next_surface_;
@@ -260,8 +297,10 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
 
 void OpenGlesHle::release_renderer_resources()
 {
-    if (renderer_owner_ != 0)
-        renderer_->release_owner(renderer_owner_);
+    // Dropping publishers posts bounded worker maintenance. Accepted work keeps
+    // its snapshots/backend and the owner record's captured FIFO boundary.
+    program_renderer_.reset();
+    renderer_lifetime_.reset();
 }
 
 void OpenGlesHle::set_display(std::shared_ptr<DisplayState> display)
@@ -663,30 +702,6 @@ OpenGlesHle::SurfaceState* OpenGlesHle::current_pixmap_surface(
                : nullptr;
 }
 
-bool OpenGlesHle::refresh_pixmap_surface(
-    UserlandHleCall& call, std::uint32_t surface)
-{
-    const auto found = surfaces_.find(surface);
-    if (found == surfaces_.end() || !found->second.backing_identifier)
-        return true;
-    auto& state = found->second;
-    const auto host_surface =
-        surface_store_->host_surface(*state.backing_identifier);
-    if (!host_surface)
-        return false;
-    const auto cpu_generation = host_surface->cpu_generation();
-    if (cpu_generation <= state.backing_cpu_generation)
-        return true;
-    // A newer GPU generation is still the authoritative render target. Do not
-    // overwrite its native image with the older guest shadow; record the CPU
-    // watermark so a later completed GPU-to-CPU synchronization is observed.
-    if (host_surface->gpu_generation() > cpu_generation) {
-        state.backing_cpu_generation = cpu_generation;
-        return true;
-    }
-    return reload_surface(call, surface);
-}
-
 bool OpenGlesHle::attach_eagl_window_surface(UserlandHleCall& call,
     ContextState& context, std::uint32_t renderbuffer_name,
     std::uint32_t window, std::uint32_t surface)
@@ -720,7 +735,8 @@ bool OpenGlesHle::attach_eagl_window_surface(UserlandHleCall& call,
 }
 
 std::optional<OpenGlesHle::RenderTargetBinding>
-OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
+OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context,
+    bool writable)
 {
     if (context.bound_framebuffer != 0U) {
         const auto framebuffer =
@@ -741,8 +757,9 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
                 level->render_target_inverted_vertical };
         }
         auto host_surface =
-            resources_.ensure_texture_render_target(texture, 0U, *renderer_,
-                renderer_owner_, texture_render_target_namespace | texture);
+            resources_.ensure_texture_render_target(texture, 0U, renderer_,
+                renderer_lifetime_, renderer_owner_, texture_render_target_namespace,
+                writable);
         if (!host_surface)
             return std::nullopt;
         const auto renderbuffer =
@@ -758,18 +775,14 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
             level->render_target_inverted_vertical && !display_oriented, true };
     }
     if (auto* pixmap = current_pixmap_surface(call)) {
-        if (!refresh_pixmap_surface(call, thread(call).draw_surface))
-            return std::nullopt;
-        pixmap = current_pixmap_surface(call);
-        if (pixmap == nullptr || !pixmap->backing_identifier)
-            return std::nullopt;
         const auto host_surface =
             surface_store_->host_surface(*pixmap->backing_identifier);
         if (!host_surface)
             return std::nullopt;
         return RenderTargetBinding { RenderTargetKind::Pixmap,
             render_target_key(thread(call).draw_surface),
-            pixmap->backing_identifier, pixmap, 0U, host_surface };
+            pixmap->backing_identifier, pixmap, 0U, host_surface,
+            false, false, nullptr, pixmap->identity };
     }
     const auto draw_surface = thread(call).draw_surface;
     auto binding = RenderTargetBinding { RenderTargetKind::Display,
@@ -796,6 +809,8 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
             binding.display_surface = &compatibility_display_surface_;
         }
     }
+    if (binding.display_surface)
+        binding.surface_identity = binding.display_surface->identity;
     return binding;
 }
 
@@ -811,100 +826,117 @@ GlesRenderTargetKey OpenGlesHle::render_target_key(std::uint32_t surface) const
     return { renderer_owner_, surface };
 }
 
-bool OpenGlesHle::reload_surface(UserlandHleCall& call, std::uint32_t surface)
+void OpenGlesHle::flush_surface_frame_async(UserlandHleCall& call,
+    std::uint32_t surface,
+    std::function<void(UserlandHleCall&, bool)> completed)
 {
-    const auto found = surfaces_.find(surface);
-    if (found == surfaces_.end())
-        return false;
-    auto& state = found->second;
-    if (!state.backing_identifier)
-        return true;
-    const auto backing = surface_store_->find(*state.backing_identifier);
-    const auto host_surface =
-        surface_store_->host_surface(*state.backing_identifier);
-    if (backing && host_surface &&
-        host_surface->gpu_generation() > host_surface->cpu_generation()) {
-        state.width = backing->width;
-        state.height = backing->height;
-        state.backing_cpu_generation = host_surface->cpu_generation();
-        state.refreshed_textures.clear();
-        state.dirty = false;
-        return true;
+    if (program_flush_failed_) {
+        completed(call, false);
+        return;
     }
-    const auto pixels =
-        surface_store_->read_argb(call.memory(), *state.backing_identifier);
-    if (!backing || !pixels)
-        return false;
-    state.width = backing->width;
-    state.height = backing->height;
-    state.pixels = std::move(*pixels);
-    state.backing_cpu_generation =
-        host_surface ? host_surface->cpu_generation() : 0U;
-    state.refreshed_textures.clear();
-    state.dirty = false;
-    renderer_->invalidate(render_target_key(surface));
-    return true;
+    auto& state = surfaces_.at(surface);
+    constexpr std::size_t limit = 64U * 1024U * 1024U;
+    const auto count = std::max<std::uint64_t>(
+        static_cast<std::uint64_t>(state.width) * state.height,
+        display_ ? display_->geometry().pixel_count() : 0);
+    if (!count || count > limit / sizeof(std::uint32_t)) {
+        completed(call, false);
+        return;
+    }
+    const auto bytes = static_cast<std::size_t>(count) * sizeof(std::uint32_t);
+    std::shared_ptr<SyncLease> lease;
+    std::function<bool(DisplayFrame&)> execute;
+    HostCompletion ready;
+    std::shared_ptr<HostSurface> read_source;
+    try {
+        auto credit = reserve_gles_host_preparation(bytes);
+        if (!credit) {
+            lease = program_wait(call);
+            call.suspend_until(
+                [bytes] { return gles_host_preparation_capacity(bytes); },
+                [this, lease, surface, completed](UserlandHleCall& resumed) {
+                    lease->consume();
+                    flush_surface_frame_async(resumed, surface, completed);
+                });
+            return;
+        }
+        const auto profile =
+            application_display_for_process(shared_state_, call.process_id());
+        const auto compatibility =
+            profile && profile->kind != ApplicationDisplayMode::Native;
+        if (compatibility && state.pixels.size() !=
+                static_cast<std::size_t>(state.width) * state.height)
+            state.pixels.assign(
+                static_cast<std::size_t>(state.width) * state.height, 0xff000000U);
+        auto captured = compatibility
+            ? DisplayFrame { state.width, state.height, 0, state.pixels }
+            : display_ ? display_->capture_frame() : DisplayFrame { };
+        if (!captured.width || !captured.height)
+            throw std::runtime_error { "empty EGL readback source" };
+        auto frame = std::make_shared<DisplayFrame>(captured.width, captured.height,
+            0, std::move(captured.pixels), std::move(captured.host_surface));
+        frame->presentation_lease = std::move(captured.presentation_lease);
+        read_source = frame->host_surface;
+        auto binding = RenderTargetBinding { };
+        binding.kind = RenderTargetKind::Display;
+        binding.key = render_target_key(surface);
+        binding.display_surface = &state;
+        binding.surface_identity = state.identity;
+        // Only owned host data/leases cross. Match snapshot()+synchronize,
+        // without invoking the display materializer on the core.
+        execute = [renderer = renderer_, frame, credit,
+                      lifetime = renderer_lifetime_, key = binding.key](
+                      DisplayFrame& output) {
+            if (frame->host_surface) {
+                if (!renderer->read_surface(*frame->host_surface, output))
+                    return false;
+            } else {
+                output = std::move(*frame);
+            }
+            return renderer->synchronize(output, key);
+        };
+        ready = [this, binding, owner = renderer_owner_, profile, completed](
+                    UserlandHleCall& resumed,
+                    const std::shared_ptr<GlesWorkResult>& result) {
+            bool succeeded = false;
+            try {
+                if (result && result->succeeded() && owner == renderer_owner_ &&
+                    binding_live(binding)) {
+                    succeeded = true;
+                    if (display_ && display_write_allowed(resumed)) {
+                        auto pixels = std::move(result->frame.pixels);
+                        if (profile && profile->kind != ApplicationDisplayMode::Native) {
+                            pixels = compose_application_display_pixels(*profile,
+                                { result->frame.width, result->frame.height },
+                                display_->geometry(), pixels);
+                            if (pixels.empty())
+                                succeeded = false;
+                        }
+                        if (succeeded)
+                            display_->replace_pixels(
+                                std::move(pixels), resumed.process_id());
+                    }
+                    if (succeeded)
+                        binding.display_surface->refreshed_textures.clear();
+                }
+            } catch (...) {
+                succeeded = false;
+            }
+            completed(resumed, succeeded);
+        };
+    } catch (...) {
+        if (lease) {
+            lease->cancelled = true;
+            if (lease->ready())
+                lease->consume();
+        }
+        completed(call, false);
+        return;
+    }
+    submit_host_work_async(call, bytes, std::move(execute), std::move(ready),
+        { }, std::move(read_source));
 }
 
-bool OpenGlesHle::flush_surface(UserlandHleCall& call, std::uint32_t surface)
-{
-    if (!flush_program_draws(call))
-        return false;
-    const auto found = surfaces_.find(surface);
-    if (found == surfaces_.end())
-        return false;
-    auto& state = found->second;
-    const auto profile =
-        application_display_for_process(shared_state_, call.process_id());
-    const auto compatibility_surface =
-        profile && profile->kind != ApplicationDisplayMode::Native &&
-        !state.backing_identifier;
-    if (compatibility_surface &&
-        state.pixels.size() !=
-            static_cast<std::size_t>(state.width) * state.height) {
-        state.pixels.assign(
-            static_cast<std::size_t>(state.width) * state.height, 0xff000000U);
-    }
-    auto frame =
-        state.backing_identifier
-            ? DisplayFrame { state.width, state.height, 0, state.pixels }
-        : compatibility_surface
-            ? DisplayFrame { state.width, state.height, 0, state.pixels }
-        : display_ ? display_->snapshot()
-                   : DisplayFrame { };
-    if (frame.width == 0 || frame.height == 0 ||
-        !renderer_->synchronize(frame, render_target_key(surface))) {
-        return false;
-    }
-    if (!state.backing_identifier) {
-        if (display_ && display_write_allowed(call)) {
-            auto pixels = std::move(frame.pixels);
-            if (profile && profile->kind != ApplicationDisplayMode::Native) {
-                pixels = compose_application_display_pixels(*profile,
-                    { frame.width, frame.height }, display_->geometry(),
-                    pixels);
-                if (pixels.empty())
-                    return false;
-            }
-            display_->replace_pixels(std::move(pixels), call.process_id());
-        }
-        state.refreshed_textures.clear();
-        return true;
-    }
-    state.pixels = std::move(frame.pixels);
-    state.dirty = true;
-    if (!surface_store_->write_argb(
-            call.memory(), *state.backing_identifier, state.pixels)) {
-        return false;
-    }
-    state.dirty = false;
-    if (const auto host_surface =
-            surface_store_->host_surface(*state.backing_identifier)) {
-        state.backing_cpu_generation = host_surface->cpu_generation();
-    }
-    state.refreshed_textures.clear();
-    return true;
-}
 
 std::optional<DisplayFrame> OpenGlesHle::render_target(
     UserlandHleCall& call, const RenderTargetBinding& binding)
@@ -921,7 +953,9 @@ std::optional<DisplayFrame> OpenGlesHle::render_target(
         return DisplayFrame { surface.width, surface.height, 0,
             surface.pixels };
     }
-    if (binding.kind == RenderTargetKind::Framebuffer) {
+    if (binding.kind == RenderTargetKind::Framebuffer ||
+        (binding.kind == RenderTargetKind::Pixmap && renderer_->accelerated() &&
+            !renderer_->software_fallback_allowed())) {
         if (!binding.host_surface)
             return std::nullopt;
         const auto descriptor = binding.host_surface->descriptor();
@@ -1063,131 +1097,6 @@ std::shared_ptr<HostSurface> OpenGlesHle::acquire_compatibility_surface(
     return surface;
 }
 
-bool OpenGlesHle::publish_display_surface(UserlandHleCall& call,
-    const std::shared_ptr<HostSurface>& surface,
-    std::optional<DisplayViewport> drawable_viewport)
-{
-    if (!surface || !display_ || !display_write_allowed(call))
-        return false;
-    const auto descriptor = surface->descriptor();
-    const auto output_geometry = display_->geometry();
-    const auto profile =
-        application_display_for_process(shared_state_, call.process_id());
-    const auto logical_geometry =
-        profile ? application_display_geometry(*profile, output_geometry)
-                : output_geometry;
-    const auto is_geometry = [&](DisplayGeometry geometry) {
-        return descriptor.width == geometry.width &&
-               descriptor.height == geometry.height;
-    };
-    const auto compatibility =
-        profile && profile->kind != ApplicationDisplayMode::Native;
-    std::optional<DisplayViewport> viewport;
-    auto source_width = descriptor.width;
-    auto source_height = descriptor.height;
-    if (compatibility) {
-        if (!is_geometry(logical_geometry) && !is_geometry(output_geometry))
-            return false;
-        viewport = application_display_viewport(*profile, output_geometry);
-        source_width = std::min(logical_geometry.width, descriptor.width);
-        source_height = std::min(logical_geometry.height, descriptor.height);
-    } else if (drawable_viewport) {
-        viewport = drawable_viewport;
-    } else if (!is_geometry(output_geometry)) {
-        return false;
-    }
-    if (viewport &&
-        (viewport->x < 0 || viewport->y < 0 || viewport->width == 0U ||
-            viewport->height == 0U ||
-            static_cast<std::uint64_t>(viewport->x) + viewport->width >
-                output_geometry.width ||
-            static_cast<std::uint64_t>(viewport->y) + viewport->height >
-                output_geometry.height ||
-            source_width == 0U || source_height == 0U)) {
-        return false;
-    }
-    const auto needs_composition =
-        viewport && (viewport->x != 0 || viewport->y != 0 ||
-                        viewport->width != output_geometry.width ||
-                        viewport->height != output_geometry.height ||
-                        !is_geometry(output_geometry));
-    if (needs_composition && (!renderer_->accelerated() || !command_encoder_)) {
-        if (!renderer_->map_cpu(
-                *surface, true, PerfCpuMapReason::DeferredDisplayRead)) {
-            return false;
-        }
-        const auto mapping =
-            surface->map_cpu(false, PerfCpuMapReason::DeferredDisplayRead);
-        const auto& source = mapping.frame().pixels;
-        if (source.size() !=
-            static_cast<std::size_t>(descriptor.width) * descriptor.height) {
-            return false;
-        }
-        std::vector<std::uint32_t> pixels(
-            output_geometry.pixel_count(), 0xff000000U);
-        for (std::uint32_t y = 0; y < viewport->height; ++y) {
-            const auto source_y =
-                static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) *
-                                           source_height / viewport->height);
-            for (std::uint32_t x = 0; x < viewport->width; ++x) {
-                const auto source_x =
-                    static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) *
-                                               source_width / viewport->width);
-                pixels[static_cast<std::size_t>(viewport->y + y) *
-                           output_geometry.width +
-                       viewport->x + x] =
-                    source[static_cast<std::size_t>(source_y) *
-                               descriptor.width +
-                           source_x];
-            }
-        }
-        display_->replace_pixels(std::move(pixels), call.process_id());
-        return true;
-    }
-    std::shared_ptr<HostSurface> published_surface = surface;
-    if (needs_composition) {
-        const auto destination_descriptor =
-            HostSurfaceDescriptor { output_geometry.width,
-                output_geometry.height,
-                output_geometry.width *
-                    static_cast<std::uint32_t>(sizeof(std::uint32_t)),
-                surface_pixel_format_bgra, PerfSurfaceKind::Scanout };
-        auto compatibility_surface =
-            acquire_compatibility_surface(destination_descriptor);
-        if (!compatibility_surface ||
-            !command_encoder_->fill(compatibility_surface,
-                { 0, 0, output_geometry.width, output_geometry.height },
-                0xff000000U) ||
-            !command_encoder_->copy(surface, compatibility_surface,
-                { 0, 0, source_width, source_height },
-                { viewport->x, viewport->y, viewport->width, viewport->height },
-                HostCompositeMode::Copy, 0xffU, HostFilter::Nearest,
-                HostRotation::Identity) ||
-            !command_encoder_->submit(PerfSubmitReason::Presentation)) {
-            return false;
-        }
-        published_surface = std::move(compatibility_surface);
-    }
-    auto renderer = renderer_;
-    display_->replace_surface(
-        published_surface,
-        [renderer = std::move(renderer), published_surface] {
-            if (!renderer->map_cpu(*published_surface, true,
-                    PerfCpuMapReason::DeferredDisplayRead)) {
-                return std::vector<std::uint32_t> { };
-            }
-            auto mapping = published_surface->map_cpu(
-                false, PerfCpuMapReason::DeferredDisplayRead);
-            return mapping.frame().pixels;
-        },
-        call.process_id(),
-        [published_surface] {
-            return std::max(published_surface->cpu_generation(),
-                published_surface->gpu_generation());
-        });
-    return true;
-}
-
 void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
 {
     auto* context = current_context(call);
@@ -1216,6 +1125,12 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     }
     const auto* program = programs_.program(context->current_program);
     std::optional<GlesProgramDraw> program_draw;
+    if (program && program->linked && program->native_execution &&
+        (!program_renderer_ ||
+            !program_renderer_->contains(context->current_program))) {
+        restore_program_for_draw(call, indexed);
+        return;
+    }
     if (program && program->linked && program->native_execution) {
         program_draw.emplace();
         program_draw->program = context->current_program;
@@ -1231,8 +1146,12 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         program_draw->depth_clear = context->depth_clear;
         program_draw->depth_generation = context->depth_generation;
     }
-    if (!program_draw && !flush_program_draws(call))
+    if (!program_draw && pending_program_target_) {
+        await_program_flush(call, [this, indexed](UserlandHleCall& resumed) {
+            draw(resumed, indexed);
+        });
         return;
+    }
     const auto programmable =
         program_draw ? std::nullopt : programmable_draw_state(*context);
     if (context->current_program != 0U && !programmable && !program_draw) {
@@ -1323,12 +1242,27 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     if ((program_draw ? static_cast<std::size_t>(count) : vertices.size()) <
         GlesPrimitiveAssembler::minimum_vertex_count(mode))
         return;
-    const auto binding = resolve_render_target(call, *context);
+    const auto binding = resolve_render_target(call, *context, true);
     if (!binding) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
-    auto target = render_target(call, *binding);
+    if (program_draw &&
+        program_draw_needs_flush(*binding, program_draw->textures)) {
+        // No draw has been submitted and no destination has been modified.
+        // Re-enter preparation after the previous target's core commit;
+        // temporary attributes, spans and context pointers stay on this stack.
+        await_program_flush(call, [this, indexed](UserlandHleCall& resumed) {
+            draw(resumed, indexed);
+        });
+        return;
+    }
+    // Display inputs carry owned pixels or a native content lease. Both
+    // rendering paths read native input on the worker before drawing.
+    const auto capture_display = !binding->host_surface &&
+                                 !binding->display_surface && display_;
+    auto target = capture_display ? std::optional { display_->capture_frame() }
+                                 : render_target(call, *binding);
     if (!target) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
@@ -1404,6 +1338,30 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         }
         if (!raster_unit.enabled)
             continue;
+        if (const auto* texture = resources_.texture(raster_unit.texture)) {
+            const auto level = texture->levels.find(0U);
+            const auto source = level == texture->levels.end() ? nullptr
+                : level->second.surface_id
+                    ? surface_store_->host_surface(*level->second.surface_id)
+                    : level->second.host_surface;
+            const auto writer = source ? source->writer() : nullptr;
+            if (writer && !writer->ready()) {
+                const auto lease = program_wait(call);
+                call.suspend_until([writer] { return writer->ready(); },
+                    [this, lease, indexed](UserlandHleCall& resumed) {
+                        lease->consume();
+                        await_graphics_call(resumed,
+                            [this, indexed](UserlandHleCall& ready) {
+                                draw(ready, indexed);
+                            });
+                    }, writer->sequence());
+                return;
+            }
+            if (writer && !writer->succeeded()) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+        }
         if (pixmap_surface == nullptr ||
             !pixmap_surface->refreshed_textures.contains(raster_unit.texture)) {
             const auto refresh_error = resources_.refresh_surface_texture(
@@ -1417,8 +1375,15 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         }
     }
     if (program_draw) {
-        execute_program_draw(
-            call, *binding, std::move(*target), *program_draw, mode, state);
+        execute_program_draw(call, *binding, std::move(*target), *program_draw,
+            mode, state, indexed);
+        return;
+    }
+    const auto native_target = binding->host_surface && renderer_->accelerated() &&
+                               !renderer_->software_fallback_allowed();
+    if ((!binding->host_surface || native_target) &&
+        GlesFrameDraw::can_snapshot(*target)) {
+        draw_frame_async(call, *binding, *target, vertices, mode, state, indexed);
         return;
     }
     const auto target_key = binding->key;
@@ -1448,119 +1413,11 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     }
 }
 
-void OpenGlesHle::read_pixels(UserlandHleCall& call)
-{
-    if (!flush_program_draws(call))
-        return;
-    auto* context = current_context(call);
-    if (context == nullptr) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    const auto x = static_cast<std::int32_t>(call.argument(0));
-    const auto y = static_cast<std::int32_t>(call.argument(1));
-    const auto width = static_cast<std::int32_t>(call.argument(2));
-    const auto height = static_cast<std::int32_t>(call.argument(3));
-    const auto format = call.argument(4);
-    const auto type = call.argument(5);
-    const auto output = call.argument(6);
-    if (format != gles_abi::rgba && format != gles_abi::bgra_apple) {
-        set_gl_error(call, gles_abi::invalid_enum);
-        return;
-    }
-    if (type != gles_abi::unsigned_byte) {
-        set_gl_error(call, gles_abi::invalid_enum);
-        return;
-    }
-    if (x < 0 || y < 0 || width < 0 || height < 0) {
-        set_gl_error(call, gles_abi::invalid_value);
-        return;
-    }
-    if (width == 0 || height == 0)
-        return;
-    if (output == 0U) {
-        set_gl_error(call, gles_abi::invalid_value);
-        return;
-    }
-
-    const auto binding = resolve_render_target(call, *context);
-    if (!binding) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    auto frame = render_target(call, *binding);
-    if (!frame) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    if (binding->host_surface) {
-        if (!renderer_->map_cpu(*binding->host_surface, true)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        auto mapping = binding->host_surface->map_cpu(false);
-        *frame = mapping.frame();
-    } else if (!renderer_->synchronize(*frame, binding->key)) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    if (frame->pixels.size() !=
-        static_cast<std::size_t>(frame->width) * frame->height) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    const auto unsigned_x = static_cast<std::uint32_t>(x);
-    const auto unsigned_y = static_cast<std::uint32_t>(y);
-    const auto unsigned_width = static_cast<std::uint32_t>(width);
-    const auto unsigned_height = static_cast<std::uint32_t>(height);
-    if (unsigned_x > frame->width || unsigned_y > frame->height ||
-        unsigned_width > frame->width - unsigned_x ||
-        unsigned_height > frame->height - unsigned_y) {
-        set_gl_error(call, gles_abi::invalid_value);
-        return;
-    }
-
-    constexpr std::uint64_t bytes_per_pixel = 4U;
-    const auto row_bytes =
-        static_cast<std::uint64_t>(unsigned_width) * bytes_per_pixel;
-    const auto alignment = static_cast<std::uint64_t>(context->pack_alignment);
-    const auto stride = (row_bytes + alignment - 1U) & ~(alignment - 1U);
-    const auto total = stride * (unsigned_height - 1U) + row_bytes;
-    if (total > gles_abi::maximum_resource_bytes ||
-        static_cast<std::uint64_t>(output) + total >
-            static_cast<std::uint64_t>(
-                std::numeric_limits<std::uint32_t>::max()) +
-                1U) {
-        set_gl_error(call, gles_abi::invalid_operation);
-        return;
-    }
-    std::vector<std::byte> bytes(static_cast<std::size_t>(total));
-    for (std::uint32_t row = 0; row < unsigned_height; ++row) {
-        const auto guest_y = unsigned_y + row;
-        const auto host_y =
-            binding->inverted_vertical ? guest_y : frame->height - 1U - guest_y;
-        for (std::uint32_t column = 0; column < unsigned_width; ++column) {
-            const auto pixel =
-                frame->pixels[static_cast<std::size_t>(host_y) * frame->width +
-                              unsigned_x + column];
-            const auto offset = static_cast<std::size_t>(
-                static_cast<std::uint64_t>(row) * stride +
-                static_cast<std::uint64_t>(column) * bytes_per_pixel);
-            const auto red = static_cast<std::byte>((pixel >> 16U) & 0xffU);
-            const auto green = static_cast<std::byte>((pixel >> 8U) & 0xffU);
-            const auto blue = static_cast<std::byte>(pixel & 0xffU);
-            bytes[offset] = format == gles_abi::rgba ? red : blue;
-            bytes[offset + 1U] = green;
-            bytes[offset + 2U] = format == gles_abi::rgba ? blue : red;
-            bytes[offset + 3U] = static_cast<std::byte>(pixel >> 24U);
-        }
-    }
-    if (!call.memory().copy_in(output, bytes))
-        set_gl_error(call, gles_abi::invalid_operation);
-}
-
 void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
 {
+    // Drawable queries call the firmware's Objective-C runtime.
+    for (const auto symbol : { "_sel_registerName", "_objc_msgSend" })
+        registry.register_guest_function("/libobjc.A.dylib", symbol);
     // Resolve the native capability without patching its Objective-C entry.
     registry.register_guest_function(std::string { opengles_image },
         "-[EAGLContext GetMacroContextPrivate]");
@@ -1761,7 +1618,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
         "EAGLContext", "renderbufferStorage:fromDrawable:",
         "-[EAGLContext renderbufferStorage:fromDrawable:]",
         [this](UserlandHleCall& call) {
-            if (!flush_program_draws(call)) {
+            if (program_flush_failed_) {
                 call.set_return(0U);
                 return;
             }
@@ -1777,49 +1634,48 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                     display_ ? display_->geometry() : default_display_geometry);
             const auto drawable = call.argument(3);
             const auto renderbuffer_name = context->bound_renderbuffer;
+            const auto renderbuffer =
+                context->renderbuffers.find(renderbuffer_name);
+            if (renderbuffer == context->renderbuffers.end()) {
+                call.set_return(0U);
+                return;
+            }
             GuestDrawableGeometryReader::read(call, drawable,
-                [this, context, renderbuffer_name, geometry](
-                    UserlandHleCall& completed,
+                [this, context = context->identity,
+                    renderbuffer = renderbuffer->second.identity,
+                    renderbuffer_name, geometry](UserlandHleCall& completed,
                     std::optional<GuestDrawableGeometry> drawable_geometry) {
-                    const auto finish = [this, context, renderbuffer_name,
-                                            geometry, drawable_geometry](
-                                            UserlandHleCall& done,
+                    const auto pixels = drawable_geometry
+                                            ? drawable_geometry->pixels
+                                            : geometry;
+                    std::optional<DisplayViewport> viewport;
+                    if (drawable_geometry && display_) {
+                        const auto scale =
+                            shared_state_
+                                ? display_scale_factor(
+                                      shared_state_->display_geometry,
+                                      shared_state_->user_interface_geometry)
+                                : 1U;
+                        const auto bounds = drawable_geometry->bounds;
+                        viewport = fit_display_viewport(
+                            { bounds.width * scale, bounds.height * scale },
+                            display_->geometry());
+                    }
+                    const auto finish = [this, context, renderbuffer,
+                                            renderbuffer_name, pixels,
+                                            viewport](UserlandHleCall& done,
                                             std::uint32_t window,
                                             std::uint32_t surface) {
-                        const auto attached =
-                            surface != 0U &&
-                            attach_eagl_window_surface(done, *context,
-                                renderbuffer_name, window, surface);
-                        const auto pixels = drawable_geometry
-                                                ? drawable_geometry->pixels
-                                                : geometry;
-                        const auto error =
-                            attached ? gles_abi::no_error
-                                     : ensure_renderbuffer_storage(*context,
-                                           renderbuffer_name, pixels.width,
-                                           pixels.height, gles_abi::bgra_apple);
-                        if (error == gles_abi::no_error) {
-                            auto& renderbuffer =
-                                context->renderbuffers.at(renderbuffer_name);
-                            renderbuffer.display_oriented = true;
-                            renderbuffer.drawable_viewport.reset();
-                            if (drawable_geometry && display_) {
-                                const auto scale =
-                                    shared_state_
-                                        ? display_scale_factor(
-                                              shared_state_->display_geometry,
-                                              shared_state_
-                                                  ->user_interface_geometry)
-                                        : 1U;
-                                const auto bounds = drawable_geometry->bounds;
-                                renderbuffer.drawable_viewport =
-                                    fit_display_viewport(
-                                        { bounds.width * scale,
-                                            bounds.height * scale },
-                                        display_->geometry());
-                            }
-                        }
-                        done.set_return(error == gles_abi::no_error ? 1U : 0U);
+                        const auto identifier =
+                            core_surface_identifier(done, surface);
+                        const auto backing =
+                            identifier ? surface_store_->find(*identifier)
+                                       : std::nullopt;
+                        complete_drawable_storage(done, context, renderbuffer,
+                            renderbuffer_name, pixels, viewport, window,
+                            backing ? surface : 0U,
+                            backing ? backing->provenance.publication_sequence
+                                    : 0U);
                     };
                     const auto window = GuestEaglWindow::open(completed,
                         drawable_geometry ? drawable_geometry->native_window
@@ -1840,7 +1696,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
         "EAGLContext",
         "presentRenderbuffer:", "-[EAGLContext presentRenderbuffer:]",
         [this](UserlandHleCall& call) {
-            if (!flush_program_draws(call)) {
+            if (program_flush_failed_) {
                 call.set_return(0U);
                 return;
             }
@@ -1877,48 +1733,16 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             if (binding && renderbuffer.drawable_surface_id &&
                 binding->backing_identifier ==
                     renderbuffer.drawable_surface_id) {
-                const auto window =
-                    GuestEaglWindow::open(call, renderbuffer.native_window);
-                if (!window || !renderer_->flush(binding->key)) {
-                    call.set_return(0U);
-                    return;
-                }
-                const auto renderbuffer_name = context->bound_renderbuffer;
-                window->present(call,
-                    [this, context, renderbuffer_name,
-                        address = window->address()](UserlandHleCall& completed,
-                        bool presented, std::uint32_t next_surface) {
-                        if (presented &&
-                            !attach_eagl_window_surface(completed, *context,
-                                renderbuffer_name, address, next_surface)) {
-                            // The frame is already in CoreAnimation. Restore
-                            // a private renderbuffer if its next drawable is
-                            // unavailable, so later draws remain usable.
-                            const auto found =
-                                context->renderbuffers.find(renderbuffer_name);
-                            if (found != context->renderbuffers.end()) {
-                                const auto width = found->second.width;
-                                const auto height = found->second.height;
-                                if (ensure_renderbuffer_storage(*context,
-                                        renderbuffer_name, width, height,
-                                        gles_abi::bgra_apple) ==
-                                    gles_abi::no_error) {
-                                    found->second.display_oriented = true;
-                                }
-                            }
-                        }
-                        completed.set_return(presented ? 1U : 0U);
-                    });
+                present_eagl_window_async(call, *context, *binding);
                 return;
             }
-            if (!binding ||
-                !publish_display_surface(call, binding->host_surface,
-                    renderbuffer.drawable_viewport)) {
+            if (!binding) {
                 call.set_return(0U);
                 return;
             }
-            display_->present(call.process_id());
-            call.set_return(1U);
+            present_display_surface_async(call, context->identity,
+                renderbuffer.identity, context->bound_renderbuffer, *binding,
+                renderbuffer.drawable_viewport);
         });
     registry.register_objc_instance_method(std::string { opengles_image },
         "EAGLContext", "attachImage:toCoreSurface:invertedRender:",
@@ -1966,6 +1790,184 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             }
             call.set_return(error == gles_abi::no_error ? 1U : 0U);
         });
+}
+
+void OpenGlesHle::make_current(UserlandHleCall& call)
+{
+    if (!is_valid_display(call.argument(0))) {
+        egl_error_ = egl_bad_display;
+        call.set_return(egl_false);
+        return;
+    }
+    const auto draw = call.argument(1);
+    const auto read = call.argument(2);
+    const auto context = call.argument(3);
+    if ((context != 0 && !contexts_.contains(context)) ||
+        (draw != 0 && !surfaces_.contains(draw)) ||
+        (read != 0 && !surfaces_.contains(read))) {
+        egl_error_ = context != 0 && !contexts_.contains(context)
+                         ? egl_bad_context
+                         : egl_bad_surface;
+        call.set_return(egl_false);
+        return;
+    }
+    auto& current = thread(call);
+    if (current.draw_surface != 0 && current.draw_surface != draw) {
+        const auto previous = surfaces_.find(current.draw_surface);
+        if (!program_flush_failed_ && pending_program_target_ &&
+            previous != surfaces_.end() &&
+            !previous->second.backing_identifier) {
+            await_program_flush(call,
+                [this](UserlandHleCall& resumed) { make_current(resumed); });
+            return;
+        }
+        const auto draw_key = render_target_key(draw);
+        const auto read_key = render_target_key(read);
+        flush_surface_async(call, current.draw_surface,
+            [this, draw_key, read_key](UserlandHleCall& resumed, bool succeeded) {
+                if (!succeeded || render_target_key(resumed.argument(1)) != draw_key ||
+                    render_target_key(resumed.argument(2)) != read_key) {
+                    egl_error_ = egl_bad_surface;
+                    resumed.set_return(egl_false);
+                    return;
+                }
+                complete_make_current(resumed);
+            });
+        return;
+    }
+    complete_make_current(call);
+}
+
+void OpenGlesHle::complete_make_current(UserlandHleCall& call)
+{
+    const auto draw = call.argument(1);
+    const auto read = call.argument(2);
+    const auto context = call.argument(3);
+    auto finish = [this, draw, read, context,
+                      draw_key = render_target_key(draw),
+                      read_key = render_target_key(read)](
+                      UserlandHleCall& resumed, bool succeeded) {
+        if (!succeeded || render_target_key(draw) != draw_key ||
+            render_target_key(read) != read_key) {
+            egl_error_ = egl_bad_surface;
+            resumed.set_return(egl_false);
+            return;
+        }
+        auto& current = thread(resumed);
+        current.display = context == 0 ? 0 : egl_default_display;
+        current.draw_surface = draw;
+        current.read_surface = read;
+        current.context = context;
+        if (context != 0 && draw != 0 && surfaces_.at(draw).backing_identifier) {
+            auto& profile = contexts_.at(context).guest_capabilities;
+            profile = open_gles_framebuffer_capabilities(profile);
+        }
+        egl_error_ = egl_success;
+        resumed.set_return(egl_true);
+    };
+    if (draw != 0 && thread(call).draw_surface != draw)
+        reload_surface_async(call, draw, std::move(finish));
+    else
+        finish(call, true);
+}
+
+void OpenGlesHle::destroy_surface_after_flush(
+    UserlandHleCall& call, std::uint32_t surface, bool succeeded)
+try {
+    if (!succeeded) {
+        egl_error_ = egl_bad_surface;
+        call.set_return(egl_false);
+        return;
+    }
+    auto erase = [this, surface] {
+        surfaces_.erase(surface);
+        for (auto& [processor, current] : threads_) {
+            static_cast<void>(processor);
+            if (current.draw_surface == surface)
+                current.draw_surface = 0;
+            if (current.read_surface == surface)
+                current.read_surface = 0;
+        }
+    };
+    auto& state = surfaces_.at(surface);
+    if (state.backing_identifier) {
+        erase();
+        egl_error_ = egl_success;
+        call.set_return(egl_true);
+        return;
+    }
+    auto binding = RenderTargetBinding { };
+    binding.kind = RenderTargetKind::Display;
+    binding.key = render_target_key(surface);
+    binding.display_surface = &state;
+    binding.surface_identity = state.identity;
+    const auto owner = renderer_owner_;
+    auto released = std::make_shared<bool>(false);
+    submit_host_work_async(call, 0,
+        [renderer = renderer_, lifetime = renderer_lifetime_,
+            target = binding.key, released](DisplayFrame&) {
+            *released = renderer->release(std::span { &target, 1U });
+            return *released;
+        },
+        [this, surface, owner](UserlandHleCall& resumed,
+            const std::shared_ptr<GlesWorkResult>& result) {
+            // consume() has run the committer in this serial core boundary.
+            const auto deleted = result && result->succeeded() &&
+                                 owner == renderer_owner_ &&
+                                 !surfaces_.contains(surface);
+            egl_error_ = deleted ? egl_success : egl_bad_surface;
+            resumed.set_return(deleted ? egl_true : egl_false);
+        },
+        [this, binding, owner, released, erase] {
+            if (*released && owner == renderer_owner_ && binding_live(binding))
+                erase();
+        });
+} catch (...) {
+    egl_error_ = egl_bad_surface;
+    call.set_return(egl_false);
+}
+
+void OpenGlesHle::publish_created_surface(
+    UserlandHleCall& call, std::optional<SurfaceState> state)
+{
+    if (!state) {
+        egl_error_ = egl_bad_parameter;
+        call.set_return(0U);
+        return;
+    }
+    const auto surface = next_surface_++;
+    surfaces_.emplace(surface, std::move(*state));
+    egl_error_ = egl_success;
+    call.set_return(surface);
+}
+
+void OpenGlesHle::create_surface(UserlandHleCall& call)
+{
+    if (!is_valid_display(call.argument(0))) {
+        egl_error_ = egl_bad_display;
+        call.set_return(0U);
+        return;
+    }
+    if (!egl_config(call.argument(1))) {
+        publish_created_surface(call, std::nullopt);
+        return;
+    }
+    if (call.symbol() == "_eglCreatePixmapSurface") {
+        const auto identifier = core_surface_identifier(call, call.argument(2));
+        if (!identifier) {
+            publish_created_surface(call, std::nullopt);
+            return;
+        }
+        create_pixmap_surface(call, *identifier);
+        return;
+    }
+    const auto geometry = display_geometry_for_process(shared_state_,
+        call.process_id(),
+        display_ ? display_->geometry() : default_display_geometry);
+    SurfaceState state;
+    state.width = geometry.width;
+    state.height = geometry.height;
+    publish_created_surface(call, std::move(state));
 }
 
 void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
@@ -2129,7 +2131,7 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
         call.set_return(context);
     });
     add("_eglDestroyContext", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call)) {
+        if (program_flush_failed_) {
             egl_error_ = egl_bad_surface;
             call.set_return(egl_false);
             return;
@@ -2153,55 +2155,12 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
         egl_error_ = egl_success;
         call.set_return(egl_true);
     });
-    const auto create_surface = [this](UserlandHleCall& call) {
-        if (!is_valid_display(call.argument(0))) {
-            egl_error_ = egl_bad_display;
-            call.set_return(0);
-            return;
-        }
-        if (!egl_config(call.argument(1))) {
-            egl_error_ = egl_bad_parameter;
-            call.set_return(0);
-            return;
-        }
-        SurfaceState state;
-        const auto geometry =
-            display_geometry_for_process(shared_state_, call.process_id(),
-                display_ ? display_->geometry() : default_display_geometry);
-        state.width = geometry.width;
-        state.height = geometry.height;
-        if (call.symbol() == "_eglCreatePixmapSurface") {
-            const auto identifier =
-                core_surface_identifier(call, call.argument(2));
-            const auto backing =
-                identifier ? surface_store_->find(*identifier) : std::nullopt;
-            const auto pixels = identifier ? surface_store_->read_argb(
-                                                 call.memory(), *identifier)
-                                           : std::nullopt;
-            if (!identifier || !backing || !pixels) {
-                egl_error_ = egl_bad_parameter;
-                call.set_return(0);
-                return;
-            }
-            state.backing_identifier = *identifier;
-            state.width = backing->width;
-            state.height = backing->height;
-            state.pixels = std::move(*pixels);
-            if (const auto host_surface =
-                    surface_store_->host_surface(*identifier)) {
-                state.backing_cpu_generation = host_surface->cpu_generation();
-            }
-        }
-        const auto surface = next_surface_++;
-        surfaces_.emplace(surface, std::move(state));
-        egl_error_ = egl_success;
-        call.set_return(surface);
-    };
-    add("_eglCreateWindowSurface", create_surface);
-    add("_eglCreatePbufferSurface", create_surface);
-    add("_eglCreatePixmapSurface", create_surface);
+    const auto create = [this](UserlandHleCall& call) { create_surface(call); };
+    add("_eglCreateWindowSurface", create);
+    add("_eglCreatePbufferSurface", create);
+    add("_eglCreatePixmapSurface", create);
     add("_eglDestroySurface", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call)) {
+        if (program_flush_failed_) {
             egl_error_ = egl_bad_surface;
             call.set_return(egl_false);
             return;
@@ -2217,81 +2176,13 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
             call.set_return(egl_false);
             return;
         }
-        const auto& state = surfaces_.at(surface);
-        const auto committed =
-            state.backing_identifier
-                ? renderer_->flush(render_target_key(surface))
-                : flush_surface(call, surface);
-        if (!committed) {
-            egl_error_ = egl_bad_surface;
-            call.set_return(egl_false);
-            return;
-        }
-        if (!surfaces_.at(surface).backing_identifier) {
-            const auto target = render_target_key(surface);
-            renderer_->release(std::span { &target, 1U });
-        }
-        surfaces_.erase(surface);
-        for (auto& [processor, current] : threads_) {
-            static_cast<void>(processor);
-            if (current.draw_surface == surface)
-                current.draw_surface = 0;
-            if (current.read_surface == surface)
-                current.read_surface = 0;
-        }
-        egl_error_ = egl_success;
-        call.set_return(egl_true);
+        flush_surface_async(call, surface,
+            [this, surface](UserlandHleCall& resumed, bool succeeded) {
+                destroy_surface_after_flush(resumed, surface, succeeded);
+            });
     });
-    add("_eglMakeCurrent", [this](UserlandHleCall& call) {
-        if (!is_valid_display(call.argument(0))) {
-            egl_error_ = egl_bad_display;
-            call.set_return(egl_false);
-            return;
-        }
-        const auto draw = call.argument(1);
-        const auto read = call.argument(2);
-        const auto context = call.argument(3);
-        if ((context != 0 && !contexts_.contains(context)) ||
-            (draw != 0 && !surfaces_.contains(draw)) ||
-            (read != 0 && !surfaces_.contains(read))) {
-            egl_error_ = context != 0 && !contexts_.contains(context)
-                             ? egl_bad_context
-                             : egl_bad_surface;
-            call.set_return(egl_false);
-            return;
-        }
-        auto& current = thread(call);
-        if (current.draw_surface != 0 && current.draw_surface != draw) {
-            const auto previous = surfaces_.find(current.draw_surface);
-            const auto committed =
-                previous != surfaces_.end() &&
-                        previous->second.backing_identifier
-                    ? renderer_->flush(render_target_key(current.draw_surface))
-                    : flush_surface(call, current.draw_surface);
-            if (!committed) {
-                egl_error_ = egl_bad_surface;
-                call.set_return(egl_false);
-                return;
-            }
-        }
-        if (draw != 0 && current.draw_surface != draw &&
-            !reload_surface(call, draw)) {
-            egl_error_ = egl_bad_surface;
-            call.set_return(egl_false);
-            return;
-        }
-        current.display = context == 0 ? 0 : egl_default_display;
-        current.draw_surface = draw;
-        current.read_surface = read;
-        current.context = context;
-        if (context != 0 && draw != 0 &&
-            surfaces_.at(draw).backing_identifier) {
-            auto& profile = contexts_.at(context).guest_capabilities;
-            profile = open_gles_framebuffer_capabilities(profile);
-        }
-        egl_error_ = egl_success;
-        call.set_return(egl_true);
-    });
+    add("_eglMakeCurrent",
+        [this](UserlandHleCall& call) { make_current(call); });
     add("_eglGetCurrentContext", [this](UserlandHleCall& call) {
         call.set_return(thread(call).context);
     });
@@ -2304,7 +2195,7 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
                                                     : current.draw_surface);
     });
     add("_eglSwapBuffers", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call)) {
+        if (program_flush_failed_) {
             egl_error_ = egl_bad_surface;
             call.set_return(egl_false);
             return;
@@ -2317,24 +2208,20 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
             return;
         }
         const auto surface = call.argument(1);
-        const auto& state = surfaces_.at(surface);
-        const auto committed =
-            state.backing_identifier
-                ? renderer_->flush(render_target_key(surface))
-                : flush_surface(call, surface);
-        if (!committed) {
-            egl_error_ = egl_bad_surface;
-            call.set_return(egl_false);
-            return;
-        }
-        ++frame_count_;
-        const auto found = surfaces_.find(surface);
-        if (found != surfaces_.end() && !found->second.backing_identifier &&
-            display_ && display_write_allowed(call)) {
-            display_->present(call.process_id());
-        }
-        egl_error_ = egl_success;
-        call.set_return(egl_true);
+        flush_surface_async(call, surface,
+            [this, surface](UserlandHleCall& resumed, bool succeeded) {
+                if (!succeeded) {
+                    egl_error_ = egl_bad_surface;
+                    resumed.set_return(egl_false);
+                    return;
+                }
+                ++frame_count_;
+                if (!surfaces_.at(surface).backing_identifier && display_ &&
+                    display_write_allowed(resumed))
+                    display_->present(resumed.process_id());
+                egl_error_ = egl_success;
+                resumed.set_return(egl_true);
+            });
     });
     add("_eglSwapInterval", [this](UserlandHleCall& call) {
         if (!is_valid_display(call.argument(0))) {
@@ -2449,6 +2336,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             });
     };
     add("_glGetError", [this](UserlandHleCall& call) {
+        collect_program_draw_errors();
         auto& current = thread(call);
         call.set_return(current.gl_error);
         current.gl_error = gl_no_error;
@@ -2660,13 +2548,17 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 set_gl_error(call, gles_abi::invalid_enum);
                 return;
             }
-            const auto limit = program_integer_limit(call, call.argument(0));
-            if (!limit) {
-                set_gl_error(call, gles_abi::invalid_operation);
-                return;
-            }
-            values[0] = *limit;
-            break;
+            with_program_limits(call, [this](UserlandHleCall& resumed,
+                                          bool ready) {
+                const auto limit =
+                    ready ? program_integer_limit(resumed.argument(0))
+                          : std::nullopt;
+                if (!limit)
+                    set_gl_error(resumed, gles_abi::invalid_operation);
+                else if (!resumed.memory().write32(resumed.argument(1), *limit))
+                    set_gl_error(resumed, gles_abi::invalid_value);
+            });
+            return;
         }
         case gles_abi::maximum_viewport_dimensions:
             count = 2;
@@ -2934,7 +2826,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
     });
     add("_glClear", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
+        if (program_flush_failed_)
             return;
         auto* context = current_context(call);
         if (context == nullptr) {
@@ -2953,9 +2845,22 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             ++context->depth_generation;
         if ((mask & gles_abi::color_buffer_bit) == 0)
             return;
-        const auto binding = resolve_render_target(call, *context);
+        const auto binding = resolve_render_target(call, *context, true);
         if (!binding) {
             set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        const auto clear_argb = binding->premultiplied
+                                    ? premultiply_argb(context->clear_argb)
+                                    : context->clear_argb;
+        const auto all_channels = std::all_of(context->color_mask.begin(),
+            context->color_mask.end(), [](bool enabled) { return enabled; });
+        const auto scissor_enabled =
+            context->enabled_capabilities.contains(gles_abi::scissor_test);
+        if (!binding->host_surface) {
+            clear_frame_async(call, *binding, clear_argb, context->color_mask,
+                scissor_enabled ? std::optional { context->scissor_box }
+                                : std::nullopt);
             return;
         }
         auto frame = render_target(call, *binding);
@@ -2964,13 +2869,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             return;
         }
         const auto target = binding->key;
-        const auto clear_argb = binding->premultiplied
-                                    ? premultiply_argb(context->clear_argb)
-                                    : context->clear_argb;
-        const auto all_channels = std::all_of(context->color_mask.begin(),
-            context->color_mask.end(), [](bool enabled) { return enabled; });
-        const auto scissor_enabled =
-            context->enabled_capabilities.contains(gles_abi::scissor_test);
         if (all_channels && renderer_->accelerated() && command_encoder_) {
             const auto& surface = binding->host_surface;
             if (surface) {
@@ -3009,71 +2907,44 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 }
                 if (right <= left || bottom <= top)
                     return;
-                if (command_encoder_->fill(surface,
-                        { static_cast<std::int32_t>(left),
-                            static_cast<std::int32_t>(top),
-                            static_cast<std::uint32_t>(right - left),
-                            static_cast<std::uint32_t>(bottom - top) },
-                        clear_argb)) {
-                    if (binding->framebuffer_texture != 0U) {
-                        resources_.update_texture_render_target_generation(
-                            binding->framebuffer_texture, 0U);
-                    }
-                    return;
-                }
+                clear_native_async(call, *binding,
+                    { static_cast<std::int32_t>(left),
+                        static_cast<std::int32_t>(top),
+                        static_cast<std::uint32_t>(right - left),
+                        static_cast<std::uint32_t>(bottom - top) },
+                    clear_argb);
+                return;
             }
         }
-        if (!renderer_->synchronize(*frame, target)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        if (all_channels && !scissor_enabled) {
-            std::fill(frame->pixels.begin(), frame->pixels.end(), clear_argb);
-            if (!commit_render_target(call, *binding, std::move(*frame))) {
+        if (binding->host_surface) {
+            // Native frames carry dimensions and a surface, not CPU pixels.
+            // Private GPU inputs were captured at the guest wait boundary.
+            auto mapping = binding->host_surface->try_map_current_cpu(
+                false, PerfCpuMapReason::SoftwareFallback);
+            if (!mapping) {
                 set_gl_error(call, gles_abi::invalid_operation);
-            } else {
-                renderer_->invalidate(target);
+                return;
             }
-            return;
+            *frame = mapping->frame();
         }
-        constexpr std::array<std::uint32_t, 4> channel_masks { 0x00ff0000U,
-            0x0000ff00U, 0x000000ffU, 0xff000000U };
-        for (std::uint32_t y = 0; y < frame->height; ++y) {
-            const auto host_y = static_cast<float>(y) + 0.5F;
-            const auto guest_y =
-                binding->inverted_vertical
-                    ? host_y
-                    : static_cast<float>(frame->height) - host_y;
-            for (std::uint32_t x = 0; x < frame->width; ++x) {
-                const auto guest_x = static_cast<float>(x) + 0.5F;
-                if (scissor_enabled &&
-                    (guest_x < static_cast<float>(context->scissor_box[0]) ||
-                        guest_x >=
-                            static_cast<float>(context->scissor_box[0]) +
-                                static_cast<float>(context->scissor_box[2]) ||
-                        guest_y < static_cast<float>(context->scissor_box[1]) ||
-                        guest_y >=
-                            static_cast<float>(context->scissor_box[1]) +
-                                static_cast<float>(context->scissor_box[3]))) {
-                    continue;
-                }
-                const auto offset =
-                    static_cast<std::size_t>(y) * frame->width + x;
-                auto pixel = frame->pixels[offset];
-                for (std::size_t component = 0;
-                    component < context->color_mask.size(); ++component) {
-                    if (!context->color_mask[component])
-                        continue;
-                    pixel = (pixel & ~channel_masks[component]) |
-                            (clear_argb & channel_masks[component]);
-                }
-                frame->pixels[offset] = pixel;
-            }
-        }
+        clear_gles_frame(*frame, clear_argb, context->color_mask,
+            scissor_enabled ? std::optional { context->scissor_box }
+                            : std::nullopt,
+            binding->inverted_vertical);
         if (!commit_render_target(call, *binding, std::move(*frame))) {
             set_gl_error(call, gles_abi::invalid_operation);
         } else {
-            renderer_->invalidate(target);
+            submit_host_work_async(call, 0,
+                [renderer = renderer_, lifetime = renderer_lifetime_, target](
+                    DisplayFrame&) {
+                    renderer->invalidate(target);
+                    return true;
+                },
+                [this](UserlandHleCall& resumed,
+                    const std::shared_ptr<GlesWorkResult>& result) {
+                    if (!result || !result->succeeded())
+                        set_gl_error(resumed, gles_abi::invalid_operation);
+                });
         }
     });
     add("_glViewport", [this](UserlandHleCall& call) {
@@ -3268,75 +3139,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                             : context->bound_element_array_buffer;
         binding = call.argument(1);
     });
-    const auto delete_names = [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
-            return;
-        const auto signed_count = static_cast<std::int32_t>(call.argument(0));
-        const auto input = call.argument(1);
-        if (current_context(call) == nullptr) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        if (signed_count < 0 || (signed_count != 0 && input == 0)) {
-            set_gl_error(call, gles_abi::invalid_value);
-            return;
-        }
-        const auto texture_names = call.symbol() == "_glDeleteTextures";
-        const auto count = static_cast<std::uint32_t>(signed_count);
-        for (std::uint32_t index = 0; index < count; ++index) {
-            const auto name = call.memory().read32(input + index * 4U);
-            if (!name) {
-                set_gl_error(call, gl_invalid_value);
-                break;
-            }
-            if (texture_names) {
-                std::vector<GlesRenderTargetKey> render_targets;
-                if (const auto* texture = resources_.texture(*name)) {
-                    for (const auto& [level_index, level] : texture->levels) {
-                        static_cast<void>(level_index);
-                        if (!level.surface_id && level.host_surface &&
-                            level.host_surface->key().owner ==
-                                renderer_owner_) {
-                            render_targets.push_back(level.host_surface->key());
-                        }
-                    }
-                }
-                if (!render_targets.empty())
-                    renderer_->release(render_targets);
-                resources_.erase_texture(*name);
-                for (auto& [context_name, context] : contexts_) {
-                    static_cast<void>(context_name);
-                    for (auto& unit : context.texture_units) {
-                        if (unit.bound_texture_2d == *name) {
-                            unit.bound_texture_2d = 0;
-                        }
-                        if (unit.bound_texture_rectangle == *name) {
-                            unit.bound_texture_rectangle = 0;
-                        }
-                    }
-                    for (auto& [framebuffer_name, framebuffer] :
-                        context.framebuffers) {
-                        static_cast<void>(framebuffer_name);
-                        if (framebuffer.color_texture == *name)
-                            framebuffer.color_texture = 0U;
-                    }
-                }
-            } else {
-                resources_.erase_buffer(*name);
-                for (auto& [context_name, context] : contexts_) {
-                    static_cast<void>(context_name);
-                    if (context.bound_array_buffer == *name) {
-                        context.bound_array_buffer = 0;
-                    }
-                    if (context.bound_element_array_buffer == *name) {
-                        context.bound_element_array_buffer = 0;
-                    }
-                }
-            }
-        }
-    };
-    add("_glDeleteTextures", delete_names);
-    add("_glDeleteBuffers", delete_names);
+    add("_glDeleteTextures",
+        [this](UserlandHleCall& call) { delete_names(call); });
+    add("_glDeleteBuffers",
+        [this](UserlandHleCall& call) { delete_names(call); });
     add("_glPixelStorei", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
         if (context == nullptr) {
@@ -3411,16 +3217,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         const auto binding = target == gles_abi::texture_rectangle_apple
                                  ? unit.bound_texture_rectangle
                                  : unit.bound_texture_2d;
-        std::optional<GlesRenderTargetKey> previous_render_target;
-        if (const auto* texture = resources_.texture(binding)) {
-            const auto previous =
-                texture->levels.find(static_cast<std::uint32_t>(level));
-            if (previous != texture->levels.end() &&
-                !previous->second.surface_id && previous->second.host_surface &&
-                previous->second.host_surface->key().owner == renderer_owner_) {
-                previous_render_target = previous->second.host_surface->key();
-            }
-        }
         const auto error = resources_.upload_texture_2d(call.memory(), binding,
             static_cast<std::uint32_t>(level), call.argument(2),
             static_cast<std::uint32_t>(width),
@@ -3429,9 +3225,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             open_gles_client_bitmap_profile(context->guest_capabilities));
         if (error != gles_abi::no_error) {
             set_gl_error(call, error);
-        } else if (previous_render_target) {
-            renderer_->release(
-                std::span { &*previous_render_target, std::size_t { 1 } });
         }
     });
     add("_glCompressedTexImage2D", [this](UserlandHleCall& call) {
@@ -3466,16 +3259,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         const auto binding = target == gles_abi::texture_rectangle_apple
                                  ? unit.bound_texture_rectangle
                                  : unit.bound_texture_2d;
-        std::optional<GlesRenderTargetKey> previous_render_target;
-        if (const auto* texture = resources_.texture(binding)) {
-            const auto previous =
-                texture->levels.find(static_cast<std::uint32_t>(level));
-            if (previous != texture->levels.end() &&
-                !previous->second.surface_id && previous->second.host_surface &&
-                previous->second.host_surface->key().owner == renderer_owner_) {
-                previous_render_target = previous->second.host_surface->key();
-            }
-        }
         const auto error = resources_.upload_compressed_texture_2d(
             call.memory(), binding, static_cast<std::uint32_t>(level), format,
             static_cast<std::uint32_t>(width),
@@ -3485,9 +3268,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, error);
             return;
         }
-        if (previous_render_target)
-            renderer_->release(
-                std::span { &*previous_render_target, std::size_t { 1 } });
     });
     add("_glTexSubImage2D", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
@@ -3932,28 +3712,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
     add("_glDrawArrays", [this](UserlandHleCall& call) { draw(call, false); });
     add("_glDrawElements", [this](UserlandHleCall& call) { draw(call, true); });
     add("_glReadPixels", [this](UserlandHleCall& call) { read_pixels(call); });
-    add("_glFlush", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
-            return;
-        auto* context = current_context(call);
-        const auto binding = context != nullptr
-                                 ? resolve_render_target(call, *context)
-                                 : std::nullopt;
-        if (!binding || !renderer_->flush(binding->key)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-        }
-    });
-    add("_glFinish", [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
-            return;
-        auto* context = current_context(call);
-        const auto binding = context != nullptr
-                                 ? resolve_render_target(call, *context)
-                                 : std::nullopt;
-        if (!binding || !renderer_->finish(binding->key)) {
-            set_gl_error(call, gles_abi::invalid_operation);
-        }
-    });
+    add("_glFlush",
+        [this](UserlandHleCall& call) { finish_async(call, false); });
+    add("_glFinish",
+        [this](UserlandHleCall& call) { finish_async(call, true); });
     registry.register_prefix(std::string { opengles_image }, "_gl",
         [this](UserlandHleCall& call) {
             if (!call.prefix_argument(0U) &&

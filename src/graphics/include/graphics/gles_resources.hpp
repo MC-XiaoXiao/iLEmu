@@ -21,7 +21,9 @@
 namespace ilemu {
 
 class AddressSpace;
-class HostGraphicsDevice;
+class GlesRenderer;
+class GlesRendererOwner;
+class GlesTextureTarget;
 class HostSurface;
 class SurfaceStore;
 
@@ -39,6 +41,9 @@ public:
         bool render_target_inverted_vertical { };
         // Generation represented by argb, independently of the native image.
         std::uint64_t argb_generation { };
+        // A copied/forked texture retains its exact native incarnation until
+        // its last logical or pending host user releases it.
+        std::shared_ptr<GlesTextureTarget> native_lifetime { };
     };
     struct Texture {
         std::uint32_t name { };
@@ -62,6 +67,15 @@ public:
     void erase_buffer(std::uint32_t name);
     [[nodiscard]] bool has_texture(std::uint32_t name) const;
     [[nodiscard]] bool has_buffer(std::uint32_t name) const;
+    enum class TextureSnapshot { CpuPixels, NativeImages };
+    [[nodiscard]] std::size_t texture_snapshot_bytes(
+        std::span<const std::uint32_t> names, std::size_t limit,
+        TextureSnapshot content = TextureSnapshot::CpuPixels) const;
+    // NativeImages requires the caller to retain each physical owner and
+    // order surface reads. GPU-only images do not copy stale CPU caches.
+    [[nodiscard]] GlesResourceStore snapshot_textures(
+        std::span<const std::uint32_t> names,
+        TextureSnapshot content = TextureSnapshot::CpuPixels) const;
 
     [[nodiscard]] std::uint32_t upload_texture_2d(AddressSpace& memory,
         std::uint32_t name, std::uint32_t level, std::uint32_t internal_format,
@@ -88,18 +102,17 @@ public:
         std::uint32_t surface_id, bool render_target_inverted_vertical);
     [[nodiscard]] std::uint32_t refresh_surface_texture(
         AddressSpace& memory, std::uint32_t name, const SurfaceStore& surfaces);
+    [[nodiscard]] bool needs_texture_render_target(std::uint32_t name,
+        std::uint32_t level, bool writable) const;
     [[nodiscard]] std::shared_ptr<HostSurface> ensure_texture_render_target(
-        std::uint32_t name, std::uint32_t level, HostGraphicsDevice& graphics,
-        std::uint64_t owner, std::uint64_t surface);
+        std::uint32_t name, std::uint32_t level,
+        std::shared_ptr<GlesRenderer> renderer,
+        std::shared_ptr<GlesRendererOwner> lifetime, std::uint64_t owner,
+        std::uint64_t target_namespace, bool writable);
     [[nodiscard]] bool commit_texture_render_target(std::uint32_t name,
         std::uint32_t level, std::span<const std::uint32_t> pixels);
     void update_texture_render_target_generation(
         std::uint32_t name, std::uint32_t level);
-    // Explicit software-fallback boundary for textures whose newest pixels
-    // live only in a HostSurface native image.
-    [[nodiscard]] bool materialize_surface_textures(
-        HostGraphicsDevice& graphics, std::span<const std::uint32_t> textures);
-
     [[nodiscard]] std::uint32_t upload_buffer(AddressSpace& memory,
         std::uint32_t name, std::uint32_t size, std::uint32_t data,
         std::uint32_t usage);
@@ -112,6 +125,7 @@ public:
     [[nodiscard]] const Buffer* buffer(std::uint32_t name) const;
 
 private:
+    friend class GlesPreparedTextures;
     [[nodiscard]] std::uint64_t allocate_texture_revision();
 
     std::map<std::uint32_t, Texture> textures_;

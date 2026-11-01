@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -29,10 +28,7 @@
 namespace ilemu {
 namespace {
 
-    struct Point {
-        float x { };
-        float y { };
-    };
+    using Point = HostPoint;
 
     constexpr float edge_tolerance = 0.01F;
     constexpr std::uint64_t maximum_quad_pixels = 16U * 1024U * 1024U;
@@ -179,6 +175,24 @@ void Mbx2dHle::quad_color(UserlandHleCall& call)
         return;
     }
 
+    execute_quad_color(call, *destination, *positions);
+}
+
+bool Mbx2dHle::quad_covers(const QuadCoverage& coverage, HostPoint point)
+{
+    const auto sample = sample_quad(coverage.positions, point);
+    return sample && (!coverage.perspective ||
+        interpolate_perspective(coverage.positions, *coverage.perspective,
+            *sample).has_value());
+}
+
+void Mbx2dHle::execute_quad_color(UserlandHleCall& call,
+    const ResolvedSurface& destination_surface,
+    const std::array<HostPoint, 4>& position_values,
+    std::shared_ptr<CpuDraw> cpu, bool native_attempted)
+try {
+    const auto* destination = &destination_surface;
+    const auto* positions = &position_values;
     auto left_value = (*positions)[0].x;
     auto right_value = left_value;
     auto top_value = (*positions)[0].y;
@@ -231,7 +245,12 @@ void Mbx2dHle::quad_color(UserlandHleCall& call)
                               nearly_equal((*positions)[3].x, left_value) &&
                               nearly_equal((*positions)[3].y, bottom_value);
     const auto composite_mode = host_composite_mode(state_);
-    if (axis_aligned && host_graphics_->accelerated() &&
+    auto fallback = [this, destination = *destination,
+                        positions = *positions](UserlandHleCall& resumed) {
+        execute_quad_color(resumed, destination, positions, { }, true);
+    };
+    if (!cpu && !native_attempted && axis_aligned &&
+        host_graphics_->accelerated() &&
         destination->host_surface && destination->backing &&
         destination->backing->pixel_format == surface_pixel_format_bgra &&
         composite_mode && left <= std::numeric_limits<std::int32_t>::max() &&
@@ -239,16 +258,17 @@ void Mbx2dHle::quad_color(UserlandHleCall& call)
         static_cast<std::uint64_t>(width) <=
             std::numeric_limits<std::uint32_t>::max() &&
         static_cast<std::uint64_t>(height) <=
-            std::numeric_limits<std::uint32_t>::max() &&
-        command_encoder_->fill(destination->host_surface,
+            std::numeric_limits<std::uint32_t>::max()) {
+        fill_native(call, false, *destination,
             { static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
                 static_cast<std::uint32_t>(width),
                 static_cast<std::uint32_t>(height) },
-            call.argument(1), *composite_mode, state_.blend.global_alpha)) {
-        call.set_return(mbx2d_abi::success);
+            call.argument(1), *composite_mode, state_.blend.global_alpha,
+            std::move(fallback));
         return;
     }
-    if (!axis_aligned && triangles_share_only_diagonal(*positions) &&
+    if (!cpu && !native_attempted && !axis_aligned &&
+        triangles_share_only_diagonal(*positions) &&
         host_graphics_->accelerated() && destination->host_surface &&
         destination->backing &&
         destination->backing->pixel_format == surface_pixel_format_bgra &&
@@ -258,19 +278,37 @@ void Mbx2dHle::quad_color(UserlandHleCall& call)
             std::numeric_limits<std::uint32_t>::max() &&
         static_cast<std::uint64_t>(height) <=
             std::numeric_limits<std::uint32_t>::max()) {
-        std::array<HostPoint, 4> quad { };
-        for (std::size_t index = 0; index < quad.size(); ++index) {
-            quad[index] = { (*positions)[index].x, (*positions)[index].y };
-        }
-        if (command_encoder_->fill_quad(destination->host_surface, quad,
-                { static_cast<std::int32_t>(left),
-                    static_cast<std::int32_t>(top),
-                    static_cast<std::uint32_t>(width),
-                    static_cast<std::uint32_t>(height) },
-                call.argument(1), *composite_mode, state_.blend.global_alpha)) {
-            call.set_return(mbx2d_abi::success);
-            return;
-        }
+        fill_quad_native(call, *destination, *positions,
+            { static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
+                static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height) },
+            call.argument(1), *composite_mode, state_.blend.global_alpha,
+            std::move(fallback));
+        return;
+    }
+    if (!cpu && (destination->framebuffer ||
+        (destination->host_surface && destination->core_surface_id))) {
+        prepare_cpu_draw(call, false, { }, *destination,
+            static_cast<std::size_t>(width * height) * sizeof(std::uint32_t),
+            [this, positions = *positions](UserlandHleCall& resumed,
+                const std::optional<ResolvedSurface>&,
+                const ResolvedSurface& ready_destination,
+                std::shared_ptr<CpuDraw> ready) {
+                execute_quad_color(resumed, ready_destination, positions,
+                    std::move(ready), true);
+            });
+        return;
+    }
+    if (cpu) {
+        write_cpu_draw(call, std::move(cpu),
+            { static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
+                static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height) },
+            std::vector<std::uint32_t>(
+                static_cast<std::size_t>(width * height), call.argument(1)),
+            axis_aligned ? std::nullopt
+                         : std::optional { QuadCoverage { *positions, { } } });
+        return;
     }
     const auto destination_pixels =
         read_region(*destination, left, top, width, height, call);
@@ -311,6 +349,8 @@ void Mbx2dHle::quad_color(UserlandHleCall& call)
         write_region(*destination, left, top, width, height, *pixels, call)
             ? mbx2d_abi::success
             : mbx2d_abi::failure);
+} catch (...) {
+    call.set_return(mbx2d_abi::failure);
 }
 
 void Mbx2dHle::quad_copy(
@@ -321,7 +361,7 @@ void Mbx2dHle::quad_copy(
         call.set_return(mbx2d_abi::failure);
         return;
     }
-    auto& state = *selected_state;
+    const auto& state = *selected_state;
     const auto first_argument = context_api ? 1U : 0U;
     const auto source = resolve_source(call, state.source);
     const auto destination = resolve(state.destination);
@@ -347,6 +387,28 @@ void Mbx2dHle::quad_copy(
         return;
     }
 
+    execute_quad_copy(call, context_api, *source, *destination,
+        *positions, *texture, perspective);
+}
+
+void Mbx2dHle::execute_quad_copy(UserlandHleCall& call, bool context_api,
+    const ResolvedSurface& source_surface,
+    const ResolvedSurface& destination_surface,
+    const std::array<HostPoint, 4>& position_values,
+    const std::array<HostPoint, 4>& texture_values,
+    const std::array<float, 4>& perspective, bool source_imported,
+    std::shared_ptr<CpuDraw> cpu, QuadStage stage)
+try {
+    const auto* selected_state = select_state(call, context_api);
+    if (!selected_state) {
+        call.set_return(mbx2d_abi::failure);
+        return;
+    }
+    const auto& state = *selected_state;
+    const auto* source = &source_surface;
+    const auto* destination = &destination_surface;
+    const auto* positions = &position_values;
+    const auto* texture = &texture_values;
     auto left_value = (*positions)[0].x;
     auto right_value = left_value;
     auto top_value = (*positions)[0].y;
@@ -486,31 +548,37 @@ void Mbx2dHle::quad_copy(
         nearly_equal(top_value, static_cast<float>(unclipped_top)) &&
         nearly_equal(bottom_value, static_cast<float>(unclipped_bottom));
     const auto composite_mode = host_composite_mode(state);
-    const auto host_source_current = synchronize_host_source(call, *source);
-    const auto encode_host_rectangle = [&] {
-        const auto started = std::chrono::steady_clock::now();
-        const auto encoded = command_encoder_->copy(source->host_surface,
-            destination->host_surface,
-            { static_cast<std::int32_t>(source_left),
-                static_cast<std::int32_t>(source_top),
-                static_cast<std::uint32_t>(source_width),
-                static_cast<std::uint32_t>(source_height) },
-            { static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
-                static_cast<std::uint32_t>(width),
-                static_cast<std::uint32_t>(height) },
-            *composite_mode, state.blend.global_alpha, HostFilter::Nearest,
-            *host_rotation);
-        performance_counters().record_diagnostic_graphics_hle(
-            PerfDiagnosticGraphicsHleKind::HostCopyEncode,
-            static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - started)
-                    .count()));
-        return encoded;
+    if (!source_imported) {
+        const auto imported = synchronize_host_source(call, *source);
+        if (imported == SurfaceStore::CpuImportResult::PendingGpu) {
+            import_source(call, context_api, *source, *destination,
+                [this, context_api, position_values, texture_values, perspective,
+                    cpu, stage](
+                    UserlandHleCall& resumed, const ResolvedSurface& ready_source,
+                    const ResolvedSurface& ready_destination) {
+                    execute_quad_copy(resumed, context_api, ready_source,
+                        ready_destination, position_values, texture_values,
+                        perspective, true, cpu, stage);
+                }, false, cpu_draw_lease(cpu));
+            return;
+        }
+        if (imported != SurfaceStore::CpuImportResult::Completed) {
+            call.set_return(mbx2d_abi::failure);
+            return;
+        }
+    }
+    const auto recover = [&](QuadStage next) -> UserlandHleCall::Continuation {
+        return [this, context_api, source = *source, destination = *destination,
+                   position_values, texture_values, perspective, next](
+                   UserlandHleCall& resumed) {
+            execute_quad_copy(resumed, context_api, source, destination,
+                position_values, texture_values, perspective, true, { }, next);
+        };
     };
-    if (axis_aligned_affine && host_rotation && destination_unclipped &&
-        destination_integral && host_graphics_->accelerated() &&
-        host_source_current && source->host_surface &&
+    if (!cpu && stage == QuadStage::Rectangle &&
+        axis_aligned_affine && host_rotation && destination_unclipped &&
+        destination_integral && !source->cpu_frame && host_graphics_->accelerated() &&
+        source->host_surface &&
         destination->host_surface && source->backing && destination->backing &&
         source->backing->pixel_format == surface_pixel_format_bgra &&
         destination->backing->pixel_format == surface_pixel_format_bgra &&
@@ -526,37 +594,8 @@ void Mbx2dHle::quad_copy(
         static_cast<std::uint64_t>(width) <=
             std::numeric_limits<std::uint32_t>::max() &&
         static_cast<std::uint64_t>(height) <=
-            std::numeric_limits<std::uint32_t>::max() &&
-        encode_host_rectangle()) {
-        performance_counters().record_hle("QuadCopy.NativeRectangle", 0);
-        call.set_return(mbx2d_abi::success);
-        return;
-    }
-    const auto ordered_geometry = triangles_share_only_diagonal(*positions);
-    const auto host_ready =
-        host_graphics_->accelerated() && host_source_current &&
-        source->host_surface && destination->host_surface && source->backing &&
-        destination->backing &&
-        source->backing->pixel_format == surface_pixel_format_bgra &&
-        destination->backing->pixel_format == surface_pixel_format_bgra;
-    bool native_quad_attempted = false;
-    if (ordered_geometry && host_ready && composite_mode &&
-        left <= std::numeric_limits<std::int32_t>::max() &&
-        top <= std::numeric_limits<std::int32_t>::max() &&
-        static_cast<std::uint64_t>(width) <=
-            std::numeric_limits<std::uint32_t>::max() &&
-        static_cast<std::uint64_t>(height) <=
             std::numeric_limits<std::uint32_t>::max()) {
-        native_quad_attempted = true;
-        std::array<HostTexturedVertex, 4> quad { };
-        for (std::size_t index = 0; index < quad.size(); ++index) {
-            quad[index] = { { (*positions)[index].x, (*positions)[index].y },
-                { (*texture)[index].x, (*texture)[index].y },
-                perspective[index] };
-        }
-        const auto started = std::chrono::steady_clock::now();
-        const auto encoded = command_encoder_->copy_quad(source->host_surface,
-            destination->host_surface, quad,
+        copy_native(call, context_api, *source, *destination,
             { static_cast<std::int32_t>(source_left),
                 static_cast<std::int32_t>(source_top),
                 static_cast<std::uint32_t>(source_width),
@@ -564,22 +603,80 @@ void Mbx2dHle::quad_copy(
             { static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
                 static_cast<std::uint32_t>(width),
                 static_cast<std::uint32_t>(height) },
-            *composite_mode, state.blend.global_alpha, HostFilter::Nearest);
-        performance_counters().record_diagnostic_graphics_hle(
-            PerfDiagnosticGraphicsHleKind::HostQuadEncode,
-            static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - started)
-                    .count()));
-        if (encoded) {
-            call.set_return(mbx2d_abi::success);
-            return;
-        }
+            *composite_mode, state.blend.global_alpha, *host_rotation,
+            recover(QuadStage::Quad), true);
+        return;
     }
-    performance_counters().record_hle(native_quad_attempted
-                                          ? "QuadCopy.NativeQuadDeclined"
-                                          : "QuadCopy.NativeQuadIneligible",
-        0);
+    const auto ordered_geometry = triangles_share_only_diagonal(*positions);
+    const auto host_ready =
+        !source->cpu_frame && host_graphics_->accelerated() &&
+        source->host_surface && destination->host_surface && source->backing &&
+        destination->backing &&
+        source->backing->pixel_format == surface_pixel_format_bgra &&
+        destination->backing->pixel_format == surface_pixel_format_bgra;
+    const bool native_quad_attempted = stage == QuadStage::Software;
+    if (!cpu && stage != QuadStage::Software && ordered_geometry &&
+        host_ready && composite_mode &&
+        left <= std::numeric_limits<std::int32_t>::max() &&
+        top <= std::numeric_limits<std::int32_t>::max() &&
+        static_cast<std::uint64_t>(width) <=
+            std::numeric_limits<std::uint32_t>::max() &&
+        static_cast<std::uint64_t>(height) <=
+            std::numeric_limits<std::uint32_t>::max()) {
+        std::array<HostTexturedVertex, 4> quad { };
+        for (std::size_t index = 0; index < quad.size(); ++index) {
+            quad[index] = { { (*positions)[index].x, (*positions)[index].y },
+                { (*texture)[index].x, (*texture)[index].y },
+                perspective[index] };
+        }
+        copy_quad_native(call, context_api, *source, *destination, quad,
+            { static_cast<std::int32_t>(source_left),
+                static_cast<std::int32_t>(source_top),
+                static_cast<std::uint32_t>(source_width),
+                static_cast<std::uint32_t>(source_height) },
+            { static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
+                static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height) },
+            *composite_mode, state.blend.global_alpha,
+            recover(QuadStage::Software));
+        return;
+    }
+    if (!source->cpu_frame && !cpu) {
+        performance_counters().record_hle(native_quad_attempted
+                                              ? "QuadCopy.NativeQuadDeclined"
+                                              : "QuadCopy.NativeQuadIneligible",
+            0);
+    }
+    if (!cpu && (source->backing || source->framebuffer) &&
+        (source->framebuffer || destination->framebuffer ||
+            (destination->host_surface && destination->core_surface_id))) {
+        prepare_cpu_draw(call, context_api, *source, *destination,
+            static_cast<std::size_t>(width * height) * sizeof(std::uint32_t),
+            [this, context_api, position_values, texture_values, perspective,
+                stage](UserlandHleCall& resumed,
+                const std::optional<ResolvedSurface>& ready_source,
+                const ResolvedSurface& ready_destination,
+                std::shared_ptr<CpuDraw> ready) {
+                execute_quad_copy(resumed, context_api, *ready_source,
+                    ready_destination, position_values, texture_values,
+                    perspective, true, std::move(ready), stage);
+            });
+        return;
+    }
+    if (!source->cpu_frame && source->core_surface_id != 0 &&
+        source->host_surface && source->host_surface->gpu_generation() != 0) {
+        import_source(call, context_api, *source, *destination,
+            [this, context_api, position_values, texture_values, perspective,
+                    cpu, stage](
+                UserlandHleCall& resumed, const ResolvedSurface& ready_source,
+                const ResolvedSurface& ready_destination) {
+                execute_quad_copy(resumed, context_api, ready_source,
+                    ready_destination, position_values, texture_values,
+                    perspective, true, cpu, stage);
+            },
+            true, cpu_draw_lease(cpu));
+        return;
+    }
     performance_counters().record_hle("QuadCopy.Software", 0);
     const auto source_pixels = read_region(
         *source, source_left, source_top, source_width, source_height, call);
@@ -587,13 +684,16 @@ void Mbx2dHle::quad_copy(
         call.set_return(mbx2d_abi::failure);
         return;
     }
-    const auto destination_pixels =
-        read_region(*destination, left, top, width, height, call);
-    if (!destination_pixels) {
+    const auto destination_pixels = cpu
+        ? std::optional<std::vector<std::uint32_t>> { }
+        : read_region(*destination, left, top, width, height, call);
+    if (!cpu && !destination_pixels) {
         call.set_return(mbx2d_abi::failure);
         return;
     }
-    std::vector<std::uint32_t> sampled = *destination_pixels;
+    std::vector<std::uint32_t> sampled = cpu
+        ? std::vector<std::uint32_t>(static_cast<std::size_t>(width * height))
+        : *destination_pixels;
     std::vector<bool> covered;
     if (axis_aligned_affine) {
         const auto inverse_width = 1.0F / (right_value - left_value);
@@ -627,7 +727,8 @@ void Mbx2dHle::quad_copy(
             }
         }
     } else {
-        covered.assign(static_cast<std::size_t>(width * height), false);
+        if (!cpu)
+            covered.assign(static_cast<std::size_t>(width * height), false);
         for (std::int64_t y = 0; y < height; ++y) {
             for (std::int64_t x = 0; x < width; ++x) {
                 const Point point { static_cast<float>(left + x) + 0.5F,
@@ -653,11 +754,21 @@ void Mbx2dHle::quad_copy(
                     (*source_pixels)[static_cast<std::size_t>(
                         (source_y - source_top) * source_width + source_x -
                         source_left)];
-                covered[destination_index] = true;
+                if (!cpu)
+                    covered[destination_index] = true;
             }
         }
     }
 
+    if (cpu) {
+        write_cpu_draw(call, std::move(cpu),
+            { static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
+                static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height) },
+            std::move(sampled), axis_aligned_affine ? std::nullopt
+                : std::optional { QuadCoverage { position_values, perspective } });
+        return;
+    }
     auto pixels =
         composite(state, *destination, left, top, width, height, sampled, call);
     if (!pixels) {
@@ -674,6 +785,8 @@ void Mbx2dHle::quad_copy(
         write_region(*destination, left, top, width, height, *pixels, call)
             ? mbx2d_abi::success
             : mbx2d_abi::failure);
+} catch (...) {
+    call.set_return(mbx2d_abi::failure);
 }
 
 } // namespace ilemu

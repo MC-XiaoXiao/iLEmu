@@ -5,6 +5,8 @@
 // Define host surface storage, synchronization and accelerated
 // drawing contracts.
 
+#include "graphics/gles_work_completion.hpp"
+
 #include "graphics/host_graphics.hpp"
 
 #include <algorithm>
@@ -13,6 +15,7 @@
 #include <cstddef>
 #include <limits>
 #include <ranges>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -538,8 +541,9 @@ namespace {
 } // namespace
 
 HostSurfacePresentationLease::HostSurfacePresentationLease(
-    std::shared_ptr<HostSurface> surface)
-    : surface_ { std::move(surface) }
+    std::shared_ptr<HostSurface> surface, std::shared_ptr<void> native_lifetime)
+    : native_lifetime_ { std::move(native_lifetime) }
+    , surface_ { std::move(surface) }
 {
     if (surface_)
         surface_->retain_presentation_lease();
@@ -552,12 +556,14 @@ HostSurfacePresentationLease::~HostSurfacePresentationLease()
 }
 
 std::shared_ptr<HostSurfacePresentationLease>
-make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface)
+make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface,
+    std::shared_ptr<void> native_lifetime)
 {
     if (!surface)
         return { };
     return std::shared_ptr<HostSurfacePresentationLease> {
-        new HostSurfacePresentationLease { std::move(surface) }
+        new HostSurfacePresentationLease {
+            std::move(surface), std::move(native_lifetime) }
     };
 }
 
@@ -598,6 +604,59 @@ HostSurface::HostSurface(HostSurfaceKey key, HostSurfaceDescriptor descriptor,
     record_damage_locked(cpu_generation_, cpu_damage_);
 }
 
+std::shared_ptr<const GlesWorkCompletion> HostSurface::writer() const
+{
+    std::lock_guard lock { mutex_ };
+    return writer_;
+}
+
+std::shared_ptr<const GlesWorkCompletion> HostSurface::reader() const
+{
+    std::lock_guard lock { mutex_ };
+    return reader_;
+}
+
+void HostSurface::record_read(
+    std::shared_ptr<const GlesWorkCompletion> completion)
+{
+    std::lock_guard lock { mutex_ };
+    reader_ = std::move(completion);
+}
+
+bool HostSurface::begin_write(
+    std::shared_ptr<const GlesWorkCompletion> completion,
+    std::shared_ptr<const GlesWorkCompletion>& previous)
+{
+    if (!completion || completion->sequence() == 0 || completion->ready())
+        throw std::invalid_argument { "invalid surface write admission" };
+    std::lock_guard lock { mutex_ };
+    if (writer_) {
+        if (!writer_->ready())
+            return false;
+        if (!writer_->succeeded())
+            throw std::runtime_error { "surface write dependency failed" };
+    }
+    previous = writer_;
+    writer_ = std::move(completion);
+    return true;
+}
+
+void HostSurface::abandon_write(
+    const std::shared_ptr<const GlesWorkCompletion>& completion,
+    std::shared_ptr<const GlesWorkCompletion> previous)
+{
+    std::lock_guard lock { mutex_ };
+    if (writer_ == completion)
+        writer_ = std::move(previous);
+}
+
+bool HostSurface::work_succeeded(std::uint64_t through) const
+{
+    std::lock_guard lock { mutex_ };
+    return !writer_ || (through && writer_->sequence() > through) ||
+           writer_->succeeded();
+}
+
 std::uint64_t HostSurface::cpu_generation() const
 {
     std::lock_guard lock { mutex_ };
@@ -633,6 +692,47 @@ HostSurface::CpuMapping HostSurface::map_cpu(
 {
     performance_counters().record_cpu_map(write, reason);
     return CpuMapping { *this, write };
+}
+
+std::optional<HostSurface::CpuMapping> HostSurface::try_map_current_cpu(
+    bool write, PerfCpuMapReason reason)
+{
+    CpuMapping mapping { *this, false };
+    if ((write && reader_ && !reader_->ready()) ||
+        (writer_ && !writer_->succeeded()) ||
+        gpu_generation_ > cpu_generation_)
+        return std::nullopt;
+    performance_counters().record_cpu_map(write, reason);
+    mapping.write_ = write;
+    return mapping;
+}
+
+HostSurface::CpuSnapshot HostSurface::snapshot_cpu(PerfCpuMapReason reason) const
+{
+    performance_counters().record_cpu_map(false, reason);
+    std::lock_guard lock { mutex_ };
+    return { DisplayFrame { cpu_frame_.width, cpu_frame_.height,
+                 cpu_frame_.sequence, cpu_frame_.pixels },
+        cpu_generation_, gpu_generation_ };
+}
+
+bool HostSurface::commit_cpu_readback(const CpuSnapshot& snapshot)
+{
+    std::lock_guard lock { mutex_ };
+    if ((writer_ && !writer_->succeeded()) ||
+        cpu_generation_ != snapshot.cpu_generation ||
+        gpu_generation_ != snapshot.gpu_generation ||
+        snapshot.frame.width != descriptor_.width ||
+        snapshot.frame.height != descriptor_.height ||
+        snapshot.frame.pixels.size() != cpu_frame_.pixels.size())
+        return false;
+    std::copy(snapshot.frame.pixels.begin(), snapshot.frame.pixels.end(),
+        cpu_frame_.pixels.begin());
+    cpu_generation_ = std::max(cpu_generation_, gpu_generation_);
+    next_generation_ = std::max(next_generation_, cpu_generation_);
+    if (snapshot.gpu_generation >= snapshot.cpu_generation)
+        cpu_damage_.clear();
+    return true;
 }
 
 void HostSurface::replace_cpu(std::span<const std::uint32_t> pixels)

@@ -4,9 +4,11 @@
 
 #include "foundation/address_space.hpp"
 #include "foundation/userland_hle.hpp"
+#include "graphics/surface_store.hpp"
 #include "guest_eagl_window.hpp"
 #include "kernel/opengles_hle.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -128,6 +130,158 @@ std::uint32_t OpenGlesHle::ensure_renderbuffer_storage(ContextState& context,
     return gles_abi::no_error;
 }
 
+void OpenGlesHle::present_eagl_window_async(UserlandHleCall& call,
+    const ContextState& context, const RenderTargetBinding& binding)
+try {
+    const auto& renderbuffer =
+        context.renderbuffers.at(context.bound_renderbuffer);
+    const auto window = GuestEaglWindow::open(call, renderbuffer.native_window);
+    const auto transport =
+        surface_store_->acquire_transport_lease(*binding.backing_identifier);
+    if (!window || !transport) {
+        call.set_return(0U);
+        return;
+    }
+    const auto renderbuffer_name = context.bound_renderbuffer;
+    // This resolver stays on the core across both the host wait
+    // and the firmware's window callbacks. No context pointer is
+    // retained through either scheduling boundary.
+    const auto live =
+        [this, context_id = context.identity, buffer_id = renderbuffer.identity,
+            renderbuffer_name, binding, address = window->address(),
+            owner = renderer_owner_, transport]() -> ContextState* {
+        static_cast<void>(transport);
+        if (owner != renderer_owner_ || !binding_live(binding))
+            return nullptr;
+        const auto found =
+            std::ranges::find_if(contexts_, [&](const auto& entry) {
+                return entry.second.identity == context_id;
+            });
+        if (found == contexts_.end())
+            return nullptr;
+        auto& state = found->second;
+        const auto buffer = state.renderbuffers.find(renderbuffer_name);
+        if (buffer == state.renderbuffers.end() ||
+            buffer->second.identity != buffer_id ||
+            buffer->second.native_window != address ||
+            buffer->second.drawable_surface_id != binding.backing_identifier)
+            return nullptr;
+        return &state;
+    };
+    submit_renderer_async(call, binding.key, false, transport,
+        [this, live, renderbuffer_name, window = *window](
+            UserlandHleCall& submitted, bool succeeded) {
+            if (!succeeded || !live()) {
+                submitted.set_return(0U);
+                return;
+            }
+            window.present(submitted, [this, live, renderbuffer_name,
+                                          address = window.address()](
+                                          UserlandHleCall& completed,
+                                          bool presented,
+                                          std::uint32_t next_surface) {
+                if (!presented) {
+                    completed.set_return(0U);
+                    return;
+                }
+                const auto finish = [this, live, renderbuffer_name, address,
+                                        next_surface](UserlandHleCall& ready) {
+                    auto* current = live();
+                    if (program_flush_failed_ || !current) {
+                        ready.set_return(0U);
+                        return;
+                    }
+                    if (!attach_eagl_window_surface(ready, *current,
+                            renderbuffer_name, address, next_surface)) {
+                        // The firmware already presented this frame.
+                        // Preserve the existing private next-buffer
+                        // fallback without changing its return value.
+                        auto& buffer =
+                            current->renderbuffers.at(renderbuffer_name);
+                        if (ensure_renderbuffer_storage(*current,
+                                renderbuffer_name, buffer.width, buffer.height,
+                                gles_abi::bgra_apple) == gles_abi::no_error)
+                            buffer.display_oriented = true;
+                    }
+                    ready.set_return(1U);
+                };
+                // A firmware callback can yield to another guest
+                // thread. Respect its accepted GL store work before
+                // rotating the original renderbuffer's attachment.
+                enter_graphics_call(
+                    completed, [this, finish](UserlandHleCall& ready) {
+                        if (pending_program_target_)
+                            await_program_flush(ready, finish);
+                        else
+                            finish(ready);
+                    });
+            });
+        });
+} catch (...) {
+    call.set_return(0U);
+}
+
+void OpenGlesHle::complete_drawable_storage(UserlandHleCall& call,
+    ResourceIdentity context_id, ResourceIdentity renderbuffer_id,
+    std::uint32_t name, DisplayGeometry pixels,
+    std::optional<DisplayViewport> viewport, std::uint32_t window,
+    std::uint32_t surface, std::uint64_t publication)
+{
+    const auto retry = [this, context_id, renderbuffer_id, name, pixels,
+                           viewport, window, surface,
+                           publication](UserlandHleCall& resumed) {
+        complete_drawable_storage(resumed, context_id, renderbuffer_id, name,
+            pixels, viewport, window, surface, publication);
+    };
+    // Guest geometry/window queries can yield before this callback. Another
+    // thread may have submitted GL work or deleted/replaced either object.
+    enter_graphics_call(call, [this, context_id, renderbuffer_id, name, pixels,
+                                  viewport, window, surface, publication,
+                                  retry](UserlandHleCall& ready) {
+        if (program_flush_failed_) {
+            ready.set_return(0U);
+            return;
+        }
+        if (pending_program_target_) {
+            await_program_flush(ready, retry);
+            return;
+        }
+        const auto found =
+            std::ranges::find_if(contexts_, [&](const auto& entry) {
+                return entry.second.identity == context_id;
+            });
+        if (found == contexts_.end()) {
+            ready.set_return(0U);
+            return;
+        }
+        auto& context = found->second;
+        const auto buffer = context.renderbuffers.find(name);
+        const auto identifier = core_surface_identifier(ready, surface);
+        const auto backing =
+            identifier ? surface_store_->find(*identifier) : std::nullopt;
+        if (buffer == context.renderbuffers.end() ||
+            buffer->second.identity != renderbuffer_id ||
+            (publication &&
+                (!backing ||
+                    backing->provenance.publication_sequence != publication))) {
+            ready.set_return(0U);
+            return;
+        }
+        const auto attached =
+            surface != 0U &&
+            attach_eagl_window_surface(ready, context, name, window, surface);
+        const auto error =
+            attached ? gles_abi::no_error
+                     : ensure_renderbuffer_storage(context, name, pixels.width,
+                           pixels.height, gles_abi::bgra_apple);
+        if (error == gles_abi::no_error) {
+            buffer->second.display_oriented = true;
+            buffer->second.drawable_viewport = viewport;
+        }
+        ready.set_return(error == gles_abi::no_error ? 1U : 0U);
+    });
+}
+
 void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
 {
     const auto add = [&](std::string_view name,
@@ -244,7 +398,7 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
     add("_glCheckFramebufferStatus", check_framebuffer_status);
     add("_glCheckFramebufferStatusOES", check_framebuffer_status);
     const auto delete_framebuffers = [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
+        if (program_flush_failed_)
             return;
         auto* context = current_context(call);
         const auto count = static_cast<std::int32_t>(call.argument(0));
@@ -329,7 +483,7 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
     add("_glBindRenderbuffer", bind_renderbuffer);
     add("_glBindRenderbufferOES", bind_renderbuffer);
     const auto renderbuffer_storage = [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
+        if (program_flush_failed_)
             return;
         auto* context = current_context(call);
         const auto width = call.argument(2);
@@ -448,7 +602,7 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
     add("_glGetRenderbufferParameteriv", get_renderbuffer_parameter);
     add("_glGetRenderbufferParameterivOES", get_renderbuffer_parameter);
     const auto delete_renderbuffers = [this](UserlandHleCall& call) {
-        if (!flush_program_draws(call))
+        if (program_flush_failed_)
             return;
         auto* context = current_context(call);
         const auto count = static_cast<std::int32_t>(call.argument(0));

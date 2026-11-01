@@ -7,14 +7,19 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <vector>
 
+#include "foundation/address_space.hpp"
+#include "foundation/userland_hle.hpp"
+#include "kernel/graphics_call_lease.hpp"
 #include "graphics/host_graphics.hpp"
 #include "graphics/mbx2d_abi.hpp"
 #include "graphics/surface_store.hpp"
@@ -25,6 +30,7 @@ class UserlandHleCall;
 class UserlandHleRegistry;
 class DisplayState;
 class GlesRenderer;
+class GlesRendererOwner;
 struct KernelSharedState;
 class PresentationTracker;
 
@@ -41,12 +47,39 @@ public:
 
     void reset();
     void inherit_state(const Mbx2dHle& parent);
+    void service_graphics_completions();
+    void cancel_pending_work();
+    void retire_thread(std::size_t processor);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_presentation_tracker(
         std::shared_ptr<PresentationTracker> presentations);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
 
 private:
+    void enter_graphics_call(
+        UserlandHleCall& call, UserlandHleRegistry::Handler handler);
+    enum class SubmissionKind { Flush, Swap, Finish, Terminate };
+    struct SubmissionPlan {
+        // Credit dies after retained payload storage.
+        std::shared_ptr<void> credit;
+        std::vector<HostSurfaceKey> retired;
+        std::shared_ptr<HostSurface> destination;
+        SubmissionKind kind { };
+        std::uint64_t owner { }, publication { };
+        std::size_t bytes { };
+        std::uint32_t surface_id { }, width { }, height { };
+        bool has_destination { }, framebuffer { }, prepared { }, accepted { };
+        bool retired_completed { };
+        bool context_api { };
+    };
+    void submit(UserlandHleCall& call, SubmissionKind kind,
+        bool context_api = false);
+    void await_submission(UserlandHleCall& call,
+        std::shared_ptr<GraphicsCallLease> lease,
+        std::shared_ptr<SubmissionPlan> plan);
+    [[nodiscard]] bool submission_destination_live(
+        UserlandHleCall& call, const SubmissionPlan& plan);
+    std::shared_ptr<GraphicsCallLease> sync_lease_;
     struct Surface {
         std::uint32_t handle { };
         std::uint32_t core_surface_id { };
@@ -97,6 +130,8 @@ private:
         std::uint32_t width { };
         std::uint32_t height { };
         std::uint32_t surface_handle { };
+        // Core-owned software input; never sent to the renderer or guest.
+        std::shared_ptr<const DisplayFrame> cpu_frame { };
     };
     struct BlitRegion {
         std::int64_t source_x { };
@@ -115,7 +150,6 @@ private:
     [[nodiscard]] std::optional<ResolvedSurface> resolve_source(
         UserlandHleCall& call, const std::optional<Binding>& binding);
     void retire_client_host_source(Surface& surface);
-    void release_retired_client_host_sources();
     void release_client_renderer_resources();
     [[nodiscard]] std::uint32_t allocate_context();
     [[nodiscard]] RenderState* select_state(
@@ -127,16 +161,97 @@ private:
     void set_scale_factor(UserlandHleCall& call, bool context_api);
     void set_rotation(UserlandHleCall& call, bool context_api);
     void set_feature(UserlandHleCall& call, bool context_api, bool enabled);
-    void blit_color(UserlandHleCall& call, bool context_api);
+    void blit_color(UserlandHleCall& call, bool context_api,
+        bool native_attempted = false);
+    struct NativeDraw;
+    [[nodiscard]] std::shared_ptr<NativeDraw> prepare_native_draw(
+        UserlandHleCall& call, bool context_api, ResolvedSurface destination,
+        std::optional<ResolvedSurface> source = { });
+    [[nodiscard]] bool native_draw_live(
+        UserlandHleCall& call, const NativeDraw& pending);
+    void fill_native(UserlandHleCall& call, bool context_api,
+        ResolvedSurface destination, HostRectangle rectangle,
+        std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha,
+        UserlandHleCall::Continuation fallback = { });
+    void fill_quad_native(UserlandHleCall& call, ResolvedSurface destination,
+        std::array<HostPoint, 4> positions, HostRectangle rectangle,
+        std::uint32_t color, HostCompositeMode mode, std::uint8_t alpha,
+        UserlandHleCall::Continuation fallback);
+    void copy_native(UserlandHleCall& call, bool context_api,
+        const ResolvedSurface& source, const ResolvedSurface& destination,
+        HostRectangle source_rectangle, HostRectangle destination_rectangle,
+        HostCompositeMode mode, std::uint8_t alpha, HostRotation rotation,
+        UserlandHleCall::Continuation fallback = { }, bool quad_rectangle = false);
+    void copy_quad_native(UserlandHleCall& call, bool context_api,
+        const ResolvedSurface& source, const ResolvedSurface& destination,
+        std::array<HostTexturedVertex, 4> vertices,
+        HostRectangle source_rectangle, HostRectangle scissor,
+        HostCompositeMode mode, std::uint8_t alpha,
+        UserlandHleCall::Continuation fallback);
+    void await_native_draw(
+        UserlandHleCall& call, std::shared_ptr<NativeDraw> pending);
     void blit_copy(UserlandHleCall& call, bool context_api);
+    struct CpuDraw;
+    struct QuadCoverage {
+        std::array<HostPoint, 4> positions;
+        std::optional<std::array<float, 4>> perspective;
+    };
+    using CpuContinuation = std::function<void(UserlandHleCall&,
+        const std::optional<ResolvedSurface>&, const ResolvedSurface&,
+        std::shared_ptr<CpuDraw>)>;
+    void execute_blit_copy(UserlandHleCall& call, bool context_api,
+        const ResolvedSurface& source, const ResolvedSurface& destination,
+        std::shared_ptr<CpuDraw> cpu = { }, bool native_attempted = false);
+    void prepare_cpu_draw(UserlandHleCall& call, bool context_api,
+        std::optional<ResolvedSurface> source, ResolvedSurface destination,
+        std::size_t bytes, CpuContinuation continuation);
+    void await_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu);
+    void write_cpu_draw(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
+        HostRectangle rectangle, std::vector<std::uint32_t> pixels,
+        std::optional<QuadCoverage> coverage = { });
+    void await_cpu_write(UserlandHleCall& call, std::shared_ptr<CpuDraw> cpu,
+        std::optional<std::uint64_t> gpu = std::nullopt);
+    void await_framebuffer(UserlandHleCall& call,
+        std::shared_ptr<CpuDraw> cpu, bool write);
+    [[nodiscard]] bool cpu_draw_live(UserlandHleCall& call,
+        const CpuDraw& cpu, bool source) const;
+    [[nodiscard]] static bool surface_binding_live(
+        const ResolvedSurface& expected,
+        const std::optional<ResolvedSurface>& current,
+        const AddressSpace::MappingObservation& mapping);
+    [[nodiscard]] static std::shared_ptr<GraphicsCallLease> cpu_draw_lease(
+        const std::shared_ptr<CpuDraw>& cpu);
+    using SourceContinuation = std::function<void(UserlandHleCall&,
+        const ResolvedSurface&, const ResolvedSurface&)>;
+    void import_source(UserlandHleCall& call, bool context_api,
+        ResolvedSurface source, ResolvedSurface destination,
+        SourceContinuation continuation, bool capture_pixels = false,
+        std::shared_ptr<GraphicsCallLease> lease = { });
     void quad_color(UserlandHleCall& call);
+    void execute_quad_color(UserlandHleCall& call,
+        const ResolvedSurface& destination,
+        const std::array<HostPoint, 4>& positions,
+        std::shared_ptr<CpuDraw> cpu = { }, bool native_attempted = false);
+    [[nodiscard]] static bool quad_covers(
+        const QuadCoverage& coverage, HostPoint point);
     void quad_copy(UserlandHleCall& call, bool context_api = false,
         bool perspective_api = false);
+    enum class QuadStage { Rectangle, Quad, Software };
+    void execute_quad_copy(UserlandHleCall& call, bool context_api,
+        const ResolvedSurface& source, const ResolvedSurface& destination,
+        const std::array<HostPoint, 4>& positions,
+        const std::array<HostPoint, 4>& texture,
+        const std::array<float, 4>& perspective, bool source_imported = false,
+        std::shared_ptr<CpuDraw> cpu = { }, QuadStage stage = QuadStage::Rectangle);
+    struct FlushPlan;
     void flush_surfaces(UserlandHleCall& call);
+    void await_flush_surfaces(UserlandHleCall& call,
+        std::shared_ptr<GraphicsCallLease> lease,
+        std::shared_ptr<FlushPlan> plan);
     void terminate(UserlandHleCall& call);
     [[nodiscard]] std::optional<ResolvedSurface> resolve(
         const std::optional<Binding>& binding) const;
-    [[nodiscard]] bool synchronize_host_source(
+    [[nodiscard]] SurfaceStore::CpuImportResult synchronize_host_source(
         UserlandHleCall& call, const ResolvedSurface& surface) const;
     [[nodiscard]] bool source_surface_allowed(
         const ResolvedSurface& surface) const;
@@ -146,6 +261,17 @@ private:
     [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_region(
         const ResolvedSurface& surface, std::int64_t x, std::int64_t y,
         std::int64_t width, std::int64_t height, UserlandHleCall& call) const;
+    [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_guest_region(
+        const ResolvedSurface& surface, std::int64_t x, std::int64_t y,
+        std::int64_t width, std::int64_t height, UserlandHleCall& call) const;
+    [[nodiscard]] static std::optional<std::vector<std::uint32_t>> composite_pixels(
+        const BlendState& blend, const std::vector<std::uint32_t>& source,
+        std::vector<std::uint32_t> destination);
+    enum class CpuWriteState { Completed, PendingGpu, Failed };
+    [[nodiscard]] CpuWriteState try_write_region(const ResolvedSurface& surface,
+        std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
+        const std::vector<std::uint32_t>& pixels, UserlandHleCall& call,
+        std::optional<std::uint64_t> gpu = std::nullopt);
     [[nodiscard]] bool write_region(const ResolvedSurface& surface,
         std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
         const std::vector<std::uint32_t>& pixels, UserlandHleCall& call);
@@ -160,7 +286,6 @@ private:
         UserlandHleCall& call);
     [[nodiscard]] std::optional<HostCompositeMode> host_composite_mode(
         const RenderState& state) const;
-    [[nodiscard]] bool submit_host_commands(bool wait, PerfSubmitReason reason);
     void submit_destination(UserlandHleCall& call, bool context_api);
     void deferred(UserlandHleCall& call);
 
@@ -182,7 +307,8 @@ private:
     std::uint64_t next_client_host_source_ { 1 };
     std::vector<HostSurfaceKey> retired_client_host_sources_;
     std::shared_ptr<GlesRenderer> host_graphics_;
-    std::unique_ptr<CommandEncoder> command_encoder_;
+    std::shared_ptr<GlesRendererOwner> renderer_lifetime_;
+    std::shared_ptr<CommandEncoder> command_encoder_;
 };
 
 } // namespace ilemu

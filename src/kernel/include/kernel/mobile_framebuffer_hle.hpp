@@ -22,6 +22,7 @@ namespace ilemu {
 
 class DisplayState;
 class GlesRenderer;
+class GlesRendererOwner;
 class PresentationTracker;
 class SceneCoordinator;
 struct KernelSharedState;
@@ -29,6 +30,7 @@ class SurfaceTransportLease;
 class UserlandHleCall;
 class UserlandHleRegistry;
 class SurfaceStore;
+struct GraphicsCallLease;
 
 class MobileFramebufferHle {
 public:
@@ -38,6 +40,9 @@ public:
         std::shared_ptr<PresentationTracker> presentations = { });
 
     void reset();
+    void service_graphics_completions();
+    void cancel_pending_work();
+    void retire_thread(std::size_t processor);
     void inherit_state(const MobileFramebufferHle& parent);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
@@ -57,13 +62,25 @@ private:
     enum class SubmissionResult : std::uint8_t {
         Failed,
         Submitted,
+        Pending,
     };
 
     void register_device_functions(UserlandHleRegistry& registry);
     [[nodiscard]] bool is_external_framebuffer(UserlandHleCall& call) const;
     void set_background_color(UserlandHleCall& call);
     void set_layer(UserlandHleCall& call);
-    [[nodiscard]] SubmissionResult submit_layers(UserlandHleCall& call);
+    struct SoftwareSubmission;
+    struct NativeSubmission;
+    void await_native_layers(UserlandHleCall& call,
+        std::shared_ptr<NativeSubmission> pending);
+    void publish_native_scanout(UserlandHleCall& call);
+    void enter_swap_call(UserlandHleCall& call,
+        std::function<void(UserlandHleCall&)> handler);
+    void submit_layers(UserlandHleCall& call);
+    void await_software_layers(UserlandHleCall& call,
+        std::shared_ptr<SoftwareSubmission> pending);
+    void finish_swap(UserlandHleCall& call,
+        const std::shared_ptr<GraphicsCallLease>& lease, bool succeeded);
     [[nodiscard]] std::optional<std::uint32_t> record_presentation(
         UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
@@ -71,7 +88,8 @@ private:
         std::uint32_t producer_process_id,
         std::uint64_t publication_sequence) const;
     [[nodiscard]] SubmissionResult submit_host_layers(UserlandHleCall& call);
-    void ensure_scanout_surface();
+    void reset_composition_targets();
+    [[nodiscard]] bool ensure_scanout_surface();
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_composition_surface();
 
     struct Rectangle {
@@ -98,6 +116,7 @@ private:
         HostSurfaceKey surface_key;
         std::uint64_t generation { };
     };
+    std::shared_ptr<GraphicsCallLease> sync_lease_;
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<SurfaceStore> surface_store_;
     std::shared_ptr<PresentationTracker> presentation_tracker_;
@@ -106,8 +125,12 @@ private:
     std::function<void(std::uint32_t)> frame_presented_handler_;
     std::function<void(std::uint32_t)> semantic_presentation_handler_;
     std::shared_ptr<GlesRenderer> host_graphics_;
-    std::unique_ptr<CommandEncoder> command_encoder_;
+    std::uint64_t composition_owner_ { };
+    std::shared_ptr<GlesRendererOwner> composition_lifetime_;
     std::shared_ptr<HostSurface> scanout_surface_;
+    // This lease owns the exact published image and keeps a forked reader's
+    // snapshot out of the parent's writable ring until its last use.
+    std::shared_ptr<HostSurfacePresentationLease> scanout_lease_;
     // Keep the last published target immutable while the host presenter can
     // still consume it. The ring is independent of guest model/firmware; the
     // software path below continues to compose into DisplayState pixels.
