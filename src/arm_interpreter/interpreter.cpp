@@ -74,6 +74,11 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
     const auto division = source.integer_divide_profile();
     const auto memory_profile = source.thumb_memory_profile();
     const auto simd = source.advanced_simd_profile();
+    const bool mixed_timing = source.supports_mixed_instruction_timing();
+    std::unique_ptr<InstructionLease> lease;
+    std::optional<InstructionRegion> leased_region;
+    bool leased_thumb = false;
+    unsigned leased_instructions = 0;
     for (;;) {
         result.pc = state.registers[15];
         result.instruction.reset();
@@ -100,23 +105,36 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             result.reason = StopReason::FetchFault;
             return result;
         }
-        auto lease = source.acquire_code_lease(result.pc, thumb);
-        if (auto fault = source.prepare_instruction_fetch(
-                result.pc, thumb ? 2U : 4U)) {
-            result.memory_fault = fault;
-            result.reason = StopReason::FetchFault;
-            return result;
+        // Reuse the source's existing pinned, inspectable view. Bound each
+        // lease so a register-only loop also releases pending memory writers.
+        const bool reuse = lease && leased_region && leased_instructions < 32 &&
+            (thumb == leased_thumb || mixed_timing) &&
+            result.pc >= leased_region->begin &&
+            std::uint64_t { result.pc } + 4U <= leased_region->end;
+        if (!reuse) {
+            lease.reset();
+            lease = source.acquire_code_lease(result.pc, thumb);
+            leased_thumb = thumb;
+            leased_instructions = 0;
+            if (auto fault = source.prepare_instruction_fetch(
+                    result.pc, thumb ? 2U : 4U)) {
+                result.memory_fault = fault;
+                result.reason = StopReason::FetchFault;
+                return result;
+            }
         }
         arm::Instruction inst;
         if (thumb) {
             const auto first = source.fetch16(result.pc);
             std::optional<std::uint16_t> second;
             if (first && arm::thumb_is_wide(*first)) {
-                if (auto fault = source.prepare_instruction_fetch(
-                        result.pc + 2U, 2U)) {
-                    result.memory_fault = fault;
-                    result.reason = StopReason::FetchFault;
-                    return result;
+                if (!reuse) {
+                    if (auto fault = source.prepare_instruction_fetch(
+                            result.pc + 2U, 2U)) {
+                        result.memory_fault = fault;
+                        result.reason = StopReason::FetchFault;
+                        return result;
+                    }
                 }
                 second = source.fetch16(result.pc + 2U);
             }
@@ -138,6 +156,13 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             result.reason = StopReason::FetchFault;
             return result;
         }
+        if (!reuse) {
+            const auto view = lease ? lease->cached_continuation(result.pc)
+                                    : std::nullopt;
+            leased_region = view && view->inspectable
+                ? std::optional { view->region } : std::nullopt;
+        }
+        ++leased_instructions;
         const bool passed = arm::condition_passed(inst.condition, state.cpsr);
         if (inst.condition == 15 ||
             (passed &&
@@ -184,8 +209,9 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 return result;
             }
         }
-        const auto ticks =
-            source.ticks_for_instruction(result.pc, *result.instruction);
+        const auto ticks = mixed_timing
+            ? source.ticks_for_instruction(thumb, result.pc, *result.instruction)
+            : source.ticks_for_instruction(result.pc, *result.instruction);
         if (ticks == 0 || ticks > UINT64_MAX - result.ticks_consumed) {
             result.reason = StopReason::InvalidTiming;
             return result;
@@ -248,6 +274,7 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
                 default:
                     // Checked accesses complete synchronously; the next
                     // instruction reacquires its code view, including for ISB.
+                    lease.reset();
                     std::atomic_thread_fence(std::memory_order_seq_cst);
                     break;
                 }
