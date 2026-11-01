@@ -62,7 +62,8 @@ public:
     void prepare_fork(UserlandHleCall& call,
         std::function<void(UserlandHleCall&, bool)> completion);
     void inherit_state(const OpenGlesHle& parent,
-        std::uint32_t parent_pid, std::uint32_t child_pid);
+        std::uint32_t parent_pid, std::uint32_t child_pid,
+        std::size_t parent_processor);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_guest_capabilities(OpenGlesGuestCapabilitySet profile);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);

@@ -251,11 +251,18 @@ void OpenGlesHle::reset()
 }
 
 void OpenGlesHle::inherit_state(const OpenGlesHle& parent,
-    std::uint32_t parent_pid, std::uint32_t child_pid)
+    std::uint32_t parent_pid, std::uint32_t child_pid,
+    std::size_t parent_processor)
 {
     sync_lease_.reset();
     release_renderer_resources();
-    threads_ = parent.threads_;
+    // Runtime fork preserves only its calling uthread, rebased to child slot
+    // zero. Graphics TLS follows that same identity, including EGL bindings
+    // and pending GL errors; other parent uthreads do not exist in the child.
+    threads_.clear();
+    if (const auto caller = parent.threads_.find(parent_processor);
+        caller != parent.threads_.end())
+        threads_.emplace(0U, caller->second);
     contexts_ = parent.contexts_;
     eagl_contexts_.clear();
     // Guest object addresses survive fork, while their process namespace
