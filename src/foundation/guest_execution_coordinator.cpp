@@ -7,8 +7,10 @@
 
 #include "foundation/guest_execution_coordinator.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -118,7 +120,8 @@ GuestExecutionRequest* GuestExecutionCoordinator::wait()
     std::terminate();
 }
 
-void GuestExecutionCoordinator::run(std::span<GuestExecutionRequest*> requests)
+void GuestExecutionCoordinator::run(std::span<GuestExecutionRequest*> requests,
+    const std::function<void()>& service_host)
 {
     {
         std::lock_guard lock { impl_->mutex };
@@ -137,23 +140,40 @@ void GuestExecutionCoordinator::run(std::span<GuestExecutionRequest*> requests)
     }
     if (requests.empty())
         return;
-    // The caller can execute a lane while its peers run instead of paying a
-    // worker handoff only to wait idle. It uses the same deferred-SVC and
-    // parallel-memory scope as a worker; kernel commits still wait for every
-    // lane. submit()/wait() retain their independent channel semantics.
     try {
-        for (auto* request : requests.subspan(1)) {
+        for (auto* request : requests)
             submit(*request);
+        for (;;) {
+            std::unique_lock lock { impl_->mutex };
+            if (impl_->outstanding == 0U)
+                break;
+            const auto completed = [this] {
+                return std::any_of(impl_->channels.begin(), impl_->channels.end(),
+                    [](const auto& channel) {
+                        return channel->state == Impl::State::Completed;
+                    });
+            };
+            if (service_host)
+                impl_->completion_available.wait_for(
+                    lock, std::chrono::milliseconds { 1 }, completed);
+            else
+                impl_->completion_available.wait(lock, completed);
+            for (auto& channel : impl_->channels) {
+                if (channel->state == Impl::State::Completed) {
+                    channel->request = nullptr;
+                    channel->state = Impl::State::Idle;
+                    --impl_->outstanding;
+                }
+            }
+            const bool pending = impl_->outstanding != 0U;
+            lock.unlock();
+            if (pending && service_host)
+                service_host();
         }
-        const auto previous_channel =
-            std::exchange(execution_channel_active, true);
-        execute(*requests.front());
-        execution_channel_active = previous_channel;
     } catch (...) {
         while (wait()) { }
         throw;
     }
-    while (wait()) { }
 }
 
 void GuestExecutionCoordinator::execute(GuestExecutionRequest& request) noexcept
@@ -161,6 +181,9 @@ void GuestExecutionCoordinator::execute(GuestExecutionRequest& request) noexcept
     request.result = { };
     request.error = nullptr;
     try {
+        std::optional<AddressSpace::ExclusiveAccess> access;
+        if (request.exclusive_memory)
+            access.emplace(*request.exclusive_memory);
         request.result = request.single_step
                              ? request.cpu->step(request.execution_slot)
                              : request.cpu->run_cooperatively(

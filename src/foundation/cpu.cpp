@@ -1529,7 +1529,17 @@ public:
             return;
         }
         if (owner_->svc_handler_) {
-            owner_->svc_handler_(*owner_, immediate);
+            if (GuestExecutionCoordinator::in_execution_channel()) {
+                struct MemoryPause {
+                    AddressSpace& memory;
+                    explicit MemoryPause(AddressSpace& value) : memory(value)
+                    { memory.suspend_parallel_access(); }
+                    ~MemoryPause() { memory.resume_parallel_access(); }
+                } pause { memory_ };
+                owner_->svc_handler_(*owner_, immediate);
+            } else {
+                owner_->svc_handler_(*owner_, immediate);
+            }
             // Immediate HLE executes inside Dynarmic's callback and can spend
             // far longer in host wall time than the surrounding Guest block
             // accounts in instruction ticks.  Re-check the existing host-only
@@ -2472,7 +2482,6 @@ public:
             if (JitBackendCapabilities::parallel_memory_leases &&
                 cpu.parallel_memory_allowed_ && cooperative_execution &&
                 GuestExecutionCoordinator::in_execution_channel() &&
-                cpu.svc_dispatch_mode_ == SvcDispatchMode::Deferred &&
                 !single_step && !cpu.memory_write_watch_address_) {
                 parallel_access.emplace(
                     memory_, execution_slot_, cpu.processor_id());

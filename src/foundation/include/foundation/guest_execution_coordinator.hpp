@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <span>
 
@@ -24,6 +25,7 @@ struct GuestExecutionRequest {
     std::uint64_t tick_budget { };
     std::chrono::nanoseconds host_slice_budget { };
     bool single_step { };
+    AddressSpace* exclusive_memory { };
     CpuRunResult result;
     std::exception_ptr error;
 };
@@ -41,12 +43,15 @@ public:
         const GuestExecutionCoordinator&) = delete;
 
     // The caller owns a request until wait() returns it. Only the control
-    // thread submits/collects; Guest kernel state is never touched by workers.
+    // thread submits/collects. A serial window may own immediate Guest kernel
+    // dispatch; concurrent windows defer dispatch until every lane completes.
     void submit(GuestExecutionRequest& request);
     [[nodiscard]] GuestExecutionRequest* wait();
-    // Execute one lane on the caller while dispatching its peers, then drain
-    // the kernel commit window. Individual channels remain independently usable.
-    void run(std::span<GuestExecutionRequest*> requests);
+    // Guest work always stays on its channel. While the commit window is
+    // open, service_host may collect host events but must not mutate Guest
+    // kernel state or the requests. Completion wakes the coordinator directly.
+    void run(std::span<GuestExecutionRequest*> requests,
+        const std::function<void()>& service_host = {});
     static void execute(GuestExecutionRequest& request) noexcept;
     [[nodiscard]] static bool in_execution_channel() noexcept;
 

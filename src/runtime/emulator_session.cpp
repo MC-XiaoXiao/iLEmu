@@ -342,11 +342,8 @@ void EmulatorSession::run()
         std::string { host_memory_pressure_name(jit_cache_budget.memory) } +
         " total-budget-mib=" +
         std::to_string(jit_cache_budget.total_bytes / bytes_per_mebibyte));
-    std::unique_ptr<GuestExecutionCoordinator> guest_execution_coordinator;
-    if (guest_processor_count > 1) {
-        guest_execution_coordinator =
-            std::make_unique<GuestExecutionCoordinator>(guest_processor_count);
-    }
+    auto guest_execution_coordinator =
+        std::make_unique<GuestExecutionCoordinator>(guest_processor_count);
     const auto network_policy = options.network;
     const auto airport_configuration = NetworkPreferencesAirport {
         .interface_name = "en0",
@@ -3886,8 +3883,12 @@ void EmulatorSession::run()
         }
         for (auto& prepared : prepared_slices) {
             prepared.deferred_svc = parallel_guest_batch;
+            prepared.execution.exclusive_memory =
+                !parallel_guest_batch && !tiered_execution &&
+                    prepared.runtime->precompile_tasks.empty()
+                ? prepared.runtime->memory.get() : nullptr;
             prepared.execution.cpu->set_parallel_memory_allowed(
-                parallel_guest_batch &&
+                (parallel_guest_batch || tiered_execution) &&
                 prepared.runtime->precompile_tasks.empty());
             prepared.execution.cpu->set_svc_dispatch_mode(
                 parallel_guest_batch ? SvcDispatchMode::Deferred
@@ -3906,24 +3907,26 @@ void EmulatorSession::run()
                 prepared_slices.front().scheduled.processor);
             last_serial_thread = prepared_slices.front().scheduled.thread;
         }
+        const auto service_host = [&] {
+            // The active window owns Guest state. Collect host events only;
+            // Guest injection and commands wait until that ownership returns.
+            if (display_presenter && !display_presenter->poll_events())
+                hard_stop = true;
+            if (live_control)
+                for (auto& command : live_control->poll())
+                    pending_control_commands.push_back(std::move(command));
+        };
         if (parallel_guest_batch) {
             std::vector<GuestExecutionRequest*> execution_requests;
             execution_requests.reserve(prepared_slices.size());
             for (auto& prepared : prepared_slices)
                 execution_requests.push_back(&prepared.execution);
-            guest_execution_coordinator->run(execution_requests);
+            guest_execution_coordinator->run(execution_requests, service_host);
         } else {
             for (auto& prepared : prepared_slices) {
                 if (scheduler.contains(prepared.scheduled.thread)) {
-                    // Background compilation has its own executor/memory
-                    // lock order. Tasks are admitted between guest batches
-                    // and retained until finished, so an empty task list
-                    // excludes a compiler for this address space. A profile
-                    // mode alone does not imply concurrent compilation.
-                    std::optional<AddressSpace::ExclusiveAccess> access;
-                    if (prepared.runtime->precompile_tasks.empty())
-                        access.emplace(*prepared.runtime->memory);
-                    GuestExecutionCoordinator::execute(prepared.execution);
+                    std::array<GuestExecutionRequest*, 1> request { &prepared.execution };
+                    guest_execution_coordinator->run(request, service_host);
                 }
             }
         }
@@ -3994,7 +3997,7 @@ void EmulatorSession::run()
             }
             guest_parallelism_policy.observe(scheduled->thread,
                 result.ticks_consumed, result.svc_calls,
-                result.host_execution_ns, prepared.deferred_svc,
+                result.host_execution_ns, parallel_guest_batch,
                 result.translated_code);
             if (prepared.deferred_svc && result.svc) {
                 const auto dispatch_started = std::chrono::steady_clock::now();
