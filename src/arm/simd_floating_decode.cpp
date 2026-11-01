@@ -17,7 +17,10 @@ bool decode_simd_floating(Instruction& out, std::uint32_t word, bool thumb,
     VectorFloatingArithmeticOperands v;
     using Op = FloatingArithmeticOperation;
     bool scalar = false;
-    switch (word & 0xffa00f10U) {
+    const bool unary = (word & 0xffbf0f10U) == 0xf3b90700U;
+    if (unary)
+        v.operation = (word & 128U) != 0 ? Op::Negate : Op::Absolute;
+    else switch (word & 0xffa00f10U) {
     case 0xf2000d00U: v.operation = Op::Add; break;
     case 0xf2200d00U: v.operation = Op::Subtract; break;
     case 0xf3000d10U: v.operation = Op::Multiply; break;
@@ -43,8 +46,8 @@ bool decode_simd_floating(Instruction& out, std::uint32_t word, bool thumb,
     if (!thumb)
         out.condition = 14;
     // These encodings have only 32-bit floating-point elements in NEON.
-    const bool single_precision = scalar
-        ? ((word >> 20U) & 3U) == 2U : (word & 0x00100000U) == 0;
+    const bool single_precision = unary || (scalar
+        ? ((word >> 20U) & 3U) == 2U : (word & 0x00100000U) == 0);
     if (!single_precision ||
         profile != execution::AdvancedSimdProfile::Neon ||
         !execution::has_armv6t2_extensions(architecture))
@@ -59,6 +62,8 @@ bool decode_simd_floating(Instruction& out, std::uint32_t word, bool thumb,
         v.second = ((word >> 1U) & 16U) | (word & 15U);
         v.quad = (word & 64U) != 0;
     }
+    if (unary)
+        v.first = v.second;
     const auto registers = v.destination | v.first | v.second;
     const auto vectors = v.destination | v.first | (scalar ? 0U : v.second);
     if ((v.quad && ((vectors & 1U) != 0 || v.pairwise)) ||

@@ -59,7 +59,11 @@ void SimdEmitter::floating(const arm::VectorFloatingArithmeticOperands& v)
         return;
     }
     const auto emit = [&](auto d, auto a, auto b) {
-        if (v.operation == Op::Add)
+        if (v.operation == Op::Absolute)
+            code_.FABS(d, a);
+        else if (v.operation == Op::Negate)
+            code_.FNEG(d, a);
+        else if (v.operation == Op::Add)
             code_.FADD(d, a, b);
         else if (v.operation == Op::Subtract)
             code_.FSUB(d, a, b);
