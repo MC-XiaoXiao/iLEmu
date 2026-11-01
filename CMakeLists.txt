@@ -139,6 +139,8 @@ ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_x64_host_mxcsr.patch")
 ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_tiered_execution.patch")
+ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_arm64_cycle_budget.patch")
 
 # Force Dynarmic's FindBoost invocation to use the matching header-only tree.
 set(Boost_NO_SYSTEM_PATHS ON CACHE BOOL "" FORCE)

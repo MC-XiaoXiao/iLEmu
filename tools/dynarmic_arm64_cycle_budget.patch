@@ -1,0 +1,26 @@
+diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -406,0 +407,4 @@
++    // ARM64 clients can supply successive cycle chunks without returning from
++    // Run. AddTicks must retire each chunk; zero remaining or a halt ends Run.
++    bool enable_cycle_budget_replenishment = false;
++
+diff --git a/src/dynarmic/backend/arm64/a32_address_space.cpp b/src/dynarmic/backend/arm64/a32_address_space.cpp
+--- a/src/dynarmic/backend/arm64/a32_address_space.cpp
++++ b/src/dynarmic/backend/arm64/a32_address_space.cpp
+@@ -531,0 +532,14 @@
++        if (conf.enable_cycle_counting && conf.enable_cycle_budget_replenishment) {
++            oaknut::Label finish;
++            code.LDAR(Wscratch0, Xhalt);
++            code.CBNZ(Wscratch0, finish);
++            code.BL(prelude_info.get_ticks_remaining);
++            code.CBZ(X0, finish);
++            code.MOV(Xticks, X0);
++            code.STR(Xticks, SP, offsetof(StackLayout, cycles_to_run));
++            // The dispatcher checks asynchronous halts again before entry.
++            // Keep the ABI frame, Guest FPCR and RSB across clock probes.
++            code.B(prelude_info.return_to_dispatcher);
++            code.l(finish);
++        }
++

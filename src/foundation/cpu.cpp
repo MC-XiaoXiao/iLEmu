@@ -1652,7 +1652,17 @@ public:
         }
         maybe_check_host_yield(ticks, ticks_remaining_ == 0U);
     }
-    std::uint64_t GetTicksRemaining() override { return ticks_remaining_; }
+    std::uint64_t GetTicksRemaining() override
+    {
+        // AddTicks is called at SVC/Run boundaries, not at every block. Reuse
+        // the native cycle countdown for periodic clock probes as Guest
+        // execution cost changes, without a whole-Run throughput prediction.
+        return cooperative_execution_ &&
+                JitBackendCapabilities::cycle_budget_replenishment
+            ? std::min<std::uint64_t>(ticks_remaining_,
+                  std::max(host_yield_initial_tick_budget, host_yield_tick_budget_))
+            : ticks_remaining_;
+    }
     std::uint64_t GetTicksForCode(bool is_thumb, Dynarmic::A32::VAddr address,
         std::uint32_t instruction) override
     {
@@ -2465,7 +2475,10 @@ public:
         diagnostics.checkpoint(PerfLatencyKind::CpuRunLoadState);
         const auto effective_host_slice_budget =
             std::max(host_slice_budget, std::chrono::nanoseconds::zero());
-        auto native_ticks = cooperative_execution && !single_step &&
+        // Native replenishment bounds wall time directly. Keep the throughput
+        // prediction only for backends that must return from each whole Run.
+        auto native_ticks = !JitBackendCapabilities::cycle_budget_replenishment &&
+                cooperative_execution && !single_step &&
                 effective_host_slice_budget > std::chrono::nanoseconds::zero()
             ? std::min<std::uint64_t>(ticks,
                   host_execution_budget_.next(effective_host_slice_budget))
@@ -2555,7 +2568,8 @@ public:
                 ++result.host_yield_checks;
                 result.host_yielded = true;
             }
-            if (cooperative_execution && !single_step && native_ticks != 0U &&
+            if (!JitBackendCapabilities::cycle_budget_replenishment &&
+                cooperative_execution && !single_step && native_ticks != 0U &&
                 result.ticks_consumed >= native_ticks && result.svc_calls == 0U &&
                 !memory_pause_seen &&
                 !memory_yield_requested_.load(std::memory_order_relaxed)) {
@@ -3351,6 +3365,8 @@ private:
             callbacks_->cpu_model().architecture_version());
         config.always_little_endian = true;
         config.enable_cycle_counting = true;
+        config.enable_cycle_budget_replenishment =
+            JitBackendCapabilities::cycle_budget_replenishment;
         // Reuse the cycle countdown for host cooperation instead of charging
         // every translated block for a second mutable countdown.
         config.enable_host_execution_block_budget = false;

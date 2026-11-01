@@ -12,8 +12,10 @@ namespace ilemu {
 struct JitBackendCapabilities {
 #if defined(__aarch64__) || defined(_M_ARM64)
     static constexpr bool native_code_versions = true;
+    static constexpr bool cycle_budget_replenishment = true;
 #else
     static constexpr bool native_code_versions = false;
+    static constexpr bool cycle_budget_replenishment = false;
 #endif
 #if defined(__x86_64__) || defined(_M_X64)
     static constexpr bool shared_native_cache = true;
