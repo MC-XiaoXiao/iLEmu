@@ -206,7 +206,7 @@ public:
         const DisplayFrame& frame, GlesRenderTargetKey target,
         const GlesProgramDraw& program, std::uint32_t mode,
         const GlesRasterState& state, std::size_t issuer,
-        std::size_t& payload_bytes, bool read_target,
+        std::size_t& payload_bytes, bool read_target, bool native_target,
         const SurfaceStore& surfaces);
     // Completes frozen texture/target pixels on the host worker. Repeated
     // admission returns the same ticket; no guest references cross this API.

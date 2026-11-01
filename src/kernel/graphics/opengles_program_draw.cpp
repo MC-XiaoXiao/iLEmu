@@ -168,15 +168,6 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     }
     if (pending_program_target_) {
         frame.pixels.clear();
-    } else {
-        // Switching targets can publish a preceding render into the same
-        // backing texture. Reacquire the frame after that synchronization.
-        const auto refreshed = render_target(call, binding);
-        if (!refreshed) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        frame = *refreshed;
     }
     collect_program_draw_errors();
     std::shared_ptr<GlesProgramWorker::PreparedDraw> prepared;
@@ -184,7 +175,8 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
     try {
         prepared = program_renderer_->prepare_draw(frame, binding.key, draw,
             mode, state, call.cpu().processor_id(), bytes,
-            !pending_program_target_, *surface_store_);
+            !pending_program_target_, binding.host_surface != nullptr,
+            *surface_store_);
     } catch (const std::bad_alloc&) {
         set_gl_error(call, gles_abi::out_of_memory);
         return;

@@ -410,6 +410,8 @@ namespace {
     struct DrawPacket {
         std::shared_ptr<PayloadCredit> credit;
         DisplayFrame frame;
+        std::shared_ptr<HostSurface> frame_input;
+        std::shared_ptr<HostSurfacePresentationLease> frame_lease;
         GlesRenderTargetKey target;
         GlesProgramDraw draw;
         GlesProgramState::Program program;
@@ -468,14 +470,19 @@ namespace {
     std::shared_ptr<DrawPacket> snapshot(const DisplayFrame& frame,
         GlesRenderTargetKey target, const GlesProgramDraw& draw,
         std::uint32_t mode, const GlesRasterState& raster,
-        std::shared_ptr<PayloadCredit> credit, const SurfaceStore& surfaces)
+        std::shared_ptr<PayloadCredit> credit, const SurfaceStore& surfaces,
+        bool native_input)
     {
         auto packet = std::make_shared<DrawPacket>();
         packet->credit = std::move(credit);
-        // Do not copy DisplayFrame readers, native surfaces or presentation
-        // leases: EGL consumes dimensions and owned CPU pixels. A separately
-        // accepted target readback can fill this frame before draw admission.
-        // Keep guest/presentation callbacks on their original side.
+        // EGL consumes owned CPU pixels. Its input preparation reads a native
+        // display source or target before draw admission, without guest readers.
+        if (native_input) {
+            if (!frame.presentation_lease)
+                throw std::invalid_argument { "unowned GLES display input" };
+            packet->frame_input = frame.host_surface;
+            packet->frame_lease = frame.presentation_lease;
+        }
         packet->frame.width = frame.width;
         packet->frame.height = frame.height;
         packet->frame.pixels = frame.pixels;
@@ -803,7 +810,7 @@ std::shared_ptr<GlesProgramWorker::PreparedDraw>
 GlesProgramWorker::prepare_draw(const DisplayFrame& frame,
     GlesRenderTargetKey target, const GlesProgramDraw& draw, std::uint32_t mode,
     const GlesRasterState& raster, std::size_t issuer, std::size_t& bytes,
-    bool read_target, const SurfaceStore& surfaces)
+    bool read_target, bool native_target, const SurfaceStore& surfaces)
 {
     if (!draw.state)
         throw std::invalid_argument { "GLES draw has no uniform state" };
@@ -818,7 +825,8 @@ GlesProgramWorker::prepare_draw(const DisplayFrame& frame,
     prepared->bytes = bytes;
     prepared->read_target = read_target;
     prepared->packet = snapshot(
-        frame, target, draw, mode, raster, std::move(credit), surfaces);
+        frame, target, draw, mode, raster, std::move(credit), surfaces,
+        read_target && !native_target && frame.host_surface);
     prepared->inputs_ready =
         !read_target && !prepared->packet->textures.needs_capture();
     return prepared;
@@ -837,6 +845,7 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_input_readback(
         draw->backend.lock() != state_->backend ||
         epoch == state_->epochs.end() || epoch->second != draw->epoch)
         throw std::invalid_argument { "stale GLES target preparation" };
+    const auto input = draw->packet->frame_input;
     auto result = state_->executor->submit_host(
         0,
         [packet = draw->packet, read_target = draw->read_target,
@@ -859,7 +868,13 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_input_readback(
                        frame.pixels.size() ==
                            static_cast<std::size_t>(width) * height;
             }
-            auto frame = std::move(packet->frame);
+            DisplayFrame frame;
+            if (packet->frame_input) {
+                if (!renderer->read_surface(*packet->frame_input, frame))
+                    return false;
+            } else {
+                frame = std::move(packet->frame);
+            }
             const auto read = renderer->synchronize(frame, packet->target);
             if (!read || frame.width != width || frame.height != height ||
                 frame.pixels.size() != static_cast<std::size_t>(width) * height)
@@ -868,6 +883,8 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_input_readback(
             return true;
         },
         draw->bytes);
+    if (result && input)
+        input->record_read(result->completion());
     draw->input_readback = result;
     return result;
 }
@@ -899,6 +916,8 @@ void GlesProgramWorker::complete_inputs(
         draw->packet->frame = std::move(target.snapshot.frame);
         target = { };
     }
+    draw->packet->frame_input.reset();
+    draw->packet->frame_lease.reset();
     draw->inputs_ready = true;
     // A ready input ticket must not occupy a result slot while the same draw
     // is waiting to allocate its output ticket. Its success is now explicit.

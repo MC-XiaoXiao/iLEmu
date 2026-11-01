@@ -1392,9 +1392,9 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         });
         return;
     }
-    // Fixed-pipeline display inputs carry owned pixels or a native content
-    // lease. GlesFrameDraw reads native input on the worker before drawing.
-    const auto capture_display = !program_draw && !binding->host_surface &&
+    // Display inputs carry owned pixels or a native content lease. Both
+    // rendering paths read native input on the worker before drawing.
+    const auto capture_display = !binding->host_surface &&
                                  !binding->display_surface && display_;
     auto target = capture_display ? std::optional { display_->capture_frame() }
                                  : render_target(call, *binding);
