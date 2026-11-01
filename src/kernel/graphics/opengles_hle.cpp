@@ -2992,18 +2992,13 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 }
                 if (right <= left || bottom <= top)
                     return;
-                if (command_encoder_->fill(surface,
-                        { static_cast<std::int32_t>(left),
-                            static_cast<std::int32_t>(top),
-                            static_cast<std::uint32_t>(right - left),
-                            static_cast<std::uint32_t>(bottom - top) },
-                        clear_argb)) {
-                    if (binding->framebuffer_texture != 0U) {
-                        resources_.update_texture_render_target_generation(
-                            binding->framebuffer_texture, 0U);
-                    }
-                    return;
-                }
+                clear_native_async(call, *binding,
+                    { static_cast<std::int32_t>(left),
+                        static_cast<std::int32_t>(top),
+                        static_cast<std::uint32_t>(right - left),
+                        static_cast<std::uint32_t>(bottom - top) },
+                    clear_argb);
+                return;
             }
         }
         if (binding->host_surface) {

@@ -279,18 +279,24 @@ void Mbx2dHle::enter_graphics_call(
         const auto* state = select_state(call, context_api);
         const auto destination = state ? resolve(state->destination)
                                        : std::nullopt;
-        const auto reader = destination && destination->host_surface
-                                ? destination->host_surface->reader() : nullptr;
-        if (reader && !reader->ready()) {
+        const auto surface = destination ? destination->host_surface : nullptr;
+        auto dependency = surface ? surface->writer() : nullptr;
+        if (dependency && dependency->ready() && !dependency->succeeded()) {
+            call.set_return(mbx_failure);
+            return;
+        }
+        if (!dependency || dependency->ready())
+            dependency = surface ? surface->reader() : nullptr;
+        if (dependency && !dependency->ready()) {
             auto lease = std::make_shared<GraphicsCallLease>();
             lease->owner = call.cpu().processor_id();
             sync_lease_ = lease;
-            call.suspend_until([reader] { return reader->ready(); },
+            call.suspend_until([dependency] { return dependency->ready(); },
                 [this, lease, handler = std::move(handler)](
                     UserlandHleCall& resumed) {
                     lease->consume();
                     enter_graphics_call(resumed, handler);
-                }, reader->sequence());
+                }, dependency->sequence());
             return;
         }
     }

@@ -51,22 +51,28 @@ bool OpenGlesHle::prepare_texture_target(
     const auto* context = current_context(call);
     if (!context)
         return false;
-    const auto await_reader = [&](const std::shared_ptr<HostSurface>& surface) {
-        const auto reader = surface ? surface->reader() : nullptr;
-        if (!reader || reader->ready())
+    const auto await_access = [&](const std::shared_ptr<HostSurface>& surface) {
+        auto dependency = surface ? surface->writer() : nullptr;
+        if (dependency && dependency->ready() && !dependency->succeeded()) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return true;
+        }
+        if (!dependency || dependency->ready())
+            dependency = surface ? surface->reader() : nullptr;
+        if (!dependency || dependency->ready())
             return false;
         const auto lease = program_wait(call);
-        call.suspend_until([reader] { return reader->ready(); },
+        call.suspend_until([dependency] { return dependency->ready(); },
             [this, lease, handler](UserlandHleCall& resumed) {
                 lease->consume();
                 await_graphics_call(resumed, handler);
-            }, reader->sequence());
+            }, dependency->sequence());
         return true;
     };
     if (!context->bound_framebuffer) {
         const auto* pixmap = current_pixmap_surface(call);
         return pixmap && pixmap->backing_identifier &&
-               await_reader(surface_store_->host_surface(
+               await_access(surface_store_->host_surface(
                    *pixmap->backing_identifier));
     }
     const auto framebuffer =
@@ -82,7 +88,7 @@ bool OpenGlesHle::prepare_texture_target(
         return false;
     const auto& image = level->second;
     if (image.surface_id)
-        return await_reader(surface_store_->host_surface(*image.surface_id));
+        return await_access(surface_store_->host_surface(*image.surface_id));
     if (!image.host_surface || !image.native_lifetime)
         return false;
     const auto cpu_clear =
