@@ -114,7 +114,12 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
 
 bool GlesFrameDraw::capacity() const
 {
-    return result_ || gles_host_work_capacity(state_->result_bytes);
+    if (result_)
+        return true;
+    const auto writer = state_->frame.host_surface
+                            ? state_->frame.host_surface->writer() : nullptr;
+    return (!writer || writer->ready()) &&
+           gles_host_work_capacity(state_->result_bytes);
 }
 
 std::shared_ptr<GlesWorkResult> GlesFrameDraw::enqueue(
@@ -124,7 +129,7 @@ std::shared_ptr<GlesWorkResult> GlesFrameDraw::enqueue(
         return result_;
     if (!renderer)
         throw std::invalid_argument { "GLES frame renderer is unavailable" };
-    result_ = enqueue_gles_host_work(state_->result_bytes,
+    auto execute =
         [state = state_, renderer = std::move(renderer)](DisplayFrame& frame) {
             if (state->frame.host_surface) {
                 // This path has no software fallback or CPU output. Publish
@@ -143,7 +148,12 @@ std::shared_ptr<GlesWorkResult> GlesFrameDraw::enqueue(
             return renderer->draw(frame, state->target, state->vertices,
                        state->mode, state->raster) &&
                    renderer->synchronize(frame, state->target);
-        });
+        };
+    result_ = state_->frame.host_surface
+                  ? enqueue_gles_surface_write(
+                        state_->frame.host_surface, std::move(execute))
+                  : enqueue_gles_host_work(
+                        state_->result_bytes, std::move(execute));
     return result_;
 }
 

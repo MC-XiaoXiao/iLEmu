@@ -141,6 +141,13 @@ template <typename Value> struct GlesValueResult {
 [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(
     std::size_t result_bytes, std::function<bool(DisplayFrame&)> execute,
     std::size_t command_bytes = 0);
+// Register the exact writer before publishing its command to the same FIFO.
+// The callback owns native lifetimes and publishes actual pixel generations.
+[[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_gles_surface_write(
+    std::shared_ptr<HostSurface> surface,
+    std::function<bool(DisplayFrame&)> execute);
+// Zero outside host work. This is an execution identity, not GPU completion.
+[[nodiscard]] std::uint64_t gles_executing_work_sequence();
 [[nodiscard]] bool gles_host_work_capacity(
     std::size_t result_bytes, std::size_t command_bytes = 0);
 [[nodiscard]] bool gles_draw_preparation_capacity(std::size_t payload_bytes);

@@ -78,6 +78,7 @@ enum class HostRotation : std::uint8_t {
     Clockwise270,
 };
 
+class GlesWorkCompletion;
 class HostSurface;
 
 class HostSurfacePresentationLease {
@@ -139,6 +140,18 @@ public:
     {
         return descriptor_;
     }
+    // Exact host work dependency, independent of CPU/GPU pixel generations.
+    [[nodiscard]] std::shared_ptr<const GlesWorkCompletion> writer() const;
+    // Queue admission only: no GPU/guest work while this short lock is held.
+    // A previous failed write quarantines the image; a pending write retries.
+    [[nodiscard]] bool begin_write(
+        std::shared_ptr<const GlesWorkCompletion> completion,
+        std::shared_ptr<const GlesWorkCompletion>& previous);
+    void abandon_write(const std::shared_ptr<const GlesWorkCompletion>& completion,
+        std::shared_ptr<const GlesWorkCompletion> previous);
+    // A queued reader ignores writers admitted after its own FIFO position.
+    // Outside that FIFO, zero means all currently accepted writers matter.
+    [[nodiscard]] bool work_succeeded(std::uint64_t through = 0) const;
     [[nodiscard]] std::uint64_t cpu_generation() const;
     [[nodiscard]] std::uint64_t gpu_generation() const;
     [[nodiscard]] bool presentation_leased() const;
@@ -195,6 +208,7 @@ private:
     HostSurfaceDescriptor descriptor_;
     mutable std::mutex mutex_;
     DisplayFrame cpu_frame_;
+    std::shared_ptr<const GlesWorkCompletion> writer_;
     std::uint64_t next_generation_ { 1 };
     std::uint64_t cpu_generation_ { 1 };
     std::uint64_t gpu_generation_ { };

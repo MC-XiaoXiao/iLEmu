@@ -7,6 +7,7 @@
 
 #include "graphics/surface_store.hpp"
 #include "graphics/surface_cpu_readback.hpp"
+#include "graphics/gles_work_completion.hpp"
 
 #include <algorithm>
 
@@ -510,6 +511,10 @@ SurfaceStore::CpuReadResult SurfaceStore::try_read_argb(
         return { };
     std::unique_lock sync_lock { sync->mutex };
     const auto surface = host_surface(id);
+    if (const auto writer = surface ? surface->writer() : nullptr;
+        writer && !writer->succeeded())
+        return { writer->ready() ? CpuReadResult::State::Failed
+                                 : CpuReadResult::State::PendingGpu, { }, 0 };
     if (surface && surface->gpu_generation() > surface->cpu_generation())
         return { CpuReadResult::State::PendingGpu, { }, 0 };
     auto pixels = read_guest_argb(memory, *backing);
@@ -747,6 +752,8 @@ std::optional<bool> SurfaceStore::cpu_sync_required(
     const auto surface = host_surface(id);
     if (!surface)
         return false;
+    if (const auto writer = surface->writer(); writer && !writer->succeeded())
+        return writer->ready() ? std::nullopt : std::optional { true };
     const auto sync_state = shared_sync_state(id);
     if (!sync_state)
         return std::nullopt;
@@ -889,6 +896,12 @@ SurfaceStore::CpuImportResult SurfaceStore::try_synchronize_from_guest(
     if (!backing || (!surface_is_32bit(backing->pixel_format) &&
                         !surface_is_packed_555(backing->pixel_format)))
         return backing ? CpuImportResult::Completed : CpuImportResult::Failed;
+    if (const auto surface = host_surface(id)) {
+        const auto writer = surface->writer();
+        if (writer && !writer->succeeded())
+            return writer->ready() ? CpuImportResult::Failed
+                                   : CpuImportResult::PendingGpu;
+    }
     const auto sync_state = shared_sync_state(id);
     if (!sync_state)
         return CpuImportResult::Failed;

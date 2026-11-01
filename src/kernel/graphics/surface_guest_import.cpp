@@ -118,6 +118,15 @@ try {
         !call.memory().accessible(
             expected.base, expected.allocation_size, MemoryPermission::Read))
         throw std::runtime_error { "guest import backing was replaced" };
+    const auto writer = pending->surface ? pending->surface->writer() : nullptr;
+    if (writer && !writer->ready()) {
+        call.suspend_until([writer] { return writer->ready(); },
+            [pending](UserlandHleCall& resumed) { resume(resumed, pending); },
+            writer->sequence());
+        return;
+    }
+    if (writer && !writer->succeeded())
+        throw std::runtime_error { "guest import writer failed" };
     if (pending->host && pending->host->completion &&
         pending->host->completion->ready()) {
         const auto& read = pending->host->value;

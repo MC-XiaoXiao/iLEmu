@@ -5,6 +5,7 @@
 // Render guest GLES state and shared surfaces through Vulkan.
 
 #include "vulkan_gles_renderer.hpp"
+#include "graphics/gles_program_renderer.hpp"
 #include "vulkan_memory_allocator.hpp"
 #include "vulkan_image_allocation.hpp"
 #include "vulkan_present_timing.hpp"
@@ -2730,6 +2731,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
         PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
     {
+        if (!surface.work_succeeded(gles_executing_work_sequence()))
+            return false;
         return synchronize_impl(snapshot.frame, surface.key(), readback_damage,
             &stamp, &surface, &snapshot, reason);
     }
@@ -4771,6 +4774,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         if (!surface)
             return PresentResult::Failed;
+        if (const auto writer = surface->writer(); writer && !writer->succeeded())
+            return writer->ready() ? PresentResult::Failed : PresentResult::Skipped;
         last_failure_reason_.store(
             PerfFallbackReason::None, std::memory_order_relaxed);
         const auto cpu_generation = surface->cpu_generation();

@@ -24,6 +24,7 @@ namespace {
     constexpr std::size_t payload_limit = 64U * 1024U * 1024U;
 
     std::atomic_uint64_t completion_generation { 1 };
+    thread_local std::uint64_t executing_work_sequence { };
     std::mutex wake_mutex;
     std::condition_variable host_activity;
     std::function<void()> completion_wake;
@@ -170,7 +171,8 @@ namespace {
         }
         std::shared_ptr<GlesWorkResult> submit_host(std::size_t bytes,
             std::function<bool(DisplayFrame&)> execute,
-            std::size_t command_bytes = 0)
+            std::size_t command_bytes = 0,
+            std::shared_ptr<HostSurface> write_target = { })
         {
             if (bytes > payload_limit || command_bytes > payload_limit)
                 throw std::length_error { "GLES result exceeds 64 MiB" };
@@ -187,17 +189,9 @@ namespace {
                 credits->capacity.notify_all();
                 notify_completion();
             };
-            std::unique_lock lock { credits_->mutex };
-            if (stopping_ || credits_->count >= command_limit ||
-                credits_->results >= command_limit ||
-                command_bytes > payload_limit - credits_->bytes ||
-                bytes > payload_limit - credits_->result_bytes)
-                return { };
-            if (next_sequence_ == 0)
-                throw std::overflow_error { "GLES sequence space exhausted" };
-            const auto sequence = next_sequence_;
-            commands_.push_back({ sequence, command_bytes,
-                [result, bytes, execute = std::move(execute)] {
+            Command command { 0, command_bytes,
+                [result, bytes, write_target, execute = std::move(execute)] {
+                    static_cast<void>(write_target);
                     bool success = false;
                     try {
                         success = execute(result->frame);
@@ -209,8 +203,30 @@ namespace {
                         success = false;
                     }
                     result->publish(success);
-                } });
+                } };
+            std::unique_lock lock { credits_->mutex };
+            if (stopping_ || credits_->count >= command_limit ||
+                credits_->results >= command_limit ||
+                command_bytes > payload_limit - credits_->bytes ||
+                bytes > payload_limit - credits_->result_bytes)
+                return { };
+            if (next_sequence_ == 0)
+                throw std::overflow_error { "GLES sequence space exhausted" };
+            const auto sequence = next_sequence_;
             result->assign_sequence(sequence);
+            std::shared_ptr<const GlesWorkCompletion> previous;
+            if (write_target &&
+                !write_target->begin_write(result->completion(), previous))
+                return { };
+            command.sequence = sequence;
+            try {
+                commands_.push_back(std::move(command));
+            } catch (...) {
+                if (write_target)
+                    write_target->abandon_write(
+                        result->completion(), std::move(previous));
+                throw;
+            }
             ++next_sequence_;
             ++credits_->count;
             credits_->bytes += command_bytes;
@@ -310,7 +326,9 @@ namespace {
                 }
                 // packaged_task publishes a value or exception for every
                 // accepted command. No queue lock spans driver/GPU execution.
+                executing_work_sequence = command.sequence;
                 command.execute();
+                executing_work_sequence = 0;
                 command.execute = { };
                 {
                     std::lock_guard lock { credits_->mutex };
@@ -636,6 +654,21 @@ std::shared_ptr<GlesWorkResult> enqueue_gles_host_work(std::size_t bytes,
 {
     return shared_executor()->submit_host(
         bytes, std::move(execute), command_bytes);
+}
+
+std::shared_ptr<GlesWorkResult> enqueue_gles_surface_write(
+    std::shared_ptr<HostSurface> surface,
+    std::function<bool(DisplayFrame&)> execute)
+{
+    if (!surface)
+        throw std::invalid_argument { "missing surface write target" };
+    return shared_executor()->submit_host(
+        0, std::move(execute), 0, std::move(surface));
+}
+
+std::uint64_t gles_executing_work_sequence()
+{
+    return executing_work_sequence;
 }
 
 class GlesProgramWorker::PreparedDraw {

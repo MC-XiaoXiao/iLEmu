@@ -167,6 +167,8 @@ bool GlesRenderer::capture_readback(HostSurface& surface,
     HostSurface::CpuSnapshot& snapshot, ReadbackStamp& stamp,
     PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
 {
+    if (!surface.work_succeeded(gles_executing_work_sequence()))
+        return false;
     snapshot = surface.snapshot_cpu(reason);
     return synchronize(snapshot.frame, surface.key(), readback_damage, &stamp);
 }
@@ -189,7 +191,11 @@ bool GlesRenderer::read_surface(HostSurface& surface, DisplayFrame& output,
         if (!capture_readback(surface, snapshot, stamp, reason, readback_damage))
             return false;
         const auto committed = surface.commit_cpu_readback(snapshot);
-        if (!committed && stamp.renderer == 0)
+        // A CPU-current snapshot is already a captured boundary. A later
+        // admitted writer can prevent publishing its cache without making
+        // those captured pixels stale. GPU-newer unstamped shadows still retry.
+        if (!committed && stamp.renderer == 0 &&
+            snapshot.gpu_generation > snapshot.cpu_generation)
             continue;
         if (committed)
             acknowledge_readback(surface.key(), stamp);

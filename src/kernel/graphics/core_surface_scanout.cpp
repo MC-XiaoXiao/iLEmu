@@ -126,7 +126,8 @@ try {
         if (pixels.empty())
             pixels = std::move(host->value.snapshot.frame.pixels);
     } else {
-        if (last_scanout_publication_ == publication &&
+        if (surface->work_succeeded() &&
+            last_scanout_publication_ == publication &&
             last_scanout_generation_ == generation &&
             last_scanout_gpu_generation_ == gpu_generation)
             return false;

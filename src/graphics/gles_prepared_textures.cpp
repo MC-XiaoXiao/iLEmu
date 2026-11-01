@@ -4,6 +4,7 @@
 
 #include "graphics/gles_prepared_textures.hpp"
 #include "graphics/surface_store.hpp"
+#include "graphics/gles_work_completion.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -72,7 +73,9 @@ GlesPreparedTextures::GlesPreparedTextures(const GlesResourceStore& source,
             const auto generation =
                 std::max(image.host_surface->cpu_generation(),
                     image.host_surface->gpu_generation());
-            if (image.argb.size() ==
+            const auto writer = image.host_surface->writer();
+            if ((!writer || writer->succeeded()) &&
+                image.argb.size() ==
                     static_cast<std::size_t>(image.width) * image.height &&
                 image.argb_generation == generation)
                 continue;
