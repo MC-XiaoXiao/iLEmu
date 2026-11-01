@@ -1095,9 +1095,10 @@ std::shared_ptr<HostSurface> OpenGlesHle::acquire_compatibility_surface(
 }
 
 bool OpenGlesHle::publish_display_surface(UserlandHleCall& call,
-    const std::shared_ptr<HostSurface>& surface,
+    const RenderTargetBinding& binding,
     std::optional<DisplayViewport> drawable_viewport)
 {
+    const auto& surface = binding.host_surface;
     if (!surface || !display_ || !display_write_allowed(call))
         return false;
     const auto descriptor = surface->descriptor();
@@ -1199,6 +1200,18 @@ bool OpenGlesHle::publish_display_surface(UserlandHleCall& call,
         }
         published_surface = std::move(compatibility_surface);
     }
+    const auto lifetime = needs_composition
+                              ? std::shared_ptr<void> { renderer_lifetime_ }
+                          : binding.backing_identifier
+                              ? std::shared_ptr<void> {
+                                    surface_store_->acquire_transport_lease(
+                                        *binding.backing_identifier) }
+                              : resources_.texture(binding.framebuffer_texture)
+                                    ->levels.at(0U).native_lifetime;
+    if (!lifetime)
+        return false;
+    auto presentation =
+        make_host_surface_presentation_lease(published_surface, lifetime);
     auto renderer = renderer_;
     display_->replace_surface(
         published_surface,
@@ -1215,7 +1228,7 @@ bool OpenGlesHle::publish_display_surface(UserlandHleCall& call,
         [published_surface] {
             return std::max(published_surface->cpu_generation(),
                 published_surface->gpu_generation());
-        });
+        }, std::move(presentation));
     return true;
 }
 
@@ -1862,7 +1875,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 return;
             }
             if (!binding ||
-                !publish_display_surface(call, binding->host_surface,
+                !publish_display_surface(call, *binding,
                     renderbuffer.drawable_viewport)) {
                 call.set_return(0U);
                 return;

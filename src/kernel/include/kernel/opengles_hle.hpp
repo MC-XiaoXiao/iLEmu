@@ -317,7 +317,7 @@ private:
     [[nodiscard]] bool commit_render_target(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayFrame frame);
     [[nodiscard]] bool publish_display_surface(UserlandHleCall& call,
-        const std::shared_ptr<HostSurface>& surface,
+        const RenderTargetBinding& binding,
         std::optional<DisplayViewport> drawable_viewport = std::nullopt);
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);

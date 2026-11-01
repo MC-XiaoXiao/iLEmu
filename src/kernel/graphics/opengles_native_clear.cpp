@@ -32,11 +32,18 @@ struct OpenGlesHle::NativeClear {
         bool execute(DisplayFrame& output)
         {
             if (!target) {
-                if (!renderer->synchronize(frame, key))
+                DisplayFrame pixels;
+                if (frame.host_surface) {
+                    if (!renderer->read_surface(*frame.host_surface, pixels))
+                        return false;
+                } else {
+                    pixels = std::move(frame);
+                }
+                if (!renderer->synchronize(pixels, key))
                     return false;
-                clear_gles_frame(frame, color, color_mask, scissor, inverted);
+                clear_gles_frame(pixels, color, color_mask, scissor, inverted);
                 renderer->invalidate(key);
-                output = std::move(frame);
+                output = std::move(pixels);
                 return true;
             }
             const auto encoder = renderer->create_command_encoder();
@@ -100,7 +107,9 @@ try {
             });
         return;
     }
-    auto frame = render_target(call, binding);
+    auto frame = !binding.display_surface && !binding.pixmap_surface && display_
+                     ? std::optional { display_->capture_frame() }
+                     : render_target(call, binding);
     if (!frame)
         throw std::runtime_error { "missing CPU clear frame" };
     auto pending = std::make_shared<NativeClear>();
@@ -194,6 +203,7 @@ try {
                 return;
             }
         }
+        const auto source = work->frame.host_surface;
         auto execute = [work](DisplayFrame& output) {
             return work->execute(output);
         };
@@ -217,6 +227,8 @@ try {
                 });
             return;
         }
+        if (source)
+            source->record_read(pending->result->completion());
         pending->lease->result = pending->result;
     }
     const auto result = pending->result;
