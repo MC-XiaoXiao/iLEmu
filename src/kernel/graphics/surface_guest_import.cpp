@@ -21,6 +21,7 @@ struct SurfaceGuestImport::Pending {
     SurfaceStore::Backing backing;
     AddressSpace::MappingObservation mapping;
     std::shared_ptr<HostSurface> surface;
+    std::shared_ptr<SurfaceTransportLease> transport;
     std::shared_ptr<GlesValueResult<SurfaceCpuReadback>> host;
     Completion completion;
     ReadCompletion read_completion;
@@ -89,6 +90,9 @@ void SurfaceGuestImport::start(UserlandHleCall& call,
         const auto backing = pending->store->find(id);
         if (!backing)
             throw std::runtime_error { "missing guest import backing" };
+        pending->transport = pending->store->acquire_transport_lease(id);
+        if (!pending->transport)
+            throw std::runtime_error { "missing guest import owner" };
         pending->backing = *backing;
         pending->mapping = call.memory().observe_mapping(
             backing->base, backing->allocation_size);
@@ -193,7 +197,12 @@ try {
     const auto host = pending->host;
     if (!host->completion) {
         host->completion = enqueue_gles_host_work(pending->bytes,
-            [host](DisplayFrame&) { return host->value.capture(); });
+            [host, transport = pending->transport](DisplayFrame&) {
+                // The shared object's renderer owner must outlive accepted
+                // work even if exec/exit discards its guest observer/store.
+                static_cast<void>(transport);
+                return host->value.capture();
+            });
         if (!host->completion) {
             call.suspend_until(
                 [bytes = pending->bytes] {

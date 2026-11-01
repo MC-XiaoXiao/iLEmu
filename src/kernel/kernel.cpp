@@ -1648,6 +1648,7 @@ CompatibilityKernel::pending_event_poll_candidates()
     service_completed_file_renames();
     opengles_hle_.service_graphics_completions(!process_.exited);
     mbx2d_hle_.service_graphics_completions();
+    mobile_framebuffer_hle_.service_graphics_completions();
     // Host scanout has no guest HLE observer. Consume its retained completion
     // at the same serial boundary even when no guest thread is runnable.
     if (!process_.exited && core_surface_hle_.default_scanout_ready()) {

@@ -80,7 +80,15 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
     const auto add = [&](std::string symbol,
                          UserlandHleRegistry::Handler handler) {
         registry.register_function(std::string { framebuffer_image },
-            std::move(symbol), std::move(handler));
+            std::move(symbol),
+            [this, handler = std::move(handler)](UserlandHleCall& call) {
+                const auto entry_symbol = call.symbol();
+                if (entry_symbol.starts_with("_IOMobileFramebufferSwap") ||
+                    entry_symbol == "_IOMobileFramebufferWaitSurface")
+                    enter_swap_call(call, handler);
+                else
+                    handler(call);
+            });
     };
     register_device_functions(registry);
     // Observe the firmware callback before it coalesces received notifications.
@@ -144,17 +152,8 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
             performance_counters().record_vsync_swap_end(call.process_id(),
                 call.argument(0),
                 static_cast<std::uint32_t>(call.cpu().processor_id()));
-            static_cast<void>(submit_layers(call));
-            const auto semantic_process_id = record_presentation(call);
-            if (display_) {
-                display_->present(call.process_id());
-                performance_counters().record_vsync_guest_submit(
-                    call.process_id(), call.argument(0));
-                if (frame_presented_handler_)
-                    frame_presented_handler_(call.process_id());
-                if (semantic_process_id && semantic_presentation_handler_)
-                    semantic_presentation_handler_(*semantic_process_id);
-            }
+            submit_layers(call);
+            return;
         }
         call.set_return(iokit_abi::success);
     });
@@ -187,6 +186,8 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
 
 void MobileFramebufferHle::reset()
 {
+    cancel_pending_work();
+    sync_lease_.reset();
     external_framebuffers_.clear();
     layers_.clear();
     layer_surface_leases_.clear();
@@ -202,6 +203,8 @@ void MobileFramebufferHle::reset()
 
 void MobileFramebufferHle::inherit_state(const MobileFramebufferHle& parent)
 {
+    cancel_pending_work();
+    sync_lease_.reset();
     external_framebuffers_ = parent.external_framebuffers_;
     layers_ = parent.layers_;
     layer_surface_leases_ = parent.layer_surface_leases_;
@@ -516,9 +519,12 @@ MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         // Page-granular guest dirtiness cannot be merged safely into a surface
         // whose complete contents are newer on the GPU. CPU-owned layers still
         // need their direct mapped writes imported before presentation.
+        if (source && !source->work_succeeded())
+            return SubmissionResult::Failed;
         if (source && source->gpu_generation() <= source->cpu_generation() &&
-            !surface_store_->synchronize_from_guest(
-                call.memory(), effective_state.surface_id)) {
+            surface_store_->try_synchronize_from_guest(
+                call.memory(), effective_state.surface_id) !=
+                SurfaceStore::CpuImportResult::Completed) {
             return SubmissionResult::Failed;
         }
         const auto source_rectangle = exact_rectangle(effective_state.source);
@@ -863,150 +869,6 @@ void MobileFramebufferHle::set_layer(UserlandHleCall& call)
                    call.argument(mobile_framebuffer_abi::flags_argument) });
     layer_surface_leases_.insert_or_assign(layer, surface_lease);
     call.set_return(iokit_abi::success);
-}
-
-MobileFramebufferHle::SubmissionResult
-MobileFramebufferHle::submit_layers(UserlandHleCall& call)
-{
-    if (display_ == nullptr)
-        return SubmissionResult::Failed;
-    const auto host_submission = submit_host_layers(call);
-    if (host_submission != SubmissionResult::Failed)
-        return host_submission;
-    scanout_contents_valid_ = false;
-    submitted_layers_.clear();
-    const auto geometry = display_->geometry();
-    std::vector<std::uint32_t> composed(
-        geometry.pixel_count(), background_argb_);
-    const auto blend_channel = [](std::uint32_t source,
-                                   std::uint32_t destination,
-                                   std::uint32_t inverse_alpha) {
-        return std::min(
-            255U, source + (destination * inverse_alpha + 127U) / 255U);
-    };
-    for (const auto& [layer, state] : layers_) {
-        static_cast<void>(layer);
-        const auto backing = surface_store_->find(state.surface_id);
-        if (backing && !application_surface_allowed(
-                           backing->provenance.producer_process_id,
-                           backing->provenance.publication_sequence)) {
-            continue;
-        }
-        auto effective_state = state;
-        if (backing) {
-            apply_application_display(effective_state,
-                backing->provenance.producer_process_id, backing->width,
-                backing->height);
-        }
-        const auto source_surface =
-            surface_store_->host_surface(effective_state.surface_id);
-        if (source_surface)
-            source_surface->mark_scanout_presentation();
-        auto source_pixels =
-            surface_store_->read_argb(call.memory(), effective_state.surface_id);
-        if (!backing || !source_pixels || backing->width == 0 ||
-            backing->height == 0) {
-            continue;
-        }
-        const auto clipped_edge = [](double value, std::uint32_t maximum) {
-            return static_cast<int>(std::clamp(
-                std::floor(value + 0.5), 0.0, static_cast<double>(maximum)));
-        };
-        const auto destination_left =
-            clipped_edge(effective_state.destination.x, geometry.width);
-        const auto destination_top =
-            clipped_edge(effective_state.destination.y, geometry.height);
-        const auto destination_right = clipped_edge(
-            static_cast<double>(effective_state.destination.x) +
-                effective_state.destination.width,
-            geometry.width);
-        const auto destination_bottom = clipped_edge(
-            static_cast<double>(effective_state.destination.y) +
-                effective_state.destination.height,
-            geometry.height);
-        if (destination_right <= destination_left ||
-            destination_bottom <= destination_top) {
-            continue;
-        }
-        const auto full_surface_copy =
-            destination_left == 0 && destination_top == 0 &&
-            destination_right == static_cast<int>(geometry.width) &&
-            destination_bottom == static_cast<int>(geometry.height) &&
-            effective_state.destination.x == 0.0F &&
-            effective_state.destination.y == 0.0F &&
-            effective_state.destination.width ==
-                static_cast<float>(geometry.width) &&
-            effective_state.destination.height ==
-                static_cast<float>(geometry.height) &&
-            effective_state.source.x == 0.0F &&
-            effective_state.source.y == 0.0F &&
-            effective_state.source.width == static_cast<float>(backing->width) &&
-            effective_state.source.height ==
-                static_cast<float>(backing->height) &&
-            backing->width == geometry.width &&
-            backing->height == geometry.height &&
-            std::all_of(source_pixels->begin(), source_pixels->end(),
-                [](std::uint32_t pixel) { return (pixel >> 24U) == 255U; });
-        if (full_surface_copy) {
-            composed = std::move(*source_pixels);
-            continue;
-        }
-        std::vector<std::uint32_t> source_columns(
-            static_cast<std::size_t>(destination_right - destination_left));
-        for (auto x = destination_left; x < destination_right; ++x) {
-            const auto horizontal =
-                (static_cast<float>(x) + 0.5F - effective_state.destination.x) /
-                effective_state.destination.width;
-            source_columns[static_cast<std::size_t>(x - destination_left)] =
-                static_cast<std::uint32_t>(
-                    std::floor(std::clamp(
-                        static_cast<double>(effective_state.source.x) +
-                            horizontal * effective_state.source.width,
-                        0.0, static_cast<double>(backing->width - 1U))));
-        }
-        for (auto y = destination_top; y < destination_bottom; ++y) {
-            const auto vertical =
-                (static_cast<float>(y) + 0.5F - effective_state.destination.y) /
-                effective_state.destination.height;
-            const auto source_y = static_cast<std::uint32_t>(
-                std::floor(std::clamp(
-                    static_cast<double>(effective_state.source.y) +
-                        vertical * effective_state.source.height,
-                    0.0, static_cast<double>(backing->height - 1U))));
-            for (auto x = destination_left; x < destination_right; ++x) {
-                const auto source_x = source_columns[static_cast<std::size_t>(
-                    x - destination_left)];
-                const auto source_pixel =
-                    (*source_pixels)[static_cast<std::size_t>(source_y) *
-                                         backing->width +
-                                     static_cast<std::size_t>(source_x)];
-                auto& destination_pixel =
-                    composed[static_cast<std::size_t>(y) * geometry.width +
-                             static_cast<std::size_t>(x)];
-                const auto alpha = source_pixel >> 24U;
-                if (alpha == 255U) {
-                    destination_pixel = source_pixel;
-                    continue;
-                }
-                const auto inverse_alpha = 255U - alpha;
-                const auto output_alpha = blend_channel(
-                    alpha, destination_pixel >> 24U, inverse_alpha);
-                const auto output_red =
-                    blend_channel((source_pixel >> 16U) & 0xffU,
-                        (destination_pixel >> 16U) & 0xffU, inverse_alpha);
-                const auto output_green =
-                    blend_channel((source_pixel >> 8U) & 0xffU,
-                        (destination_pixel >> 8U) & 0xffU, inverse_alpha);
-                const auto output_blue = blend_channel(source_pixel & 0xffU,
-                    destination_pixel & 0xffU, inverse_alpha);
-                destination_pixel = (output_alpha << 24U) |
-                                    (output_red << 16U) | (output_green << 8U) |
-                                    output_blue;
-            }
-        }
-    }
-    display_->replace_pixels(std::move(composed), call.process_id());
-    return SubmissionResult::Submitted;
 }
 
 std::optional<std::uint32_t> MobileFramebufferHle::record_presentation(

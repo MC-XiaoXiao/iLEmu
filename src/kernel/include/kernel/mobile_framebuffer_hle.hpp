@@ -29,6 +29,7 @@ class SurfaceTransportLease;
 class UserlandHleCall;
 class UserlandHleRegistry;
 class SurfaceStore;
+struct GraphicsCallLease;
 
 class MobileFramebufferHle {
 public:
@@ -38,6 +39,9 @@ public:
         std::shared_ptr<PresentationTracker> presentations = { });
 
     void reset();
+    void service_graphics_completions();
+    void cancel_pending_work();
+    void retire_thread(std::size_t processor);
     void inherit_state(const MobileFramebufferHle& parent);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
@@ -63,7 +67,14 @@ private:
     [[nodiscard]] bool is_external_framebuffer(UserlandHleCall& call) const;
     void set_background_color(UserlandHleCall& call);
     void set_layer(UserlandHleCall& call);
-    [[nodiscard]] SubmissionResult submit_layers(UserlandHleCall& call);
+    struct SoftwareSubmission;
+    void enter_swap_call(UserlandHleCall& call,
+        std::function<void(UserlandHleCall&)> handler);
+    void submit_layers(UserlandHleCall& call);
+    void await_software_layers(UserlandHleCall& call,
+        std::shared_ptr<SoftwareSubmission> pending);
+    void finish_swap(UserlandHleCall& call,
+        const std::shared_ptr<GraphicsCallLease>& lease, bool succeeded);
     [[nodiscard]] std::optional<std::uint32_t> record_presentation(
         UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
@@ -98,6 +109,7 @@ private:
         HostSurfaceKey surface_key;
         std::uint64_t generation { };
     };
+    std::shared_ptr<GraphicsCallLease> sync_lease_;
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<SurfaceStore> surface_store_;
     std::shared_ptr<PresentationTracker> presentation_tracker_;
