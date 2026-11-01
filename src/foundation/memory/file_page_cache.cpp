@@ -1743,6 +1743,8 @@ bool GuestPageBacking::flush_file()
         written += static_cast<std::size_t>(result);
     }
     const bool complete = written == file_byte_count_;
+    if (written && file->object_identity)
+        file->object_identity->writeback_revision.fetch_add(1, std::memory_order_release);
     if (complete) {
         if (const auto registry = file->generation_registry.lock()) {
             static_cast<void>(registry->publish_descriptor(file->path,
@@ -2327,6 +2329,30 @@ FilePageCache::load_pages(const std::filesystem::path& path,
         result.push_back(load_page(*mapping, offset, byte_count));
     }
     return result;
+}
+
+std::shared_ptr<const GuestFileIoState> FilePageCache::retain_file_object(int descriptor)
+{
+    struct stat status { };
+    if (::fstat(descriptor, &status) != 0)
+        return {};
+    const std::scoped_lock lock { mutex_ };
+    auto& owner = file_objects_[{ static_cast<std::uint64_t>(status.st_dev),
+        static_cast<std::uint64_t>(status.st_ino) }];
+    if (auto existing = owner.lock())
+        return existing;
+    auto identity = std::make_shared<GuestFileIoState>();
+    do {
+        identity->file_descriptor = ::fcntl(descriptor, F_DUPFD_CLOEXEC, 0);
+    } while (identity->file_descriptor < 0 && errno == EINTR);
+    if (identity->file_descriptor < 0)
+        return {};
+    owner = identity;
+    if (++file_object_insertions_since_prune_ >= 64U) {
+        std::erase_if(file_objects_, [](const auto& entry) { return entry.second.expired(); });
+        file_object_insertions_since_prune_ = 0;
+    }
+    return identity;
 }
 
 std::size_t FilePageCache::reflect_descriptor_write(int file_descriptor,

@@ -234,6 +234,9 @@ struct GuestFileIoState {
 
     mutable std::mutex mutex;
     int file_descriptor { -1 };
+    // Shared by every generation of a live vnode. Descriptor writes retain
+    // this owner while asynchronous host I/O races VM mapping writeback.
+    mutable std::atomic<std::uint64_t> writeback_revision { 0 };
     // A shared-file mapping keeps this descriptor open so writeback remains
     // attached to the original vnode/file object after pathname replacement.
     mutable std::map<std::uint64_t, GuestPageBytes> prefetched_pages;
@@ -546,6 +549,7 @@ public:
 
     // Host descriptor writes bypass GuestPageBacking. Reflect their completed
     // byte range into every live MAP_SHARED page for the same file object.
+    [[nodiscard]] std::shared_ptr<const GuestFileIoState> retain_file_object(int descriptor);
     [[nodiscard]] std::size_t reflect_descriptor_write(int file_descriptor,
         std::uint64_t file_offset, std::span<const std::byte> bytes);
 

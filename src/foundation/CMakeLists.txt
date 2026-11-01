@@ -48,6 +48,7 @@ add_library(ilemu_foundation STATIC
     host_resource_controller.cpp
     host_memory.cpp
     host_file_mapping.cpp
+    host_file_io.cpp
     host_file_sync.cpp
     host_file_watcher.cpp
     jit_artifact.cpp
