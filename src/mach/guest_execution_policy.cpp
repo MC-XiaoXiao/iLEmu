@@ -68,11 +68,11 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
             scheduling_info->scheduled_priority);
     if (equal_or_higher_competitors != 0U) {
         // Complete one round of equal-priority host cooperation inside one
-        // response period. As contention grows, each share converges on the
-        // established low-latency initial budget.
+        // response period. The normal initial slice is not a minimum share:
+        // multiplying it by a busy run queue would exceed the whole period.
         const auto contender_count = equal_or_higher_competitors + 1U;
         policy_cap = std::min(policy_cap,
-            std::max(initial_budget_,
+            std::max(minimum_budget_,
                 response_period_ / static_cast<std::chrono::nanoseconds::rep>(
                                        contender_count)));
     }
@@ -81,7 +81,7 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
         // A client preference can temporarily select below the XNU queue head.
         // Return quickly so the higher-priority guest thread can win the next
         // ordinary scheduler selection.
-        policy_cap = initial_budget_;
+        policy_cap = std::min(policy_cap, initial_budget_);
     }
     if (request.latency_sensitive)
         policy_cap = std::min(policy_cap, latency_budget_);
