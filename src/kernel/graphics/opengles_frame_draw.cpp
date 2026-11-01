@@ -62,7 +62,7 @@ try {
     }
     auto host = GlesFrameDraw::prepare(
         frame, binding.key, vertices, mode, raster, *surface_store_, bytes,
-        std::move(native_lifetime));
+        binding.host_surface != nullptr, std::move(native_lifetime));
     if (!host) {
         // No command or snapshot was accepted. Only scalar ABI is retained;
         // preparation may restart after capacity returns and store dependencies

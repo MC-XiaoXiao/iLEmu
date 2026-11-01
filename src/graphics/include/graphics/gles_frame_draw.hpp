@@ -27,7 +27,7 @@ public:
         const DisplayFrame& frame, HostSurfaceKey target,
         std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
         const GlesRasterState& raster, const SurfaceStore& surfaces,
-        std::size_t& bytes,
+        std::size_t& bytes, bool native_target,
         std::shared_ptr<void> native_lifetime = { });
     [[nodiscard]] bool capacity() const;
     // Retry returns the accepted ticket, never another draw submission.

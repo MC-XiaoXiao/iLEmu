@@ -1392,15 +1392,12 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         });
         return;
     }
-    // Capture a CPU-owned display without invoking its optional GPU reader.
-    // Live native inputs retain the established path until writer ordering is
-    // represented for every shared-surface consumer.
+    // Fixed-pipeline display inputs carry owned pixels or a native content
+    // lease. GlesFrameDraw reads native input on the worker before drawing.
     const auto capture_display = !program_draw && !binding->host_surface &&
                                  !binding->display_surface && display_;
     auto target = capture_display ? std::optional { display_->capture_frame() }
                                  : render_target(call, *binding);
-    if (capture_display && target && target->host_surface)
-        target = render_target(call, *binding);
     if (!target) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;

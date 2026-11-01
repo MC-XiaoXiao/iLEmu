@@ -30,6 +30,8 @@ struct GlesFrameDraw::State {
     // Credit outlives every owned input container.
     std::shared_ptr<void> credit;
     std::shared_ptr<void> native_lifetime;
+    std::shared_ptr<HostSurface> source;
+    std::shared_ptr<HostSurfacePresentationLease> source_lease;
     DisplayFrame frame;
     HostSurfaceKey target;
     std::vector<GlesRasterVertex> vertices;
@@ -57,12 +59,14 @@ bool GlesFrameDraw::can_snapshot(const DisplayFrame& frame)
 std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     HostSurfaceKey target, std::span<const GlesRasterVertex> vertices,
     std::uint32_t mode, const GlesRasterState& raster,
-    const SurfaceStore& surfaces, std::size_t& bytes,
+    const SurfaceStore& surfaces, std::size_t& bytes, bool native_target,
     std::shared_ptr<void> native_lifetime)
 {
     if (!can_snapshot(frame) ||
-        (frame.host_surface &&
-            (!native_lifetime || frame.host_surface->key() != target)))
+        (native_target &&
+            (!frame.host_surface || !native_lifetime ||
+                frame.host_surface->key() != target)) ||
+        (!native_target && frame.host_surface && !frame.presentation_lease))
         throw std::invalid_argument {
             "GLES draw requires live surface ordering"
         };
@@ -72,7 +76,11 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
             throw std::length_error { "GLES frame draw exceeds 64 MiB" };
         bytes += size * count;
     };
-    add(sizeof(std::uint32_t), frame.pixels.size());
+    const auto pixels = frame.host_surface && !native_target
+                            ? static_cast<std::uint64_t>(frame.width) *
+                                  frame.height
+                            : frame.pixels.size();
+    add(sizeof(std::uint32_t), pixels);
     add(sizeof(GlesRasterVertex), vertices.size());
     const auto names = textures(raster);
     // Input image ownership and reader ordering are independent of whether
@@ -103,10 +111,14 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     state->credit = std::move(credit);
     state->native_lifetime = std::move(native_lifetime);
     state->transports.reserve(transports);
-    // No reader, presentation lease or guest-owned view crosses the queue.
-    // A native image retains its private owner or shared transport instead.
+    // No reader callback or guest-owned view crosses the queue. Native
+    // Destinations retain their owner; display input retains its content lease.
     state->frame = DisplayFrame { frame.width, frame.height, 0, frame.pixels,
-        frame.host_surface };
+        native_target ? frame.host_surface : nullptr };
+    if (!native_target) {
+        state->source = frame.host_surface;
+        state->source_lease = frame.presentation_lease;
+    }
     state->target = target;
     state->vertices.assign(vertices.begin(), vertices.end());
     if (raster.resources) {
@@ -138,7 +150,7 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     state->raster = raster;
     state->raster.resources = &state->textures;
     state->mode = mode;
-    state->result_bytes = frame.pixels.size() * sizeof(std::uint32_t);
+    state->result_bytes = native_target ? 0U : pixels * sizeof(std::uint32_t);
     return std::shared_ptr<GlesFrameDraw> { new GlesFrameDraw {
         std::move(state) } };
 }
@@ -174,7 +186,12 @@ std::shared_ptr<GlesWorkResult> GlesFrameDraw::enqueue(
                 static_cast<void>(state->frame.host_surface->mark_gpu_write());
                 return true;
             }
-            frame = std::move(state->frame);
+            if (state->source) {
+                if (!renderer->read_surface(*state->source, frame))
+                    return false;
+            } else {
+                frame = std::move(state->frame);
+            }
             renderer->invalidate(state->target);
             return renderer->draw(frame, state->target, state->vertices,
                        state->mode, state->raster) &&
@@ -186,6 +203,8 @@ std::shared_ptr<GlesWorkResult> GlesFrameDraw::enqueue(
                   : enqueue_gles_host_work(
                         state_->result_bytes, std::move(execute));
     if (result_) {
+        if (state_->source)
+            state_->source->record_read(result_->completion());
         // All guest publication is serial on the core. No later producer can
         // enter between acceptance and this registration. One FIFO executes
         // every accepted reader, so the newest ready reader covers earlier ones.
