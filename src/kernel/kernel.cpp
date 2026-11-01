@@ -191,17 +191,46 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     std::filesystem::path rootfs, DeviceModel device,
     std::optional<bool> activated, LockdownCapabilities lockdown_capabilities,
     std::optional<DarwinConfiguration> configuration)
+    : CompatibilityKernel { memory, output, std::move(rootfs),
+        std::move(device), activated, lockdown_capabilities,
+        std::move(configuration), nullptr }
+{
+}
+
+CompatibilityKernel::CompatibilityKernel(AddressSpace& memory,
+    const CompatibilityKernel& parent, std::optional<bool> activated,
+    LockdownCapabilities lockdown_capabilities)
+    : CompatibilityKernel { memory, parent.output_, parent.rootfs_,
+        parent.device_model_, activated, lockdown_capabilities, std::nullopt,
+        &parent }
+{
+}
+
+CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
+    std::filesystem::path rootfs, DeviceModel device,
+    std::optional<bool> activated, LockdownCapabilities lockdown_capabilities,
+    std::optional<DarwinConfiguration> configuration,
+    const CompatibilityKernel* parent)
     : memory_ { memory }
     , output_ { output }
     , rootfs_ { std::move(rootfs) }
     , device_model_ { device }
-    , hfs_volumes_ { rootfs_, device_model_.memory.storage_bytes }
+    , hfs_volumes_ { parent ? parent->hfs_volumes_
+                            : hfs::VolumeLayout { rootfs_,
+                                  device_model_.memory.storage_bytes } }
     , hfs_metadata_ { rootfs_ }
-    , display_state_ { std::make_shared<DisplayState>(
-          device_model_.screen.panel,
-          std::chrono::nanoseconds {
-              iokit_abi::display_vsync::period_absolute_time }) }
-    , audio_service_ { std::make_shared<AudioService>(rootfs_) }
+    , display_state_ { parent ? parent->display_state_
+                              : std::make_shared<DisplayState>(
+                                    device_model_.screen.panel,
+                                    std::chrono::nanoseconds {
+                                        iokit_abi::display_vsync::
+                                            period_absolute_time }) }
+    , wifi_state_ { parent ? parent->wifi_state_
+                           : std::make_shared<WifiState>() }
+    , audio_service_ { parent ? parent->audio_service_
+                              : std::make_shared<AudioService>(rootfs_) }
+    , ringer_switch_state_ { parent ? parent->ringer_switch_state_
+                                    : std::make_shared<RingerSwitchState>() }
     , userland_hle_ { memory_, output_ }
     , hid_event_system_hle_ { userland_hle_ }
     , iokit_method_hle_ { userland_hle_ }
@@ -214,6 +243,10 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         [this](const WifiSnapshot& before, const WifiSnapshot& after) {
             apply_wifi_transition(before, after);
         } }
+    , presentation_tracker_ { parent ? parent->presentation_tracker_
+                                     : std::make_shared<PresentationTracker>() }
+    , scene_coordinator_ { parent ? parent->scene_coordinator_
+                                  : std::make_shared<SceneCoordinator>() }
     , core_surface_hle_ { userland_hle_, display_state_, surface_store_,
         presentation_tracker_ }
     , opengles_hle_ { userland_hle_, display_state_, surface_store_ }
@@ -222,6 +255,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , mobile_framebuffer_hle_ { userland_hle_, display_state_, surface_store_,
         presentation_tracker_ }
     , shared_state_ { [&] {
+        if (parent)
+            return parent->shared_state_;
         if (!configuration)
             configuration = resolve_darwin_configuration(rootfs_);
         return std::make_shared<KernelSharedState>(configuration->version,
@@ -242,113 +277,128 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         shared_state_->guest_file_generation_registry);
     opengles_hle_.set_guest_capabilities(
         open_gles_capabilities_for_device(device_model_.screen.accelerator));
-    display_state_->set_orientation_resolver(
-        [state = shared_state_, scenes = scene_coordinator_](
-            std::uint32_t owner_process_id) {
-            // A system compositor can publish a frame while an active client is
-            // still visible (for example, a keyboard or volume HUD over a
-            // landscape App). In that state the compositor's portrait process
-            // is not the orientation owner of the pixels. During Home the
-            // client is Exiting instead, so SpringBoard's portrait frame must
-            // win. Keep the process owner as the default and use the active
-            // client only for system-owned overlay publishes.
-            const auto foreground_scene = scenes->foreground_client_scene();
-            const auto active_scene = scenes->active_client_scene();
-            std::lock_guard lock { state->mach_mutex };
-            const auto owner = state->processes.find(owner_process_id);
-            const auto owner_is_application =
-                owner != state->processes.end() &&
-                is_application_executable_path(owner->second.executable_path);
-            if (!owner_is_application && active_scene &&
-                active_scene->state == ClientSceneState::Active) {
-                if (const auto client =
-                        state->processes.find(active_scene->client_process_id);
-                    client != state->processes.end()) {
-                    return client->second.display_orientation;
+    if (!parent) {
+        display_state_->set_orientation_resolver(
+            [state = shared_state_, scenes = scene_coordinator_](
+                std::uint32_t owner_process_id) {
+                // A system compositor can publish a frame while an active
+                // client is still visible (for example, a keyboard or volume
+                // HUD over a landscape App). In that state the compositor's
+                // portrait process is not the orientation owner of the pixels.
+                // During Home the client is Exiting instead, so SpringBoard's
+                // portrait frame must win. Keep the process owner as the
+                // default and use the active client only for system-owned
+                // overlay publishes.
+                const auto foreground_scene = scenes->foreground_client_scene();
+                const auto active_scene = scenes->active_client_scene();
+                std::lock_guard lock { state->mach_mutex };
+                const auto owner = state->processes.find(owner_process_id);
+                const auto owner_is_application =
+                    owner != state->processes.end() &&
+                    is_application_executable_path(
+                        owner->second.executable_path);
+                if (!owner_is_application && active_scene &&
+                    active_scene->state == ClientSceneState::Active) {
+                    if (const auto client = state->processes.find(
+                            active_scene->client_process_id);
+                        client != state->processes.end()) {
+                        return client->second.display_orientation;
+                    }
                 }
-            }
-            if (owner != state->processes.end()) {
-                return owner->second.display_orientation;
-            }
-            if (foreground_scene) {
-                if (const auto process = state->processes.find(
-                        foreground_scene->client_process_id);
-                    process != state->processes.end()) {
-                    return process->second.display_orientation;
+                if (owner != state->processes.end()) {
+                    return owner->second.display_orientation;
                 }
-            }
-            return DisplayOrientation::Portrait;
-        });
+                if (foreground_scene) {
+                    if (const auto process = state->processes.find(
+                            foreground_scene->client_process_id);
+                        process != state->processes.end()) {
+                        return process->second.display_orientation;
+                    }
+                }
+                return DisplayOrientation::Portrait;
+            });
+    }
     apple80211_hle_.set_event_injection_handler(
         [this](std::uint32_t descriptor, std::uint32_t event) {
             inject_wifi_driver_event(descriptor, event);
         });
-    auto resolved = std::move(*configuration);
-    shared_state_->display_console.configure(resolved.version);
-    shared_state_->darwin_kernel_identity = std::move(resolved.identity);
-    configure_darwin_notify_state();
-    shared_state_->device_product_type = device_model_.identity.product_type;
-    shared_state_->device_board_config = device_model_.identity.board_config;
-    shared_state_->device_hardware_model =
-        device_model_.identity.hardware_model();
-    shared_state_->device_model_number = device_model_.identity.model_number;
-    shared_state_->device_ram_bytes = device_model_.memory.ram_bytes;
-    shared_state_->graphics_services_capability_memory =
-        make_graphics_services_capability_memory(rootfs_, device_model_);
-    shared_state_->device_cpu_type = arm_mach_cpu_type;
-    shared_state_->graphics_accelerator = device_model_.screen.accelerator;
-    shared_state_->audio_hardware_profile = device_model_.audio;
-    shared_state_->graphics_driver_bundle =
-        device_model_.screen.resolve_driver_bundle(rootfs_);
-    shared_state_->framebuffer_service_class =
-        (resolved.version >= DarwinGeneration::Ios7)
-            ? "AppleCLCD"
-            : std::string { device_model_.screen.framebuffer_service_class };
-    shared_state_->external_framebuffer =
-        device_model_.screen.external_framebuffer;
-    shared_state_->ambient_light_sensor = device_model_.ambient_light_sensor;
-    shared_state_->apple_key_store_available =
-        device_model_.keybag.apple_key_store_available;
-    shared_state_->effaceable_storage_available =
-        device_model_.keybag.effaceable_storage_available;
-    shared_state_->virtual_effaceable_storage_available =
-        device_model_.keybag.virtual_effaceable_storage_available;
-    shared_state_->effaceable_storage_blob =
-        device_model_.keybag.virtual_effaceable_storage_blob;
-    shared_state_->device_cpu_subtype =
-        mach_cpu_subtype_for_model(device_model_.processor.model);
-    const auto virtual_baseband =
-        device_model_.baseband.transport == BasebandTransport::Virtual;
-    const auto offline_baseband =
-        device_model_.baseband.transport == BasebandTransport::Offline;
-    const auto baseband_device_available =
-        virtual_baseband || device_model_.baseband.device_available;
-    // Keep the registry/CoreTelephony surface present in Offline mode so stock
-    // clients can settle on the normal Offline state. Offline still exposes a
-    // fixed mux control endpoint for the daemon's setup ABI, but it only
-    // records logical channels; it has no modem input and no host-bound output.
-    shared_state_->baseband_device_state.set_available(
-        baseband_device_available);
-    shared_state_->baseband_device_state.set_transmit_queue_writable(
-        baseband_device_available);
-    shared_state_->baseband_device_state.set_dynamic_channels_available(
-        virtual_baseband || (offline_baseband && baseband_device_available));
-    shared_state_->baseband_device_state.set_mux_channel_capacity(
-        offline_baseband && baseband_device_available
-            ? bsd::baseband_device::offline_mux_channel_capacity
-            : 0U);
-    shared_state_->baseband_device_state.set_offline_control_enabled(
-        offline_baseband);
-    shared_state_->mounts.clear();
-    // fstab describes available volumes, not already mounted filesystems.
-    // The kernel boots from root; userland checks and mounts data afterwards.
-    const auto& root_volume = hfs_volumes_.for_guest_path("/");
-    shared_state_->mounts.push_back({ "hfs", root_volume.mount_point,
-        root_volume.mounted_device, root_volume.mount_flags });
-    device_model_.screen.panel = display_state_->geometry();
-    shared_state_->display_geometry = device_model_.screen.panel;
-    shared_state_->user_interface_geometry =
-        device_model_.screen.user_interface;
+    if (!parent) {
+        auto resolved = std::move(*configuration);
+        shared_state_->display_console.configure(resolved.version);
+        shared_state_->darwin_kernel_identity = std::move(resolved.identity);
+        configure_darwin_notify_state();
+        shared_state_->device_product_type =
+            device_model_.identity.product_type;
+        shared_state_->device_board_config =
+            device_model_.identity.board_config;
+        shared_state_->device_hardware_model =
+            device_model_.identity.hardware_model();
+        shared_state_->device_model_number =
+            device_model_.identity.model_number;
+        shared_state_->device_ram_bytes = device_model_.memory.ram_bytes;
+        shared_state_->graphics_services_capability_memory =
+            make_graphics_services_capability_memory(rootfs_, device_model_);
+        shared_state_->device_cpu_type = arm_mach_cpu_type;
+        shared_state_->graphics_accelerator = device_model_.screen.accelerator;
+        shared_state_->audio_hardware_profile = device_model_.audio;
+        shared_state_->graphics_driver_bundle =
+            device_model_.screen.resolve_driver_bundle(rootfs_);
+        shared_state_->framebuffer_service_class =
+            (resolved.version >= DarwinGeneration::Ios7)
+                ? "AppleCLCD"
+                : std::string {
+                      device_model_.screen.framebuffer_service_class
+                  };
+        shared_state_->external_framebuffer =
+            device_model_.screen.external_framebuffer;
+        shared_state_->ambient_light_sensor =
+            device_model_.ambient_light_sensor;
+        shared_state_->apple_key_store_available =
+            device_model_.keybag.apple_key_store_available;
+        shared_state_->effaceable_storage_available =
+            device_model_.keybag.effaceable_storage_available;
+        shared_state_->virtual_effaceable_storage_available =
+            device_model_.keybag.virtual_effaceable_storage_available;
+        shared_state_->effaceable_storage_blob =
+            device_model_.keybag.virtual_effaceable_storage_blob;
+        shared_state_->device_cpu_subtype =
+            mach_cpu_subtype_for_model(device_model_.processor.model);
+        const auto virtual_baseband =
+            device_model_.baseband.transport == BasebandTransport::Virtual;
+        const auto offline_baseband =
+            device_model_.baseband.transport == BasebandTransport::Offline;
+        const auto baseband_device_available =
+            virtual_baseband || device_model_.baseband.device_available;
+        // Keep the registry/CoreTelephony surface present in Offline mode so
+        // stock clients can settle on the normal Offline state. Offline still
+        // exposes a fixed mux control endpoint for the daemon's setup ABI, but
+        // it only records logical channels; it has no modem input and no
+        // host-bound output.
+        shared_state_->baseband_device_state.set_available(
+            baseband_device_available);
+        shared_state_->baseband_device_state.set_transmit_queue_writable(
+            baseband_device_available);
+        shared_state_->baseband_device_state.set_dynamic_channels_available(
+            virtual_baseband ||
+            (offline_baseband && baseband_device_available));
+        shared_state_->baseband_device_state.set_mux_channel_capacity(
+            offline_baseband && baseband_device_available
+                ? bsd::baseband_device::offline_mux_channel_capacity
+                : 0U);
+        shared_state_->baseband_device_state.set_offline_control_enabled(
+            offline_baseband);
+        shared_state_->mounts.clear();
+        // fstab describes available volumes, not already mounted filesystems.
+        // The kernel boots from root; userland checks and mounts data
+        // afterwards.
+        const auto& root_volume = hfs_volumes_.for_guest_path("/");
+        shared_state_->mounts.push_back({ "hfs", root_volume.mount_point,
+            root_volume.mounted_device, root_volume.mount_flags });
+        device_model_.screen.panel = display_state_->geometry();
+        shared_state_->display_geometry = device_model_.screen.panel;
+        shared_state_->user_interface_geometry =
+            device_model_.screen.user_interface;
+    }
     hid_event_system_hle_.set_shared_state(shared_state_);
     core_surface_hle_.set_shared_state(shared_state_);
     core_surface_hle_.set_scene_coordinator(scene_coordinator_);
@@ -443,26 +493,29 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
                 scene_coordinator_.get(), 0U);
         });
     thread_ports_.emplace(0, process_.thread_port);
-    if (!mach_task_identity::initialize_root(*shared_state_, process_)) {
-        throw std::runtime_error {
-            "failed to initialize root Mach task identity"
-        };
+    if (!parent) {
+        if (!mach_task_identity::initialize_root(*shared_state_, process_)) {
+            throw std::runtime_error {
+                "failed to initialize root Mach task identity"
+            };
+        }
+        shared_state_->processes[process_.pid] =
+            KernelSharedState::ProcessRecord { process_.parent_pid,
+                process_.membership, process_.uid, process_.effective_uid,
+                process_.gid, process_.effective_gid, process_.groups,
+                process_.nice_value, process_.exit_status,
+                process_.termination_signal, process_.exited, false, false, { },
+                "launchd", "/sbin/launchd", { "/sbin/launchd" },
+                { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
+                    "SHELL=/bin/sh" },
+                KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, 0U, { },
+                { }, DisplayOrientation::Portrait, { }, 0U };
+        shared_state_->processes[process_.pid].memory_status =
+            darwin::memorystatus::initial_state(shared_state_->darwin_version);
+        shared_state_->processes[process_.pid].syscall_counters =
+            task_syscalls_;
+        shared_state_->processes[process_.pid].vm_events = task_vm_events_;
     }
-    shared_state_->processes[process_.pid] =
-        KernelSharedState::ProcessRecord { process_.parent_pid,
-            process_.membership, process_.uid, process_.effective_uid,
-            process_.gid, process_.effective_gid, process_.groups, process_.nice_value,
-            process_.exit_status,
-            process_.termination_signal, process_.exited, false, false, { },
-            "launchd", "/sbin/launchd", { "/sbin/launchd" },
-            { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
-                "SHELL=/bin/sh" },
-            KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, 0U, { }, { },
-            DisplayOrientation::Portrait, { }, 0U };
-    shared_state_->processes[process_.pid].memory_status =
-        darwin::memorystatus::initial_state(shared_state_->darwin_version);
-    shared_state_->processes[process_.pid].syscall_counters = task_syscalls_;
-    shared_state_->processes[process_.pid].vm_events = task_vm_events_;
     memory_.set_task_vm_events(task_vm_events_);
     install_commpage();
 }

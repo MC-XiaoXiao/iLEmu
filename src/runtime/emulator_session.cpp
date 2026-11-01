@@ -1778,8 +1778,8 @@ void EmulatorSession::run()
                     PerfLatencyKind::ProcessCreateKernel
                 };
                 child->kernel = std::make_unique<CompatibilityKernel>(
-                    *child->memory, output, rootfs, device, activation_override,
-                    lockdown_capabilities, darwin_configuration);
+                    *child->memory, *runtime_ptr->kernel, activation_override,
+                    lockdown_capabilities);
             }
             if (inheritance ==
                 CompatibilityKernel::ProcessInheritance::SpawnExec) {

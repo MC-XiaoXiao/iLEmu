@@ -174,6 +174,12 @@ public:
         LockdownCapabilities lockdown_capabilities = { },
         std::optional<DarwinConfiguration> configuration = std::nullopt);
 
+    // A child joins the existing boot's device namespace; it does not boot
+    // another filesystem, display or audio service before inheriting it.
+    CompatibilityKernel(AddressSpace& memory, const CompatibilityKernel& parent,
+        std::optional<bool> activated = std::nullopt,
+        LockdownCapabilities lockdown_capabilities = { });
+
     void attach(Cpu& cpu);
     void set_key_store(std::shared_ptr<KeyStore> key_store)
     {
@@ -580,6 +586,12 @@ public:
     [[nodiscard]] std::string wait_reason(std::size_t processor) const;
 
 private:
+    CompatibilityKernel(AddressSpace& memory, Output& output,
+        std::filesystem::path rootfs, DeviceModel device,
+        std::optional<bool> activated, LockdownCapabilities lockdown_capabilities,
+        std::optional<DarwinConfiguration> configuration,
+        const CompatibilityKernel* parent);
+
     friend class BsdDispatchTable;
     friend class MachDispatchTable;
     struct CreatedGuestThread {
