@@ -1475,6 +1475,30 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         }
         if (!raster_unit.enabled)
             continue;
+        if (const auto* texture = resources_.texture(raster_unit.texture)) {
+            const auto level = texture->levels.find(0U);
+            const auto source = level == texture->levels.end() ? nullptr
+                : level->second.surface_id
+                    ? surface_store_->host_surface(*level->second.surface_id)
+                    : level->second.host_surface;
+            const auto writer = source ? source->writer() : nullptr;
+            if (writer && !writer->ready()) {
+                const auto lease = program_wait(call);
+                call.suspend_until([writer] { return writer->ready(); },
+                    [this, lease, indexed](UserlandHleCall& resumed) {
+                        lease->consume();
+                        await_graphics_call(resumed,
+                            [this, indexed](UserlandHleCall& ready) {
+                                draw(ready, indexed);
+                            });
+                    }, writer->sequence());
+                return;
+            }
+            if (writer && !writer->succeeded()) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+        }
         if (pixmap_surface == nullptr ||
             !pixmap_surface->refreshed_textures.contains(raster_unit.texture)) {
             const auto refresh_error = resources_.refresh_surface_texture(

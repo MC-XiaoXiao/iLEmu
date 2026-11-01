@@ -7,6 +7,7 @@
 #include "graphics/display.hpp"
 #include "graphics/gles_program_renderer.hpp"
 #include "graphics/gles_resources.hpp"
+#include "graphics/surface_store.hpp"
 
 #include <array>
 #include <stdexcept>
@@ -33,6 +34,7 @@ struct GlesFrameDraw::State {
     HostSurfaceKey target;
     std::vector<GlesRasterVertex> vertices;
     GlesResourceStore textures;
+    std::vector<std::shared_ptr<SurfaceTransportLease>> transports;
     GlesRasterState raster;
     std::uint32_t mode { };
     std::size_t result_bytes { };
@@ -61,7 +63,7 @@ bool GlesFrameDraw::can_snapshot(
             continue;
         for (const auto& [level, image] : texture->levels) {
             static_cast<void>(level);
-            if (image.host_surface || image.surface_id)
+            if ((image.host_surface || image.surface_id) && !frame.host_surface)
                 return false;
         }
     }
@@ -70,7 +72,8 @@ bool GlesFrameDraw::can_snapshot(
 
 std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     HostSurfaceKey target, std::span<const GlesRasterVertex> vertices,
-    std::uint32_t mode, const GlesRasterState& raster, std::size_t& bytes,
+    std::uint32_t mode, const GlesRasterState& raster,
+    const SurfaceStore& surfaces, std::size_t& bytes,
     std::shared_ptr<void> native_lifetime)
 {
     if (!can_snapshot(frame, raster) ||
@@ -88,22 +91,66 @@ std::shared_ptr<GlesFrameDraw> GlesFrameDraw::prepare(const DisplayFrame& frame,
     add(sizeof(std::uint32_t), frame.pixels.size());
     add(sizeof(GlesRasterVertex), vertices.size());
     const auto names = textures(raster);
+    const auto content = frame.host_surface
+                             ? GlesResourceStore::TextureSnapshot::NativeImages
+                             : GlesResourceStore::TextureSnapshot::CpuPixels;
+    std::size_t transports = 0;
     if (raster.resources)
-        add(1, raster.resources->texture_snapshot_bytes(names, payload_limit));
+        add(1, raster.resources->texture_snapshot_bytes(
+                   names, payload_limit, content));
+    if (raster.resources)
+        for (const auto name : names) {
+            const auto* texture = raster.resources->texture(name);
+            if (!texture)
+                continue;
+            for (const auto& [level, image] : texture->levels) {
+                static_cast<void>(level);
+                if (image.surface_id) {
+                    add(sizeof(std::shared_ptr<SurfaceTransportLease>) +
+                        8U * sizeof(void*));
+                    ++transports;
+                }
+            }
+        }
     auto credit = reserve_gles_host_preparation(bytes);
     if (!credit)
         return { };
     auto state = std::make_shared<State>();
     state->credit = std::move(credit);
     state->native_lifetime = std::move(native_lifetime);
+    state->transports.reserve(transports);
     // No reader, presentation lease or guest-owned view crosses the queue.
     // A native image retains its private owner or shared transport instead.
     state->frame = DisplayFrame { frame.width, frame.height, 0, frame.pixels,
         frame.host_surface };
     state->target = target;
     state->vertices.assign(vertices.begin(), vertices.end());
-    if (raster.resources)
-        state->textures = raster.resources->snapshot_textures(names);
+    if (raster.resources) {
+        state->textures = raster.resources->snapshot_textures(names, content);
+        for (const auto name : names) {
+            const auto* texture = state->textures.texture(name);
+            if (!texture)
+                continue;
+            for (const auto& [level, image] : texture->levels) {
+                static_cast<void>(level);
+                if (!image.host_surface)
+                    continue;
+                if (image.surface_id) {
+                    auto transport =
+                        surfaces.acquire_transport_lease(*image.surface_id);
+                    if (!transport ||
+                        surfaces.host_surface(*image.surface_id) !=
+                            image.host_surface)
+                        throw std::invalid_argument {
+                            "stale GLES frame source" };
+                    state->transports.push_back(std::move(transport));
+                } else if (!image.native_lifetime) {
+                    throw std::invalid_argument {
+                        "unowned GLES frame source" };
+                }
+            }
+        }
+    }
     state->raster = raster;
     state->raster.resources = &state->textures;
     state->mode = mode;
@@ -154,6 +201,21 @@ std::shared_ptr<GlesWorkResult> GlesFrameDraw::enqueue(
                         state_->frame.host_surface, std::move(execute))
                   : enqueue_gles_host_work(
                         state_->result_bytes, std::move(execute));
+    if (result_) {
+        // All guest publication is serial on the core. No later producer can
+        // enter between acceptance and this registration. One FIFO executes
+        // every accepted reader, so the newest ready reader covers earlier ones.
+        for (const auto name : textures(state_->raster)) {
+            const auto* texture = state_->textures.texture(name);
+            if (!texture)
+                continue;
+            for (const auto& [level, image] : texture->levels) {
+                static_cast<void>(level);
+                if (image.host_surface)
+                    image.host_surface->record_read(result_->completion());
+            }
+        }
+    }
     return result_;
 }
 
@@ -164,6 +226,8 @@ bool GlesFrameDraw::complete()
     // Result publication follows the worker's last access to this field.
     // The store still owns the image; retirement itself remains worker-owned.
     state_->native_lifetime.reset();
+    state_->textures.reset();
+    state_->transports.clear();
     return result_->succeeded();
 }
 

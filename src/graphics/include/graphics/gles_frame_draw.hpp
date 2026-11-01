@@ -14,10 +14,12 @@ struct DisplayFrame;
 struct HostSurfaceKey;
 struct GlesWorkResult;
 class GlesRenderer;
+class SurfaceStore;
 
 // Immutable fixed-pipeline input for a CPU frame or an owned native target.
 // Native targets require their private owner or shared transport lifetime and
-// a caller-owned store gate. Live texture sources still need ordered ownership.
+// a caller-owned store gate. Native sources retain their owners and publish
+// read dependencies before the core yields.
 class GlesFrameDraw final {
 public:
     [[nodiscard]] static bool can_snapshot(
@@ -25,7 +27,8 @@ public:
     [[nodiscard]] static std::shared_ptr<GlesFrameDraw> prepare(
         const DisplayFrame& frame, HostSurfaceKey target,
         std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
-        const GlesRasterState& raster, std::size_t& bytes,
+        const GlesRasterState& raster, const SurfaceStore& surfaces,
+        std::size_t& bytes,
         std::shared_ptr<void> native_lifetime = { });
     [[nodiscard]] bool capacity() const;
     // Retry returns the accepted ticket, never another draw submission.

@@ -769,7 +769,8 @@ bool GlesResourceStore::has_buffer(std::uint32_t name) const
 }
 
 std::size_t GlesResourceStore::texture_snapshot_bytes(
-    std::span<const std::uint32_t> names, std::size_t limit) const
+    std::span<const std::uint32_t> names, std::size_t limit,
+    TextureSnapshot content) const
 {
     std::size_t bytes = 0;
     const auto add = [&](std::size_t size, std::size_t count = 1) {
@@ -790,14 +791,17 @@ std::size_t GlesResourceStore::texture_snapshot_bytes(
         for (const auto& [level, image] : source->levels) {
             static_cast<void>(level);
             add(sizeof(image) + 4 * sizeof(void*));
-            add(sizeof(std::uint32_t), image.argb.size());
+            if (content != TextureSnapshot::NativeImages || !image.host_surface ||
+                image.host_surface->gpu_generation() <=
+                    image.host_surface->cpu_generation())
+                add(sizeof(std::uint32_t), image.argb.size());
         }
     }
     return bytes;
 }
 
 GlesResourceStore GlesResourceStore::snapshot_textures(
-    std::span<const std::uint32_t> names) const
+    std::span<const std::uint32_t> names, TextureSnapshot content) const
 {
     GlesResourceStore snapshot;
     for (const auto name : names) {
@@ -808,14 +812,33 @@ GlesResourceStore GlesResourceStore::snapshot_textures(
             continue;
         snapshot.ensure_texture(name);
         auto& copied = *snapshot.texture(name);
-        copied = *source;
-        // This copies cached CPU data only. The caller must resolve any GPU
-        // dependency first, or reject live sources before preparing a packet.
-        for (auto& [level, image] : copied.levels) {
-            static_cast<void>(level);
-            image.host_surface.reset();
-            image.native_lifetime.reset();
-            image.surface_id.reset();
+        copied.parameters = source->parameters;
+        for (const auto& [level, image] : source->levels) {
+            const auto native = content == TextureSnapshot::NativeImages;
+            if (native && image.host_surface &&
+                image.host_surface->gpu_generation() >
+                    image.host_surface->cpu_generation()) {
+                copied.levels.emplace(level, TextureLevel {
+                    .width = image.width,
+                    .height = image.height,
+                    .internal_format = image.internal_format,
+                    .argb = { },
+                    .surface_id = image.surface_id,
+                    .revision = image.revision,
+                    .host_surface = image.host_surface,
+                    .host_generation = image.host_generation,
+                    .render_target_inverted_vertical =
+                        image.render_target_inverted_vertical,
+                    .argb_generation = 0,
+                    .native_lifetime = image.native_lifetime });
+                continue;
+            }
+            auto& cloned = copied.levels.emplace(level, image).first->second;
+            if (!native) {
+                cloned.host_surface.reset();
+                cloned.native_lifetime.reset();
+                cloned.surface_id.reset();
+            }
         }
     }
     return snapshot;

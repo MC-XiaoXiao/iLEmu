@@ -4930,7 +4930,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 continue;
             }
             const auto& surface = *level->second.host_surface;
-            if (surface.gpu_generation() > surface.cpu_generation())
+            // An owned native input has no CPU pixels. An earlier readback
+            // may publish the surface cache after that input was prepared;
+            // it does not change which image this draw must sample.
+            if (level->second.argb.empty() ||
+                surface.gpu_generation() > surface.cpu_generation())
                 gpu_newer_host_surfaces[index] = level->second.host_surface;
         }
         std::lock_guard lock { mutex_ };

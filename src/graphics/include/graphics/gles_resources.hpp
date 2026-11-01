@@ -67,12 +67,15 @@ public:
     void erase_buffer(std::uint32_t name);
     [[nodiscard]] bool has_texture(std::uint32_t name) const;
     [[nodiscard]] bool has_buffer(std::uint32_t name) const;
+    enum class TextureSnapshot { CpuPixels, NativeImages };
     [[nodiscard]] std::size_t texture_snapshot_bytes(
-        std::span<const std::uint32_t> names, std::size_t limit) const;
-    // Deep selected CPU texture storage. Live surface identities are not
-    // usable by a CPU snapshot and never cross this boundary.
+        std::span<const std::uint32_t> names, std::size_t limit,
+        TextureSnapshot content = TextureSnapshot::CpuPixels) const;
+    // NativeImages requires the caller to retain each physical owner and
+    // order surface reads. GPU-only images do not copy stale CPU caches.
     [[nodiscard]] GlesResourceStore snapshot_textures(
-        std::span<const std::uint32_t> names) const;
+        std::span<const std::uint32_t> names,
+        TextureSnapshot content = TextureSnapshot::CpuPixels) const;
 
     [[nodiscard]] std::uint32_t upload_texture_2d(AddressSpace& memory,
         std::uint32_t name, std::uint32_t level, std::uint32_t internal_format,

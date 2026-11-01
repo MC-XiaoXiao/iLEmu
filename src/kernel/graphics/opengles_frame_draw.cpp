@@ -19,6 +19,7 @@ struct OpenGlesHle::FrameDraw {
     std::shared_ptr<GlesFrameDraw> host;
     std::shared_ptr<GlesWorkResult> result;
     std::shared_ptr<SyncLease> lease;
+    bool indexed { };
 
     static bool target_live(const GlesResourceStore& resources,
         const RenderTargetBinding& binding)
@@ -56,7 +57,7 @@ try {
             throw std::runtime_error { "missing GLES frame target owner" };
     }
     auto host = GlesFrameDraw::prepare(
-        frame, binding.key, vertices, mode, raster, bytes,
+        frame, binding.key, vertices, mode, raster, *surface_store_, bytes,
         std::move(native_lifetime));
     if (!host) {
         // No command or snapshot was accepted. Only scalar ABI is retained;
@@ -74,6 +75,7 @@ try {
     }
     auto pending = std::make_shared<FrameDraw>();
     pending->binding = binding;
+    pending->indexed = indexed;
     pending->owner = renderer_owner_;
     pending->host = std::move(host);
     std::function<void()> complete_native;
@@ -112,6 +114,23 @@ try {
     if (!pending->result) {
         pending->result = pending->host->enqueue(renderer_);
         if (!pending->result) {
+            if (pending->binding.host_surface) {
+                // A shared source can change while admission is unavailable.
+                // Nothing was accepted: release live inputs, keep the store
+                // gate, and prepare again after capacity returns.
+                pending->lease->complete_core = { };
+                pending->host.reset();
+                call.suspend_until([] { return gles_host_work_capacity(0); },
+                    [this, lease = pending->lease, indexed = pending->indexed](
+                        UserlandHleCall& resumed) {
+                        lease->consume();
+                        await_graphics_call(resumed,
+                            [this, indexed](UserlandHleCall& ready) {
+                                draw(ready, indexed);
+                            });
+                    });
+                return;
+            }
             call.suspend_until(
                 [host = pending->host] { return host->capacity(); },
                 [this, pending](UserlandHleCall& resumed) {
