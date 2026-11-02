@@ -746,16 +746,21 @@ void CompatibilityKernel::wake_graphics_input_receivers()
     std::vector<std::pair<std::uint32_t, std::uint32_t>> receivers;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
-        for (const auto& [object, queue] : shared_state_->mach_queues) {
-            if (queue.empty() ||
-                !std::any_of(queue.begin(), queue.end(), [](const auto& message) {
+        auto& candidates = shared_state_->mach_graphics_input_queue_candidates;
+        for (auto candidate = candidates.begin(); candidate != candidates.end();) {
+            const auto object = *candidate;
+            const auto queue = shared_state_->mach_queues.find(object);
+            if (queue == shared_state_->mach_queues.end() || queue->second.empty() ||
+                !std::any_of(queue->second.begin(), queue->second.end(), [](const auto& message) {
                     return message.graphics_input_sequence != 0U &&
                            message.graphics_input_kind !=
                                KernelSharedState::MachMessage::GraphicsInputKind::
                                    None;
                 })) {
+                candidate = candidates.erase(candidate);
                 continue;
             }
+            ++candidate;
             const auto port = shared_state_->mach_port_objects.lookup(object);
             if (!port || port->receive_owner == 0U)
                 continue;

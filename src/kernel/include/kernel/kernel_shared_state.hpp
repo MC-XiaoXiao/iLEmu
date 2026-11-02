@@ -1482,6 +1482,10 @@ struct KernelSharedState {
     void cancel_mach_receives_locked(std::uint32_t task,
         std::optional<std::uint32_t> processor = std::nullopt);
     std::map<std::uint32_t, std::deque<MachMessage>> mach_queues;
+    // Only these queues can contain host input messages needing an explicit
+    // receiver wake. Consumers may leave stale candidates; the wake boundary
+    // rechecks their contents under mach_mutex and prunes empty matches.
+    std::set<std::uint32_t> mach_graphics_input_queue_candidates;
     // Queue producers may run on host input/device threads while guest kernels
     // poll from the scheduler. Keep the cheap readiness snapshot lock-free;
     // the queue and every generation transition remain serialized by
@@ -1512,8 +1516,15 @@ struct KernelSharedState {
         const bool handed_off = handoff_mach_message_locked(destination, message);
         auto& queue = mach_queues[destination];
         const auto was_empty = queue.empty();
-        if (!handed_off)
+        if (!handed_off) {
+            if (message.graphics_input_sequence != 0U &&
+                message.graphics_input_kind != MachMessage::GraphicsInputKind::None) {
+                // Publish a conservative candidate before the message, so a
+                // failed queue allocation cannot leave an unindexed input.
+                mach_graphics_input_queue_candidates.insert(destination);
+            }
             queue.push_back(std::move(message));
+        }
         if (!handed_off && was_empty) {
             if (const auto links =
                     mach_port_set_links_by_member.find(destination);

@@ -615,6 +615,7 @@ namespace mach_support {
             // undeliverable and must not recreate the receive queue.
             state.mach_queues.erase(object);
         }
+        state.mach_graphics_input_queue_candidates.erase(object);
         if (const auto surface =
                 state.surface_transport_port_surfaces.find(object);
             surface != state.surface_transport_port_surfaces.end()) {
