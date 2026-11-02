@@ -1550,22 +1550,44 @@ bool CompatibilityKernel::mach_kevent_observation_current(
 
 bool CompatibilityKernel::kevent_mach_poll_required(std::uint32_t queue_fd) const
 {
-    const auto queue = kqueues_.find(queue_fd);
-    if (queue == kqueues_.end())
+    if (!kqueues_.contains(queue_fd))
         return true;
-    for (const auto& registration : queue->second) {
-        if (!registration.enabled)
-            continue;
-        // Descriptor filters can observe nested kqueues. Keep their existing
-        // full readiness walk; direct Mach knotes already retain exact empty
-        // observations, including receive rights and port-set membership.
-        if (registration.filter == darwin::kqueue::filter_read ||
-            registration.filter == darwin::kqueue::filter_write ||
-            (registration.filter == darwin::kqueue::filter_mach_port &&
-                !mach_kevent_observation_current(registration)))
-            return true;
-    }
-    return false;
+    DescriptorPollVisited visited;
+    const auto required = [&](auto&& self, std::uint32_t fd, bool nested) -> bool {
+        const auto queue = kqueues_.find(fd);
+        const auto duplicate = duplicated_descriptors_.find(fd);
+        if (queue == kqueues_.end() && duplicate == duplicated_descriptors_.end())
+            return false;
+        // Retain conservative polling for cycles, while reusing completed
+        // negative results when several descriptor paths reach the same queue.
+        const auto [entry, inserted] = visited.try_emplace(fd, true);
+        if (!inserted)
+            return entry->second;
+        if (queue == kqueues_.end()) {
+            const auto result = self(self, duplicate->second, true);
+            visited.find(fd)->second = result;
+            return result;
+        }
+        for (const auto& registration : queue->second) {
+            if (!registration.enabled)
+                continue;
+            // The outer wait's deadline cache covers its direct timers.
+            // Nested timers still require the existing full readiness probe.
+            if ((nested && registration.timer) ||
+                (registration.filter == darwin::kqueue::filter_mach_port &&
+                    !mach_kevent_observation_current(registration)))
+                return true;
+            if ((registration.filter == darwin::kqueue::filter_read ||
+                    registration.filter == darwin::kqueue::filter_write) &&
+                self(self, static_cast<std::uint32_t>(registration.ident), true))
+                return true;
+        }
+        visited.find(fd)->second = false;
+        return false;
+    };
+    // Leaf descriptors retain their I/O-generation and host-probe wakeups;
+    // only actual Mach dependencies need a walk for unrelated IPC activity.
+    return required(required, queue_fd, false);
 }
 
 std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
