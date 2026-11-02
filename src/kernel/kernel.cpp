@@ -1730,8 +1730,10 @@ CompatibilityKernel::pending_event_poll_candidates()
         !deadline_due && !sample_due && !host_probe_due) {
         // Keep the captured outer generation, not a later producer snapshot.
         // A racing enqueue will still differ on the next scheduler pass.
-        if (mach_snapshot_current)
+        if (mach_snapshot_current) {
             pending_event_poll_mach_generation_ = mach_generation;
+            return pending_event_mach_candidates_;
+        }
         return { };
     }
 
@@ -1745,10 +1747,17 @@ CompatibilityKernel::pending_event_poll_candidates()
     processors.reserve(pending_event_processors_.size());
     std::optional<std::uint64_t> next_deadline;
     bool requires_host_probe = false;
+    bool mach_snapshot_valid = pending_thread_aborts_.empty();
+    pending_event_mach_dependencies_.clear();
+    pending_event_mach_snapshot_receiver_generation_ =
+        shared_state_->hid_event_queue.receiver_generation_snapshot();
+    pending_event_mach_snapshot_timer_generation_ = local_timer_deadline_generation_;
     for (const auto processor : pending_event_processors_) {
         if (userland_hle_.pending_call(processor)) {
             if (userland_hle_.pending_call_ready(processor))
                 processors.push_back(processor);
+            else
+                mach_snapshot_valid = false;
             continue;
         }
         const auto send = pending_mach_sends_.find(processor);
@@ -1757,14 +1766,32 @@ CompatibilityKernel::pending_event_poll_candidates()
         // Mach queue. Keep that consumer eligible even while the queue is empty.
         const auto hid_receiver =
             hid_event_system_hle_.is_event_consumer(process_.pid, processor);
+        const auto exception_waiting = exception_delivery_.waiting(processor);
         if (caught_signal_ready(processor) ||
-            (exception_delivery_.waiting(processor) ? exception_delivery_.ready(*shared_state_, processor) :
+            (exception_waiting ? exception_delivery_.ready(*shared_state_, processor) :
             send != pending_mach_sends_.end() ? send->second.ticket->ready(guest_now) :
             receive != pending_mach_receives_.end()
                 ? hid_receiver || mach_receive_poll_required_locked(
                                       receive->second, guest_now)
                 : pending_io_poll_required_locked(processor))) {
             processors.push_back(processor);
+        } else if (mach_snapshot_valid) {
+            if (exception_waiting || send != pending_mach_sends_.end()) {
+                mach_snapshot_valid = false;
+            } else if (receive != pending_mach_receives_.end()) {
+                // Reuse the negative receive observation above. The captured
+                // outer generation leaves a racing enqueue visible next pass.
+                if (!receive->second.receive_object) {
+                    mach_snapshot_valid = false;
+                } else {
+                    pending_event_mach_dependencies_.push_back({
+                        *receive->second.receive_object,
+                        receive->second.observed_queue_generation });
+                }
+            } else {
+                mach_snapshot_valid = append_pending_io_mach_dependencies_locked(
+                    processor, io_generation);
+            }
         }
         if (const auto deadline = pending_io_deadline_locked(processor);
             deadline && *deadline > guest_now &&
@@ -1780,9 +1807,10 @@ CompatibilityKernel::pending_event_poll_candidates()
                                     ? host_now + host_probe_interval
                                     : std::chrono::steady_clock::time_point::max();
     pending_event_mach_snapshot_valid_ = false;
-    if (processors.empty()) {
-        pending_event_mach_snapshot_valid_ =
-            rebuild_pending_mach_poll_snapshot_locked(io_generation);
+    pending_event_mach_candidates_.clear();
+    if (mach_snapshot_valid) {
+        pending_event_mach_candidates_ = processors;
+        pending_event_mach_snapshot_valid_ = true;
     }
     return processors;
 }
@@ -1793,6 +1821,9 @@ bool CompatibilityKernel::pending_mach_poll_snapshot_current_locked(
     return pending_event_mach_snapshot_valid_ &&
         pending_event_poll_topology_generation_ == pending_event_topology_generation_ &&
         pending_event_poll_io_generation_ == io_generation &&
+        // Receiver registration can change outside this task's wait topology.
+        pending_event_mach_snapshot_receiver_generation_ ==
+            shared_state_->hid_event_queue.receiver_generation_snapshot() &&
         pending_event_mach_snapshot_timer_generation_ == local_timer_deadline_generation_ &&
         pending_thread_aborts_.empty() &&
         std::all_of(pending_event_mach_dependencies_.begin(),
@@ -1802,60 +1833,33 @@ bool CompatibilityKernel::pending_mach_poll_snapshot_current_locked(
             });
 }
 
-bool CompatibilityKernel::rebuild_pending_mach_poll_snapshot_locked(
-    std::uint64_t io_generation)
+bool CompatibilityKernel::append_pending_io_mach_dependencies_locked(
+    std::size_t processor, std::uint64_t io_generation)
 {
-    pending_event_mach_dependencies_.clear();
-    pending_event_mach_snapshot_timer_generation_ = local_timer_deadline_generation_;
-    if (!pending_thread_aborts_.empty())
+    const auto cached = pending_io_poll_cache_.find(processor);
+    if (cached == pending_io_poll_cache_.end() ||
+        cached->second.io_generation != io_generation)
         return false;
-    for (const auto processor : pending_event_processors_) {
-        // These continuations have readiness beyond the empty receive/object
-        // observations collected here. Preserve their existing full probe.
-        if (userland_hle_.pending_call(processor) ||
-            exception_delivery_.waiting(processor) ||
-            pending_mach_sends_.contains(processor))
-            return false;
-        if (const auto receive = pending_mach_receives_.find(processor);
-            receive != pending_mach_receives_.end()) {
-            if (hid_event_system_hle_.is_event_consumer(process_.pid, processor) ||
-                !receive->second.receive_object ||
-                receive->second.observed_queue_generation !=
-                    shared_state_->mach_receive_generation_snapshot(
-                        *receive->second.receive_object))
+    if (pending_io_wait_ignores_mach_locked(processor))
+        return true;
+    if (const auto kevent = pending_kevents_.find(processor);
+        kevent != pending_kevents_.end()) {
+        return !kevent_mach_poll_required(kevent->second.queue_fd,
+            &pending_event_mach_dependencies_);
+    }
+    const auto select = pending_selects_.find(processor);
+    if (select == pending_selects_.end())
+        return false;
+    for (std::size_t word = 0; word < select->second.read_words.size(); ++word) {
+        auto bits = select->second.read_words[word];
+        while (bits != 0U) {
+            const auto fd = static_cast<std::uint32_t>(word * 32U) +
+                static_cast<std::uint32_t>(std::countr_zero(bits));
+            if (fd < select->second.descriptor_count &&
+                (kqueues_.contains(fd) || duplicated_descriptors_.contains(fd)) &&
+                kevent_mach_poll_required(fd, &pending_event_mach_dependencies_))
                 return false;
-            pending_event_mach_dependencies_.push_back({
-                *receive->second.receive_object,
-                receive->second.observed_queue_generation });
-            continue;
-        }
-        const auto cached = pending_io_poll_cache_.find(processor);
-        if (cached == pending_io_poll_cache_.end() ||
-            cached->second.io_generation != io_generation)
-            return false;
-        if (pending_io_wait_ignores_mach_locked(processor))
-            continue;
-        if (const auto kevent = pending_kevents_.find(processor);
-            kevent != pending_kevents_.end()) {
-            if (kevent_mach_poll_required(kevent->second.queue_fd,
-                    &pending_event_mach_dependencies_))
-                return false;
-            continue;
-        }
-        const auto select = pending_selects_.find(processor);
-        if (select == pending_selects_.end())
-            return false;
-        for (std::size_t word = 0; word < select->second.read_words.size(); ++word) {
-            auto bits = select->second.read_words[word];
-            while (bits != 0U) {
-                const auto fd = static_cast<std::uint32_t>(word * 32U) +
-                    static_cast<std::uint32_t>(std::countr_zero(bits));
-                if (fd < select->second.descriptor_count &&
-                    (kqueues_.contains(fd) || duplicated_descriptors_.contains(fd)) &&
-                    kevent_mach_poll_required(fd, &pending_event_mach_dependencies_))
-                    return false;
-                bits &= bits - 1U;
-            }
+            bits &= bits - 1U;
         }
     }
     return true;
@@ -2008,6 +2012,12 @@ void CompatibilityKernel::remember_pending_io_not_ready_locked(
     std::size_t processor, std::uint64_t io_generation,
     std::uint64_t mach_generation)
 {
+    // Rebuild the negative dependencies after a previously eligible I/O wait
+    // observes no readiness. An always-eligible HID receive keeps its cadence.
+    if (pending_event_mach_snapshot_valid_ &&
+        std::binary_search(pending_event_mach_candidates_.begin(),
+            pending_event_mach_candidates_.end(), processor))
+        pending_event_mach_snapshot_valid_ = false;
     // A producer may race the readiness walk through another task. Do not
     // publish a negative stamp unless both shared generations stayed stable.
     if (io_generation != shared_state_->io_event_generation_snapshot() ||

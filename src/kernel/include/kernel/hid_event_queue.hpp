@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -66,18 +67,23 @@ public:
         consumer_ = consumer;
         events_.clear();
         contact_origin_.reset();
+        receiver_generation_.fetch_add(1, std::memory_order_release);
     }
     void close(std::uint32_t process)
     {
         std::lock_guard lock { mutex_ };
+        bool changed = false;
         if (consumer_ && consumer_->process == process) {
             consumer_.reset();
             events_.clear();
             contact_origin_.reset();
+            changed = true;
         }
-        std::erase_if(observers_, [process](const ObserverState& state) {
+        const auto removed = std::erase_if(observers_, [process](const ObserverState& state) {
             return state.observer.process == process;
         });
+        if (changed || removed != 0U)
+            receiver_generation_.fetch_add(1, std::memory_order_release);
     }
     void observe(Observer observer)
     {
@@ -89,19 +95,27 @@ public:
             });
         if (existing == observers_.end()) {
             observers_.push_back(ObserverState { observer, { } });
+            receiver_generation_.fetch_add(1, std::memory_order_release);
             return;
         }
         if (existing->observer.processor != observer.processor)
             existing->events.clear();
         existing->observer = observer;
+        receiver_generation_.fetch_add(1, std::memory_order_release);
     }
     void unobserve(std::uint32_t process, std::uint32_t client)
     {
         std::lock_guard lock { mutex_ };
-        std::erase_if(observers_, [&](const ObserverState& state) {
+        const auto removed = std::erase_if(observers_, [&](const ObserverState& state) {
             return state.observer.process == process &&
                    state.observer.client == client;
         });
+        if (removed != 0U)
+            receiver_generation_.fetch_add(1, std::memory_order_release);
+    }
+    [[nodiscard]] std::uint64_t receiver_generation_snapshot() const noexcept
+    {
+        return receiver_generation_.load(std::memory_order_acquire);
     }
     [[nodiscard]] std::optional<Consumer> consumer() const
     {
@@ -225,6 +239,9 @@ private:
     std::deque<Event> events_;
     std::vector<ObserverState> observers_;
     std::optional<std::array<float, 2>> contact_origin_;
+    // Receiver configuration invalidates scheduler eligibility; queued input
+    // retains the existing receiver cadence without changing this revision.
+    std::atomic_uint64_t receiver_generation_ { 1 };
 };
 
 } // namespace ilemu

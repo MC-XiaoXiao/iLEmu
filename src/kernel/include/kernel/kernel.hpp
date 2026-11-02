@@ -932,8 +932,8 @@ private:
     };
     [[nodiscard]] bool pending_mach_poll_snapshot_current_locked(
         std::uint64_t io_generation) const;
-    [[nodiscard]] bool rebuild_pending_mach_poll_snapshot_locked(
-        std::uint64_t io_generation);
+    [[nodiscard]] bool append_pending_io_mach_dependencies_locked(
+        std::size_t processor, std::uint64_t io_generation);
     [[nodiscard]] bool pending_io_poll_required_locked(
         std::size_t processor) const;
     [[nodiscard]] bool pending_io_wait_ignores_mach_locked(
@@ -1289,9 +1289,11 @@ private:
         std::chrono::steady_clock::time_point::min()
     };
     bool pending_event_poll_observed_ { };
-    // A complete negative scan can absorb unrelated IPC without revisiting
-    // every blocked processor. Other readiness domains retain their own gates.
+    // Negative observations can absorb unrelated IPC while retaining eligible
+    // processors for delivery. Other readiness domains retain their own gates.
     std::vector<MachPollDependency> pending_event_mach_dependencies_;
+    std::vector<std::size_t> pending_event_mach_candidates_;
+    std::uint64_t pending_event_mach_snapshot_receiver_generation_ { };
     std::uint64_t pending_event_mach_snapshot_timer_generation_ { };
     bool pending_event_mach_snapshot_valid_ { };
     struct PendingIoDeadlineCache {
