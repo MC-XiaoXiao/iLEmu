@@ -15,6 +15,7 @@
 #include "graphics/display_presenter.hpp"
 #include "graphics/gles_program_renderer.hpp"
 #include "guest_timing.hpp"
+#include "guest_host_continuation.hpp"
 #include "jit_diagnostics.hpp"
 #include "jit_policy.hpp"
 #include "process.hpp"
@@ -112,6 +113,7 @@ namespace {
         GuestExecutionRequest execution;
         bool deferred_svc { };
         bool host_tick_budget_limited { };
+        std::optional<GuestHostContinuation> host_continuation;
     };
 
 } // namespace
@@ -462,7 +464,9 @@ void EmulatorSession::run()
     // The callback is host-only and is unregistered before either adapter is
     // destroyed. Its mutex serializes unregister with an in-flight publisher.
     set_gles_completion_wake(
-        [display = display_presenter.get(), control = live_control.get()] {
+        [display = display_presenter.get(), control = live_control.get(),
+            execution = guest_execution_coordinator.get()] {
+            execution->notify_host_completion();
             if (display)
                 display->wake_event_wait();
             if (control)
@@ -2776,6 +2780,7 @@ void EmulatorSession::run()
     while ((!bounded_execution || remaining_ticks != 0) &&
            !initial_runtime->kernel->process().exited && !hard_stop &&
            !host.stop_requested()) {
+        guest_execution_coordinator->poll_host_completions();
         synchronize_device_time_to_host();
         synchronize_scheduler_time();
         observe_transition_stability();
@@ -3295,6 +3300,8 @@ void EmulatorSession::run()
                     // keeping the wake inside that conditional left pure
                     // Mach/VSync receivers Waiting.
                     const auto made_runnable = scheduler.make_runnable(thread);
+                    if (made_runnable && scheduler.host_continuation_allowed(thread))
+                        guest_execution_policy.host_completed(thread);
                     if (made_runnable && delivered_input) {
                         // A just-delivered input event is a generic interactive
                         // wakeup, not a process-specific priority. Let its
@@ -3634,6 +3641,8 @@ void EmulatorSession::run()
                         runtime->kernel->display_vsync_callback_processor());
             }
         }
+        const auto host_continuation = guest_execution_policy.host_continuation(
+            scheduler, dispatch_now);
         const auto dispatch = guest_dispatch_policy.decide(scheduler,
             GuestDispatchObservation {
                 .now = dispatch_now,
@@ -3657,9 +3666,13 @@ void EmulatorSession::run()
                 .realtime_lease_active =
                     display_urgent_lease_deadline &&
                     dispatch_now < *display_urgent_lease_deadline,
-            });
+            }, host_continuation);
         if (dispatch.explicit_handoff_stale)
             scheduler_handoff_thread.reset();
+        if (dispatch.reason == GuestDispatchReason::Debugger ||
+            dispatch.reason == GuestDispatchReason::ExplicitHandoff)
+            static_cast<void>(guest_execution_policy.host_continuation(
+                scheduler, dispatch_now, true));
         const auto preferred_thread = dispatch.preferred_thread;
         const bool debugger_only =
             dispatch.reason == GuestDispatchReason::Debugger;
@@ -3677,6 +3690,8 @@ void EmulatorSession::run()
         // receiver. Ownership is refreshed after guest execution and stale
         // identities are harmless because resolution still requires a live
         // matching runtime and a pending VSync receive.
+        guest_execution_coordinator->arm_host_completions(
+            scheduler.host_await_count() != 0);
         std::vector<XnuScheduledSlice> scheduled_batch;
         scheduled_batch.reserve(guest_processor_count);
         auto reservable_ticks = remaining_ticks;
@@ -3953,6 +3968,14 @@ void EmulatorSession::run()
             prepared.execution.cpu->set_svc_dispatch_mode(
                 parallel_guest_batch ? SvcDispatchMode::Deferred
                                      : SvcDispatchMode::Immediate);
+            prepared.execution.host_deadline =
+                guest_execution_policy.deadline(prepared.scheduled.thread);
+            if (!parallel_guest_batch && prepared_slices.size() == 1 &&
+                !gdb_server && scheduler.host_await_count() == 0) {
+                prepared.host_continuation.emplace(*prepared.runtime->kernel,
+                    scheduler, prepared.scheduled.thread);
+                prepared.execution.continuation = &*prepared.host_continuation;
+            }
         }
 
         if (guest_processor_count == 1 && !prepared_slices.empty() &&
@@ -3967,6 +3990,9 @@ void EmulatorSession::run()
                 prepared_slices.front().scheduled.processor);
             last_serial_thread = prepared_slices.front().scheduled.thread;
         }
+        // Retain the accumulated prefix while a serial window resumes. Kernel
+        // statistics and retirement queries reuse the existing pending-tick view.
+        pending_kernel_entries = prepared_slices;
         const auto service_host = [&] {
             // The active window owns Guest state. Collect host events only;
             // Guest injection and commands wait until that ownership returns.
@@ -4131,7 +4157,8 @@ void EmulatorSession::run()
             bool scheduler_completed = false;
             if (Dynarmic::Has(
                     result.reason, Dynarmic::HaltReason::UserDefined5)) {
-                completion = XnuSliceCompletion::Block;
+                completion = runtime.kernel->thread_awaits_host(index)
+                    ? XnuSliceCompletion::HostAwait : XnuSliceCompletion::Block;
             } else if (Dynarmic::Has(
                            result.reason, Dynarmic::HaltReason::UserDefined6) &&
                        runtime.pending_exec) {

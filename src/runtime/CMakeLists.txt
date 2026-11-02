@@ -5,6 +5,7 @@
 add_library(ilemu_runtime STATIC
     boot_options.cpp
     emulator_session.cpp
+    guest_host_continuation.cpp
     realtime_pacer.cpp
     resource_policy.cpp
     session_catalog.cpp

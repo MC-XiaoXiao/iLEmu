@@ -272,6 +272,10 @@ public:
                pending_filesystem_dispatches_.contains(processor) ||
                pending_file_mappings_.contains(processor);
     }
+    [[nodiscard]] bool thread_awaits_host(std::size_t processor) const
+    {
+        return userland_hle_.pending_host_continuation(processor);
+    }
     void set_mach_message_wake_handler(MachMessageWakeHandler handler)
     {
         mach_message_wake_handler_ = std::move(handler);
