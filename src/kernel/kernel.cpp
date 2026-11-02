@@ -1866,10 +1866,34 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
     }
     if (cached->second.mach_generation !=
         shared_state_->mach_queue_generation_snapshot()) {
-        const auto kevent = pending_kevents_.find(processor);
-        if (kevent == pending_kevents_.end() ||
-            kevent_mach_poll_required(kevent->second.queue_fd))
+        if (const auto kevent = pending_kevents_.find(processor);
+            kevent != pending_kevents_.end()) {
+            if (kevent_mach_poll_required(kevent->second.queue_fd))
+                return true;
+        } else if (const auto select = pending_selects_.find(processor);
+                   select != pending_selects_.end()) {
+            // select can observe Mach messages through readable kqueues.
+            // Reuse their object-scoped negative observations instead of
+            // rechecking every descriptor for unrelated process IPC. I/O
+            // generations, host probes and timer deadlines remain independent.
+            for (std::size_t word = 0;
+                word < select->second.read_words.size(); ++word) {
+                auto bits = select->second.read_words[word];
+                while (bits != 0U) {
+                    const auto bit = static_cast<std::uint32_t>(
+                        std::countr_zero(bits));
+                    const auto fd = static_cast<std::uint32_t>(word * 32U) + bit;
+                    if (fd < select->second.descriptor_count &&
+                        (kqueues_.contains(fd) ||
+                            duplicated_descriptors_.contains(fd)) &&
+                        kevent_mach_poll_required(fd))
+                        return true;
+                    bits &= bits - 1U;
+                }
+            }
+        } else {
             return true;
+        }
     }
     if (const auto deadline = pending_io_deadline_locked(processor);
         deadline && shared_state_->clock.now() >= *deadline) {
