@@ -446,6 +446,23 @@ void AddressSpace::clear_exclusive_write_backings_locked() noexcept
     exclusive_write_backing_keys_.clear();
 }
 
+void AddressSpace::guard_exclusive_jit_page_locked(std::uint32_t address)
+{
+    // Reservation entry only revokes direct writes. Mapping, translation and
+    // backing changes refresh all tables separately; preserve their read and
+    // instruction entries here while invalidating every leased native view.
+    invalidate_parallel_page_locked(address);
+    if (!jit_write_page_table_)
+        return;
+    const auto base = page_base(address);
+    auto& entry = jit_write_page_table_->entries()[base / page_size];
+    if (entry == nullptr)
+        return;
+    entry = nullptr;
+    direct_jit_write_pages_.erase(base);
+    direct_shared_jit_write_pages_.erase(base);
+}
+
 void AddressSpace::track_exclusive_access(
     std::uint32_t address, std::size_t size)
 {
@@ -466,7 +483,7 @@ void AddressSpace::track_exclusive_access(
         if (page != nullptr && page->backing)
             track_exclusive_backing_locked(page->backing.get());
         if (inserted)
-            refresh_jit_page_locked(page_address);
+            guard_exclusive_jit_page_locked(page_address);
         if (page == nullptr || !page->shared_writable || !page->backing)
             continue;
 
@@ -489,7 +506,7 @@ void AddressSpace::track_exclusive_access(
         }
         for (const auto alias_address : aliases) {
             exclusive_write_tracked_pages_[alias_address] |= mask;
-            refresh_jit_page_locked(alias_address);
+            guard_exclusive_jit_page_locked(alias_address);
         }
     }
     exclusive_write_tracking_active_.store(

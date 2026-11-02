@@ -607,6 +607,7 @@ private:
         const Page& page) const noexcept;
     void track_exclusive_backing_locked(const GuestPageBacking* backing);
     void clear_exclusive_write_backings_locked() noexcept;
+    void guard_exclusive_jit_page_locked(std::uint32_t address);
     void release_exclusive_write_tracking_locked(
         std::uint32_t address, std::size_t size);
     void mark_shared_backing_written_locked(
