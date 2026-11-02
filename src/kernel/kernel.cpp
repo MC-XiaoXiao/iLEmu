@@ -1798,8 +1798,16 @@ CompatibilityKernel::pending_event_poll_candidates()
             (!next_deadline || *deadline < *next_deadline)) {
             next_deadline = deadline;
         }
-        requires_host_probe = requires_host_probe ||
-                              pending_io_requires_host_poll_locked(processor);
+        if (!requires_host_probe) {
+            // A negative wait already classified its descriptor tree. Reuse
+            // that fact until an I/O mutation invalidates it; a due host probe
+            // still makes the wait eligible through its separate deadline.
+            const auto cached = pending_io_poll_cache_.find(processor);
+            requires_host_probe = cached != pending_io_poll_cache_.end() &&
+                                          cached->second.io_generation == io_generation
+                                      ? cached->second.host_probe_required
+                                      : pending_io_requires_host_poll_locked(processor);
+        }
     }
     pending_event_poll_deadline_ = next_deadline;
     constexpr auto host_probe_interval = std::chrono::milliseconds { 1 };
