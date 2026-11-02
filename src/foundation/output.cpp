@@ -22,6 +22,7 @@ namespace {
             "[clock]",
             "[process]",
             "[cpu] fatal",
+            "[cpu] exception",
             "[display]",
             "[baseband]",
             "[watch]",
