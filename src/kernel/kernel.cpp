@@ -1833,6 +1833,8 @@ bool CompatibilityKernel::rebuild_pending_mach_poll_snapshot_locked(
         if (cached == pending_io_poll_cache_.end() ||
             cached->second.io_generation != io_generation)
             return false;
+        if (pending_io_wait_ignores_mach_locked(processor))
+            continue;
         if (const auto kevent = pending_kevents_.find(processor);
             kevent != pending_kevents_.end()) {
             if (kevent_mach_poll_required(kevent->second.queue_fd,
@@ -1939,6 +1941,19 @@ void CompatibilityKernel::refresh_pending_event_processor_locked(
     ++pending_event_topology_generation_;
 }
 
+bool CompatibilityKernel::pending_io_wait_ignores_mach_locked(
+    std::size_t processor) const
+{
+    // Pthread/user-lock wakes publish I/O readiness before scheduler callbacks.
+    // Ordinary clock waits depend only on their retained deadline. Bootstrap
+    // retries also observe service registration and must keep their Mach probe.
+    if (pending_psynch_waits_.contains(processor) ||
+        pending_ulock_waits_.contains(processor))
+        return true;
+    const auto timer = pending_timers_.find(processor);
+    return timer != pending_timers_.end() && !timer->second.bootstrap_retry;
+}
+
 bool CompatibilityKernel::pending_io_poll_required_locked(
     std::size_t processor) const
 {
@@ -1976,7 +1991,7 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
                     bits &= bits - 1U;
                 }
             }
-        } else {
+        } else if (!pending_io_wait_ignores_mach_locked(processor)) {
             return true;
         }
     }

@@ -936,6 +936,8 @@ private:
         std::uint64_t io_generation);
     [[nodiscard]] bool pending_io_poll_required_locked(
         std::size_t processor) const;
+    [[nodiscard]] bool pending_io_wait_ignores_mach_locked(
+        std::size_t processor) const;
     void remember_pending_io_not_ready_locked(std::size_t processor,
         std::uint64_t io_generation, std::uint64_t mach_generation);
     [[nodiscard]] std::optional<std::uint64_t>

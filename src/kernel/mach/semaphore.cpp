@@ -180,9 +180,11 @@ std::uint32_t CompatibilityKernel::signal_semaphore_thread_locked(
 void CompatibilityKernel::wake_thread_and_maybe_preempt(
     Cpu& cpu, const std::optional<WokenThread>& thread)
 {
-    if (!thread || !thread_wake_handler_)
+    if (!thread)
         return;
     shared_state_->note_io_event_transition();
+    if (!thread_wake_handler_)
+        return;
     const auto wake_result =
         thread_wake_handler_(thread->first, thread->second);
     if (wake_result.preemption_needed && scheduler_preemption_query_ &&
@@ -198,10 +200,11 @@ void CompatibilityKernel::wake_thread_and_maybe_preempt(
 void CompatibilityKernel::wake_threads_and_maybe_preempt(
     Cpu& cpu, std::span<const WokenThread> threads)
 {
-    if (!thread_wake_handler_)
-        return;
+    // Polling consumers observe readiness even without a scheduler callback.
     if (!threads.empty())
         shared_state_->note_io_event_transition();
+    if (!thread_wake_handler_)
+        return;
     bool preemption_needed = false;
     for (const auto& [process, processor] : threads) {
         preemption_needed |=
