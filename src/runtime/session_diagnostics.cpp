@@ -43,6 +43,7 @@ std::string_view state_name(XnuThreadState state)
     switch (state) {
     case XnuThreadState::Runnable: return "runnable";
     case XnuThreadState::Running: return "running";
+    case XnuThreadState::HostAwait: return "host-await";
     case XnuThreadState::Waiting: return "waiting";
     }
     return "unknown";
