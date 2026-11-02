@@ -3200,9 +3200,9 @@ void EmulatorSession::run()
                 // remains the dependency processor until NotifyFunc advances
                 // its watermark; storing it as the callback would discard the
                 // last processor observed at the real callback boundary.
-                if (const auto processor =
-                        runtime->kernel->display_vsync_dependency_processor();
-                    processor) {
+                const auto display =
+                    runtime->kernel->display_vsync_scheduling_snapshot();
+                if (const auto processor = display.dependency; processor) {
                     display_receive_pending = true;
                     const XnuThreadId receiver_thread { *display_urgent_process,
                         static_cast<std::uint32_t>(*processor) };
@@ -3217,9 +3217,8 @@ void EmulatorSession::run()
                             std::chrono::milliseconds { 50 };
                     }
                 }
-                if (runtime->kernel->display_vsync_callback_pending()) {
-                    if (const auto processor = runtime->kernel
-                            ->display_vsync_callback_processor()) {
+                if (display.callback_pending) {
+                    if (const auto processor = display.callback) {
                         const XnuThreadId callback_thread {
                             *display_urgent_process,
                             static_cast<std::uint32_t>(*processor)
@@ -3507,38 +3506,27 @@ void EmulatorSession::run()
                 ++runtime;
             }
         }
-        const auto display_callback_pending = [&]() {
-            if (!display_urgent_process)
-                return false;
-            for (const auto& runtime : runtimes) {
-                if (!runtime->kernel->process().exited &&
-                    runtime->kernel->process().pid == *display_urgent_process) {
-                    return runtime->kernel->display_vsync_callback_pending();
-                }
+        const auto display_dispatch_snapshot = [&]() {
+            if (display_urgent_process) {
+                if (auto* runtime = runtime_index.find(*display_urgent_process);
+                    runtime && !runtime->kernel->process().exited)
+                    return runtime->kernel->display_vsync_scheduling_snapshot();
             }
-            return false;
+            return CompatibilityKernel::DisplayVSyncSchedulingSnapshot {};
         }();
+        const auto display_callback_pending =
+            display_dispatch_snapshot.callback_pending;
+        // Event delivery above may have advanced NotifyFunc or SwapEnd. Use a
+        // fresh snapshot here, then retain it through this read-only selection.
         const auto observed_inflight_callback =
             [&]() -> std::optional<std::pair<XnuThreadId, std::uint64_t>> {
-            // NotifyFunc can consume the receive dependency in the preceding
-            // slice, including the first callback before a local callback hint
-            // exists. Resolve in-flight work from the registration even after
-            // the receive hint has been retired.
-            if (!display_urgent_process)
-                return std::nullopt;
-            for (const auto& runtime : runtimes) {
-                if (!runtime->kernel->process().exited &&
-                    runtime->kernel->process().pid == *display_urgent_process) {
-                    if (const auto dependency = runtime->kernel
-                            ->display_vsync_inflight_callback_dependency()) {
-                        return std::pair {
-                            XnuThreadId { *display_urgent_process,
-                                static_cast<std::uint32_t>(dependency->first) },
-                            dependency->second
-                        };
-                    }
-                    break;
-                }
+            if (display_urgent_process && display_dispatch_snapshot.inflight_callback) {
+                const auto& [processor, sequence] =
+                    *display_dispatch_snapshot.inflight_callback;
+                return std::pair {
+                    XnuThreadId { *display_urgent_process,
+                        static_cast<std::uint32_t>(processor) },
+                    sequence };
             }
             return std::nullopt;
         }();
@@ -3657,12 +3645,12 @@ void EmulatorSession::run()
                         if (info && info->state == XnuThreadState::Runnable)
                             frame_dependency_thread = thread;
                     };
-                prefer_runnable(
-                    runtime->kernel->display_vsync_dependency_processor());
-                if (!frame_dependency_thread &&
-                    runtime->kernel->display_vsync_callback_pending())
-                    prefer_runnable(
-                        runtime->kernel->display_vsync_callback_processor());
+                const auto display = display_urgent_process == active_process
+                    ? display_dispatch_snapshot
+                    : runtime->kernel->display_vsync_scheduling_snapshot();
+                prefer_runnable(display.dependency);
+                if (!frame_dependency_thread && display.callback_pending)
+                    prefer_runnable(display.callback);
             }
         }
         const auto host_continuation = guest_execution_policy.host_continuation(

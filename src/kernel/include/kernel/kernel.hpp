@@ -564,24 +564,21 @@ public:
     // Owner of the earliest registered pulse, independent of this kernel task.
     [[nodiscard]] std::optional<std::uint32_t> next_display_vsync_process() const;
     [[nodiscard]] std::optional<std::size_t> display_vsync_receiver_processor();
-    // Return the blocked Mach receiver, a bounded live receive continuation for
-    // an unread pulse, or the receiver awaiting the firmware callback boundary.
-    // This is host-only scheduling metadata and does not alter the receive ABI.
-    [[nodiscard]] std::optional<std::size_t>
-    display_vsync_dependency_processor();
-    // Returns the last guest processor observed inside the real display
-    // notification callback. This is host scheduling metadata only; callers
-    // must fall back to display_vsync_receiver_processor() when unavailable.
     [[nodiscard]] std::optional<std::size_t> display_vsync_callback_processor();
-    // Return the processor currently between the firmware NotifyFunc and
-    // SwapEnd boundaries. This closes only the host scheduling dependency; the
-    // Guest callback, frame count, and timing remain firmware-owned.
-    [[nodiscard]] std::optional<std::pair<std::size_t, std::uint64_t>>
-    display_vsync_inflight_callback_dependency();
-    // True only while a real queued VSync notification has not yet reached the
-    // firmware NotifyFunc boundary. This is host scheduling metadata and does
-    // not synthesize callbacks or keep selector 9 enabled.
-    [[nodiscard]] bool display_vsync_callback_pending();
+    struct DisplayVSyncSchedulingSnapshot {
+        // Blocked receive, bounded unread continuation, or delivered receiver
+        // awaiting the real firmware NotifyFunc boundary.
+        std::optional<std::size_t> dependency;
+        // Last processor observed at NotifyFunc, resolved when a callback is pending.
+        std::optional<std::size_t> callback;
+        // NotifyFunc has begun but SwapEnd has not retired its sequence.
+        std::optional<std::pair<std::size_t, std::uint64_t>> inflight_callback;
+        bool callback_pending { };
+    };
+    // Read the related host scheduling hints under one ownership boundary.
+    // Reuse only until Guest execution or event delivery can change them.
+    [[nodiscard]] DisplayVSyncSchedulingSnapshot
+    display_vsync_scheduling_snapshot();
     void advance_absolute_time(std::uint64_t deadline);
     void advance_time_by(std::uint64_t interval);
     // The clock is shared by every process, while device registrations are

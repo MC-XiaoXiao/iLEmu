@@ -131,63 +131,6 @@ CompatibilityKernel::display_vsync_receiver_processor()
 }
 
 std::optional<std::size_t>
-CompatibilityKernel::display_vsync_dependency_processor()
-{
-    std::lock_guard kernel_lock { mutex_ };
-    std::lock_guard mach_lock { shared_state_->mach_mutex };
-
-    std::optional<std::size_t> delivered_receiver;
-    std::optional<std::size_t> unread_receiver;
-    for (const auto& [connection_object, registration] :
-        shared_state_->iokit_display_vsync) {
-        static_cast<void>(connection_object);
-        if (!registration.enabled || registration.owner_pid != process_.pid ||
-            registration.callback_sequence >= registration.sequence) {
-            continue;
-        }
-        if (const auto receiver = preferred_pending_mach_receiver_locked(
-                registration.notification_port)) {
-            return receiver;
-        }
-        if (!delivered_receiver && registration.last_receiver_processor &&
-            registration.receiver_sequence > registration.callback_sequence) {
-            delivered_receiver =
-                static_cast<std::size_t>(*registration.last_receiver_processor);
-        }
-        if (!unread_receiver && registration.last_receiver_processor &&
-            registration.last_receiver_thread_object != 0U &&
-            registration.sequence > registration.receiver_sequence &&
-            std::chrono::steady_clock::now() <
-                registration.receiver_hint_deadline) {
-            const auto task =
-                shared_state_->task_thread_port_objects.find(process_.pid);
-            if (task == shared_state_->task_thread_port_objects.end())
-                continue;
-            const auto thread =
-                task->second.find(*registration.last_receiver_processor);
-            if (thread == task->second.end() ||
-                thread->second != registration.last_receiver_thread_object)
-                continue;
-            const auto queue =
-                shared_state_->mach_queues.find(registration.notification_port);
-            if (queue != shared_state_->mach_queues.end() &&
-                std::any_of(queue->second.begin(), queue->second.end(),
-                    [&](const auto& message) {
-                        return message.display_vsync_connection_object ==
-                                   connection_object &&
-                               message.display_vsync_registration_generation ==
-                                   registration.registration_generation &&
-                               message.display_vsync_sequence ==
-                                   registration.sequence;
-                    })) {
-                unread_receiver = *registration.last_receiver_processor;
-            }
-        }
-    }
-    return delivered_receiver ? delivered_receiver : unread_receiver;
-}
-
-std::optional<std::size_t>
 CompatibilityKernel::display_vsync_callback_processor()
 {
     std::lock_guard kernel_lock { mutex_ };
@@ -217,44 +160,97 @@ CompatibilityKernel::display_vsync_callback_processor()
     return fallback;
 }
 
-std::optional<std::pair<std::size_t, std::uint64_t>>
-CompatibilityKernel::display_vsync_inflight_callback_dependency()
+CompatibilityKernel::DisplayVSyncSchedulingSnapshot
+CompatibilityKernel::display_vsync_scheduling_snapshot()
 {
     std::lock_guard kernel_lock { mutex_ };
     std::lock_guard mach_lock { shared_state_->mach_mutex };
+    DisplayVSyncSchedulingSnapshot snapshot;
+    std::optional<std::size_t> blocked_dependency;
+    std::optional<std::size_t> delivered_receiver;
+    std::optional<std::size_t> unread_receiver;
+    bool preferred_callback = false;
+    // Discover callback ownership before resolving queues. A settled display
+    // needs no callback receiver lookup; its previous callback remains merely
+    // historical metadata.
     for (const auto& [connection_object, registration] :
         shared_state_->iokit_display_vsync) {
         static_cast<void>(connection_object);
-        if (registration.enabled && registration.owner_pid == process_.pid &&
-            registration.last_callback_processor &&
+        if (!registration.enabled || registration.owner_pid != process_.pid)
+            continue;
+        snapshot.callback_pending = snapshot.callback_pending ||
+            registration.callback_sequence < registration.receiver_sequence;
+        if (!snapshot.inflight_callback && registration.last_callback_processor &&
             registration.swap_sequence < registration.callback_sequence) {
-            return std::pair { static_cast<std::size_t>(
-                                   *registration.last_callback_processor),
+            snapshot.inflight_callback = std::pair {
+                static_cast<std::size_t>(*registration.last_callback_processor),
                 registration.callback_sequence };
         }
     }
-    return std::nullopt;
-}
-
-bool CompatibilityKernel::display_vsync_callback_pending()
-{
-    std::lock_guard kernel_lock { mutex_ };
-    std::lock_guard mach_lock { shared_state_->mach_mutex };
-    return std::any_of(shared_state_->iokit_display_vsync.begin(),
-        shared_state_->iokit_display_vsync.end(), [this](const auto& entry) {
-            const auto& registration = entry.second;
-            // A queued notification is not callback work yet. Its exact
-            // blocked Mach receiver is handled by
-            // display_vsync_dependency_processor(); using the previous
-            // callback processor before this pulse is received can starve the
-            // run-loop dependency that will consume it. The callback becomes
-            // pending only after successful Mach copyout establishes the
-            // receiver watermark.
-            return registration.enabled &&
-                   registration.owner_pid == process_.pid &&
-                   registration.callback_sequence <
-                       registration.receiver_sequence;
-        });
+    for (const auto& [connection_object, registration] :
+        shared_state_->iokit_display_vsync) {
+        if (!registration.enabled || registration.owner_pid != process_.pid)
+            continue;
+        const auto awaiting_callback =
+            registration.callback_sequence < registration.sequence;
+        // Each receiver lookup walks the compound Mach wait queue. Resolve it
+        // once for all hints that inspect this registration, retaining their
+        // independent first-match and fallback ordering.
+        const auto receiver =
+            (awaiting_callback && !blocked_dependency) ||
+                    (snapshot.callback_pending &&
+                        registration.last_callback_processor && !preferred_callback)
+                ? preferred_pending_mach_receiver_locked(
+                      registration.notification_port)
+                : std::nullopt;
+        if (snapshot.callback_pending && registration.last_callback_processor) {
+            if (!snapshot.callback || (receiver && !preferred_callback))
+                snapshot.callback = *registration.last_callback_processor;
+            if (receiver)
+                preferred_callback = true;
+        }
+        if (!awaiting_callback || blocked_dependency)
+            continue;
+        if (receiver) {
+            blocked_dependency = receiver;
+            continue;
+        }
+        if (!delivered_receiver && registration.last_receiver_processor &&
+            registration.receiver_sequence > registration.callback_sequence)
+            delivered_receiver = *registration.last_receiver_processor;
+        if (!unread_receiver && registration.last_receiver_processor &&
+            registration.last_receiver_thread_object != 0U &&
+            registration.sequence > registration.receiver_sequence &&
+            std::chrono::steady_clock::now() <
+                registration.receiver_hint_deadline) {
+            const auto task =
+                shared_state_->task_thread_port_objects.find(process_.pid);
+            if (task == shared_state_->task_thread_port_objects.end())
+                continue;
+            const auto thread =
+                task->second.find(*registration.last_receiver_processor);
+            if (thread == task->second.end() ||
+                thread->second != registration.last_receiver_thread_object)
+                continue;
+            const auto queue =
+                shared_state_->mach_queues.find(registration.notification_port);
+            if (queue != shared_state_->mach_queues.end() &&
+                std::any_of(queue->second.begin(), queue->second.end(),
+                    [&](const auto& message) {
+                        return message.display_vsync_connection_object ==
+                                   connection_object &&
+                               message.display_vsync_registration_generation ==
+                                   registration.registration_generation &&
+                               message.display_vsync_sequence ==
+                                   registration.sequence;
+                    }))
+                unread_receiver = *registration.last_receiver_processor;
+        }
+    }
+    snapshot.dependency = blocked_dependency ? blocked_dependency
+                          : delivered_receiver ? delivered_receiver
+                                               : unread_receiver;
+    return snapshot;
 }
 
 std::optional<std::size_t> CompatibilityKernel::pending_mach_receiver_processor(
