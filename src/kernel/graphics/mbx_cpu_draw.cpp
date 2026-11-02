@@ -155,7 +155,7 @@ try {
     if (!cpu->credit)
         cpu->credit = reserve_gles_host_preparation(cpu->bytes);
     if (!cpu->credit) {
-        call.suspend_until(
+        call.suspend_for_host(
             [bytes = cpu->bytes] { return gles_host_preparation_capacity(bytes); },
             [this, cpu](UserlandHleCall& resumed) { await_cpu_draw(resumed, cpu); });
         return;
@@ -232,7 +232,7 @@ try {
     if (!dependency || dependency->ready())
         dependency = target.host_surface->reader();
     if (dependency && !dependency->ready()) {
-        call.suspend_until([dependency] { return dependency->ready(); },
+        call.suspend_for_host([dependency] { return dependency->ready(); },
             [this, cpu](UserlandHleCall& resumed) {
                 await_cpu_write(resumed, cpu);
             }, dependency->sequence());

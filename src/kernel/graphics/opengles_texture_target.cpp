@@ -62,7 +62,7 @@ bool OpenGlesHle::prepare_texture_target(
         if (!dependency || dependency->ready())
             return false;
         const auto lease = program_wait(call);
-        call.suspend_until([dependency] { return dependency->ready(); },
+        call.suspend_for_host([dependency] { return dependency->ready(); },
             [this, lease, handler](UserlandHleCall& resumed) {
                 lease->consume();
                 await_graphics_call(resumed, handler);
@@ -114,7 +114,7 @@ bool OpenGlesHle::prepare_texture_target(
         auto credit = reserve_gles_host_preparation(bytes);
         if (!credit) {
             const auto lease = program_wait(call);
-            call.suspend_until(
+            call.suspend_for_host(
                 [bytes] { return gles_host_preparation_capacity(bytes); },
                 [this, lease, handler](UserlandHleCall& resumed) {
                     lease->consume();
@@ -168,7 +168,7 @@ void OpenGlesHle::await_texture_target(UserlandHleCall& call,
         return;
     }
     if (!pending->result) {
-        call.suspend_until(
+        call.suspend_for_host(
             [bytes = pending->bytes] {
                 return gles_host_work_capacity(0, bytes);
             },
@@ -178,7 +178,7 @@ void OpenGlesHle::await_texture_target(UserlandHleCall& call,
         return;
     }
     lease->result = pending->result;
-    call.suspend_until([result = pending->result] { return result->ready(); },
+    call.suspend_for_host([result = pending->result] { return result->ready(); },
         [this, pending, lease, handler](UserlandHleCall& resumed) {
             const auto* context = current_context(resumed);
             const auto* texture = resources_.texture(pending->texture);

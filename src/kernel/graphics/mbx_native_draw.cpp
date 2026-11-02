@@ -224,7 +224,7 @@ try {
         if (!work->credit) {
             work->credit = reserve_gles_host_preparation(bytes);
             if (!work->credit) {
-                call.suspend_until(
+                call.suspend_for_host(
                     [] { return gles_host_preparation_capacity(bytes); },
                     [this, pending](UserlandHleCall& resumed) {
                         await_native_draw(resumed, pending);
@@ -244,7 +244,7 @@ try {
                 throw std::runtime_error { "failed MBX native source writer" };
         }
         if (dependency && !dependency->ready()) {
-            call.suspend_until([dependency] { return dependency->ready(); },
+            call.suspend_for_host([dependency] { return dependency->ready(); },
                 [this, pending](UserlandHleCall& resumed) {
                     await_native_draw(resumed, pending);
                 }, dependency->sequence());
@@ -253,7 +253,7 @@ try {
         gate->result = enqueue_gles_surface_write(work->target,
             [work](DisplayFrame&) { return work->execute(); });
         if (!gate->result) {
-            call.suspend_until([] { return gles_host_work_capacity(0); },
+            call.suspend_for_host([] { return gles_host_work_capacity(0); },
                 [this, pending](UserlandHleCall& resumed) {
                     await_native_draw(resumed, pending);
                 });
@@ -265,7 +265,7 @@ try {
             work->source->record_read(gate->result->completion());
     }
     const auto result = gate->result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, pending](UserlandHleCall& resumed) {
             const auto live = native_draw_live(resumed, *pending);
             const auto lease = pending->lease;

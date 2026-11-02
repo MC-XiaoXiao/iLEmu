@@ -67,7 +67,7 @@ try {
         // No command or snapshot was accepted. Only scalar ABI is retained;
         // preparation may restart after capacity returns and store dependencies
         // have been consumed, just as for program-draw preparation.
-        call.suspend_until(
+        call.suspend_for_host(
             [bytes] { return gles_host_preparation_capacity(bytes); },
             [this, indexed](UserlandHleCall& resumed) {
                 await_graphics_call(
@@ -125,7 +125,7 @@ try {
                 // gate, and prepare again after capacity returns.
                 pending->lease->complete_core = { };
                 pending->host.reset();
-                call.suspend_until([] { return gles_host_work_capacity(0); },
+                call.suspend_for_host([] { return gles_host_work_capacity(0); },
                     [this, lease = pending->lease, indexed = pending->indexed](
                         UserlandHleCall& resumed) {
                         lease->consume();
@@ -136,7 +136,7 @@ try {
                     });
                 return;
             }
-            call.suspend_until(
+            call.suspend_for_host(
                 [host = pending->host] { return host->capacity(); },
                 [this, pending](UserlandHleCall& resumed) {
                     await_frame_draw(resumed, pending);
@@ -147,7 +147,7 @@ try {
         performance_counters().record_draw();
     }
     const auto result = pending->result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, pending](UserlandHleCall& resumed) {
             try {
                 if (pending->owner != renderer_owner_ ||

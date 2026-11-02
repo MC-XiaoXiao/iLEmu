@@ -236,7 +236,7 @@ void Mbx2dHle::enter_graphics_call(
     UserlandHleCall& call, UserlandHleRegistry::Handler handler)
 {
     if (!renderer_lifetime_->activate()) {
-        call.suspend_until(
+        call.suspend_for_host(
             [this] {
                 return renderer_lifetime_->active() ||
                        GlesRendererOwner::capacity();
@@ -249,7 +249,7 @@ void Mbx2dHle::enter_graphics_call(
     service_graphics_completions();
     if (sync_lease_ && !sync_lease_->consumed) {
         const auto lease = sync_lease_;
-        call.suspend_until([lease] { return lease->ready(); },
+        call.suspend_for_host([lease] { return lease->ready(); },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
                 enter_graphics_call(resumed, handler);
             }, lease->result ? lease->result->sequence() : 0);
@@ -280,7 +280,7 @@ void Mbx2dHle::enter_graphics_call(
             auto lease = std::make_shared<GraphicsCallLease>();
             lease->owner = call.cpu().processor_id();
             sync_lease_ = lease;
-            call.suspend_until([dependency] { return dependency->ready(); },
+            call.suspend_for_host([dependency] { return dependency->ready(); },
                 [this, lease, handler = std::move(handler)](
                     UserlandHleCall& resumed) {
                     lease->consume();

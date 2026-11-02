@@ -852,7 +852,7 @@ void OpenGlesHle::flush_surface_frame_async(UserlandHleCall& call,
         auto credit = reserve_gles_host_preparation(bytes);
         if (!credit) {
             lease = program_wait(call);
-            call.suspend_until(
+            call.suspend_for_host(
                 [bytes] { return gles_host_preparation_capacity(bytes); },
                 [this, lease, surface, completed](UserlandHleCall& resumed) {
                     lease->consume();
@@ -1347,7 +1347,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
             const auto writer = source ? source->writer() : nullptr;
             if (writer && !writer->ready()) {
                 const auto lease = program_wait(call);
-                call.suspend_until([writer] { return writer->ready(); },
+                call.suspend_for_host([writer] { return writer->ready(); },
                     [this, lease, indexed](UserlandHleCall& resumed) {
                         lease->consume();
                         await_graphics_call(resumed,

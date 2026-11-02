@@ -91,7 +91,7 @@ try {
                 return framebuffer->execute(renderer, frame);
             });
         if (!framebuffer->result) {
-            call.suspend_until(
+            call.suspend_for_host(
                 [bytes] { return gles_host_work_capacity(bytes); },
                 [this, cpu, write](UserlandHleCall& resumed) {
                     await_framebuffer(resumed, cpu, write);
@@ -103,7 +103,7 @@ try {
             source->record_read(framebuffer->result->completion());
     }
     const auto result = framebuffer->result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, cpu, framebuffer, result, write](UserlandHleCall& resumed) {
             try {
                 if (!cpu_draw_live(resumed, *cpu, !write) ||

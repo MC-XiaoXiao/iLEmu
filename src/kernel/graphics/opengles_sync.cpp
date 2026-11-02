@@ -176,7 +176,7 @@ void OpenGlesHle::await_graphics_call(
     UserlandHleCall& call, UserlandHleRegistry::Handler handler)
 {
     if (!renderer_lifetime_->activate()) {
-        call.suspend_until(
+        call.suspend_for_host(
             [this] {
                 return renderer_lifetime_->active() ||
                        GlesRendererOwner::capacity();
@@ -191,7 +191,7 @@ void OpenGlesHle::await_graphics_call(
         // Only calls touching this process's graphics stores depend on this
         // lease. Other guest threads, devices and processes keep executing.
         const auto lease = sync_lease_;
-        call.suspend_until([lease] { return lease->ready(); },
+        call.suspend_for_host([lease] { return lease->ready(); },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
                 await_graphics_call(resumed, handler);
             },
@@ -205,7 +205,7 @@ void OpenGlesHle::await_graphics_call(
         // existing store gate while already retired GPU resources are reclaimed.
         // Deletion/binding/query calls do not need this creation credit.
         const auto lease = program_wait(call);
-        call.suspend_until(
+        call.suspend_for_host(
             [] {
                 return GlesRendererOwner::capacity() ||
                        !GlesRendererOwner::retirement_pending();
@@ -220,7 +220,7 @@ void OpenGlesHle::await_graphics_call(
         !program_renderer_->issuer_ready(call.cpu().processor_id())) {
         const auto issuer = call.cpu().processor_id();
         const auto boundary = program_renderer_->issuer_boundary(issuer);
-        call.suspend_until(
+        call.suspend_for_host(
             [this, issuer, boundary] {
                 return !program_renderer_ ||
                        program_renderer_->issuer_ready(issuer, boundary);
@@ -265,14 +265,14 @@ void OpenGlesHle::await_program_flush(
         return;
     }
     if (!result) {
-        call.suspend_until([bytes] { return gles_host_work_capacity(bytes); },
+        call.suspend_for_host([bytes] { return gles_host_work_capacity(bytes); },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
                 await_program_flush(resumed, handler);
             });
         return;
     }
     lease->result = result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, result, lease, key, handler = std::move(handler)](
             UserlandHleCall& resumed) {
             if (!result->succeeded() || !pending_program_target_ ||
@@ -372,7 +372,7 @@ void OpenGlesHle::submit_host_work_async(UserlandHleCall& call, std::size_t byte
                           ? enqueue_gles_surface_write(write_target, execute)
                           : enqueue_gles_host_work(bytes, execute);
         if (!result) {
-            call.suspend_until(
+            call.suspend_for_host(
                 [bytes, write_target] {
                     const auto writer =
                         write_target ? write_target->writer() : nullptr;
@@ -392,7 +392,7 @@ void OpenGlesHle::submit_host_work_async(UserlandHleCall& call, std::size_t byte
             read_source->record_read(result->completion());
         // Core-only metadata follows real accepted work, including issuer exit.
         lease->complete_core = std::move(complete_core);
-        call.suspend_until([result] { return result->ready(); },
+        call.suspend_for_host([result] { return result->ready(); },
             [result, lease, completed](UserlandHleCall& resumed) {
                 lease->consume();
                 completed(resumed, result);

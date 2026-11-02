@@ -22,7 +22,7 @@ void OpenGlesHle::prepare_fork(UserlandHleCall& call,
             prepared = false;
         } else if (sync_lease_ && !sync_lease_->consumed) {
             const auto lease = sync_lease_;
-            call.suspend_until([lease] { return lease->ready(); },
+            call.suspend_for_host([lease] { return lease->ready(); },
                 [this, completion](UserlandHleCall& resumed) {
                     prepare_fork(resumed, completion);
                 },

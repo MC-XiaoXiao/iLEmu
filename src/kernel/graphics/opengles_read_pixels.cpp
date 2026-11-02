@@ -143,7 +143,7 @@ try {
             return renderer->synchronize(output, key);
         });
     if (!result) {
-        call.suspend_until([bytes] { return gles_host_work_capacity(bytes); },
+        call.suspend_for_host([bytes] { return gles_host_work_capacity(bytes); },
             [this, destination](UserlandHleCall& resumed) {
                 await_graphics_call(
                     resumed, [this, destination](UserlandHleCall& ready) {
@@ -158,7 +158,7 @@ try {
     lease->owner = call.cpu().processor_id();
     lease->result = result;
     sync_lease_ = lease;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, result, lease, inverted = binding->inverted_vertical,
             destination, backing = binding->backing_identifier,
             key = binding->key](UserlandHleCall& resumed) {

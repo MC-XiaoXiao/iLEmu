@@ -412,7 +412,7 @@ MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         submit_layers(resumed);
     };
     if (!credit) {
-        call.suspend_until(
+        call.suspend_for_host(
             [bytes] { return gles_host_preparation_capacity(bytes); }, retry);
         return SubmissionResult::Pending;
     }
@@ -455,7 +455,7 @@ MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
     if (!pending->result) {
         // Nothing was accepted. Rebuild live input preparation after capacity
         // returns, rather than retaining a mutable source across admission.
-        call.suspend_until([] { return gles_host_work_capacity(0); }, retry);
+        call.suspend_for_host([] { return gles_host_work_capacity(0); }, retry);
         return SubmissionResult::Pending;
     }
     pending->lease->result = pending->result;
@@ -472,7 +472,7 @@ void MobileFramebufferHle::await_native_layers(
     UserlandHleCall& call, std::shared_ptr<NativeSubmission> pending)
 {
     const auto result = pending->result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, pending](UserlandHleCall& resumed) {
             try {
                 bool live = pending->lease == sync_lease_ &&

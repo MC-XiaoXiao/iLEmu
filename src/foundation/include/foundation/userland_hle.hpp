@@ -82,6 +82,10 @@ public:
     // Neither closure may retain this call or its temporary Cpu reference.
     void suspend_until(std::function<bool()> ready, Continuation completion,
         std::uint64_t completion_sequence = 0);
+    // An implementation wait on host work retains the Guest execution turn.
+    // Actual Guest waits continue to use suspend_until.
+    void suspend_for_host(std::function<bool()> ready, Continuation completion,
+        std::uint64_t completion_sequence = 0);
     [[nodiscard]] bool has_pending_completion() const
     {
         return static_cast<bool>(pending_completion_);
@@ -162,6 +166,7 @@ private:
     std::function<bool()> pending_ready_;
     Continuation pending_completion_;
     std::uint64_t pending_sequence_ { };
+    bool pending_host_continuation_ { };
     std::optional<std::array<std::uint32_t, 16>> saved_arguments_;
     enum class ReturnBoundary { LinkRegister, SavedProgramCounter };
     ReturnBoundary return_boundary_ { ReturnBoundary::LinkRegister };
@@ -292,6 +297,7 @@ public:
     [[nodiscard]] bool run_kernel_operation(Cpu& cpu, std::uint32_t process_id,
         std::string_view operation, Handler handler);
     [[nodiscard]] bool pending_call(std::size_t processor) const;
+    [[nodiscard]] bool pending_host_continuation(std::size_t processor) const;
     [[nodiscard]] bool pending_call_ready(std::size_t processor) const;
     [[nodiscard]] std::optional<std::uint64_t> pending_call_sequence(
         std::size_t processor) const;
@@ -480,6 +486,7 @@ private:
         std::uint32_t entry_address;
         std::uint16_t registration_id;
         std::uint64_t sequence;
+        bool host_continuation;
         std::function<bool()> ready;
         Handler completion;
         UserlandHleCall::ReturnBoundary return_boundary {

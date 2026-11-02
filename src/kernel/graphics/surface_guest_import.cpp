@@ -124,14 +124,14 @@ try {
         throw std::runtime_error { "guest import backing was replaced" };
     const auto reader = pending->surface ? pending->surface->reader() : nullptr;
     if (reader && !reader->ready()) {
-        call.suspend_until([reader] { return reader->ready(); },
+        call.suspend_for_host([reader] { return reader->ready(); },
             [pending](UserlandHleCall& resumed) { resume(resumed, pending); },
             reader->sequence());
         return;
     }
     const auto writer = pending->surface ? pending->surface->writer() : nullptr;
     if (writer && !writer->ready()) {
-        call.suspend_until([writer] { return writer->ready(); },
+        call.suspend_for_host([writer] { return writer->ready(); },
             [pending](UserlandHleCall& resumed) { resume(resumed, pending); },
             writer->sequence());
         return;
@@ -211,7 +211,7 @@ try {
                 return host->value.capture();
             });
         if (!host->completion) {
-            call.suspend_until(
+            call.suspend_for_host(
                 [bytes = pending->bytes] {
                     return gles_host_work_capacity(bytes);
                 },
@@ -222,7 +222,7 @@ try {
     const auto ticket = host->completion;
     if (pending->lease)
         pending->lease->result = ticket;
-    call.suspend_until([ticket] { return ticket->ready(); },
+    call.suspend_for_host([ticket] { return ticket->ready(); },
         [pending](UserlandHleCall& resumed) { resume(resumed, pending); },
         ticket->sequence());
 } catch (...) {

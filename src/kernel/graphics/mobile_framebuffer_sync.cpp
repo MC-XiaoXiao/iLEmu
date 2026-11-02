@@ -196,7 +196,7 @@ void MobileFramebufferHle::enter_swap_call(
                 handler(ready);
             };
         }
-        call.suspend_until([lease] { return lease->ready(); },
+        call.suspend_for_host([lease] { return lease->ready(); },
             [this, handler = std::move(handler)](UserlandHleCall& resumed) {
                 enter_swap_call(resumed, handler);
             },
@@ -326,7 +326,7 @@ try {
     if (!pending->credit) {
         pending->credit = reserve_gles_host_preparation(pending->bytes);
         if (!pending->credit) {
-            call.suspend_until(
+            call.suspend_for_host(
                 [bytes = pending->bytes] {
                     return gles_host_preparation_capacity(bytes);
                 },

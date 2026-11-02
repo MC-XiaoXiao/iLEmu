@@ -192,7 +192,7 @@ void OpenGlesHle::execute_program_draw(UserlandHleCall& call,
         // attribute views/frame data on return; preparation may safely restart
         // from frozen scalar ABI after credit becomes available.
         const auto lease = program_wait(call);
-        call.suspend_until(
+        call.suspend_for_host(
             [bytes] { return gles_draw_preparation_capacity(bytes); },
             [this, lease, indexed](UserlandHleCall& resumed) {
                 lease->consume();
@@ -232,7 +232,7 @@ void OpenGlesHle::prepare_program_inputs(UserlandHleCall& call,
         return;
     }
     if (!result) {
-        call.suspend_until(
+        call.suspend_for_host(
             [this, prepared] {
                 return !program_renderer_ ||
                        program_renderer_->draw_capacity(prepared);
@@ -243,7 +243,7 @@ void OpenGlesHle::prepare_program_inputs(UserlandHleCall& call,
         return;
     }
     lease->result = result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, binding, dimensions, prepared, lease](UserlandHleCall& resumed) {
             try {
                 if (!program_renderer_ || !binding_live(binding))
@@ -294,7 +294,7 @@ void OpenGlesHle::submit_program_draw(UserlandHleCall& call,
     }
     if (!result) {
         static_cast<void>(program_wait(call));
-        call.suspend_until(
+        call.suspend_for_host(
             [this, prepared] {
                 return !program_renderer_ ||
                        program_renderer_->draw_capacity(prepared);

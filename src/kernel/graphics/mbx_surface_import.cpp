@@ -82,7 +82,7 @@ try {
             static_cast<std::size_t>(plan->count) * sizeof(FlushPlan::Entry);
         plan->credit = reserve_gles_host_preparation(metadata_bytes);
         if (!plan->credit) {
-            call.suspend_until(
+            call.suspend_for_host(
                 [metadata_bytes] {
                     return gles_host_preparation_capacity(metadata_bytes);
                 },
@@ -161,7 +161,7 @@ try {
                     ++plan->next;
                     // Keep even an immediately completed import off a recursive
                     // list walk. This is a core continuation, not a GPU completion.
-                    resumed.suspend_until([] { return true; },
+                    resumed.suspend_for_host([] { return true; },
                         [this, lease, plan](UserlandHleCall& ready) {
                             await_flush_surfaces(ready, lease, plan);
                         });

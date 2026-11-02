@@ -163,7 +163,7 @@ try {
         needs_composition ? reserve_gles_host_preparation(bytes) : nullptr;
     if (needs_composition && !credit) {
         const auto lease = program_wait(call);
-        call.suspend_until(
+        call.suspend_for_host(
             [bytes] { return gles_host_preparation_capacity(bytes); },
             [this, lease, context, renderbuffer, renderbuffer_name, binding,
                 drawable_viewport](UserlandHleCall& resumed) {

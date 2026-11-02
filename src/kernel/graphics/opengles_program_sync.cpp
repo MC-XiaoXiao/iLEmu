@@ -32,7 +32,7 @@ void OpenGlesHle::park_program_job(UserlandHleCall& call,
     std::shared_ptr<SyncLease> lease, UserlandHleRegistry::Handler completion)
 {
     const auto result = lease->result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, lease, completion = std::move(completion)](
             UserlandHleCall& resumed) {
             try {
@@ -67,7 +67,7 @@ void OpenGlesHle::with_program_renderer(
         return;
     }
     if (!result) {
-        call.suspend_until(
+        call.suspend_for_host(
             [] {
                 return gles_host_work_capacity(
                     GlesProgramWorker::initialization_bytes);
@@ -131,7 +131,7 @@ void OpenGlesHle::with_program_limits(
             return;
         }
         if (!result) {
-            ready.suspend_until(
+            ready.suspend_for_host(
                 [] {
                     return gles_host_work_capacity(
                         sizeof(std::optional<GlesProgramWorker::Limits>));
@@ -184,7 +184,7 @@ void OpenGlesHle::enqueue_program_link(UserlandHleCall& call,
         return;
     }
     if (!result) {
-        call.suspend_until(
+        call.suspend_for_host(
             [] {
                 return gles_host_work_capacity(
                     GlesProgramWorker::link_result_bytes);
@@ -328,7 +328,7 @@ void OpenGlesHle::delete_program(UserlandHleCall& call, bool prepared)
         return;
     }
     if (!result) {
-        call.suspend_until(
+        call.suspend_for_host(
             [] {
                 return gles_host_work_capacity(
                     sizeof(GlesProgramWorker::ErasedProgram));
@@ -375,7 +375,7 @@ void OpenGlesHle::shader_precision(UserlandHleCall& call)
             return;
         }
         if (!result) {
-            ready.suspend_until(
+            ready.suspend_for_host(
                 [] { return gles_host_work_capacity(sizeof(Value)); },
                 [this](
                     UserlandHleCall& resumed) { shader_precision(resumed); });

@@ -181,7 +181,7 @@ void CoreSurfaceHle::await_cpu_access(
         }
         if (!host->completion) {
             const auto bytes = pending->bytes;
-            call.suspend_until(
+            call.suspend_for_host(
                 [bytes] { return gles_host_work_capacity(bytes); },
                 [this, pending](UserlandHleCall& resumed) {
                     await_cpu_access(resumed, pending);
@@ -190,7 +190,7 @@ void CoreSurfaceHle::await_cpu_access(
         }
     }
     const auto result = host->completion;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, pending](UserlandHleCall& resumed) {
             complete_cpu_access(
                 resumed, pending, pending->result->completion->succeeded());

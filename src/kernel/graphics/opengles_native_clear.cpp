@@ -94,7 +94,7 @@ try {
     auto credit = reserve_gles_host_preparation(bytes);
     if (!credit) {
         const auto lease = program_wait(call);
-        call.suspend_until(
+        call.suspend_for_host(
             [bytes] { return gles_host_preparation_capacity(bytes); },
             [this, lease, binding, owner = renderer_owner_, color, color_mask,
                 scissor](UserlandHleCall& resumed) {
@@ -195,7 +195,7 @@ try {
         if (!work->credit) {
             work->credit = reserve_gles_host_preparation(bytes);
             if (!work->credit) {
-                call.suspend_until(
+                call.suspend_for_host(
                     [] { return gles_host_preparation_capacity(bytes); },
                     [this, pending](UserlandHleCall& resumed) {
                         await_native_clear(resumed, pending);
@@ -216,7 +216,7 @@ try {
                 pending->result_bytes, std::move(execute));
         }
         if (!pending->result) {
-            call.suspend_until(
+            call.suspend_for_host(
                 [target = work->target, bytes = pending->result_bytes] {
                     const auto writer = target ? target->writer() : nullptr;
                     return (!writer || writer->ready()) &&
@@ -232,7 +232,7 @@ try {
         pending->lease->result = pending->result;
     }
     const auto result = pending->result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, pending](UserlandHleCall& resumed) {
             try {
                 if (pending->owner != renderer_owner_ ||

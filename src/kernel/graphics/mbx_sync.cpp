@@ -141,7 +141,7 @@ void Mbx2dHle::await_submission(UserlandHleCall& call,
             plan->bytes = capacity * sizeof(HostSurfaceKey);
             plan->credit = reserve_gles_host_preparation(plan->bytes);
             if (!plan->credit) {
-                call.suspend_until(
+                call.suspend_for_host(
                     [bytes = plan->bytes] {
                         return gles_host_preparation_capacity(bytes);
                     },
@@ -170,7 +170,7 @@ void Mbx2dHle::await_submission(UserlandHleCall& call,
         return;
     }
     if (!result) {
-        call.suspend_until(
+        call.suspend_for_host(
             [bytes = plan->bytes] { return gles_host_work_capacity(0, bytes); },
             [this, lease, plan](UserlandHleCall& resumed) {
                 await_submission(resumed, lease, plan);
@@ -179,7 +179,7 @@ void Mbx2dHle::await_submission(UserlandHleCall& call,
     }
     plan->accepted = true;
     lease->result = result;
-    call.suspend_until([result] { return result->ready(); },
+    call.suspend_for_host([result] { return result->ready(); },
         [this, result, lease, plan](UserlandHleCall& resumed) {
             const auto terminate = plan->kind == SubmissionKind::Terminate;
             const auto same_owner = plan->owner == renderer_owner_;

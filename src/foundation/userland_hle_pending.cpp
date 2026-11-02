@@ -22,6 +22,13 @@ void UserlandHleCall::suspend_until(std::function<bool()> ready,
     pending_sequence_ = completion_sequence;
 }
 
+void UserlandHleCall::suspend_for_host(std::function<bool()> ready,
+    Continuation completion, std::uint64_t completion_sequence)
+{
+    suspend_until(std::move(ready), std::move(completion), completion_sequence);
+    pending_host_continuation_ = true;
+}
+
 bool UserlandHleRegistry::run_kernel_operation(Cpu& cpu,
     std::uint32_t process_id, std::string_view operation, Handler handler)
 {
@@ -54,7 +61,9 @@ void UserlandHleRegistry::park_call(UserlandHleCall& call)
                   call.cpu_.registers(), arguments, call.cpu_.cpsr(),
                   std::string { call.symbol_ }, call.prefix_argument_count_,
                   call.entry_address_, call.registration_id_,
-                  call.pending_sequence_, std::move(call.pending_ready_),
+                  call.pending_sequence_, call.pending_host_continuation_ &&
+                      call.return_boundary_ == UserlandHleCall::ReturnBoundary::LinkRegister,
+                  std::move(call.pending_ready_),
                   std::move(call.pending_completion_), call.return_boundary_ });
     // Even an already completed ticket parks once. The next serial kernel
     // boundary observes its retained level state, so publication cannot race
@@ -65,6 +74,12 @@ void UserlandHleRegistry::park_call(UserlandHleCall& call)
 bool UserlandHleRegistry::pending_call(std::size_t processor) const
 {
     return pending_host_calls_.contains(processor);
+}
+
+bool UserlandHleRegistry::pending_host_continuation(std::size_t processor) const
+{
+    const auto pending = pending_host_calls_.find(processor);
+    return pending != pending_host_calls_.end() && pending->second.host_continuation;
 }
 
 bool UserlandHleRegistry::pending_call_ready(std::size_t processor) const
