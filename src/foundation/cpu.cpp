@@ -6,6 +6,7 @@
 // and CPU callbacks.
 
 #include "foundation/cpu.hpp"
+#include "foundation/cpu_run_result.hpp"
 #include "execution/cooperation.hpp"
 #include "cpu_independent_executor.hpp"
 #include "foundation/jit_tiered_execution.hpp"
@@ -3916,22 +3917,6 @@ public:
         return run_tiered(cpu, ticks, slot, cooperative, host_budget);
     }
 
-    static void accumulate(CpuRunResult& total, CpuRunResult part)
-    {
-        total.ticks_consumed += part.ticks_consumed;
-        total.svc_calls += part.svc_calls;
-        total.host_execution_ns += part.host_execution_ns;
-        total.host_yield_checks += part.host_yield_checks;
-        total.translated_code |= part.translated_code;
-        total.host_yielded |= part.host_yielded;
-        total.reason = total.reason | part.reason;
-        total.svc = part.svc;
-        total.fault = std::move(part.fault);
-        total.exception = std::move(part.exception);
-        total.architectural_exception = part.architectural_exception;
-        total.debug_breakpoint = part.debug_breakpoint;
-    }
-
     CpuRunResult run_native_tiered(Cpu& cpu, std::uint64_t ticks, std::size_t slot,
         bool cooperative, std::chrono::nanoseconds host_budget)
     {
@@ -3985,7 +3970,7 @@ public:
                 }
             }
             const bool boundary = part.backend_switch;
-            accumulate(total, std::move(part));
+            accumulate_cpu_run(total, std::move(part));
             if (total.reason != Dynarmic::HaltReason{} || total.host_yielded || !boundary)
                 break;
         }
@@ -4107,7 +4092,7 @@ public:
                 force_native = false;
             }
             const auto boundary = part.backend_switch;
-            accumulate(total, std::move(part));
+            accumulate_cpu_run(total, std::move(part));
             if (total.reason != Dynarmic::HaltReason{} || total.host_yielded ||
                 (!boundary && !unsupported))
                 break;

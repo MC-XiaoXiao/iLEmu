@@ -20,6 +20,16 @@
 
 namespace ilemu {
 
+class GuestExecutionContinuation {
+public:
+    virtual ~GuestExecutionContinuation() = default;
+    // Called only on the execution owner after an implementation wait. Charge
+    // core completion work to result, excluding host ticket wait time. A false
+    // return preserves/updates the actual stop for outer scheduler handling.
+    virtual bool resume(Cpu& cpu, CpuRunResult& result,
+        std::chrono::steady_clock::time_point deadline) = 0;
+};
+
 struct GuestExecutionRequest {
     Cpu* cpu { };
     std::size_t execution_slot { };
@@ -31,6 +41,9 @@ struct GuestExecutionRequest {
     std::exception_ptr error;
     const execution::GuestCooperationSignal* cooperation_signal { };
     std::uint64_t completion_generation { };
+    GuestExecutionContinuation* continuation { };
+    std::chrono::steady_clock::time_point host_deadline {
+        std::chrono::steady_clock::time_point::max() };
 };
 
 // Owns host execution lanes for a batch selected by the Guest scheduler. The

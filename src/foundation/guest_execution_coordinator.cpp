@@ -6,6 +6,7 @@
 // execution lanes.
 
 #include "foundation/guest_execution_coordinator.hpp"
+#include "foundation/cpu_run_result.hpp"
 
 #include <algorithm>
 #include <condition_variable>
@@ -203,12 +204,38 @@ void GuestExecutionCoordinator::execute(GuestExecutionRequest& request) noexcept
         std::optional<AddressSpace::ExclusiveAccess> access;
         if (request.exclusive_memory)
             access.emplace(*request.exclusive_memory);
-        request.result = request.single_step
-                             ? request.cpu->step(request.execution_slot)
-                             : request.cpu->run_cooperatively(
-                                   request.tick_budget,
-                                   request.host_slice_budget,
-                                   request.execution_slot);
+        if (request.single_step) {
+            request.result = request.cpu->step(request.execution_slot);
+            return;
+        }
+        const auto deadline = std::min(request.host_deadline,
+            std::chrono::steady_clock::now() + request.host_slice_budget);
+        for (;;) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (remaining <= std::chrono::nanoseconds::zero()) {
+                request.result.host_yielded = true;
+                break;
+            }
+            auto part = request.cpu->run_cooperatively(
+                request.tick_budget - request.result.ticks_consumed,
+                remaining, request.execution_slot);
+            const auto backend_switch = part.backend_switch;
+            accumulate_cpu_run(request.result, std::move(part));
+            request.result.backend_switch = backend_switch;
+            if (!request.continuation || request.cooperation_signal ||
+                request.result.reason != Dynarmic::HaltReason::UserDefined5 ||
+                request.result.host_yielded || request.result.fault ||
+                request.result.architectural_exception ||
+                !request.result.exception.empty() || request.result.debug_breakpoint ||
+                request.result.ticks_consumed >= request.tick_budget ||
+                !request.continuation->resume(*request.cpu, request.result, deadline))
+                break;
+            // The core consumed this implementation boundary. Its Guest
+            // ticks remain in result, while the next run supplies the stop.
+            request.result.reason = {};
+            request.result.svc.reset();
+        }
     } catch (...) {
         request.error = std::current_exception();
     }
