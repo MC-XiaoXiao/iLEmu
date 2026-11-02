@@ -435,7 +435,7 @@ namespace {
                 processor_id_, execution_slot_, total_started_, ended,
                 phase_nanoseconds_, requested_ticks_, consumed_ticks_,
                 host_yield_checks_, host_yielded_, svc_calls_, svc_,
-                halt_reason_);
+                halt_reason_, program_counters_);
         }
 
         void checkpoint(PerfLatencyKind kind)
@@ -451,6 +451,23 @@ namespace {
                         .count());
             }
             phase_started_ = ended;
+        }
+
+        void record_entry(const Cpu& cpu)
+        {
+            if (!enabled_)
+                return;
+            program_counters_ = { cpu.registers()[15], cpu.registers()[14],
+                cpu.cpsr(), cpu.registers()[15], cpu.registers()[14], cpu.cpsr() };
+        }
+
+        void record_exit(const Cpu& cpu)
+        {
+            if (!enabled_)
+                return;
+            program_counters_[3] = cpu.registers()[15];
+            program_counters_[4] = cpu.registers()[14];
+            program_counters_[5] = cpu.cpsr();
         }
 
         void record_result(std::uint64_t consumed_ticks,
@@ -477,6 +494,7 @@ namespace {
         std::uint64_t svc_calls_ { };
         std::optional<std::uint32_t> svc_;
         std::uint32_t halt_reason_ { };
+        std::array<std::uint32_t, 6> program_counters_ { };
         bool enabled_ { };
         std::chrono::steady_clock::time_point total_started_;
         std::chrono::steady_clock::time_point phase_started_;
@@ -2474,6 +2492,7 @@ public:
         observe_shared_invalidation_epoch();
         diagnostics.checkpoint(PerfLatencyKind::CpuRunInvalidation);
         load_state(cpu);
+        diagnostics.record_entry(cpu);
         diagnostics.checkpoint(PerfLatencyKind::CpuRunLoadState);
         const auto effective_host_slice_budget =
             std::max(host_slice_budget, std::chrono::nanoseconds::zero());
@@ -2611,6 +2630,7 @@ public:
             }
             diagnostics.checkpoint(PerfLatencyKind::CpuRunResult);
             save_state(cpu);
+            diagnostics.record_exit(cpu);
             diagnostics.checkpoint(PerfLatencyKind::CpuRunSaveState);
             record_code_cache_usage();
             performance_counters().record_cpu_execution(result.ticks_consumed);
@@ -2626,6 +2646,7 @@ public:
             guest_preemption_requested_at_.reset();
             record_dispatch_counters();
             save_state(cpu);
+            diagnostics.record_exit(cpu);
             record_code_cache_usage();
             throw;
         }

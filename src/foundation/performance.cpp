@@ -121,10 +121,10 @@ namespace {
 
     constexpr auto diagnostic_cpu_run_phase_count =
         diagnostic_cpu_run_phase_kinds.size();
-    // Keep the bounded timeline focused on runs that can consume a meaningful
-    // fraction of a 60 Hz frame. The percentile histograms retain the complete
-    // phase population; this ordered list is for frame-correlation outliers.
-    constexpr std::uint64_t minimum_diagnostic_cpu_run_nanoseconds = 8'000'000;
+    // Retain short slices too: many small executions can fill one long frame.
+    // This timeline remains opt-in and bounded independently of display rows.
+    constexpr std::size_t maximum_diagnostic_cpu_run_samples = 8192;
+    std::uint64_t diagnostic_cpu_runs_dropped { };
 
     struct DiagnosticCpuRun {
         std::uint32_t process_id { };
@@ -141,7 +141,19 @@ namespace {
         std::uint64_t svc_calls { };
         std::optional<std::uint32_t> svc;
         std::uint32_t halt_reason { };
+        std::array<std::uint32_t, 6> program_counters { };
     };
+
+    struct DiagnosticSchedulerDispatch {
+        std::uint32_t process_id { };
+        std::uint32_t thread_id { };
+        std::uint64_t runnable_generation { };
+        bool front_continuation { };
+        std::uint64_t wait_nanoseconds { };
+        DiagnosticSchedulerDispatchContext context;
+    };
+    std::vector<DiagnosticSchedulerDispatch> diagnostic_scheduler_dispatches;
+    std::uint64_t diagnostic_scheduler_dispatches_dropped { };
 
     struct DiagnosticContentFrame {
         std::uint64_t sequence { };
@@ -652,9 +664,14 @@ void PerformanceCounters::reset(bool enabled)
             source.runnable_generation.store(0, std::memory_order_relaxed);
             source.calls.store(0, std::memory_order_relaxed);
             source.nanoseconds.store(0, std::memory_order_relaxed);
-            source.last_used.store(0, std::memory_order_relaxed);
+            source.bucket_previous = diagnostic_source_empty;
+            source.bucket_next = diagnostic_source_empty;
+            source.lru_previous = diagnostic_source_empty;
+            source.lru_next = diagnostic_source_empty;
         }
-        diagnostic_source_use_clock_ = 0;
+        diagnostic_source_bucket_heads_.fill(diagnostic_source_empty);
+        diagnostic_source_lru_head_ = diagnostic_source_empty;
+        diagnostic_source_lru_tail_ = diagnostic_source_empty;
         diagnostic_source_occupancy_.store(0, std::memory_order_relaxed);
         diagnostic_source_inserted_.store(0, std::memory_order_relaxed);
         diagnostic_source_updated_.store(0, std::memory_order_relaxed);
@@ -687,6 +704,13 @@ void PerformanceCounters::reset_display_window_locked()
     diagnostic_display_frames.clear();
     diagnostic_vsync_frames.clear();
     diagnostic_cpu_runs.clear();
+    diagnostic_cpu_runs_dropped = 0;
+    diagnostic_scheduler_dispatches.clear();
+    diagnostic_scheduler_dispatches_dropped = 0;
+    if (cpu_source_diagnostics_configured()) {
+        diagnostic_cpu_runs.reserve(maximum_diagnostic_cpu_run_samples);
+        diagnostic_scheduler_dispatches.reserve(maximum_diagnostic_cpu_run_samples);
+    }
     diagnostic_content_frames.clear();
     diagnostic_input_events.clear();
     diagnostic_previous_frame_work = { };
@@ -2468,7 +2492,8 @@ void PerformanceCounters::record_cpu_run_phases(std::uint32_t process_id,
     std::span<const std::uint64_t> phase_nanoseconds,
     std::uint64_t requested_ticks, std::uint64_t consumed_ticks,
     std::uint64_t host_yield_checks, bool host_yielded, std::uint64_t svc_calls,
-    std::optional<std::uint32_t> svc, std::uint32_t halt_reason)
+    std::optional<std::uint32_t> svc, std::uint32_t halt_reason,
+    std::span<const std::uint32_t, 6> program_counters)
 {
     constexpr auto first_kind =
         static_cast<std::size_t>(PerfLatencyKind::CpuRunLockWait);
@@ -2518,8 +2543,7 @@ void PerformanceCounters::record_cpu_run_phases(std::uint32_t process_id,
         if (host_yielded)
             ++process.host_yields;
     }
-    if (phase_nanoseconds.back() >= minimum_diagnostic_cpu_run_nanoseconds &&
-        diagnostic_cpu_runs.size() < maximum_diagnostic_sequence_samples) {
+    if (diagnostic_cpu_runs.size() < maximum_diagnostic_cpu_run_samples) {
         DiagnosticCpuRun run;
         run.process_id = process_id;
         run.processor_id = processor_id;
@@ -2535,14 +2559,19 @@ void PerformanceCounters::record_cpu_run_phases(std::uint32_t process_id,
         run.svc_calls = svc_calls;
         run.svc = svc;
         run.halt_reason = halt_reason;
+        std::copy(program_counters.begin(), program_counters.end(),
+            run.program_counters.begin());
         diagnostic_cpu_runs.push_back(run);
+    } else {
+        ++diagnostic_cpu_runs_dropped;
     }
 }
 
 void PerformanceCounters::record_diagnostic_scheduler_dispatch(
     std::uint32_t process_id, std::uint32_t thread_id,
     std::uint64_t runnable_generation, bool front_continuation,
-    std::uint64_t nanoseconds)
+    std::uint64_t nanoseconds,
+    const DiagnosticSchedulerDispatchContext* context)
 {
     if (!cpu_source_diagnostics_enabled())
         return;
@@ -2558,6 +2587,17 @@ void PerformanceCounters::record_diagnostic_scheduler_dispatch(
     record_latency(PerfLatencyKind::SchedulerRunnableToDispatch, nanoseconds);
     record_diagnostic_source(
         kind, process_id, thread_id, runnable_generation, nanoseconds);
+    if (!context)
+        return;
+    std::lock_guard lock { display_window_mutex_ };
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    if (diagnostic_scheduler_dispatches.size() < maximum_diagnostic_cpu_run_samples) {
+        diagnostic_scheduler_dispatches.push_back({ process_id, thread_id,
+            runnable_generation, front_continuation, nanoseconds, *context });
+    } else {
+        ++diagnostic_scheduler_dispatches_dropped;
+    }
 }
 
 void PerformanceCounters::record_diagnostic_svc_dispatch(
@@ -2567,6 +2607,26 @@ void PerformanceCounters::record_diagnostic_svc_dispatch(
     if (!cpu_source_diagnostics_enabled())
         return;
     record_diagnostic_source(kind, process_id, number, 0, nanoseconds);
+}
+
+void PerformanceCounters::touch_diagnostic_source_locked(std::uint32_t index)
+{
+    if (index == diagnostic_source_lru_tail_)
+        return;
+    auto& source = diagnostic_source_counters_[index];
+    if (source.lru_previous != diagnostic_source_empty)
+        diagnostic_source_counters_[source.lru_previous].lru_next = source.lru_next;
+    else if (diagnostic_source_lru_head_ == index)
+        diagnostic_source_lru_head_ = source.lru_next;
+    if (source.lru_next != diagnostic_source_empty)
+        diagnostic_source_counters_[source.lru_next].lru_previous = source.lru_previous;
+    source.lru_previous = diagnostic_source_lru_tail_;
+    source.lru_next = diagnostic_source_empty;
+    if (diagnostic_source_lru_tail_ != diagnostic_source_empty)
+        diagnostic_source_counters_[diagnostic_source_lru_tail_].lru_next = index;
+    else
+        diagnostic_source_lru_head_ = index;
+    diagnostic_source_lru_tail_ = index;
 }
 
 void PerformanceCounters::record_diagnostic_source(
@@ -2592,68 +2652,55 @@ void PerformanceCounters::record_diagnostic_source(
     }
 
     std::lock_guard source_lock { diagnostic_source_mutex_ };
-
-    const auto use = ++diagnostic_source_use_clock_;
-    auto index = diagnostic_source_index(key, runnable_generation);
-    std::optional<std::size_t> empty_index;
-    for (std::size_t probe = 0; probe < diagnostic_source_capacity; ++probe) {
+    const auto bucket = diagnostic_source_index(key, runnable_generation);
+    for (auto index = diagnostic_source_bucket_heads_[bucket];
+        index != diagnostic_source_empty;
+        index = diagnostic_source_counters_[index].bucket_next) {
         auto& source = diagnostic_source_counters_[index];
-        const auto observed = source.key.load(std::memory_order_relaxed);
-        const auto observed_generation =
-            source.runnable_generation.load(std::memory_order_relaxed);
-        if (observed == key && observed_generation == runnable_generation) {
+        if (source.key.load(std::memory_order_relaxed) == key &&
+            source.runnable_generation.load(std::memory_order_relaxed) ==
+                runnable_generation) {
             source.calls.fetch_add(1, std::memory_order_relaxed);
-            source.nanoseconds.fetch_add(
-                nanoseconds, std::memory_order_relaxed);
-            source.last_used.store(use, std::memory_order_relaxed);
+            source.nanoseconds.fetch_add(nanoseconds, std::memory_order_relaxed);
+            touch_diagnostic_source_locked(index);
             diagnostic_source_updated_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        if (observed == 0) {
-            empty_index = index;
-            break;
-        }
-        index = (index + 1U) & (diagnostic_source_capacity - 1U);
     }
 
-    std::optional<std::size_t> target = empty_index;
-    if (!target) {
-        // Only a full-table miss needs an eviction scan. The common miss path
-        // stops at its first empty slot, keeping the diagnostic table bounded
-        // without turning every new source into a 4096-entry walk.
-        std::uint64_t least_recent_use =
-            std::numeric_limits<std::uint64_t>::max();
-        for (std::size_t slot = 0; slot < diagnostic_source_capacity; ++slot) {
-            auto& source = diagnostic_source_counters_[slot];
-            const auto last_used =
-                source.last_used.load(std::memory_order_relaxed);
-            if (!target || last_used < least_recent_use) {
-                least_recent_use = last_used;
-                target = slot;
-            }
-        }
-    }
-    const auto target_index = *target;
-    auto& source = diagnostic_source_counters_[target_index];
-    if (!empty_index) {
+    auto index = static_cast<std::uint32_t>(
+        diagnostic_source_occupancy_.load(std::memory_order_relaxed));
+    if (index == diagnostic_source_capacity) {
+        index = diagnostic_source_lru_head_;
+        auto& victim = diagnostic_source_counters_[index];
+        const auto old_bucket = diagnostic_source_index(
+            victim.key.load(std::memory_order_relaxed),
+            victim.runnable_generation.load(std::memory_order_relaxed));
+        if (victim.bucket_previous != diagnostic_source_empty)
+            diagnostic_source_counters_[victim.bucket_previous].bucket_next =
+                victim.bucket_next;
+        else
+            diagnostic_source_bucket_heads_[old_bucket] = victim.bucket_next;
+        if (victim.bucket_next != diagnostic_source_empty)
+            diagnostic_source_counters_[victim.bucket_next].bucket_previous =
+                victim.bucket_previous;
         diagnostic_source_evicted_.fetch_add(1, std::memory_order_relaxed);
     } else {
         const auto occupancy = diagnostic_source_occupancy_.fetch_add(
-                                   1, std::memory_order_relaxed) +
-                               1;
-        auto peak =
-            diagnostic_source_peak_occupancy_.load(std::memory_order_relaxed);
-        while (occupancy > peak &&
-               !diagnostic_source_peak_occupancy_.compare_exchange_weak(peak,
-                   occupancy, std::memory_order_relaxed,
-                   std::memory_order_relaxed)) { }
+                                   1, std::memory_order_relaxed) + 1;
+        diagnostic_source_peak_occupancy_.store(occupancy, std::memory_order_relaxed);
     }
+    auto& source = diagnostic_source_counters_[index];
+    source.bucket_previous = diagnostic_source_empty;
+    source.bucket_next = diagnostic_source_bucket_heads_[bucket];
+    if (source.bucket_next != diagnostic_source_empty)
+        diagnostic_source_counters_[source.bucket_next].bucket_previous = index;
+    diagnostic_source_bucket_heads_[bucket] = index;
     source.calls.store(1, std::memory_order_relaxed);
     source.nanoseconds.store(nanoseconds, std::memory_order_relaxed);
-    source.runnable_generation.store(
-        runnable_generation, std::memory_order_relaxed);
-    source.last_used.store(use, std::memory_order_relaxed);
+    source.runnable_generation.store(runnable_generation, std::memory_order_relaxed);
     source.key.store(key, std::memory_order_relaxed);
+    touch_diagnostic_source_locked(index);
     diagnostic_source_inserted_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -3647,7 +3694,10 @@ std::string format_display_performance_summary(
             "callbacks-begin/artifact-preload/execute/result/save-state/"
             "cache-accounting/total-us:requested-ticks/consumed-ticks/"
             "host-yielded/host-yield-checks/svc-calls/svc-immediate/"
-            "halt-reason"
+            "halt-reason:entry-pc/entry-lr/entry-cpsr/exit-pc/exit-lr/exit-cpsr"
+         << " diagnostic-cpu-run-stats=" << diagnostic_cpu_runs.size() << '/'
+         << diagnostic_cpu_runs_dropped << '/'
+         << maximum_diagnostic_cpu_run_samples
          << " diagnostic-cpu-run=";
     if (diagnostic_cpu_runs.empty()) {
         text << "none";
@@ -3677,7 +3727,41 @@ std::string format_display_performance_summary(
             } else {
                 text << '-';
             }
-            text << '/' << run.halt_reason;
+            text << '/' << run.halt_reason << ':';
+            for (std::size_t reg = 0; reg < run.program_counters.size(); ++reg) {
+                if (reg != 0)
+                    text << '/';
+                text << run.program_counters[reg];
+            }
+        }
+    }
+    text << " diagnostic-scheduler-dispatch-format="
+            "pid:thread:generation:front:dispatch-us/wait-us:"
+            "priority/processor/ordinary-pid/ordinary-thread/"
+            "ordinary-priority/reason/preferred"
+         << " diagnostic-scheduler-dispatch-stats="
+         << diagnostic_scheduler_dispatches.size() << '/'
+         << diagnostic_scheduler_dispatches_dropped << '/'
+         << maximum_diagnostic_cpu_run_samples
+         << " diagnostic-scheduler-dispatch=";
+    if (diagnostic_scheduler_dispatches.empty()) {
+        text << "none";
+    } else {
+        bool first = true;
+        for (const auto& entry : diagnostic_scheduler_dispatches) {
+            if (!first)
+                text << ',';
+            first = false;
+            const auto& context = entry.context;
+            text << entry.process_id << ':' << entry.thread_id << ':'
+                 << entry.runnable_generation << ':'
+                 << (entry.front_continuation ? 1U : 0U) << ':';
+            append_diagnostic_timestamp(text, context.dispatched_at);
+            text << '/' << entry.wait_nanoseconds / 1'000U << ':'
+                 << context.selected_priority << '/' << context.processor << '/'
+                 << context.ordinary_process << '/' << context.ordinary_thread
+                 << '/' << context.ordinary_priority << '/' << context.reason
+                 << '/' << (context.preferred ? 1U : 0U);
         }
     }
     text << " diagnostic-sequence-us=";

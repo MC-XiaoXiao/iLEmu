@@ -357,6 +357,19 @@ struct PerformanceSnapshot {
     std::uint64_t diagnostic_source_peak_occupancy { };
 };
 
+// Primitive scheduler facts captured before selection removes the queue head.
+// This optional context is present only in explicit CPU diagnostic windows.
+struct DiagnosticSchedulerDispatchContext {
+    std::chrono::steady_clock::time_point dispatched_at;
+    std::int32_t selected_priority { -1 };
+    std::uint32_t processor { };
+    std::uint32_t ordinary_process { };
+    std::uint32_t ordinary_thread { };
+    std::int32_t ordinary_priority { -1 };
+    std::uint32_t reason { };
+    bool preferred { };
+};
+
 class PerformanceCounters {
 public:
     void reset(bool enabled);
@@ -557,10 +570,12 @@ public:
         std::uint64_t requested_ticks, std::uint64_t consumed_ticks,
         std::uint64_t host_yield_checks, bool host_yielded,
         std::uint64_t svc_calls, std::optional<std::uint32_t> svc,
-        std::uint32_t halt_reason);
+        std::uint32_t halt_reason,
+        std::span<const std::uint32_t, 6> program_counters);
     void record_diagnostic_scheduler_dispatch(std::uint32_t process_id,
         std::uint32_t thread_id, std::uint64_t runnable_generation,
-        bool front_continuation, std::uint64_t nanoseconds);
+        bool front_continuation, std::uint64_t nanoseconds,
+        const DiagnosticSchedulerDispatchContext* context = nullptr);
     void record_diagnostic_svc_dispatch(PerfDiagnosticSourceKind kind,
         std::uint32_t process_id, std::uint32_t number,
         std::uint64_t nanoseconds);
@@ -781,16 +796,27 @@ private:
     // table to make (thread, runnable generation) insertion atomic. The
     // normal scheduler path returns before touching this lock.
     mutable std::mutex diagnostic_source_mutex_;
+    static constexpr std::uint32_t diagnostic_source_empty =
+        diagnostic_source_capacity;
+    void touch_diagnostic_source_locked(std::uint32_t index);
     struct DiagnosticSourceCounter {
         std::atomic<std::uint64_t> key { };
         std::atomic<std::uint64_t> runnable_generation { };
         std::atomic<std::uint64_t> calls { };
         std::atomic<std::uint64_t> nanoseconds { };
-        std::atomic<std::uint64_t> last_used { };
+        std::uint32_t bucket_previous { diagnostic_source_empty };
+        std::uint32_t bucket_next { diagnostic_source_empty };
+        std::uint32_t lru_previous { diagnostic_source_empty };
+        std::uint32_t lru_next { diagnostic_source_empty };
     };
     std::array<DiagnosticSourceCounter, diagnostic_source_capacity>
         diagnostic_source_counters_;
-    std::uint64_t diagnostic_source_use_clock_ { };
+    // Separate bucket chains keep a full-table miss local to its hash bucket.
+    // Intrusive LRU links select and unlink the victim without scanning slots.
+    std::array<std::uint32_t, diagnostic_source_capacity>
+        diagnostic_source_bucket_heads_ { };
+    std::uint32_t diagnostic_source_lru_head_ { diagnostic_source_empty };
+    std::uint32_t diagnostic_source_lru_tail_ { diagnostic_source_empty };
     std::atomic<std::uint64_t> diagnostic_source_occupancy_ { };
     std::atomic<std::uint64_t> diagnostic_source_inserted_ { };
     std::atomic<std::uint64_t> diagnostic_source_updated_ { };

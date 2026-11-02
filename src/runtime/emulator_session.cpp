@@ -3714,6 +3714,12 @@ void EmulatorSession::run()
             const auto hint = processor == preferred_processor
                                   ? preferred_thread
                                   : std::nullopt;
+            const bool cpu_diagnostics =
+                performance_counters().cpu_source_diagnostics_enabled();
+            const auto ordinary_head = cpu_diagnostics
+                ? scheduler.peek_next_for_processor(processor) : std::nullopt;
+            const auto ordinary_info = ordinary_head
+                ? scheduler.info(*ordinary_head) : std::nullopt;
             auto scheduled = scheduler.choose_next(processor, hint);
             if (!scheduled && hint && !debugger_only)
                 scheduled = scheduler.choose_next(processor);
@@ -3732,24 +3738,34 @@ void EmulatorSession::run()
                 }
                 performance_counters().record_diagnostic_input_execute(
                     scheduled->thread.process, scheduled->thread.thread);
-                if (performance_counters().cpu_source_diagnostics_enabled() &&
-                    scheduled->runnable_since !=
+                if (cpu_diagnostics && scheduled->runnable_since !=
                         std::chrono::steady_clock::time_point { }) {
-                    const auto elapsed = std::chrono::steady_clock::now() -
-                                         scheduled->runnable_since;
+                    const auto dispatched_at = std::chrono::steady_clock::now();
+                    const auto elapsed = dispatched_at - scheduled->runnable_since;
                     const auto nanoseconds = static_cast<std::uint64_t>(
                         std::chrono::duration_cast<std::chrono::nanoseconds>(
                             elapsed)
                             .count());
+                    const auto info = scheduler.info(scheduled->thread);
+                    const DiagnosticSchedulerDispatchContext context {
+                        .dispatched_at = dispatched_at,
+                        .selected_priority = info ? info->scheduled_priority : -1,
+                        .processor = static_cast<std::uint32_t>(processor),
+                        .ordinary_process = ordinary_head ? ordinary_head->process : 0U,
+                        .ordinary_thread = ordinary_head ? ordinary_head->thread : 0U,
+                        .ordinary_priority = ordinary_info
+                            ? ordinary_info->scheduled_priority : -1,
+                        .reason = static_cast<std::uint32_t>(dispatch.reason),
+                        .preferred = preferred_thread == scheduled->thread,
+                    };
                     performance_counters().record_diagnostic_scheduler_dispatch(
                         scheduled->thread.process, scheduled->thread.thread,
                         scheduled->runnable_generation,
-                        scheduled->front_continuation, nanoseconds);
+                        scheduled->front_continuation, nanoseconds, &context);
                     // Transition-localization probe. It records only severe
                     // runnable starvation while CPU source diagnostics are
                     // explicitly active.
                     if (nanoseconds >= 50'000'000U) {
-                        const auto info = scheduler.info(scheduled->thread);
                         const auto active_process =
                             initial_runtime->kernel->active_client_process_id();
                         const auto transition =
@@ -3761,6 +3777,13 @@ void EmulatorSession::run()
                             " thread=" +
                             std::to_string(scheduled->thread.thread) +
                             " wait-ns=" + std::to_string(nanoseconds) +
+                            " dispatched-ns=" + std::to_string(
+                                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    dispatched_at.time_since_epoch()).count()) +
+                            " runnable-generation=" +
+                            std::to_string(scheduled->runnable_generation) +
+                            " dispatch-reason=" +
+                            std::to_string(static_cast<unsigned>(dispatch.reason)) +
                             " priority=" +
                             (info ? std::to_string(info->scheduled_priority)
                                   : "none") +
