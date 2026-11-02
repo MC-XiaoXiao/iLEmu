@@ -129,6 +129,7 @@ bool XnuScheduler::remove_thread(XnuThreadId thread, std::uint64_t pending_ticks
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end())
         return false;
+    finish_host_await(iterator->second);
     if (iterator->second.info.state == XnuThreadState::Waiting) {
         --waiting_count_;
     } else {
@@ -324,6 +325,8 @@ bool XnuScheduler::make_runnable(XnuThreadId thread)
     if (iterator == threads_.end())
         return false;
     auto& record = iterator->second;
+    const auto host_continuation = record.host_await;
+    finish_host_await(record);
     if (record.suspend_count != 0) {
         record.resume_runnable = true;
         return true;
@@ -340,9 +343,11 @@ bool XnuScheduler::make_runnable(XnuThreadId thread)
     }
     transition_state(thread, record, XnuThreadState::Runnable);
     begin_runnable_generation(record);
-    record.info.remaining_quantum = quantum_for(record);
-    record.info.computation_metered = 0;
-    if (record.info.realtime) {
+    if (!host_continuation) {
+        record.info.remaining_quantum = quantum_for(record);
+        record.info.computation_metered = 0;
+    }
+    if (record.info.realtime && !host_continuation) {
         record.info.realtime_deadline = saturating_add(
             realtime_clock_ticks_, record.info.realtime_constraint);
     }
@@ -390,6 +395,10 @@ XnuThreadWakeResult XnuScheduler::wake_thread(XnuThreadId thread)
     if (iterator == threads_.end())
         return { };
     auto& record = iterator->second;
+    // Guest IPC/signals cannot complete a host implementation ticket. Their
+    // retained events will be delivered after its serial completion.
+    if (record.host_await)
+        return { true, false };
     if (record.execution_pending) {
         if (record.suspend_count != 0)
             record.resume_runnable = true;
@@ -418,6 +427,8 @@ bool XnuScheduler::block(XnuThreadId thread)
     if (iterator == threads_.end())
         return false;
     auto& record = iterator->second;
+    record.host_resume_allowed = false;
+    finish_host_await(record);
     if (!record.execution_pending)
         release_processor_context(record);
     const auto was_waiting = record.info.state == XnuThreadState::Waiting;
@@ -448,6 +459,7 @@ bool XnuScheduler::suspend_thread(XnuThreadId thread, XnuThreadSuspension reason
     }
 
     auto& record = iterator->second;
+    record.host_resume_allowed = false;
     ++record.suspension_counts[static_cast<std::size_t>(reason)];
     if (record.suspend_count++ != 0)
         return true;
@@ -478,8 +490,17 @@ bool XnuScheduler::resume_thread(XnuThreadId thread, XnuThreadSuspension reason)
     auto& record = iterator->second;
     --record.suspension_counts[static_cast<std::size_t>(reason)];
     --record.suspend_count;
-    if (record.suspend_count != 0 || !record.resume_runnable)
+    if (record.suspend_count != 0)
         return true;
+    if (!record.resume_runnable) {
+        if (record.host_await) {
+            --waiting_count_;
+            transition_state(thread, record, XnuThreadState::HostAwait);
+            if (record.info.timeshare)
+                ++active_timeshare_count_;
+        }
+        return true;
+    }
     record.resume_runnable = false;
     --waiting_count_;
     transition_state(thread, record, XnuThreadState::Runnable);
@@ -887,6 +908,41 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
     if (completion == XnuSliceCompletion::Terminate)
         return remove_thread(thread);
 
+    if (completion == XnuSliceCompletion::HostAwait) {
+        record.host_resume_allowed = record.info.remaining_quantum != 0 &&
+                                     record.suspend_count == 0 &&
+                                     record.info.state == XnuThreadState::Running;
+        if (!record.host_await) {
+            record.host_await = true;
+            ++host_await_count_;
+        }
+        record.wake_pending = false;
+        record.resume_runnable = false;
+        remove_from_queue(thread, record);
+        // Host work changes execution availability, not Guest wait accounting.
+        // A concurrent task/thread hold continues to own the Waiting state.
+        if (record.suspend_count == 0) {
+            if (record.info.state == XnuThreadState::Waiting) {
+                --waiting_count_;
+                if (record.info.timeshare)
+                    ++active_timeshare_count_;
+            }
+            transition_state(thread, record, XnuThreadState::HostAwait);
+        }
+        if (record.info.remaining_quantum == 0) {
+            performance_counters().record_scheduler_quantum_expiry();
+            record.info.remaining_quantum = quantum_for(record);
+            record.info.remaining_timeslices = 0;
+            record.info.timeslice_processor.reset();
+            recompute_priority(thread, record);
+        }
+        return true;
+    }
+
+    if (completion != XnuSliceCompletion::Continue ||
+        record.info.remaining_quantum == 0)
+        record.host_resume_allowed = false;
+
     if (record.info.state != XnuThreadState::Running) {
         // A suspension (possibly already resumed) changed state while this
         // slice was in flight. Preserve the hold or existing queue entry;
@@ -982,6 +1038,20 @@ void XnuScheduler::release_processor_context(const ThreadRecord& record)
     if (const auto processor = record.info.last_processor;
         processor && processor_contexts_[*processor] == record.id)
         processor_contexts_[*processor].reset();
+}
+
+void XnuScheduler::finish_host_await(ThreadRecord& record)
+{
+    if (record.host_await) {
+        record.host_await = false;
+        --host_await_count_;
+    }
+}
+
+bool XnuScheduler::host_continuation_allowed(XnuThreadId thread) const
+{
+    const auto record = threads_.find(thread);
+    return record != threads_.end() && record->second.host_resume_allowed;
 }
 
 void XnuScheduler::synchronize_time(std::uint64_t elapsed_ticks)

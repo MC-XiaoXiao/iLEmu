@@ -22,6 +22,7 @@ struct GuestExecutionBudgetRequest {
     std::optional<std::chrono::nanoseconds> host_control_delay;
     std::optional<std::chrono::nanoseconds> guest_realtime_deadline_delay;
     bool latency_sensitive { };
+    std::chrono::steady_clock::time_point now { std::chrono::steady_clock::now() };
 };
 
 // Core host-execution policy for an XNU-selected guest thread. It chooses only
@@ -32,7 +33,15 @@ public:
     explicit GuestExecutionPolicy(std::chrono::nanoseconds response_period);
 
     [[nodiscard]] std::chrono::nanoseconds budget(const XnuScheduler& scheduler,
-        const GuestExecutionBudgetRequest& request) const;
+        const GuestExecutionBudgetRequest& request);
+    void host_completed(XnuThreadId thread);
+    [[nodiscard]] std::chrono::steady_clock::time_point deadline(XnuThreadId thread) const
+    {
+        return histories_.at(thread).deadline;
+    }
+    [[nodiscard]] std::optional<XnuThreadId> host_continuation(
+        const XnuScheduler& scheduler, std::chrono::steady_clock::time_point now,
+        bool interrupted = false);
     // A translated host-cooperative slice is expensive work rather than a
     // hot-code throughput sample. Keep its next slice at the low-latency
     // starting budget so display and input peers can run while demand JIT is
@@ -51,6 +60,8 @@ private:
         std::uint8_t saturation_level { };
         bool translation_active { };
         std::uint64_t continuation_host_ns { };
+        std::uint64_t continuation_budget_ns { };
+        std::chrono::steady_clock::time_point deadline { };
     };
 
     static constexpr std::uint8_t maximum_saturation_level = 2;
@@ -61,6 +72,7 @@ private:
     std::chrono::nanoseconds latency_budget_;
     std::chrono::nanoseconds throughput_budget_;
     std::map<XnuThreadId, ThreadHistory> histories_;
+    std::optional<XnuThreadId> host_continuation_;
 };
 
 } // namespace ilemu

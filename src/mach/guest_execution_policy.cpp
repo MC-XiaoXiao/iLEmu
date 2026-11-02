@@ -40,7 +40,7 @@ GuestExecutionPolicy::GuestExecutionPolicy(
 
 std::chrono::nanoseconds GuestExecutionPolicy::budget(
     const XnuScheduler& scheduler,
-    const GuestExecutionBudgetRequest& request) const
+    const GuestExecutionBudgetRequest& request)
 {
     PerformanceLatencyScope latency { PerfLatencyKind::GuestExecutionBudget,
         performance_counters().cpu_source_diagnostics_enabled() };
@@ -113,7 +113,52 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
     };
     limit_for_deadline(request.host_control_delay);
     limit_for_deadline(request.guest_realtime_deadline_delay);
-    return std::clamp(result, minimum_budget_, throughput_budget_);
+    result = std::clamp(result, minimum_budget_, throughput_budget_);
+    auto& turn = histories_[request.thread];
+    if (turn.deadline <= request.now) {
+        turn.deadline = request.now + result;
+        turn.continuation_host_ns = 0;
+        turn.continuation_budget_ns = static_cast<std::uint64_t>(result.count());
+    } else {
+        // Host waits and short deferred returns share one fixed response
+        // deadline. A different dispatch hint cannot renew this turn.
+        result = std::min(result,
+            std::max(minimum_budget_, std::chrono::duration_cast<
+                std::chrono::nanoseconds>(turn.deadline - request.now)));
+        turn.deadline = std::min(turn.deadline, request.now + result);
+    }
+    return result;
+}
+
+void GuestExecutionPolicy::host_completed(XnuThreadId thread)
+{
+    const auto found = histories_.find(thread);
+    if (found != histories_.end() &&
+        found->second.deadline != std::chrono::steady_clock::time_point {})
+        host_continuation_ = thread;
+}
+
+std::optional<XnuThreadId> GuestExecutionPolicy::host_continuation(
+    const XnuScheduler& scheduler, std::chrono::steady_clock::time_point now,
+    bool interrupted)
+{
+    if (!host_continuation_)
+        return std::nullopt;
+    const auto thread = *host_continuation_;
+    const auto history = histories_.find(thread);
+    const auto info = scheduler.info(thread);
+    if (interrupted || history == histories_.end() ||
+        history->second.deadline <= now || !info ||
+        info->state != XnuThreadState::Runnable ||
+        !scheduler.host_continuation_allowed(thread) ||
+        scheduler.highest_runnable_priority() > info->scheduled_priority) {
+        if (history != histories_.end()) {
+            history->second.deadline = {};
+            history->second.continuation_host_ns = 0;
+        }
+        host_continuation_.reset();
+    }
+    return host_continuation_;
 }
 
 XnuSliceCompletion GuestExecutionPolicy::observe(
@@ -121,23 +166,41 @@ XnuSliceCompletion GuestExecutionPolicy::observe(
     std::uint64_t host_execution_ns, std::chrono::nanoseconds host_slice_budget)
 {
     if (completion == XnuSliceCompletion::Terminate) {
-        histories_.erase(thread);
+        forget(thread);
         return completion;
     }
     auto history = histories_.find(thread);
-    if (completion == XnuSliceCompletion::Continue && host_execution_ns != 0 &&
+    if (completion == XnuSliceCompletion::HostAwait && host_continuation_ == thread)
+        host_continuation_.reset();
+    const auto continuation = completion == XnuSliceCompletion::Continue ||
+                              completion == XnuSliceCompletion::HostAwait;
+    if (continuation && host_execution_ns != 0 &&
         host_slice_budget > std::chrono::nanoseconds::zero()) {
         if (history == histories_.end())
             history = histories_.try_emplace(thread).first;
         auto& used = history->second.continuation_host_ns;
         const auto cap = static_cast<std::uint64_t>(throughput_budget_.count());
         used += std::min(host_execution_ns, cap - used);
-        if (used >= static_cast<std::uint64_t>(host_slice_budget.count())) {
-            completion = XnuSliceCompletion::HostCooperate;
+        const auto turn_budget = history->second.continuation_budget_ns != 0
+            ? history->second.continuation_budget_ns
+            : static_cast<std::uint64_t>(host_slice_budget.count());
+        if (used >= turn_budget ||
+            (history->second.deadline != std::chrono::steady_clock::time_point {} &&
+                std::chrono::steady_clock::now() >= history->second.deadline)) {
+            // An expired response turn must still await its actual result.
+            if (completion == XnuSliceCompletion::Continue)
+                completion = XnuSliceCompletion::HostCooperate;
+            history->second.deadline = {};
             used = 0;
         }
     } else if (history != histories_.end()) {
         history->second.continuation_host_ns = 0;
+    }
+    if (!continuation || completion == XnuSliceCompletion::HostCooperate) {
+        if (history != histories_.end())
+            history->second.deadline = {};
+        if (host_continuation_ == thread)
+            host_continuation_.reset();
     }
     if (translated_code) {
         if (history == histories_.end())
@@ -159,7 +222,8 @@ XnuSliceCompletion GuestExecutionPolicy::observe(
     history->second.translation_active = false;
     if (history->second.saturation_level > 1U) {
         --history->second.saturation_level;
-    } else if (history->second.continuation_host_ns == 0) {
+    } else if (history->second.continuation_host_ns == 0 &&
+               history->second.deadline == std::chrono::steady_clock::time_point {}) {
         histories_.erase(history);
     }
     return completion;
@@ -168,10 +232,14 @@ XnuSliceCompletion GuestExecutionPolicy::observe(
 void GuestExecutionPolicy::forget(XnuThreadId thread)
 {
     histories_.erase(thread);
+    if (host_continuation_ == thread)
+        host_continuation_.reset();
 }
 
 void GuestExecutionPolicy::forget_process(std::uint32_t process_id)
 {
+    if (host_continuation_ && host_continuation_->process == process_id)
+        host_continuation_.reset();
     std::erase_if(histories_, [process_id](const auto& entry) {
         return entry.first.process == process_id;
     });

@@ -91,12 +91,14 @@ struct XnuThreadIdHash {
 enum class XnuThreadState : std::uint8_t {
     Runnable,
     Running,
+    HostAwait,
     Waiting,
 };
 
 enum class XnuSliceCompletion : std::uint8_t {
     Continue,
     HostCooperate,
+    HostAwait,
     Yield,
     Block,
     Terminate,
@@ -289,6 +291,8 @@ public:
         return processor_run_queues_.size();
     }
     [[nodiscard]] std::size_t runnable_count() const { return runnable_count_; }
+    [[nodiscard]] std::size_t host_await_count() const { return host_await_count_; }
+    [[nodiscard]] bool host_continuation_allowed(XnuThreadId thread) const;
     // Host cooperation may use this read-only count to bound one wall-clock
     // scheduling round. It does not alter XNU queue order or policy.
     [[nodiscard]] std::size_t runnable_count_at_or_above_priority(
@@ -384,6 +388,8 @@ private:
         std::uint64_t user_ticks { };
         bool resume_runnable { };
         bool wake_pending { };
+        bool host_await { };
+        bool host_resume_allowed { };
         std::int32_t failsafe_saved_base_priority { };
         bool failsafe_saved_timeshare { };
         bool failsafe_saved_realtime { };
@@ -404,6 +410,7 @@ private:
     void transition_state(XnuThreadId thread, ThreadRecord& record,
         XnuThreadState state);
     void release_processor_context(const ThreadRecord& record);
+    void finish_host_await(ThreadRecord& record);
     void enqueue(ThreadRecord& record, QueuePosition position);
     void remove_from_queue(XnuThreadId thread, ThreadRecord& record);
     void index_depression(XnuThreadId thread, const ThreadRecord& record);
@@ -463,6 +470,7 @@ private:
     std::vector<ThreadRecord*> usage_records_;
     std::size_t runnable_count_ { };
     std::size_t waiting_count_ { };
+    std::size_t host_await_count_ { };
     std::size_t active_timeshare_count_ { };
     std::uint64_t quantum_ticks_ { };
     std::uint64_t scheduler_tick_ticks_ { };
