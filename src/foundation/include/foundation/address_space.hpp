@@ -605,6 +605,8 @@ private:
         bool guest_write = false);
     [[nodiscard]] bool reservation_invalidation_required_locked(
         const Page& page) const noexcept;
+    void track_exclusive_backing_locked(const GuestPageBacking* backing);
+    void clear_exclusive_write_backings_locked() noexcept;
     void release_exclusive_write_tracking_locked(
         std::uint32_t address, std::size_t size);
     void mark_shared_backing_written_locked(
@@ -700,6 +702,8 @@ private:
     // of a guarded page must be present. Shared pixel stores can then reject
     // unrelated reservations without scanning all virtual page markers.
     tsl::robin_pg_set<const GuestPageBacking*> exclusive_write_backings_;
+    // Dense occupied-key list makes reset independent of retained bucket count.
+    std::vector<const GuestPageBacking*> exclusive_write_backing_keys_;
     std::atomic<bool> exclusive_write_tracking_active_ { };
     std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_ { };
     std::vector<TrackedWriteRange> tracked_write_ranges_;

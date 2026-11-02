@@ -419,8 +419,31 @@ void AddressSpace::disable_jit_write_page_table()
     direct_shared_jit_write_pages_.clear();
     exclusive_write_tracked_pages_.clear();
     exclusive_guard_stamps_.clear();
-    exclusive_write_backings_.clear();
+    clear_exclusive_write_backings_locked();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
+}
+
+void AddressSpace::track_exclusive_backing_locked(const GuestPageBacking* backing)
+{
+    const auto [entry, inserted] = exclusive_write_backings_.insert(backing);
+    if (!inserted)
+        return;
+    try {
+        exclusive_write_backing_keys_.push_back(backing);
+    } catch (...) {
+        exclusive_write_backings_.erase(entry);
+        throw;
+    }
+}
+
+void AddressSpace::clear_exclusive_write_backings_locked() noexcept
+{
+    // A hash-table clear visits every retained bucket. A previous large set
+    // of reservations must not make each later single-page atomic write scan
+    // that high-water capacity. Erase only keys inserted since the last reset.
+    for (const auto* backing : exclusive_write_backing_keys_)
+        exclusive_write_backings_.erase(backing);
+    exclusive_write_backing_keys_.clear();
 }
 
 void AddressSpace::track_exclusive_access(
@@ -441,7 +464,7 @@ void AddressSpace::track_exclusive_access(
         exclusive_write_tracked_pages_.at(page_address) |= mask;
         const auto* page = find_page_locked(page_address);
         if (page != nullptr && page->backing)
-            exclusive_write_backings_.insert(page->backing.get());
+            track_exclusive_backing_locked(page->backing.get());
         if (inserted)
             refresh_jit_page_locked(page_address);
         if (page == nullptr || !page->shared_writable || !page->backing)
@@ -484,7 +507,7 @@ void AddressSpace::clear_exclusive_access_tracking()
         page = exclusive_write_tracked_pages_.erase(page);
         refresh_jit_page_locked(address);
     }
-    exclusive_write_backings_.clear();
+    clear_exclusive_write_backings_locked();
     exclusive_guard_stamps_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
 }
@@ -514,10 +537,12 @@ void AddressSpace::release_exclusive_write_tracking_locked(
                 return;
             marker.value() &= ~reservation_granule_mask(address, size, first);
             if (marker->second == 0U) {
-                exclusive_write_tracked_pages_.erase(marker);
+                // This branch needs no successor iterator: finding it would
+                // walk unused buckets in a sparse table after the last marker.
+                exclusive_write_tracked_pages_.erase(first);
                 refresh_jit_page_locked(first);
                 if (exclusive_write_tracked_pages_.empty()) {
-                    exclusive_write_backings_.clear();
+                    clear_exclusive_write_backings_locked();
                     exclusive_write_tracking_active_.store(
                         false, std::memory_order_release);
                 }
@@ -549,7 +574,7 @@ void AddressSpace::release_exclusive_write_tracking_locked(
         refresh_jit_page_locked(page_address);
     }
     if (exclusive_write_tracked_pages_.empty()) {
-        exclusive_write_backings_.clear();
+        clear_exclusive_write_backings_locked();
         exclusive_write_tracking_active_.store(
             false, std::memory_order_release);
     }
@@ -708,7 +733,7 @@ void AddressSpace::unmap_range_locked(
         exclusive_write_tracked_pages_.erase(static_cast<std::uint32_t>(base));
     }
     if (exclusive_write_tracked_pages_.empty()) {
-        exclusive_write_backings_.clear();
+        clear_exclusive_write_backings_locked();
         exclusive_write_tracking_active_.store(
             false, std::memory_order_release);
     }
@@ -791,7 +816,7 @@ void AddressSpace::clear()
     clear_jit_page_table_locked();
     exclusive_write_tracked_pages_.clear();
     exclusive_guard_stamps_.clear();
-    exclusive_write_backings_.clear();
+    clear_exclusive_write_backings_locked();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
     tracked_write_ranges_.clear();
     write_tracked_pages_.clear();
@@ -1675,7 +1700,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
     if (exclusive_write_tracked_pages_.contains(page_base(address))) {
         const auto* page = find_page_locked(address);
         if (page != nullptr && page->backing)
-            exclusive_write_backings_.insert(page->backing.get());
+            track_exclusive_backing_locked(page->backing.get());
     }
     const auto base = page_base(address);
     if (jit_instruction_page_table_) {
