@@ -2777,9 +2777,33 @@ void EmulatorSession::run()
     };
     SessionDiagnostics diagnostics { *initial_runtime, runtimes, scheduler,
         display_presenter.get(), output };
+    std::vector<XnuScheduledSlice> scheduled_batch;
+    scheduled_batch.reserve(guest_processor_count);
+    std::vector<PreparedGuestSlice> prepared_slices;
+    prepared_slices.reserve(guest_processor_count);
+    std::vector<GuestExecutionRequest*> execution_requests;
+    execution_requests.reserve(guest_processor_count);
+    // Retain the type-erased callback as well as the batch buffers. Converting
+    // its captured references to std::function on every run allocates a new
+    // callback object at each CPU channel handoff.
+    const std::function<void()> service_host = [&] {
+        // The active window owns Guest state. Collect host events only;
+        // Guest injection and commands wait until that ownership returns.
+        if (display_presenter && !display_presenter->poll_events())
+            hard_stop = true;
+        if (live_control)
+            for (auto& command : live_control->poll())
+                pending_control_commands.push_back(std::move(command));
+    };
+
     while ((!bounded_execution || remaining_ticks != 0) &&
            !initial_runtime->kernel->process().exited && !hard_stop &&
            !host.stop_requested()) {
+        // run() has collected every request from the previous turn. Release
+        // its state before lifecycle servicing while retaining batch capacity.
+        execution_requests.clear();
+        prepared_slices.clear();
+        scheduled_batch.clear();
         guest_execution_coordinator->poll_host_completions();
         synchronize_device_time_to_host();
         synchronize_scheduler_time();
@@ -3692,8 +3716,6 @@ void EmulatorSession::run()
         // matching runtime and a pending VSync receive.
         guest_execution_coordinator->arm_host_completions(
             scheduler.host_await_count() != 0);
-        std::vector<XnuScheduledSlice> scheduled_batch;
-        scheduled_batch.reserve(guest_processor_count);
         auto reservable_ticks = remaining_ticks;
         for (std::size_t processor = 0; processor < guest_processor_count;
             ++processor) {
@@ -3793,19 +3815,11 @@ void EmulatorSession::run()
                 break;
         }
 
-        std::vector<PreparedGuestSlice> prepared_slices;
-        prepared_slices.reserve(scheduled_batch.size());
         std::optional<std::uint64_t> display_vsync_tick_budget;
-        std::optional<std::uint64_t> display_vsync_deadline;
-        for (auto& runtime : runtimes) {
-            if (runtime->kernel->process().exited)
-                continue;
-            const auto deadline =
-                runtime->kernel->next_display_vsync_deadline();
-            if (deadline && (!display_vsync_deadline ||
-                                *deadline < *display_vsync_deadline))
-                display_vsync_deadline = deadline;
-        }
+        // Registrations and their deadline index belong to the shared kernel
+        // state. Every runtime observes the same panel deadline.
+        const auto display_vsync_deadline =
+            initial_runtime->kernel->next_display_vsync_deadline();
         if (display_vsync_deadline) {
             const auto now = initial_runtime->kernel->current_absolute_time();
             if (*display_vsync_deadline > now) {
@@ -3993,18 +4007,7 @@ void EmulatorSession::run()
         // Retain the accumulated prefix while a serial window resumes. Kernel
         // statistics and retirement queries reuse the existing pending-tick view.
         pending_kernel_entries = prepared_slices;
-        const auto service_host = [&] {
-            // The active window owns Guest state. Collect host events only;
-            // Guest injection and commands wait until that ownership returns.
-            if (display_presenter && !display_presenter->poll_events())
-                hard_stop = true;
-            if (live_control)
-                for (auto& command : live_control->poll())
-                    pending_control_commands.push_back(std::move(command));
-        };
         if (parallel_guest_batch) {
-            std::vector<GuestExecutionRequest*> execution_requests;
-            execution_requests.reserve(prepared_slices.size());
             for (auto& prepared : prepared_slices)
                 execution_requests.push_back(&prepared.execution);
             guest_execution_coordinator->run(execution_requests, service_host);
