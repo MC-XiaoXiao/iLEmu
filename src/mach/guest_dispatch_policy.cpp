@@ -7,6 +7,7 @@
 
 #include "mach/guest_dispatch_policy.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace ilemu {
@@ -49,35 +50,52 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         ? scheduler.info(*result.preferred_thread) : std::nullopt;
     const auto processor = info && info->bound_processor
         ? *info->bound_processor : 0U;
-    auto& turn = preference_turns_[processor];
-    turn.ordinary_head = scheduler.peek_next_for_processor(processor);
-    if (guest_control || !turn.ordinary_head ||
-        result.preferred_thread == turn.ordinary_head)
+    auto& turns = preference_turns_[processor];
+    const auto ordinary_head = scheduler.peek_next_for_processor(processor);
+    if (guest_control || !ordinary_head ||
+        result.preferred_thread == ordinary_head)
         return result;
 
-    // Roles, process changes and implementation waits share one bypass turn.
-    // Keep it spent until the ordinary head actually executes; returning an
-    // ordinary decision which never runs must not renew another host burst.
-    if (result.preferred_thread && !turn.deadline)
-        turn.deadline = observation.now + realtime_burst_period_;
-    if (turn.bypasses >= preferred_process_burst_limit ||
-        (turn.deadline && observation.now >= *turn.deadline)) {
+    auto turn = std::find_if(turns.begin(), turns.end(), [&](const auto& entry) {
+        return entry.ordinary_head == *ordinary_head;
+    });
+    if (turn == turns.end()) {
+        if (!result.preferred_thread)
+            return result;
+        // Retain debt across head changes and implementation waits. Drop
+        // entries for threads now in a Guest wait or retired.
+        std::erase_if(turns, [&](const auto& entry) {
+            const auto state = scheduler.info(entry.ordinary_head);
+            return !state || state->state == XnuThreadState::Waiting;
+        });
+        if (turns.capacity() == 0U)
+            turns.reserve(8U);
+        turns.push_back(PreferenceTurn { *ordinary_head,
+            observation.now + realtime_burst_period_, 0U });
+        turn = turns.end() - 1;
+    }
+    // A higher-priority head may run between two bypasses of this thread.
+    // Its progress cannot renew the skipped thread's host preference budget.
+    if (turn->bypasses >= preferred_process_burst_limit ||
+        (turn->deadline && observation.now >= *turn->deadline)) {
         result.preferred_thread.reset();
         result.reason = GuestDispatchReason::Ordinary;
     } else if (result.preferred_thread) {
-        ++turn.bypasses;
+        ++turn->bypasses;
     }
     return result;
 }
 
-void GuestDispatchPolicy::observe_execution(std::size_t processor,
+void GuestDispatchPolicy::observe_execution(std::size_t /*processor*/,
     XnuThreadId thread, std::uint64_t ticks_consumed)
 {
-    auto& turn = preference_turns_[processor];
-    if (ticks_consumed != 0 && turn.ordinary_head == thread) {
-        turn.deadline.reset();
-        turn.bypasses = 0;
-    }
+    if (ticks_consumed == 0U)
+        return;
+    // Real progress retires this thread's debt even after processor migration.
+    for (auto& turns : preference_turns_)
+        std::erase_if(turns, [&](const auto& entry) {
+            return entry.ordinary_head == thread;
+        });
 }
 
 GuestDispatchDecision GuestDispatchPolicy::decide_interactive_process(

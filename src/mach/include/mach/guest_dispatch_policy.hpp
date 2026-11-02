@@ -87,11 +87,11 @@ private:
     [[nodiscard]] GuestDispatchDecision decide_hint(const XnuScheduler& scheduler,
         const GuestDispatchObservation& observation);
     struct PreferenceTurn {
-        std::optional<XnuThreadId> ordinary_head;
+        XnuThreadId ordinary_head;
         std::optional<std::chrono::steady_clock::time_point> deadline;
         std::size_t bypasses { };
     };
-    std::vector<PreferenceTurn> preference_turns_;
+    std::vector<std::vector<PreferenceTurn>> preference_turns_;
     [[nodiscard]] GuestDispatchDecision decide_interactive_process(
         const XnuScheduler& scheduler, std::uint32_t process,
         GuestDispatchReason reason);
