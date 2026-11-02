@@ -114,33 +114,11 @@ if(ILEMU_DYNARMIC_REVISION_RESULT EQUAL 0 AND
     set(ILEMU_DYNARMIC_SELECTED_REVISION
         "${ILEMU_DYNARMIC_CHECKED_OUT_REVISION}" CACHE INTERNAL
         "Dynarmic revision observed during configure" FORCE)
-    message(STATUS
-        "Using Dynarmic ${ILEMU_DYNARMIC_CHECKED_OUT_REVISION} "
-        "with the parent-repository iLEmu patches")
+    message(STATUS "Using Dynarmic ${ILEMU_DYNARMIC_CHECKED_OUT_REVISION}")
 else()
     set(ILEMU_DYNARMIC_SELECTED_REVISION "unknown" CACHE INTERNAL
         "Dynarmic revision observed during configure" FORCE)
 endif()
-
-# Carry local backend fixes as reproducible, idempotent patches.
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_dependency_patch.cmake")
-ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_remove_test_hooks.patch")
-ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_arm64_halt_width.patch")
-ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_arm64_exclusive_address.patch")
-ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_arm64_memory_result.patch")
-
-ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_x64_fp_multiply.patch")
-ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_x64_host_mxcsr.patch")
-ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_tiered_execution.patch")
-ilemu_apply_dependency_patch("${ILEMU_DYNARMIC_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_arm64_cycle_budget.patch")
 
 # Force Dynarmic's FindBoost invocation to use the matching header-only tree.
 set(Boost_NO_SYSTEM_PATHS ON CACHE BOOL "" FORCE)
