@@ -1548,7 +1548,8 @@ bool CompatibilityKernel::mach_kevent_observation_current(
                 registration.empty_mach_queue_object);
 }
 
-bool CompatibilityKernel::kevent_mach_poll_required(std::uint32_t queue_fd) const
+bool CompatibilityKernel::kevent_mach_poll_required(std::uint32_t queue_fd,
+    std::vector<MachPollDependency>* dependencies) const
 {
     if (!kqueues_.contains(queue_fd))
         return true;
@@ -1577,6 +1578,11 @@ bool CompatibilityKernel::kevent_mach_poll_required(std::uint32_t queue_fd) cons
                 (registration.filter == darwin::kqueue::filter_mach_port &&
                     !mach_kevent_observation_current(registration)))
                 return true;
+            if (dependencies &&
+                registration.filter == darwin::kqueue::filter_mach_port) {
+                dependencies->push_back({ registration.empty_mach_queue_object,
+                    registration.empty_mach_queue_generation });
+            }
             if ((registration.filter == darwin::kqueue::filter_read ||
                     registration.filter == darwin::kqueue::filter_write) &&
                 self(self, static_cast<std::uint32_t>(registration.ident), true))

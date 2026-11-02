@@ -1712,11 +1712,15 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto topology_changed = !pending_event_poll_observed_ ||
                                   pending_event_poll_topology_generation_ !=
                                       pending_event_topology_generation_;
+    const auto mach_changed = !pending_event_poll_observed_ ||
+                              pending_event_poll_mach_generation_ !=
+                                  mach_generation;
+    const auto mach_snapshot_current = mach_changed &&
+        pending_mach_poll_snapshot_current_locked(io_generation);
     const auto readiness_changed = !pending_event_poll_observed_ ||
                                    pending_event_poll_io_generation_ !=
                                        io_generation ||
-                                   pending_event_poll_mach_generation_ !=
-                                       mach_generation;
+                                   (mach_changed && !mach_snapshot_current);
     const auto deadline_due = pending_event_poll_deadline_ &&
                               guest_now >= *pending_event_poll_deadline_;
     const auto sample_deadline = hid_event_system_hle_.next_sample_deadline();
@@ -1724,6 +1728,10 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto host_probe_due = host_now >= pending_event_host_probe_;
     if (!graphics_changed && !topology_changed && !readiness_changed &&
         !deadline_due && !sample_due && !host_probe_due) {
+        // Keep the captured outer generation, not a later producer snapshot.
+        // A racing enqueue will still differ on the next scheduler pass.
+        if (mach_snapshot_current)
+            pending_event_poll_mach_generation_ = mach_generation;
         return { };
     }
 
@@ -1771,7 +1779,84 @@ CompatibilityKernel::pending_event_poll_candidates()
     pending_event_host_probe_ = requires_host_probe
                                     ? host_now + host_probe_interval
                                     : std::chrono::steady_clock::time_point::max();
+    pending_event_mach_snapshot_valid_ = false;
+    if (processors.empty()) {
+        pending_event_mach_snapshot_valid_ =
+            rebuild_pending_mach_poll_snapshot_locked(io_generation);
+    }
     return processors;
+}
+
+bool CompatibilityKernel::pending_mach_poll_snapshot_current_locked(
+    std::uint64_t io_generation) const
+{
+    return pending_event_mach_snapshot_valid_ &&
+        pending_event_poll_topology_generation_ == pending_event_topology_generation_ &&
+        pending_event_poll_io_generation_ == io_generation &&
+        pending_event_mach_snapshot_timer_generation_ == local_timer_deadline_generation_ &&
+        pending_thread_aborts_.empty() &&
+        std::all_of(pending_event_mach_dependencies_.begin(),
+            pending_event_mach_dependencies_.end(), [this](const auto& dependency) {
+                return dependency.generation ==
+                    shared_state_->mach_receive_generation_snapshot(dependency.object);
+            });
+}
+
+bool CompatibilityKernel::rebuild_pending_mach_poll_snapshot_locked(
+    std::uint64_t io_generation)
+{
+    pending_event_mach_dependencies_.clear();
+    pending_event_mach_snapshot_timer_generation_ = local_timer_deadline_generation_;
+    if (!pending_thread_aborts_.empty())
+        return false;
+    for (const auto processor : pending_event_processors_) {
+        // These continuations have readiness beyond the empty receive/object
+        // observations collected here. Preserve their existing full probe.
+        if (userland_hle_.pending_call(processor) ||
+            exception_delivery_.waiting(processor) ||
+            pending_mach_sends_.contains(processor))
+            return false;
+        if (const auto receive = pending_mach_receives_.find(processor);
+            receive != pending_mach_receives_.end()) {
+            if (hid_event_system_hle_.is_event_consumer(process_.pid, processor) ||
+                !receive->second.receive_object ||
+                receive->second.observed_queue_generation !=
+                    shared_state_->mach_receive_generation_snapshot(
+                        *receive->second.receive_object))
+                return false;
+            pending_event_mach_dependencies_.push_back({
+                *receive->second.receive_object,
+                receive->second.observed_queue_generation });
+            continue;
+        }
+        const auto cached = pending_io_poll_cache_.find(processor);
+        if (cached == pending_io_poll_cache_.end() ||
+            cached->second.io_generation != io_generation)
+            return false;
+        if (const auto kevent = pending_kevents_.find(processor);
+            kevent != pending_kevents_.end()) {
+            if (kevent_mach_poll_required(kevent->second.queue_fd,
+                    &pending_event_mach_dependencies_))
+                return false;
+            continue;
+        }
+        const auto select = pending_selects_.find(processor);
+        if (select == pending_selects_.end())
+            return false;
+        for (std::size_t word = 0; word < select->second.read_words.size(); ++word) {
+            auto bits = select->second.read_words[word];
+            while (bits != 0U) {
+                const auto fd = static_cast<std::uint32_t>(word * 32U) +
+                    static_cast<std::uint32_t>(std::countr_zero(bits));
+                if (fd < select->second.descriptor_count &&
+                    (kqueues_.contains(fd) || duplicated_descriptors_.contains(fd)) &&
+                    kevent_mach_poll_required(fd, &pending_event_mach_dependencies_))
+                    return false;
+                bits &= bits - 1U;
+            }
+        }
+    }
+    return true;
 }
 
 std::optional<std::chrono::steady_clock::time_point>

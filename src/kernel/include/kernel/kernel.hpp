@@ -926,6 +926,14 @@ private:
     void dispatch_bsd_mmap(Cpu& cpu);
     void complete_bsd_mapping(Cpu& cpu, PendingFileMapping mapping);
     bool deliver_pending_file_mapping(Cpu& cpu);
+    struct MachPollDependency {
+        std::uint32_t object;
+        std::uint64_t generation;
+    };
+    [[nodiscard]] bool pending_mach_poll_snapshot_current_locked(
+        std::uint64_t io_generation) const;
+    [[nodiscard]] bool rebuild_pending_mach_poll_snapshot_locked(
+        std::uint64_t io_generation);
     [[nodiscard]] bool pending_io_poll_required_locked(
         std::size_t processor) const;
     void remember_pending_io_not_ready_locked(std::size_t processor,
@@ -1020,7 +1028,8 @@ private:
         const KeventRegistration& registration) const;
     [[nodiscard]] bool mach_kevent_observation_current(
         const KeventRegistration& registration) const;
-    [[nodiscard]] bool kevent_mach_poll_required(std::uint32_t queue_fd) const;
+    [[nodiscard]] bool kevent_mach_poll_required(std::uint32_t queue_fd,
+        std::vector<MachPollDependency>* dependencies = nullptr) const;
     [[nodiscard]] std::optional<std::uint32_t> socket_pending_byte_count(
         std::uint32_t fd, std::uint32_t& darwin_error) const;
     [[nodiscard]] std::shared_ptr<bsd::baseband_device::OpenDescription>
@@ -1278,6 +1287,11 @@ private:
         std::chrono::steady_clock::time_point::min()
     };
     bool pending_event_poll_observed_ { };
+    // A complete negative scan can absorb unrelated IPC without revisiting
+    // every blocked processor. Other readiness domains retain their own gates.
+    std::vector<MachPollDependency> pending_event_mach_dependencies_;
+    std::uint64_t pending_event_mach_snapshot_timer_generation_ { };
+    bool pending_event_mach_snapshot_valid_ { };
     struct PendingIoDeadlineCache {
         std::uint64_t generation { };
         std::optional<std::uint64_t> deadline;
