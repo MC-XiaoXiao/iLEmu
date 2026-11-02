@@ -31,6 +31,55 @@ GuestDispatchPolicy::GuestDispatchPolicy(
     }
 }
 
+GuestDispatchDecision GuestDispatchPolicy::decide(
+    const XnuScheduler& scheduler,
+    const GuestDispatchObservation& observation,
+    std::optional<XnuThreadId> host_continuation)
+{
+    auto result = decide_hint(scheduler, observation);
+    const auto guest_control = result.reason == GuestDispatchReason::Debugger ||
+                               result.reason == GuestDispatchReason::ExplicitHandoff;
+    if (host_continuation && !guest_control) {
+        result.preferred_thread = host_continuation;
+        result.reason = GuestDispatchReason::HostContinuation;
+    }
+    if (preference_turns_.size() != scheduler.processor_count())
+        preference_turns_.resize(scheduler.processor_count());
+    const auto info = result.preferred_thread
+        ? scheduler.info(*result.preferred_thread) : std::nullopt;
+    const auto processor = info && info->bound_processor
+        ? *info->bound_processor : 0U;
+    auto& turn = preference_turns_[processor];
+    turn.ordinary_head = scheduler.peek_next_for_processor(processor);
+    if (guest_control || !turn.ordinary_head ||
+        result.preferred_thread == turn.ordinary_head)
+        return result;
+
+    // Roles, process changes and implementation waits share one bypass turn.
+    // Keep it spent until the ordinary head actually executes; returning an
+    // ordinary decision which never runs must not renew another host burst.
+    if (result.preferred_thread && !turn.deadline)
+        turn.deadline = observation.now + realtime_burst_period_;
+    if (turn.bypasses >= preferred_process_burst_limit ||
+        (turn.deadline && observation.now >= *turn.deadline)) {
+        result.preferred_thread.reset();
+        result.reason = GuestDispatchReason::Ordinary;
+    } else if (result.preferred_thread) {
+        ++turn.bypasses;
+    }
+    return result;
+}
+
+void GuestDispatchPolicy::observe_execution(std::size_t processor,
+    XnuThreadId thread, std::uint64_t ticks_consumed)
+{
+    auto& turn = preference_turns_[processor];
+    if (ticks_consumed != 0 && turn.ordinary_head == thread) {
+        turn.deadline.reset();
+        turn.bypasses = 0;
+    }
+}
+
 GuestDispatchDecision GuestDispatchPolicy::decide_interactive_process(
     const XnuScheduler& scheduler, std::uint32_t process,
     GuestDispatchReason reason)
@@ -58,7 +107,7 @@ GuestDispatchDecision GuestDispatchPolicy::decide_interactive_process(
     return { candidate, reason, false };
 }
 
-GuestDispatchDecision GuestDispatchPolicy::decide(
+GuestDispatchDecision GuestDispatchPolicy::decide_hint(
     const XnuScheduler& scheduler,
     const GuestDispatchObservation& observation)
 {

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "mach/xnu_scheduler.hpp"
 
@@ -56,6 +57,7 @@ enum class GuestDispatchReason : std::uint8_t {
     InputProcess,
     InteractiveProcess,
     FrameDependency,
+    HostContinuation,
 };
 
 struct GuestDispatchDecision {
@@ -74,9 +76,22 @@ public:
             std::chrono::nanoseconds { 16'666'667 });
 
     [[nodiscard]] GuestDispatchDecision decide(const XnuScheduler& scheduler,
-        const GuestDispatchObservation& observation);
+        const GuestDispatchObservation& observation,
+        std::optional<XnuThreadId> host_continuation = std::nullopt);
+    // A decision alone is not service. Only real Guest progress by the XNU
+    // queue head releases the next host-preference turn on that processor.
+    void observe_execution(std::size_t processor, XnuThreadId thread,
+        std::uint64_t ticks_consumed);
 
 private:
+    [[nodiscard]] GuestDispatchDecision decide_hint(const XnuScheduler& scheduler,
+        const GuestDispatchObservation& observation);
+    struct PreferenceTurn {
+        std::optional<XnuThreadId> ordinary_head;
+        std::optional<std::chrono::steady_clock::time_point> deadline;
+        std::size_t bypasses { };
+    };
+    std::vector<PreferenceTurn> preference_turns_;
     [[nodiscard]] GuestDispatchDecision decide_interactive_process(
         const XnuScheduler& scheduler, std::uint32_t process,
         GuestDispatchReason reason);

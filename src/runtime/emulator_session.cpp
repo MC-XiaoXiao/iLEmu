@@ -4023,6 +4023,8 @@ void EmulatorSession::run()
             const auto index = prepared.thread_index;
             auto& cpu = *prepared.execution.cpu;
             auto result = std::move(prepared.execution.result);
+            guest_dispatch_policy.observe_execution(scheduled->processor,
+                scheduled->thread, result.ticks_consumed);
             auto host_execution_ns = result.host_execution_ns;
             if (prepared.host_tick_budget_limited &&
                 result.ticks_consumed >= prepared.execution.tick_budget)

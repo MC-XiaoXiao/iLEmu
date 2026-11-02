@@ -259,6 +259,10 @@ public:
     [[nodiscard]] std::optional<XnuScheduledSlice> choose_next(
         std::size_t processor,
         std::optional<XnuThreadId> preferred = std::nullopt);
+    // Read the same eligible local/global head as ordinary selection, without
+    // changing Guest state, queue position or runnable age.
+    [[nodiscard]] std::optional<XnuThreadId> peek_next_for_processor(
+        std::size_t processor) const;
     [[nodiscard]] XnuPreemption preemption_for(
         XnuThreadId running_thread, std::size_t processor) const;
     // XNU's scheduler policy owns the yield decision. Resolve the physical
@@ -427,8 +431,6 @@ private:
         std::size_t processor) const;
     [[nodiscard]] ThreadRecord& peek_highest(RunQueue& run_queue);
     [[nodiscard]] const ThreadRecord& peek_highest(const RunQueue& run_queue) const;
-    [[nodiscard]] std::optional<XnuThreadId> peek_next_for_processor(
-        std::size_t processor) const;
     static void refresh_high_queue(RunQueue& run_queue);
     void advance_scheduler_time(std::uint64_t consumed_ticks);
     void age_priorities(std::uint64_t elapsed_ticks);
