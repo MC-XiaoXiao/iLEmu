@@ -91,6 +91,8 @@ void GuestExecutionCoordinator::submit(GuestExecutionRequest& request)
     for (const auto& other : impl_->channels)
         if (other->request && other->request->cpu == request.cpu)
             throw std::logic_error { "guest CPU already has an outstanding request" };
+    request.cooperation_signal = host_completion_pending_ ? &host_completions_ : nullptr;
+    request.completion_generation = polled_completion_generation_;
     channel.request = &request;
     channel.state = Impl::State::Submitted;
     ++impl_->outstanding;
@@ -118,6 +120,21 @@ GuestExecutionRequest* GuestExecutionCoordinator::wait()
         return request;
     }
     std::terminate();
+}
+
+void GuestExecutionCoordinator::poll_host_completions()
+{
+    polled_completion_generation_ = host_completions_.generation();
+}
+
+void GuestExecutionCoordinator::arm_host_completions(bool pending)
+{
+    host_completion_pending_ = pending;
+}
+
+void GuestExecutionCoordinator::notify_host_completion() noexcept
+{
+    host_completions_.notify();
 }
 
 void GuestExecutionCoordinator::run(std::span<GuestExecutionRequest*> requests,
@@ -181,6 +198,8 @@ void GuestExecutionCoordinator::execute(GuestExecutionRequest& request) noexcept
     request.result = { };
     request.error = nullptr;
     try {
+        const execution::GuestCooperationScope cooperation {
+            request.cooperation_signal, request.completion_generation };
         std::optional<AddressSpace::ExclusiveAccess> access;
         if (request.exclusive_memory)
             access.emplace(*request.exclusive_memory);

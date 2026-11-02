@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #pragma once
+#include "execution/cooperation.hpp"
 #include "execution/run.hpp"
 
 namespace ilemu::execution::arm64 {
@@ -15,7 +16,8 @@ public:
     {
         auto reason = stops_.consume();
         if (deadline_ != std::chrono::steady_clock::time_point::max() &&
-            std::chrono::steady_clock::now() >= deadline_)
+            (std::chrono::steady_clock::now() >= deadline_ ||
+                GuestCooperationScope::requested()))
             reason = reason | StopReason::HostDeadline;
         return reason;
     }

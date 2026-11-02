@@ -6,6 +6,7 @@
 // and CPU callbacks.
 
 #include "foundation/cpu.hpp"
+#include "execution/cooperation.hpp"
 #include "cpu_independent_executor.hpp"
 #include "foundation/jit_tiered_execution.hpp"
 #include "foundation/guest_execution_coordinator.hpp"
@@ -1926,7 +1927,7 @@ private:
         host_yield_tick_accumulator_ = 0;
         ++host_yield_checks_;
         const auto now = std::chrono::steady_clock::now();
-        if (now >= host_slice_deadline_) {
+        if (now >= host_slice_deadline_ || execution::GuestCooperationScope::requested()) {
             request_host_yield();
             return;
         }

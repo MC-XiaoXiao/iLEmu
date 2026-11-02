@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "arm/program_status.hpp"
 #include "arm_interpreter/interpreter.hpp"
+#include "execution/cooperation.hpp"
 #include "simd.hpp"
 #include "arm/a32_decode.hpp"
 #include "arm/integer_semantics.hpp"
@@ -88,7 +89,8 @@ RunResult ArmInterpreter::run_slice(CpuThreadState& state,
             request.mode != ExecutionMode::SingleStep)
             result.reason = result.reason | StopReason::TickBudget;
         if (request.deadline != std::chrono::steady_clock::time_point::max() &&
-            std::chrono::steady_clock::now() >= request.deadline)
+            (std::chrono::steady_clock::now() >= request.deadline ||
+                GuestCooperationScope::requested()))
             result.reason = result.reason | StopReason::HostDeadline;
         if (result.reason != StopReason::None)
             return result;
