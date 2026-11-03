@@ -488,6 +488,7 @@ private:
         std::uint64_t benefit_generation { };
         std::uint64_t benefit_hits { };
         bool boot_working_set { };
+        bool native_reused { };
     };
     struct PendingWriteback {
         std::shared_ptr<const BlockArtifact> artifact;

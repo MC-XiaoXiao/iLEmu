@@ -2837,13 +2837,21 @@ void JitArtifactStore::evict_until_fit_locked(std::size_t required_bytes) const
            !lru_.empty()) {
         const auto victim = lru_.begin();
         const auto* key = *victim;
+        const auto iterator = artifacts_.find(key);
+        // A successful native import proves reuse across a cache miss. Give
+        // that template one more turn before a stream of first translations
+        // evicts it; the existing queue and byte budget remain authoritative.
+        if (iterator != artifacts_.end() && iterator->second.native_reused) {
+            iterator->second.native_reused = false;
+            touch_locked(iterator);
+            continue;
+        }
         if (victim == boot_lru_begin_) {
             boot_lru_begin_ = std::next(victim);
         }
         lru_.erase(victim);
         if (lru_.empty())
             boot_lru_begin_ = lru_.end();
-        const auto iterator = artifacts_.find(key);
         if (iterator == artifacts_.end())
             continue;
         resident_bytes_ -= iterator->second.resident_bytes;
@@ -3251,6 +3259,12 @@ void JitArtifactStore::record_native_imported(
                 std::memory_order_acq_rel, std::memory_order_relaxed)) {
             const std::lock_guard lock { mutex_ };
             ++stats_.native_imported;
+            if (const auto resident = artifacts_.find(lookup.artifact->key);
+                resident != artifacts_.end() &&
+                resident->second.artifact == lookup.artifact &&
+                lookup.artifact->data.native_only()) {
+                resident->second.native_reused = true;
+            }
             return;
         }
     }
