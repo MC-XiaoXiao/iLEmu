@@ -76,6 +76,11 @@ bool UserlandHleRegistry::pending_call(std::size_t processor) const
     return pending_host_calls_.contains(processor);
 }
 
+bool UserlandHleRegistry::has_pending_calls() const
+{
+    return !pending_host_calls_.empty();
+}
+
 bool UserlandHleRegistry::pending_host_continuation(std::size_t processor) const
 {
     const auto pending = pending_host_calls_.find(processor);

@@ -1717,8 +1717,11 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto host_now = std::chrono::steady_clock::now();
     const auto guest_now = shared_state_->clock.now();
     const auto graphics_generation = gles_completion_generation();
+    // Host graphics waits park HLE calls. Unrelated processes keep their own
+    // Mach/I/O generations and deadlines instead of walking every waiter.
     const auto graphics_changed =
-        graphics_generation != pending_graphics_generation_;
+        graphics_generation != pending_graphics_generation_ &&
+        userland_hle_.has_pending_calls();
     pending_graphics_generation_ = graphics_generation;
     const auto topology_changed = !pending_event_poll_observed_ ||
                                   pending_event_poll_topology_generation_ !=
