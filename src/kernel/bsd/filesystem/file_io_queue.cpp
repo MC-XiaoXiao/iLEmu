@@ -40,6 +40,8 @@ void FileIoQueue::pop()
 }
 void FileIoQueue::start()
 {
+    if (shared_file_writer_ && shared_file_writer_->pending())
+        return;
     auto& operation = *operations_.front();
     if (operation.cancelled || operation.error)
         return;
@@ -61,6 +63,12 @@ void FileIoQueue::start()
             std::move(operation.input),
             operation.kind == FileIoOperation::Kind::Write, operation.append);
     }
+}
+void FileIoQueue::start_ready()
+{
+    if (!operations_.empty() && !operations_.front()->committed &&
+        !operations_.front()->request && !operations_.front()->sync_request)
+        start();
 }
 void FileIoQueue::repeat_write(FileIoOperation& operation)
 {

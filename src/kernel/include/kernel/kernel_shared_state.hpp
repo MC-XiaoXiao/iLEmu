@@ -2271,6 +2271,9 @@ struct KernelSharedState {
     mutable std::mutex socket_mutex;
     // Created on first use under filesystem_mutex; shared across processes.
     FileIoQueue file_io;
+    std::shared_ptr<HostSharedFileWriter> shared_file_writer {
+        std::make_shared<HostSharedFileWriter>()
+    };
     mutable std::mutex filesystem_mutex;
     std::shared_ptr<HostFileRenamer> file_renamer;
     std::atomic<std::size_t> filesystem_renames_pending { 0 };

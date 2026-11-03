@@ -162,7 +162,8 @@ bool CompatibilityKernel::deliver_pending_filesystem_dispatch(Cpu& cpu)
     service_completed_file_renames();
     service_file_io();
     if (shared_state_->filesystem_renames_pending.load(
-            std::memory_order_acquire) != 0 || !shared_state_->file_io.empty())
+            std::memory_order_acquire) != 0 || !shared_state_->file_io.empty() ||
+        shared_state_->shared_file_writer->pending())
         return false;
     const auto found = pending_filesystem_dispatches_.find(cpu.processor_id());
     if (found == pending_filesystem_dispatches_.end())

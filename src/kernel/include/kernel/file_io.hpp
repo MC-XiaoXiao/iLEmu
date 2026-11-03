@@ -5,6 +5,7 @@
 #include "filesystem/bsd_file_lock.hpp"
 #include "foundation/host_file_io.hpp"
 #include "foundation/host_file_sync.hpp"
+#include "foundation/shared_file_writeback.hpp"
 #include "kernel/guest_read_buffer.hpp"
 #include "kernel/open_file_offset.hpp"
 #include <deque>
@@ -12,7 +13,7 @@
 
 namespace ilemu {
 struct FileIoOperation {
-    enum class Kind { Read, Write, Synchronize };
+    enum class Kind { Read, Write, Synchronize, MappingSync };
     Kind kind;
     std::uint32_t owner;
     std::uint32_t descriptor;
@@ -30,6 +31,7 @@ struct FileIoOperation {
     std::size_t size { };
     std::shared_ptr<HostFileIoRequest> request;
     std::shared_ptr<HostFileSyncRequest> sync_request;
+    std::shared_ptr<FileWritebackRequest> mapping_sync;
     std::uint32_t notification_signal { };
     std::int32_t result { -1 };
     std::uint32_t error { };
@@ -67,6 +69,11 @@ public:
     void repeat_write(FileIoOperation& operation);
     void cancel(const std::shared_ptr<FileIoOperation>& operation);
     [[nodiscard]] bool owns(std::uint32_t owner) const;
+    void set_shared_file_writer(std::shared_ptr<HostSharedFileWriter> writer)
+    {
+        shared_file_writer_ = std::move(writer);
+    }
+    void start_ready();
 
 private:
     void start();
@@ -77,5 +84,6 @@ private:
     std::deque<std::shared_ptr<FileIoOperation>> admissions_;
     std::unique_ptr<HostFileIo> io_;
     std::unique_ptr<HostFileSynchronizer> synchronizer_;
+    std::shared_ptr<HostSharedFileWriter> shared_file_writer_;
 };
 } // namespace ilemu

@@ -271,6 +271,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         iokit_abi::mobile_framebuffer_default_surface_id);
     memory_.set_file_generation_registry(
         shared_state_->guest_file_generation_registry);
+    memory_.set_shared_file_writer(shared_state_->shared_file_writer);
+    shared_state_->file_io.set_shared_file_writer(shared_state_->shared_file_writer);
     audio_service_->set_output_gain(shared_state_->audio_output_gain);
     core_audio_hle_.set_output_gain(shared_state_->audio_output_gain);
     shared_state_->shared_mapping_page_cache->set_generation_registry(

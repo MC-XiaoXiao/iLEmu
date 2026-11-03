@@ -21,6 +21,11 @@ void CompatibilityKernel::dispatch_bsd_nosys(Cpu& cpu, bool send_sigsys)
 void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
 {
     service_file_io();
+    if ((number == 59U || number == 244U) &&
+        shared_state_->shared_file_writer->pending()) {
+        static_cast<void>(defer_filesystem_dispatch(cpu, number));
+        return;
+    }
     HostSocketEvents::instance().commit();
     shared_state_->bsd_dispatch_table.dispatch(*this, cpu, number);
 }

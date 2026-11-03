@@ -18,6 +18,10 @@ namespace ilemu {
 
 void CompatibilityKernel::dispatch_bsd_mmap(Cpu& cpu)
 {
+    if (shared_state_->shared_file_writer->pending()) {
+        static_cast<void>(defer_filesystem_dispatch(cpu, 197U));
+        return;
+    }
     PendingFileMapping mapping;
     std::copy_n(cpu.registers().begin(), mapping.arguments.size(),
         mapping.arguments.begin());
@@ -28,6 +32,7 @@ bool CompatibilityKernel::deliver_pending_file_mapping(Cpu& cpu)
 {
     const auto found = pending_file_mappings_.find(cpu.processor_id());
     if (found == pending_file_mappings_.end() ||
+        shared_state_->shared_file_writer->pending() ||
         !found->second.preparation->ready())
         return false;
     auto mapping = std::move(found->second);

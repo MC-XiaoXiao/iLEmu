@@ -127,6 +127,11 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
 {
     const TaskVmEvents::Scope user_access { memory_.task_vm_events() };
     service_completed_file_renames();
+    const auto virtual_stream_io = (number == 3U || number == 4U) &&
+        !file_descriptors_.contains(cpu.registers()[0]);
+    if (!virtual_stream_io && shared_state_->shared_file_writer->pending() &&
+        defer_filesystem_dispatch(cpu, number))
+        return;
     if (!shared_state_->file_io.empty() && number != 6 && number != 153 &&
         number != 154 && number != darwin::syscall::synchronize_file &&
         defer_filesystem_dispatch(cpu, number))

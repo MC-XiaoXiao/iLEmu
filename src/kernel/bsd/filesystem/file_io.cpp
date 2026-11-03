@@ -124,7 +124,12 @@ void CompatibilityKernel::wait_for_file_io(
 
 void CompatibilityKernel::service_file_io()
 {
+    // A shared snapshot can overwrite in-flight descriptor I/O. Keep commit
+    // behind persistence, then use the existing revision replay for writes.
+    if (shared_state_->shared_file_writer->pending())
+        return;
     auto& queue = shared_state_->file_io;
+    queue.start_ready();
     for (;;) {
         if (const auto waiting = queue.admission();
             waiting &&
@@ -226,7 +231,16 @@ bool CompatibilityKernel::deliver_pending_file_io(Cpu& cpu)
 {
     service_file_io();
     const auto found = pending_file_ios_.find(cpu.processor_id());
-    if (found == pending_file_ios_.end() || !found->second->committed)
+    if (found == pending_file_ios_.end())
+        return false;
+    if (const auto& sync = found->second->mapping_sync) {
+        if (!sync->ready())
+            return false;
+        found->second->result = 0;
+        found->second->error = sync->succeeded() ? 0U : darwin::error::io;
+        found->second->committed = true;
+    }
+    if (!found->second->committed)
         return false;
     const auto operation = found->second;
     pending_file_ios_.erase(found);

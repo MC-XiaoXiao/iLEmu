@@ -866,18 +866,19 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bsd_error(cpu, darwin::error::operation_not_supported);
             return;
         }
-        const auto result = memory_.synchronize_file_mappings(address, size,
-            (flags & darwin::memory_sync_flag::asynchronous) == 0);
-        switch (result) {
-        case AddressSpace::FileSyncResult::Success:
-            bsd_success(cpu, 0);
-            break;
-        case AddressSpace::FileSyncResult::Unmapped:
+        const auto synchronous = (flags & darwin::memory_sync_flag::asynchronous) == 0;
+        const auto request = memory_.prepare_file_mappings_sync(address, size, synchronous);
+        if (!request) {
             bsd_error(cpu, darwin::error::no_memory);
-            break;
-        case AddressSpace::FileSyncResult::IoError:
-            bsd_error(cpu, darwin::error::io);
-            break;
+        } else if (synchronous) {
+            auto operation = std::make_shared<FileIoOperation>();
+            operation->kind = FileIoOperation::Kind::MappingSync;
+            operation->owner = process_.pid;
+            operation->descriptor = 0;
+            operation->mapping_sync = *request;
+            wait_for_file_io(cpu, std::move(operation));
+        } else {
+            bsd_success(cpu, 0);
         }
         return;
     }
