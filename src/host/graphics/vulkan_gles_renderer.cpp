@@ -51,7 +51,6 @@ namespace {
 
     constexpr VkFormat color_format = VK_FORMAT_B8G8R8A8_UNORM;
     constexpr std::uint64_t fence_timeout_nanoseconds = 5'000'000'000ULL;
-    constexpr std::uint64_t acquire_timeout_nanoseconds = 2'000'000ULL;
     constexpr std::size_t maximum_batch_draws = 128;
     constexpr std::size_t command_ring_size = 6;
     constexpr VkDeviceSize minimum_vertex_arena_bytes = 1U << 20U;
@@ -3173,8 +3172,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::uint32_t image_index { };
         const auto acquire_next_image = [&] {
             const PerformanceLatencyScope latency { PerfLatencyKind::Acquire };
+            // The presenter retains this frame and retries Skipped results.
+            // Poll while owning renderer state so unavailable swapchain images
+            // do not stall Guest draws on the same mutex.
             return vkAcquireNextImageKHR(device_, presentation_swapchain_,
-                acquire_timeout_nanoseconds, slot->image_available,
+                0U, slot->image_available,
                 VK_NULL_HANDLE, &image_index);
         };
         auto acquired = acquire_next_image();
