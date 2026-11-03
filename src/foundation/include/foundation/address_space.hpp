@@ -35,6 +35,8 @@
 
 namespace ilemu {
 
+class HostFilePager;
+
 struct MemoryFault {
     std::uint32_t address { };
     std::size_t size { };
@@ -95,6 +97,12 @@ public:
     // Configure before guest execution. Spawn shares immutable file pages,
     // while its virtual mappings and all detached private writes stay local.
     void share_file_page_cache(const AddressSpace& source);
+    void set_file_pager(std::shared_ptr<HostFilePager> pager)
+    { file_pager_ = std::move(pager); }
+    // Checked CPU callbacks call this before touching bytes. A false result
+    // records a host page-in wait in the current FilePageFaultScope.
+    [[nodiscard]] bool prepare_file_access(std::uint32_t address,
+        std::size_t size, MemoryPermission access);
 
     // Selects the synchronization policy before guest execution starts. The
     // physical single-core device runs all memory access on the scheduler
@@ -725,6 +733,7 @@ private:
     std::map<std::uint64_t, MappingLease> mapping_leases_;
     std::uint64_t next_mapping_lease_token_ { 1 };
     std::shared_ptr<FilePageCache> file_page_cache_;
+    std::shared_ptr<HostFilePager> file_pager_;
     std::shared_ptr<HostSharedFileWriter> shared_file_writer_;
     std::function<void()> exclusive_write_observer_;
 };

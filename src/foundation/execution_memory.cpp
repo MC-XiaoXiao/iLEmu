@@ -160,6 +160,8 @@ execution::MemoryRead ExecutionMemory::read(
         return { 0, execution::MemoryFault { address, 1 } };
     }
     TaskVmEvents::Scope actor { impl_->memory_.task_vm_events() };
+    if (!impl_->memory_.prepare_file_access(address, width, MemoryPermission::Read))
+        return { 0, execution::MemoryFault { address, 5 } };
     std::optional<std::uint32_t> value;
     switch (size) {
     case execution::AccessSize::Byte:
@@ -187,6 +189,8 @@ std::optional<execution::MemoryFault> ExecutionMemory::write(
         return execution::MemoryFault { address, 1U | (1U << 11U) };
     }
     TaskVmEvents::Scope actor { impl_->memory_.task_vm_events() };
+    if (!impl_->memory_.prepare_file_access(address, width, MemoryPermission::Write))
+        return execution::MemoryFault { address, 5U | (1U << 11U) };
     bool written = false;
     switch (size) {
     case execution::AccessSize::Byte:

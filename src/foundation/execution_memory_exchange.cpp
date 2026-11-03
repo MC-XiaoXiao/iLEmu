@@ -9,6 +9,9 @@ std::optional<execution::MemoryRead> ExecutionMemory::exchange(
     if ((width != 1 && width != 4) || (address & (width - 1U)) != 0)
         throw std::invalid_argument("invalid atomic exchange width/alignment");
     TaskVmEvents::Scope actor { impl_->memory_.task_vm_events() };
+    if (!impl_->memory_.prepare_file_access(address, width,
+            MemoryPermission::Read | MemoryPermission::Write))
+        return execution::MemoryRead { 0, execution::MemoryFault { address, 5 } };
     std::optional<std::uint32_t> previous;
     {
         // Keep mapping/permission diagnosis in the same bounded transaction.

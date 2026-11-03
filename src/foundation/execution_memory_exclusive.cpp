@@ -31,6 +31,8 @@ public:
         if (auto fault = alignment(*owner, address, size, false))
             return { 0, fault };
         TaskVmEvents::Scope actor { owner->memory_.task_vm_events() };
+        if (!owner->memory_.prepare_file_access(address, size, MemoryPermission::Read))
+            return { 0, execution::MemoryFault { address, 5 } };
         reservation_ = owner->memory_.load_exclusive(address, size);
         address_ = address;
         return reservation_

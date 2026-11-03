@@ -17,6 +17,7 @@ target_link_libraries(ilemu_foundation_memory PRIVATE OpenSSL::Crypto)
 add_library(ilemu_foundation STATIC
     "${ILEMU_BUILD_INFO_SOURCE}"
     address_space.cpp
+    address_space_file_fault.cpp
     address_space_exclusive.cpp
     address_space_instructions.cpp
     address_space_instruction_view.cpp
@@ -49,6 +50,7 @@ add_library(ilemu_foundation STATIC
     host_memory.cpp
     host_process_image.cpp
     host_file_mapping.cpp
+    host_file_pager.cpp
     host_file_io.cpp
     host_file_sync.cpp
     shared_file_writeback.cpp

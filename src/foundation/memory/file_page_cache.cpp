@@ -1563,6 +1563,23 @@ void GuestPageBacking::invalidate_reservation_identity(
         (*granules)[index].store(identity, std::memory_order_release);
 }
 
+std::optional<GuestFileGeneration> file_descriptor_generation(int descriptor)
+{
+    struct stat status {};
+    if (::fstat(descriptor, &status) != 0)
+        return std::nullopt;
+    return generation_from_stat(status);
+}
+
+bool GuestPageBacking::needs_file_read() const
+{
+    if (!has_file_source_)
+        return false;
+    const std::lock_guard lock { mutex_ };
+    return file_backing_ && !file_backing_->immutable_snapshot &&
+           !file_backing_->immutable_file_view;
+}
+
 void GuestPageBacking::materialize() const
 {
     if (!has_file_source_)
@@ -2418,7 +2435,14 @@ std::size_t FilePageCache::reflect_descriptor_write(int file_descriptor,
     std::size_t updated_pages = 0;
     for (const auto& page : pages) {
         auto instruction_write = page->lock_instruction_write();
-        page->materialize();
+        // Unfaulted pages read the completed descriptor bytes on demand.
+        // Do not turn descriptor reflection into a synchronous page-in or
+        // let an in-flight detached read publish an older image over it.
+        {
+            const std::lock_guard page_lock { page->mutex_ };
+            if (page->file_backing_)
+                continue;
+        }
         const auto page_begin = page->file_offset_;
         const auto page_end = page_begin + page->file_byte_count_;
         const auto update_begin = std::max(file_offset, page_begin);

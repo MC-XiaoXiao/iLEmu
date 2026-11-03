@@ -6,6 +6,7 @@
 // and CPU callbacks.
 
 #pragma once
+#include "foundation/file_page_fault.hpp"
 
 #include <array>
 #include <chrono>
@@ -183,6 +184,7 @@ struct CpuRunResult {
     bool translated_code { };
     std::optional<CpuException> architectural_exception;
     bool backend_switch { };
+    std::optional<FilePageFault> file_page_fault;
 };
 
 enum class SvcDispatchMode : std::uint8_t {

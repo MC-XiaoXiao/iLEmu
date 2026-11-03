@@ -198,6 +198,8 @@ public:
                 throw std::logic_error(
                     "fetch preparation outside entry instruction");
             TaskVmEvents::Scope actor { owner_.memory_.task_vm_events() };
+            if (!owner_.memory_.prepare_file_access(address, size, MemoryPermission::Execute))
+                return execution::MemoryFault { address, 5 };
             if (!owner_.memory_.prepare_instruction_fetch(address, size))
                 return owner_.fault(address, size, MemoryPermission::Execute);
             const auto base = execution_page_base(address);

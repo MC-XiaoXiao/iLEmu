@@ -1428,12 +1428,16 @@ public:
     std::optional<std::uint32_t> MemoryReadCode(std::uint32_t address) override
     {
         const TaskVmEvents::Scope observation { nullptr };
+        if (!prepare_file_access(address, 4, MemoryPermission::Execute))
+            return std::nullopt;
         return memory_.read32(address, MemoryPermission::Execute);
     }
 
     bool InstructionFetch(std::uint32_t address, std::size_t size) override
     {
         const TaskVmEvents::Scope execution { memory_.task_vm_events() };
+        if (!prepare_file_access(address, size, MemoryPermission::Execute))
+            return false;
         if (memory_.prepare_instruction_fetch(address, size))
             return true;
         memory_fault(address, size, MemoryPermission::Execute);
@@ -1725,7 +1729,7 @@ public:
     {
         return CpuRunResult { reason, consumed_, svc_, svc_calls_, fault_,
             breakpoint_, exception_, host_yield_requested_,
-            host_yield_checks_, 0U, translated_code_, architectural_exception_ };
+            host_yield_checks_, 0U, translated_code_, architectural_exception_, false, {} };
     }
 
     [[nodiscard]] const ArmCpuModel& cpu_model() const { return cpu_model_; }
@@ -2110,6 +2114,8 @@ private:
     {
         const TaskVmEvents::Scope actor {
             executing ? memory_.task_vm_events() : nullptr };
+        if (!prepare_file_access(address, sizeof(T), MemoryPermission::Read))
+            return 0;
         const auto value = (memory_.*member)(address, MemoryPermission::Read);
         if (!value) {
             memory_fault(address, sizeof(T), MemoryPermission::Read);
@@ -2129,6 +2135,8 @@ private:
     template <typename T, typename Member>
     void write(std::uint32_t address, T value, Member member)
     {
+        if (!prepare_file_access(address, sizeof(T), MemoryPermission::Write))
+            return;
         if (!guest_memory(member, address, value)) {
             memory_fault(address, sizeof(T), MemoryPermission::Write);
         } else {
@@ -2139,6 +2147,9 @@ private:
     template <typename T, typename Member>
     T swap(std::uint32_t address, T value, Member member)
     {
+        if (!prepare_file_access(address, sizeof(T),
+                MemoryPermission::Read | MemoryPermission::Write))
+            return 0;
         const auto previous = guest_memory(member, address, value);
         if (!previous) {
             memory_fault(address, sizeof(T),
@@ -2153,6 +2164,8 @@ private:
     bool write_exclusive(
         std::uint32_t address, T value, T expected, Member member)
     {
+        if (!prepare_file_access(address, sizeof(T), MemoryPermission::Write))
+            return false;
         const auto written = guest_memory(member, address, expected, value);
         if (written)
             notify_memory_write(address, sizeof(T), value);
@@ -2173,6 +2186,17 @@ private:
         if (watched >= write_begin && watched < write_end) {
             owner_->memory_write_handler_(*owner_, address, size, value);
         }
+    }
+
+    bool prepare_file_access(std::uint32_t address, std::size_t size,
+        MemoryPermission access)
+    {
+        if (memory_.prepare_file_access(address, size, access))
+            return true;
+        // Dynarmic's checked-memory abort preserves the faulting PC and
+        // suppresses retirement of the failed access. No C++ unwind crosses JIT.
+        jit_->HaltExecution(Dynarmic::HaltReason::MemoryAbort);
+        return false;
     }
 
     void memory_fault(
@@ -5768,12 +5792,29 @@ Cpu::Cpu(
 
 Cpu::~Cpu() = default;
 
+namespace {
+    template <class Run> CpuRunResult run_with_file_faults(Run&& run)
+    {
+        FilePageFaultScope faults;
+        auto result = run();
+        if (faults.pending()) {
+            result.file_page_fault = faults.pending();
+            result.fault.reset();
+            result.svc.reset();
+            result.reason = Dynarmic::HaltReason::UserDefined5;
+        }
+        return result;
+    }
+}
+
 CpuRunResult Cpu::run(std::uint64_t ticks, std::size_t execution_slot)
 {
     if (!execution_pool_) {
         throw std::logic_error { "CPU execution resources have been released" };
     }
-    return execution_pool_->run(*this, ticks, execution_slot, false, false);
+    return run_with_file_faults([&] {
+        return execution_pool_->run(*this, ticks, execution_slot, false, false);
+    });
 }
 
 CpuRunResult Cpu::run_cooperatively(
@@ -5782,7 +5823,9 @@ CpuRunResult Cpu::run_cooperatively(
     if (!execution_pool_) {
         throw std::logic_error { "CPU execution resources have been released" };
     }
-    return execution_pool_->run(*this, ticks, execution_slot, false, true);
+    return run_with_file_faults([&] {
+        return execution_pool_->run(*this, ticks, execution_slot, false, true);
+    });
 }
 
 CpuRunResult Cpu::run_cooperatively(std::uint64_t ticks,
@@ -5791,8 +5834,10 @@ CpuRunResult Cpu::run_cooperatively(std::uint64_t ticks,
     if (!execution_pool_) {
         throw std::logic_error { "CPU execution resources have been released" };
     }
-    return execution_pool_->run(
-        *this, ticks, execution_slot, false, true, host_slice_budget);
+    return run_with_file_faults([&] {
+        return execution_pool_->run(
+            *this, ticks, execution_slot, false, true, host_slice_budget);
+    });
 }
 
 CpuRunResult Cpu::step(std::size_t execution_slot)
@@ -5800,7 +5845,9 @@ CpuRunResult Cpu::step(std::size_t execution_slot)
     if (!execution_pool_) {
         throw std::logic_error { "CPU execution resources have been released" };
     }
-    return execution_pool_->run(*this, 1, execution_slot, true, false);
+    return run_with_file_faults([&] {
+        return execution_pool_->run(*this, 1, execution_slot, true, false);
+    });
 }
 
 void Cpu::reset()

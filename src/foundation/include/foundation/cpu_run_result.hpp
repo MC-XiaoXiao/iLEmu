@@ -17,6 +17,7 @@ inline void accumulate_cpu_run(CpuRunResult& total, CpuRunResult part)
     total.reason = total.reason | part.reason;
     total.svc = part.svc;
     total.fault = std::move(part.fault);
+    total.file_page_fault = std::move(part.file_page_fault);
     total.exception = std::move(part.exception);
     total.architectural_exception = part.architectural_exception;
     total.debug_breakpoint = part.debug_breakpoint;

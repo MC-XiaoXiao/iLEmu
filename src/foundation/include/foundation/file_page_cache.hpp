@@ -60,6 +60,8 @@ struct RuntimeBackingGeneration {
 // to the explicit runtime-generation name.
 using GuestFileGeneration = RuntimeBackingGeneration;
 
+[[nodiscard]] std::optional<GuestFileGeneration> file_descriptor_generation(int descriptor);
+
 // Cross-process immutable backing for a validated file generation. The
 // backing file is content-addressed and opened read-only, then mapped with
 // MAP_SHARED so independent emulator processes fault the same host page-cache
@@ -361,6 +363,7 @@ struct GuestPageBacking {
     // File-backed mappings are materialized on first guest access. Anonymous
     // and IPC-backed pages have no source and remain ordinary byte arrays.
     void materialize() const;
+    [[nodiscard]] bool needs_file_read() const;
     // A consumer of a shared mapping can opt its physical page into a common
     // write generation. Later aliases then retain cross-address-space dirty
     // visibility without observing or copying each individual store.
@@ -382,6 +385,7 @@ private:
     friend class FilePageCache;
     friend class FileMappingPreparation;
     friend class SharedFileWriteback;
+    friend class FilePageRead;
 
     mutable std::mutex mutex_;
     mutable std::shared_mutex instruction_mutex_;

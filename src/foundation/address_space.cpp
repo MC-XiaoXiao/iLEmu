@@ -2443,12 +2443,10 @@ bool AddressSpace::is_read_only_executable(
         base += page_size) {
         const auto page_address = static_cast<std::uint32_t>(base);
         const auto* page = find_page_locked(page_address);
-        if (page == nullptr || !page->backing) {
-            const auto* mapping = find_file_mapping_locked(page_address);
-            if (mapping == nullptr || mapping->mode != PageMappingMode::CopyOnWrite)
-                return false;
-            continue;
-        }
+        // Translation must not demand-read a cold file page to fold a
+        // constant. Its first architectural access owns the page-in wait.
+        if (page == nullptr || !page->backing)
+            return false;
         if (page->instructions ||
             (!page->file_cached && !page->backing->file_backed()) ||
             page->shared_writable ||
@@ -2919,6 +2917,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     });
     result->next_mapping_lease_token_ = next_mapping_lease_token_;
     result->file_page_cache_ = file_page_cache_;
+    result->file_pager_ = file_pager_;
     result->shared_file_writer_ = shared_file_writer_;
     result->exclusive_write_tracked_pages_ = exclusive_write_tracked_pages_;
     result->exclusive_write_backings_ = exclusive_write_backings_;
