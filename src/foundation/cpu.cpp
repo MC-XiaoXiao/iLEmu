@@ -1395,6 +1395,12 @@ private:
         // compilations can exhaust a host slice before the execution probes
         // reach their count threshold, so check at every translation boundary.
         maybe_check_host_yield(0U, true);
+        // A suspended code read emits a temporary no-execute block. Its
+        // dependencies omit the unread bytes, so it cannot become an artifact.
+        if (FilePageFaultScope::suspended()) {
+            produced_native_template_.reset();
+            return;
+        }
         // Ordinary translations retain their demand counters even when they
         // publish an optional process-local native template. No IR serialization
         // or disk work is performed by that transient publication.

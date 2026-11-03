@@ -22,6 +22,8 @@ public:
     FilePageFaultScope();
     ~FilePageFaultScope();
     static bool enabled() noexcept { return current_ != nullptr; }
+    static bool suspended() noexcept
+    { return current_ && current_->pending_.has_value(); }
     static void suspend(FilePageFault fault);
     [[nodiscard]] const std::optional<FilePageFault>& pending() const
     { return pending_; }
