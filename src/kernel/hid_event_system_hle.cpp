@@ -237,6 +237,22 @@ bool HidEventSystemHle::is_event_consumer(
     return state_ && state_->hid_event_queue.is_receiver(process, processor);
 }
 
+bool HidEventSystemHle::pending_event_ready(std::uint32_t process,
+    std::size_t processor, std::uint64_t now) const
+{
+    if (!state_ || delivering_processors_.contains(processor))
+        return false;
+    if (state_->hid_event_queue.has_pending(process, processor))
+        return true;
+    const auto deadline = accelerometer_.next_deadline();
+    if (consumer_process_ != process || consumer_processor_ != processor ||
+        !deadline || now < *deadline)
+        return false;
+    const auto consumer = state_->hid_event_queue.consumer();
+    return consumer && consumer->process == process &&
+           consumer->processor == processor;
+}
+
 std::optional<std::size_t> HidEventSystemHle::interactive_processor(
     std::uint32_t process) const
 {

@@ -31,6 +31,8 @@ public:
         std::uint64_t* input_sequence = nullptr);
     [[nodiscard]] bool is_event_consumer(
         std::uint32_t process, std::size_t processor) const;
+    [[nodiscard]] bool pending_event_ready(std::uint32_t process,
+        std::size_t processor, std::uint64_t now) const;
     [[nodiscard]] std::optional<std::size_t> interactive_processor(
         std::uint32_t process) const;
     [[nodiscard]] std::optional<std::uint64_t> next_sample_deadline() const

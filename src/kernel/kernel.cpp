@@ -1773,16 +1773,18 @@ CompatibilityKernel::pending_event_poll_candidates()
         }
         const auto send = pending_mach_sends_.find(processor);
         const auto receive = pending_mach_receives_.find(processor);
-        // HID callbacks enter through a blocked receive independently of its
-        // Mach queue. Keep that consumer eligible even while the queue is empty.
-        const auto hid_receiver =
-            hid_event_system_hle_.is_event_consumer(process_.pid, processor);
+        // HID callbacks enter independently of the Mach queue, but registration
+        // alone does not make a parked receiver ready. Input publication changes
+        // the I/O generation; periodic samples use the deadline above.
+        const auto hid_ready = receive != pending_mach_receives_.end() &&
+            hid_event_system_hle_.pending_event_ready(
+                process_.pid, processor, guest_now);
         const auto exception_waiting = exception_delivery_.waiting(processor);
         if (caught_signal_ready(processor) ||
             (exception_waiting ? exception_delivery_.ready(*shared_state_, processor) :
             send != pending_mach_sends_.end() ? send->second.ticket->ready(guest_now) :
             receive != pending_mach_receives_.end()
-                ? hid_receiver || mach_receive_poll_required_locked(
+                ? hid_ready || mach_receive_poll_required_locked(
                                       receive->second, guest_now)
                 : pending_io_poll_required_locked(processor))) {
             processors.push_back(processor);
