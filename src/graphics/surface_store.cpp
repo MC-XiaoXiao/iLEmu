@@ -529,7 +529,10 @@ SurfaceStore::CpuReadResult SurfaceStore::try_read_argb(
             return { CpuReadResult::State::PendingGpu, { }, 0 };
         if (mapping->frame().pixels.size() != pixels->size())
             return { };
-        if (baseline.size() == pixels->size()) {
+        if (!guest_changed) {
+            std::copy(mapping->frame().pixels.begin(),
+                mapping->frame().pixels.end(), pixels->begin());
+        } else if (baseline.size() == pixels->size()) {
             // A different host reader may already have materialized GPU data.
             // Preserve those pixels unless the guest changed them since its
             // last import; the guest baseline records guest bytes, not the
