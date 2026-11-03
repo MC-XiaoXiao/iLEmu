@@ -2321,8 +2321,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
     {
         std::unique_lock lock { mutex_ };
         ++stats_.lookups;
-        promote_retention_locked(key, retention);
-        if (auto artifact = artifacts_.find(key);
+        if (auto artifact = promote_retention_locked(key, retention);
             artifact != artifacts_.end()) {
             const auto disk_hit = artifact->second.loaded_from_disk;
             if (disk_hit) {
@@ -2410,8 +2409,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
             std::filesystem::path source_path;
             {
                 std::unique_lock lock { mutex_ };
-                promote_retention_locked(key, retention);
-                if (auto artifact = artifacts_.find(key);
+                if (auto artifact = promote_retention_locked(key, retention);
                     artifact != artifacts_.end()) {
                     const auto disk_hit = artifact->second.loaded_from_disk;
                     if (disk_hit) {
@@ -2461,8 +2459,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
                 stats_.demand_deserialization_nanoseconds =
                     std::numeric_limits<std::uint64_t>::max();
             }
-            promote_retention_locked(key, retention);
-            if (auto artifact = artifacts_.find(key);
+            if (auto artifact = promote_retention_locked(key, retention);
                 artifact != artifacts_.end()) {
                 const auto disk_hit = artifact->second.loaded_from_disk;
                 if (disk_hit) {
@@ -2770,11 +2767,12 @@ JitArtifactStore::hotset_snapshot_locked() const
     return snapshot;
 }
 
-void JitArtifactStore::promote_retention_locked(
+JitArtifactStore::ArtifactMap::iterator JitArtifactStore::promote_retention_locked(
     const JitArtifactKey& key, JitArtifactRetention retention) const
 {
+    const auto resident = artifacts_.find(key);
     if (retention != JitArtifactRetention::BootWorkingSet)
-        return;
+        return resident;
     bool changed = false;
     std::uint64_t membership_generation = 0U;
     const auto generation = [this, &membership_generation] {
@@ -2791,8 +2789,7 @@ void JitArtifactStore::promote_retention_locked(
             changed = true;
         }
     }
-    if (const auto resident = artifacts_.find(key);
-        resident != artifacts_.end()) {
+    if (resident != artifacts_.end()) {
         if (!resident->second.boot_working_set &&
             !resident->second.artifact->data.native_only()) {
             promote_resident_retention_locked(resident);
@@ -2810,6 +2807,7 @@ void JitArtifactStore::promote_retention_locked(
     }
     if (changed)
         mark_hotset_dirty_locked();
+    return resident;
 }
 
 void JitArtifactStore::promote_resident_retention_locked(
@@ -3024,8 +3022,7 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
     {
         const std::lock_guard lock { mutex_ };
         ++stats_.publish_calls;
-        promote_retention_locked(key, retention);
-        if (const auto existing = artifacts_.find(key);
+        if (const auto existing = promote_retention_locked(key, retention);
             existing != artifacts_.end()) {
             // Portable publication may replace an earlier transient template.
             // The template never prevents explicit portable artifact creation.
