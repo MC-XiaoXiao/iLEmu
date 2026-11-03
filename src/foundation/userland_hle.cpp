@@ -1737,6 +1737,65 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
     hle_generation_plan_builds.fetch_add(1, std::memory_order_relaxed);
 }
 
+class UserlandHleRegistry::ImageSymbolBindings {
+public:
+    ImageSymbolBindings(const UserlandHleRegistry& registry,
+        std::string_view image_path)
+    {
+        for (const auto& registration : registry.registrations_) {
+            if (registration.virtual_address ||
+                registration.objc_instance_method ||
+                !path_has_suffix(image_path, registration.image_suffix)) {
+                continue;
+            }
+            if (registration.prefix)
+                prefixes_.push_back(&registration);
+            else
+                exact_.emplace(registration.symbol, &registration);
+        }
+        for (const auto& [suffix, symbol] : registry.guest_functions_) {
+            if (path_has_suffix(image_path, suffix))
+                guest_functions_.insert(symbol);
+        }
+        for (const auto& [suffix, symbol] : registry.guest_data_symbols_) {
+            if (path_has_suffix(image_path, suffix))
+                guest_data_symbols_.insert(symbol);
+        }
+    }
+
+    [[nodiscard]] const Registration* select_registration(
+        std::string_view symbol) const
+    {
+        if (const auto exact = exact_.find(symbol); exact != exact_.end())
+            return exact->second;
+        const Registration* match = nullptr;
+        for (const auto* prefix : prefixes_) {
+            if (symbol.starts_with(prefix->symbol) &&
+                (match == nullptr ||
+                    prefix->symbol.size() > match->symbol.size())) {
+                match = prefix;
+            }
+        }
+        return match;
+    }
+
+    [[nodiscard]] bool guest_function(std::string_view symbol) const
+    {
+        return guest_functions_.contains(symbol);
+    }
+
+    [[nodiscard]] bool guest_data_symbol(std::string_view symbol) const
+    {
+        return guest_data_symbols_.contains(symbol);
+    }
+
+private:
+    std::map<std::string_view, const Registration*, std::less<>> exact_;
+    std::vector<const Registration*> prefixes_;
+    std::set<std::string_view, std::less<>> guest_functions_;
+    std::set<std::string_view, std::less<>> guest_data_symbols_;
+};
+
 UserlandHleRegistry::ParsedImageCacheEntry& UserlandHleRegistry::cached_image(
     std::string_view logical_image_path,
     const std::filesystem::path& source_path,
@@ -1789,24 +1848,19 @@ UserlandHleRegistry::ParsedImageCacheEntry& UserlandHleRegistry::cached_image(
     if (performance_counters().enabled())
         hle_image_plan_builds.fetch_add(1, std::memory_order_relaxed);
     auto& entry = iterator->second;
+    // Resolve path membership once for the image, before walking its symbols.
+    // Bindings only borrow registry strings for this plan construction.
+    const ImageSymbolBindings bindings { *this, logical_image_path };
     entry.mapped_symbols.reserve(entry.image->symbol_file_locations().size());
     for (const auto& location : entry.image->symbol_file_locations()) {
         const auto& symbol = entry.image->symbols()[location.symbol_index];
         const auto* registration =
-            select_registration(logical_image_path, symbol.name);
+            bindings.select_registration(symbol.name);
         if (symbol.cache_local && registration &&
             registration->lookup != SymbolLookup::ImageAndCacheLocals)
             registration = nullptr;
-        const auto guest_function = std::any_of(guest_functions_.begin(),
-            guest_functions_.end(), [&](const auto& dependency) {
-                return path_has_suffix(logical_image_path, dependency.first) &&
-                       dependency.second == symbol.name;
-            });
-        const auto guest_data_symbol = std::any_of(guest_data_symbols_.begin(),
-            guest_data_symbols_.end(), [&](const auto& dependency) {
-                return path_has_suffix(logical_image_path, dependency.first) &&
-                       dependency.second == symbol.name;
-            });
+        const auto guest_function = bindings.guest_function(symbol.name);
+        const auto guest_data_symbol = bindings.guest_data_symbol(symbol.name);
         const auto registration_id =
             registration != nullptr ? registration->id : std::uint16_t { 0 };
         const auto patch_size = registration != nullptr

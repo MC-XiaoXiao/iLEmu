@@ -430,6 +430,8 @@ private:
     static void publish_shared_plan_artifact(
         std::string_view plan_key, const SharedHlePlan& plan);
 
+    class ImageSymbolBindings;
+
     struct ParsedImageCacheEntry {
         ArmArchitectureVersion architecture { };
         ContentIdentity content_identity;
