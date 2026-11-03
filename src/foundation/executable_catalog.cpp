@@ -761,10 +761,7 @@ std::size_t ExecutableCatalog::register_shared_cache(
                 const auto file_path = std::filesystem::path {
                     cache.files()[range.file_index].path
                 };
-                if (std::find(entry.aliases.begin(), entry.aliases.end(),
-                        file_path) == entry.aliases.end()) {
-                    entry.aliases.push_back(file_path);
-                }
+                add_alias(entry, file_path);
             }
         }
         ++registered;
@@ -1244,6 +1241,11 @@ bool ExecutableCatalog::load(const std::filesystem::path& path) noexcept
         auto storage = std::make_shared<Storage>();
         storage->entries = std::move(entries);
         storage->identity_index = std::move(identity_index);
+        storage->path_index.reserve(storage->entries.size());
+        for (const auto& entry : storage->entries) {
+            for (const auto& alias : entry.aliases)
+                storage->path_index[alias].push_back(entry.content_identity);
+        }
         storage_ = std::move(storage);
         reliable_entry_points_current_ = reliable_entry_points_current;
         ++mutation_revision_;
@@ -1399,12 +1401,13 @@ const ExecutableCatalogEntry* ExecutableCatalog::find_path(
     const std::filesystem::path& path) const
 {
     const auto normalized = normalize_path(path);
+    const auto owners = storage_->path_index.find(normalized);
+    if (owners == storage_->path_index.end())
+        return nullptr;
     const ExecutableCatalogEntry* fallback = nullptr;
-    for (const auto& entry : storage_->entries) {
-        if (std::find(entry.aliases.begin(), entry.aliases.end(), normalized) ==
-            entry.aliases.end()) {
-            continue;
-        }
+    for (const auto& identity : owners->second) {
+        const auto& entry =
+            storage_->entries[storage_->identity_index.at(identity)];
         if (preferred_file_entry(entry)) {
             return &entry;
         }
@@ -1545,7 +1548,7 @@ ExecutableCatalogEntry& ExecutableCatalog::upsert(ContentIdentity identity,
         const auto index = storage_->entries.size();
         storage_->entries.push_back(ExecutableCatalogEntry {
             .content_identity = identity,
-            .aliases = { path },
+            .aliases = { },
             .file_generations = { },
             .kinds = { kind },
             .uuid = std::nullopt,
@@ -1559,15 +1562,29 @@ ExecutableCatalogEntry& ExecutableCatalog::upsert(ContentIdentity identity,
             .reliable_entry_points = { },
         });
         storage_->identity_index.emplace(std::move(identity), index);
+        add_alias(storage_->entries.back(), path);
         return storage_->entries.back();
     }
     auto& entry = storage_->entries[existing->second];
-    if (std::find(entry.aliases.begin(), entry.aliases.end(), path) ==
-        entry.aliases.end()) {
-        entry.aliases.push_back(path);
-    }
+    add_alias(entry, path);
     entry.kinds.insert(kind);
     return entry;
+}
+
+void ExecutableCatalog::add_alias(ExecutableCatalogEntry& entry,
+    const std::filesystem::path& path)
+{
+    if (std::find(entry.aliases.begin(), entry.aliases.end(), path) !=
+        entry.aliases.end())
+        return;
+    entry.aliases.push_back(path);
+    auto& owners = storage_->path_index[path];
+    const auto index = storage_->identity_index.at(entry.content_identity);
+    const auto position = std::lower_bound(owners.begin(), owners.end(), index,
+        [this](const ContentIdentity& identity, std::size_t target) {
+            return storage_->identity_index.at(identity) < target;
+        });
+    owners.insert(position, entry.content_identity);
 }
 
 void ExecutableCatalog::remove_path(const std::filesystem::path& path)
@@ -1587,6 +1604,7 @@ void ExecutableCatalog::remove_path(const std::filesystem::path& path)
             storage_->entries.begin(), storage_->entries.end(), changes_entry))
         return;
     detach_storage();
+    storage_->path_index.erase(path);
     bool changed = false;
     bool removed_entry = false;
     for (auto entry = storage_->entries.begin();
@@ -1648,6 +1666,14 @@ std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept
     add(storage_->identity_index.size() *
         (sizeof(typename decltype(storage_->identity_index)::value_type) +
             2U * sizeof(void*)));
+    add(storage_->path_index.bucket_count() * sizeof(void*));
+    add(storage_->path_index.size() *
+        (sizeof(typename decltype(storage_->path_index)::value_type) +
+            2U * sizeof(void*)));
+    for (const auto& [path, owners] : storage_->path_index) {
+        add_path(path);
+        add(owners.capacity() * sizeof(ContentIdentity));
+    }
     return total;
 }
 

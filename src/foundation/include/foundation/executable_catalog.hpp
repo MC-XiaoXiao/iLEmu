@@ -178,6 +178,8 @@ private:
         const MachOImage& image, const std::filesystem::path& path);
     [[nodiscard]] ExecutableCatalogEntry& upsert(ContentIdentity identity,
         const std::filesystem::path& path, ExecutableCatalogKind kind);
+    void add_alias(ExecutableCatalogEntry& entry,
+        const std::filesystem::path& path);
     [[nodiscard]] const ExecutableCatalogEntry& register_path_alias(
         const std::filesystem::path& alias, const std::filesystem::path& target,
         ArmArchitectureVersion architecture,
@@ -191,6 +193,10 @@ private:
         std::vector<ExecutableCatalogEntry> entries;
         std::unordered_map<ContentIdentity, std::size_t, ContentIdentityHash>
             identity_index;
+        // Cache containers may own several image entries. Keep owners in
+        // entry order so preferred-file and last-fallback lookup is unchanged.
+        std::unordered_map<std::filesystem::path, std::vector<ContentIdentity>>
+            path_index;
     };
     void detach_storage();
     std::shared_ptr<Storage> storage_ { std::make_shared<Storage>() };
