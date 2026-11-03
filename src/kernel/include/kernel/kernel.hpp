@@ -948,6 +948,8 @@ private:
         std::uint64_t io_generation) const;
     [[nodiscard]] bool append_pending_io_mach_dependencies_locked(
         std::size_t processor, std::uint64_t io_generation);
+    [[nodiscard]] std::uint64_t io_event_generation_snapshot_locked() const;
+    void note_local_io_event_transition_locked() noexcept;
     [[nodiscard]] bool pending_io_poll_required_locked(
         std::size_t processor);
     [[nodiscard]] bool pending_io_wait_ignores_mach_locked(
@@ -1326,6 +1328,9 @@ private:
         std::chrono::steady_clock::time_point next_host_probe;
         bool host_probe_required { };
     };
+    // Knote changes affect this process's descriptor namespace. Shared I/O
+    // producers retain their independent cross-process generation.
+    std::uint64_t local_io_event_generation_ { };
     std::map<std::size_t, PendingIoPollCache> pending_io_poll_cache_;
     std::set<std::size_t> pending_event_processors_;
     std::uint64_t pending_event_topology_generation_ { 1 };

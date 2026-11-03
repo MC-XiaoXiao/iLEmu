@@ -764,7 +764,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                         ++errors;
                     }
                 }
-                shared_state_->note_io_event_transition();
+                note_local_io_event_transition_locked();
                 if (errors != 0U) {
                     bsd_success(cpu, errors);
                     return true;

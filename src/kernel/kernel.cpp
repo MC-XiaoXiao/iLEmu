@@ -1659,7 +1659,7 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
             note_timer_deadline_transition();
     } else if (pending_io_poll_required_locked(processor)) {
         const auto io_generation =
-            shared_state_->io_event_generation_snapshot();
+            io_event_generation_snapshot_locked();
         const auto mach_generation =
             shared_state_->mach_queue_generation_snapshot();
         HostSocketEvents::instance().commit();
@@ -1690,7 +1690,7 @@ CompatibilityKernel::pending_event_poll_candidates()
     std::lock_guard lock { mutex_ };
     // Capture before committing notifications. A publication racing the
     // commit must remain newer than any negative wait observation below.
-    const auto io_generation = shared_state_->io_event_generation_snapshot();
+    const auto io_generation = io_event_generation_snapshot_locked();
     HostSocketEvents::instance().commit();
     service_completed_file_renames();
     service_file_io();
@@ -1903,7 +1903,7 @@ CompatibilityKernel::next_host_event_poll_deadline()
         pending_event_poll_topology_generation_ !=
             pending_event_topology_generation_ ||
         pending_event_poll_io_generation_ !=
-            shared_state_->io_event_generation_snapshot() ||
+            io_event_generation_snapshot_locked() ||
         pending_event_poll_mach_generation_ !=
             shared_state_->mach_queue_generation_snapshot()) {
         return std::chrono::steady_clock::now();
@@ -1973,6 +1973,17 @@ void CompatibilityKernel::refresh_pending_event_processor_locked(
     ++pending_event_topology_generation_;
 }
 
+std::uint64_t CompatibilityKernel::io_event_generation_snapshot_locked() const
+{
+    return shared_state_->io_event_generation_snapshot() +
+           local_io_event_generation_;
+}
+
+void CompatibilityKernel::note_local_io_event_transition_locked() noexcept
+{
+    ++local_io_event_generation_;
+}
+
 bool CompatibilityKernel::pending_io_wait_ignores_mach_locked(
     std::size_t processor) const
 {
@@ -1996,7 +2007,7 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
     if (cached == pending_io_poll_cache_.end())
         return true;
     if (cached->second.io_generation !=
-        shared_state_->io_event_generation_snapshot()) {
+        io_event_generation_snapshot_locked()) {
         return true;
     }
     const auto mach_generation =
@@ -2055,7 +2066,7 @@ void CompatibilityKernel::remember_pending_io_not_ready_locked(
         pending_event_mach_snapshot_valid_ = false;
     // A producer may race the readiness walk through another task. Do not
     // publish a negative stamp unless both shared generations stayed stable.
-    if (io_generation != shared_state_->io_event_generation_snapshot() ||
+    if (io_generation != io_event_generation_snapshot_locked() ||
         mach_generation != shared_state_->mach_queue_generation_snapshot()) {
         pending_io_poll_cache_.erase(processor);
         return;
