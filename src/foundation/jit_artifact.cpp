@@ -2872,7 +2872,10 @@ void JitArtifactStore::insert_locked(
     const bool native_only = artifact->data.native_only();
     if (native_only)
         retention = JitArtifactRetention::Normal;
-    auto resident_bytes = serialized_bytes;
+    // Resident keys keep their full hash so growth does not hash every retained
+    // artifact again. Include the additional node metadata in the byte budget.
+    auto resident_bytes = serialized_bytes +
+        (sizeof(ResidentKey) - sizeof(const JitArtifactKey*));
     if (artifact->data.native_template) {
         const auto native_bytes =
             artifact->data.native_template->MemoryFootprint();
@@ -2928,7 +2931,7 @@ void JitArtifactStore::insert_locked(
     if (boot_working_set && !had_boot_records) {
         boot_lru_begin_ = lru_position;
     }
-    const auto [iterator, inserted] = artifacts_.try_emplace(key_pointer,
+    const auto [iterator, inserted] = artifacts_.try_emplace(ResidentKey { key_pointer },
         ArtifactRecord { std::move(artifact), resident_bytes, lru_position,
             loaded_from_disk, startup_prefetched, false, benefit_generation,
             benefit_hits, boot_working_set });

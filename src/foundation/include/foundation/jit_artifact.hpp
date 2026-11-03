@@ -522,8 +522,33 @@ private:
         std::uint64_t benefit_generation { };
         std::uint64_t mutation_generation { };
     };
+    // Published artifacts own immutable keys. Keep their full hash with the
+    // borrowed pointer for resident-table growth.
+    class ResidentKey {
+    public:
+        explicit ResidentKey(const JitArtifactKey* key) noexcept
+            : key_ { key }
+            , hash_ { JitArtifactKeyHash { }(*key) }
+        {
+        }
+
+        [[nodiscard]] operator const JitArtifactKey*() const noexcept
+        {
+            return key_;
+        }
+        [[nodiscard]] std::size_t hash() const noexcept { return hash_; }
+
+    private:
+        const JitArtifactKey* key_;
+        std::size_t hash_;
+    };
     struct JitArtifactKeyPointerHash {
         using is_transparent = void;
+        [[nodiscard]] std::size_t operator()(
+            const ResidentKey& key) const noexcept
+        {
+            return key.hash();
+        }
         [[nodiscard]] std::size_t operator()(
             const JitArtifactKey* key) const noexcept
         {
@@ -553,7 +578,7 @@ private:
             return left == *right;
         }
     };
-    using ArtifactMap = std::unordered_map<const JitArtifactKey*,
+    using ArtifactMap = std::unordered_map<ResidentKey,
         ArtifactRecord, JitArtifactKeyPointerHash, JitArtifactKeyPointerEqual>;
     using DiskArtifactMap = std::unordered_map<JitArtifactKey,
         DiskArtifactRecord, JitArtifactKeyHash>;
