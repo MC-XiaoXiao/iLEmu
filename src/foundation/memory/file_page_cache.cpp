@@ -36,9 +36,6 @@
 namespace ilemu {
 namespace {
 
-    constexpr std::uint64_t file_prefetch_bytes =
-        guest_file_prefetch_pages * guest_memory_page_size;
-
     std::atomic<std::uint64_t> global_shared_write_tracking_epoch { };
     std::atomic<std::uint64_t> next_reservation_identity { 1 };
 
@@ -1617,67 +1614,21 @@ void GuestPageBacking::materialize() const
     const auto& vnode = file->object_identity;
     const std::scoped_lock pending_lock { vnode->writeback_mutex };
     const std::scoped_lock file_lock { io_state->mutex };
-    if (const auto prefetched_page =
-            io_state->prefetched_pages.find(file_offset_);
-        !shared_vnode_ && prefetched_page != io_state->prefetched_pages.end()) {
-        bytes = prefetched_page->second;
-        io_state->prefetched_pages.erase(prefetched_page);
-    } else {
-        const auto aligned_start = file_offset_ & ~(file_prefetch_bytes - 1U);
-        // Shared vnode bytes may change through another mapping or a descriptor
-        // before the next fault. Do not retain speculative nonresident bytes.
-        const auto read_start = shared_vnode_
-                                    ? file_offset_
-                                    : std::max(file->first_offset, aligned_start);
-        const auto read_size = shared_vnode_
-                                   ? static_cast<std::uint64_t>(file_byte_count_)
-                                   : std::min(file->end_offset - read_start,
-                                         file_prefetch_bytes);
-        const auto read_pages = static_cast<std::size_t>(
-            (read_size + guest_memory_page_size - 1U) / guest_memory_page_size);
-        if (io_state->file_descriptor >= 0 &&
-            read_start <=
-                static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())) {
-            std::vector<std::byte> batch(static_cast<std::size_t>(read_size));
-            std::size_t received = 0;
-            while (received < batch.size()) {
-                ssize_t count = -1;
-                do {
-                    count = ::pread(io_state->file_descriptor,
-                        batch.data() + received, batch.size() - received,
-                        static_cast<off_t>(read_start + received));
-                } while (count < 0 && errno == EINTR);
-                if (count <= 0)
-                    break;
-                received += static_cast<std::size_t>(count);
-            }
-            for (std::size_t index = 0; index < read_pages; ++index) {
-                const auto offset = index * guest_memory_page_size;
-                GuestPageBytes page_bytes { };
-                if (offset < batch.size()) {
-                    const auto count = std::min<std::size_t>(
-                        guest_memory_page_size, batch.size() - offset);
-                    std::copy_n(
-                        batch.begin() + static_cast<std::ptrdiff_t>(offset),
-                        count, page_bytes.begin());
-                }
-                const auto page_offset =
-                    read_start + static_cast<std::uint64_t>(offset);
-                if (const auto pending = vnode->pending_writeback_pages.find(page_offset);
-                    pending != vnode->pending_writeback_pages.end()) {
-                    const auto count = std::min<std::uint64_t>(guest_memory_page_size,
-                        read_size - offset);
-                    std::copy_n(pending->second->begin(), count, page_bytes.begin());
-                }
-                if (page_offset == file_offset_) {
-                    bytes = page_bytes;
-                } else if (received > offset) {
-                    io_state->prefetched_pages.emplace(
-                        page_offset, std::move(page_bytes));
-                }
-            }
-        }
+    std::size_t received = 0;
+    while (received < file_byte_count_) {
+        ssize_t count;
+        do {
+            count = ::pread(io_state->file_descriptor, bytes.data() + received,
+                file_byte_count_ - received,
+                static_cast<off_t>(file_offset_ + received));
+        } while (count < 0 && errno == EINTR);
+        if (count <= 0)
+            break;
+        received += static_cast<std::size_t>(count);
     }
+    if (const auto pending = vnode->pending_writeback_pages.find(file_offset_);
+        pending != vnode->pending_writeback_pages.end())
+        std::copy_n(pending->second->begin(), file_byte_count_, bytes.begin());
     file_backing_.reset();
 }
 
@@ -2026,37 +1977,12 @@ FileMappingPreparation::result() const
     return ready() ? std::optional { result_ } : std::nullopt;
 }
 
-void FileMappingPreparation::complete(std::size_t prepare_bytes)
+void FileMappingPreparation::complete()
 {
     if (started_.test_and_set(std::memory_order_acq_rel))
         return;
     try {
         result_ = completion_();
-        if (result_ && prepare_bytes && !result_->immutable_snapshot &&
-            !result_->immutable_file_view) {
-            const auto& file = *result_;
-            const auto revision = file.object_identity->writeback_revision.load(
-                std::memory_order_acquire);
-            std::vector<std::byte> bytes(static_cast<std::size_t>(
-                std::min<std::uint64_t>(prepare_bytes, file.end_offset - file.first_offset)));
-            std::size_t received = 0;
-            while (received < bytes.size()) {
-                const auto count = ::pread(file.io_state->file_descriptor,
-                    bytes.data() + received,
-                    bytes.size() - received,
-                    static_cast<off_t>(file.first_offset + received));
-                if (count < 0 && errno == EINTR)
-                    continue;
-                if (count <= 0) {
-                    bytes.clear();
-                    break;
-                }
-                received += static_cast<std::size_t>(count);
-            }
-            if (!bytes.empty())
-                prepared_pages_ = std::make_shared<PreparedFilePages>(
-                    result_, file.first_offset, bytes, file.generation, revision);
-        }
     } catch (...) {
         result_.reset();
     }
@@ -2064,13 +1990,9 @@ void FileMappingPreparation::complete(std::size_t prepare_bytes)
     ready_.store(true, std::memory_order_release);
 }
 
-void FileMappingPreparation::commit_pages(bool shared_vnode)
+void FileMappingPreparation::commit()
 {
     const PerformanceLatencyScope timing { PerfLatencyKind::VmMappingCommit };
-    if (prepared_pages_) {
-        prepared_pages_->commit(*cache_, shared_vnode);
-        prepared_pages_.reset();
-    }
     admission_.reset();
 }
 

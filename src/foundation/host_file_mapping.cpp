@@ -9,7 +9,6 @@
 namespace ilemu {
 namespace {
     constexpr std::size_t maximum_pending_mappings = 64;
-    constexpr std::size_t maximum_prepared_mapping_bytes = 512U * 1024U;
 }
 
 struct HostFileMappingPreparer::Admission {
@@ -44,7 +43,7 @@ HostFileMappingPreparer::prepare(
             [pending = std::weak_ptr { preparation },
                 admission = std::move(admission)] {
                 if (auto preparation = pending.lock())
-                    preparation->complete(maximum_prepared_mapping_bytes);
+                    preparation->complete();
             });
         if (!task)
             return std::nullopt;

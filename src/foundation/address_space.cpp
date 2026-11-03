@@ -1511,7 +1511,7 @@ void AddressSpace::fault_file_page_locked(std::uint32_t address, Page& page,
     auto backing = mapping.cache->load_page(
         mapping.backing, file_offset, byte_count, shared);
     // Only publish fully initialized resident bytes to the ordinary read and
-    // JIT fast paths. Shared mappings reuse the same clustered page-in path.
+    // JIT fast paths. Shared mappings reuse the same page-in path.
     backing->materialize();
     if (!page.backing)
         record_resident_page_locked();
@@ -1577,38 +1577,16 @@ bool AddressSpace::fault_file_pages(std::uint32_t address, std::size_t size)
             continue;
         performance_counters().record_page_miss();
 
-        constexpr std::uint64_t cluster_bytes =
-            guest_file_prefetch_pages * page_size;
-        const auto current_file_offset =
-            mapping.file_offset +
-            (static_cast<std::uint64_t>(current) - mapping_start);
-        const auto cluster_file_start =
-            std::max<std::uint64_t>(mapping.file_offset,
-                current_file_offset & ~(cluster_bytes - 1U));
-        const auto cluster_file_end = std::min<std::uint64_t>(
-            std::min(mapping.backing->end_offset, mapping.file_offset +
-                mapping.end - mapping_start), cluster_file_start + cluster_bytes);
-        const auto cluster_guest_start =
-            static_cast<std::uint64_t>(mapping_start) +
-            (cluster_file_start - mapping.file_offset);
-
-        for (std::uint64_t file_page = cluster_file_start,
-                           guest_page = cluster_guest_start;
-            file_page < cluster_file_end && guest_page < mapping.end;
-            file_page += page_size, guest_page += page_size) {
-            const auto guest_base = static_cast<std::uint32_t>(guest_page);
-            auto [resident, inserted] = pages_->try_emplace(guest_base);
-            if (!resident->second.backing) {
-                const auto byte_count =
-                    static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                        page_size, cluster_file_end - file_page));
-                fault_file_page_locked(guest_base, resident->second, mapping,
-                    file_page, byte_count);
-            }
-            if (inserted)
-                cache_page_locked(guest_base, resident->second);
-            refresh_jit_page_locked(guest_base);
-        }
+        const auto file_offset = mapping.file_offset + base - mapping_start;
+        const auto byte_count =
+            static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                page_size, mapping.backing->end_offset - file_offset));
+        auto [resident, inserted] = pages_->try_emplace(current);
+        fault_file_page_locked(
+            current, resident->second, mapping, file_offset, byte_count);
+        if (inserted)
+            cache_page_locked(current, resident->second);
+        refresh_jit_page_locked(current);
     }
     return true;
 }

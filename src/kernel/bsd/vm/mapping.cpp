@@ -185,7 +185,7 @@ void CompatibilityKernel::complete_bsd_mapping(
                                : darwin::error::no_memory);
             return;
         }
-        mapping.preparation->commit_pages(shared);
+        mapping.preparation->commit();
     }
     if (mapped_size == 0U) {
         bsd_success(cpu, 0U);

@@ -33,7 +33,7 @@ namespace ilemu {
 
 inline constexpr std::uint32_t guest_memory_page_size = 4096;
 inline constexpr std::uint32_t guest_exclusive_granule_size = 64;
-inline constexpr std::size_t guest_file_prefetch_pages = 32;
+inline constexpr std::size_t guest_file_read_batch_pages = 32;
 using GuestPageBytes = std::array<std::byte, guest_memory_page_size>;
 
 // Runtime-only identity of the host file object and metadata generation
@@ -239,11 +239,8 @@ struct GuestFileIoState {
     // Shared by every generation of a live vnode. Descriptor writes retain
     // this owner while asynchronous host I/O races VM mapping writeback.
     mutable std::atomic<std::uint64_t> writeback_revision { 0 };
-    // A shared-file mapping keeps this descriptor open so writeback remains
-    // attached to the original vnode/file object after pathname replacement.
-    mutable std::map<std::uint64_t, GuestPageBytes> prefetched_pages;
     // The vnode's logical bytes remain visible to lazy faults while immutable
-    // writeback snapshots are queued. Independent of descriptor/prefetch I/O.
+    // writeback snapshots are queued. Independent of descriptor I/O.
     mutable std::mutex writeback_mutex;
     mutable std::map<std::uint64_t, std::shared_ptr<const GuestPageBytes>> pending_writeback_pages;
 };
@@ -297,10 +294,9 @@ public:
         bool defer_completion = false);
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] std::optional<std::shared_ptr<GuestFileBacking>> result() const;
-    void complete(std::size_t prepare_bytes = 0);
-    // Serial kernel boundary only: seed byte-lazy cache pages, never replace
-    // resident/shared bytes. Discard a snapshot if the retained vnode changed.
-    void commit_pages(bool shared_vnode);
+    void complete();
+    // Serial kernel boundary releases the retained admission ticket.
+    void commit();
     void retain_admission(std::shared_ptr<void> admission)
     {
         admission_ = std::move(admission);
@@ -311,7 +307,6 @@ private:
     std::shared_ptr<FilePageCache> cache_;
     std::function<std::shared_ptr<GuestFileBacking>()> completion_;
     std::shared_ptr<GuestFileBacking> result_;
-    std::shared_ptr<PreparedFilePages> prepared_pages_;
     std::shared_ptr<void> admission_;
     std::atomic_flag started_ { };
     std::atomic<bool> ready_ { false };
@@ -562,7 +557,7 @@ public:
         std::span<const std::byte> bytes);
 
     // Creates or reuses one page for an already validated mapping. The page
-    // remains byte-lazy; GuestPageBacking::materialize performs clustered I/O.
+    // remains byte-lazy; GuestPageBacking::materialize reads only that page.
     [[nodiscard]] std::shared_ptr<GuestPageBacking> load_page(
         const std::shared_ptr<GuestFileBacking>& mapping,
         std::uint64_t file_offset, std::uint32_t byte_count,
