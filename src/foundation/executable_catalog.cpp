@@ -618,7 +618,13 @@ const ExecutableCatalogEntry& ExecutableCatalog::register_image(
     entry.fat_container = image.fat_container();
     entry.reliable_entry_points.clear();
     collect_reliable_entry_points(image, entry.reliable_entry_points);
-    if (const auto generation = read_file_generation(normalized)) {
+    // A prepared image may outlive a pathname replacement. Associate its
+    // content with the generation actually parsed, never a later path stat.
+    if (const auto& source = image.file_generation()) {
+        const ExecutableCatalogFileGeneration generation { source->device,
+            source->inode, source->file_size, source->modified_seconds,
+            source->modified_nanoseconds, source->changed_seconds,
+            source->changed_nanoseconds };
         const auto existing = std::find_if(entry.file_generations.begin(),
             entry.file_generations.end(),
             [&normalized](const ExecutableCatalogPathGeneration& record) {
@@ -626,9 +632,9 @@ const ExecutableCatalogEntry& ExecutableCatalog::register_image(
             });
         if (existing == entry.file_generations.end()) {
             entry.file_generations.push_back(
-                ExecutableCatalogPathGeneration { normalized, *generation });
+                ExecutableCatalogPathGeneration { normalized, generation });
         } else {
-            existing->generation = *generation;
+            existing->generation = generation;
         }
     }
     for (const auto& segment : image.segments()) {

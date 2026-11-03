@@ -85,6 +85,7 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     pending_file_renames_.erase(processor);
     pending_filesystem_dispatches_.erase(processor);
     pending_file_mappings_.erase(processor);
+    pending_process_images_.erase(processor);
     pending_baseband_writes_.erase(processor);
     pending_unix_accepts_.erase(processor);
     pending_flocks_.erase(processor);

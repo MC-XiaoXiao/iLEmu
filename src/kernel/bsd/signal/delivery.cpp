@@ -23,7 +23,8 @@ bool CompatibilityKernel::caught_signal_ready(std::size_t processor) const
         pending_file_ios_.contains(processor) ||
         pending_file_renames_.contains(processor) ||
         pending_filesystem_dispatches_.contains(processor) ||
-        pending_file_mappings_.contains(processor))
+        pending_file_mappings_.contains(processor) ||
+        pending_process_images_.contains(processor))
         return false;
     while (ready) {
         const auto signal = static_cast<std::uint32_t>(std::countr_zero(ready)) + 1U;

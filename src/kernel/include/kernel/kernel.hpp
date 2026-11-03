@@ -42,6 +42,7 @@
 #include "foundation/device_model.hpp"
 #include "foundation/dyld_shared_cache.hpp"
 #include "foundation/output.hpp"
+#include "foundation/host_process_image.hpp"
 #include "foundation/scene_coordinator.hpp"
 #include "foundation/system_button_input.hpp"
 #include "foundation/touch_input.hpp"
@@ -137,13 +138,13 @@ public:
     using SpawnCreateHandler =
         std::function<std::optional<std::uint32_t>(Cpu&)>;
     using ExecHandler = std::function<bool(
-        Cpu&, std::string, std::vector<std::string>, std::vector<std::string>)>;
+        Cpu&, PreparedProcessImage, std::vector<std::string>)>;
     struct SpawnSignalAttributes {
         std::optional<std::uint32_t> mask;
         std::uint32_t defaults { };
     };
-    using SpawnExecHandler = std::function<bool(std::uint32_t, std::string,
-        std::vector<std::string>, std::vector<std::string>, bool,
+    using SpawnExecHandler = std::function<bool(std::uint32_t, PreparedProcessImage,
+        std::vector<std::string>, bool,
         const SpawnSignalAttributes&)>;
     using SchedulerRunnableQuery = std::function<bool(std::size_t)>;
     using LegacyThreadPolicyHandler =
@@ -270,7 +271,8 @@ public:
                pending_file_ios_.contains(processor) ||
                pending_file_renames_.contains(processor) ||
                pending_filesystem_dispatches_.contains(processor) ||
-               pending_file_mappings_.contains(processor);
+               pending_file_mappings_.contains(processor) ||
+               pending_process_images_.contains(processor);
     }
     [[nodiscard]] bool thread_awaits_host(std::size_t processor) const
     {
@@ -287,6 +289,10 @@ public:
     void set_spawn_create_handler(SpawnCreateHandler handler)
     {
         spawn_create_handler_ = std::move(handler);
+    }
+    void set_process_image_preparer(std::shared_ptr<HostProcessImagePreparer> preparer)
+    {
+        process_image_preparer_ = std::move(preparer);
     }
     void set_exec_handler(ExecHandler handler)
     {
@@ -510,7 +516,7 @@ public:
     void prepare_exec(std::size_t processor_id);
     void apply_spawn_signal_attributes(const SpawnSignalAttributes& attributes);
     void install_main_image_hle(
-        Cpu& cpu, std::string_view mapped_guest_path = { });
+        Cpu& cpu, std::shared_ptr<const MachOImage> image);
     void set_process_image(std::string_view guest_path,
         std::span<const std::byte> code_signature_entitlements = { },
         const MachOImage* dynamic_linker = nullptr,
@@ -857,7 +863,8 @@ private:
     std::size_t install_mapped_user_image(Cpu& cpu,
         const std::filesystem::path& image_path, std::uint32_t mapping_address,
         std::uint32_t mapping_size, std::uint64_t file_offset,
-        bool shared_cache_mapping = false);
+        bool shared_cache_mapping = false,
+        std::shared_ptr<const MachOImage> parsed_image = { });
     void install_commpage();
     void configure_darwin_notify_state();
     struct PendingMachSend {
@@ -926,6 +933,11 @@ private:
     void dispatch_bsd_mmap(Cpu& cpu);
     void complete_bsd_mapping(Cpu& cpu, PendingFileMapping mapping);
     bool deliver_pending_file_mapping(Cpu& cpu);
+    using ProcessImageCommit = std::function<void(Cpu&, PreparedProcessImage)>;
+    void prepare_process_image(Cpu& cpu, std::string path,
+        std::vector<std::string> arguments, std::uint32_t invalid_image_error,
+        ProcessImageCommit commit);
+    bool deliver_pending_process_image(Cpu& cpu);
     struct MachPollDependency {
         std::uint32_t object;
         std::uint64_t generation;
@@ -1239,6 +1251,13 @@ private:
     MachMessageWakeHandler mach_message_wake_handler_;
     ForkHandler fork_handler_;
     SpawnCreateHandler spawn_create_handler_;
+    struct PendingProcessImage {
+        std::shared_ptr<ProcessImagePreparation> preparation;
+        std::uint32_t invalid_image_error;
+        ProcessImageCommit commit;
+    };
+    std::shared_ptr<HostProcessImagePreparer> process_image_preparer_;
+    std::map<std::size_t, PendingProcessImage> pending_process_images_;
     ExecHandler exec_handler_;
     SpawnExecHandler spawn_exec_handler_;
     MappedExecutableHandler mapped_executable_handler_;

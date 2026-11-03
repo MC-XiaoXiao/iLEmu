@@ -107,18 +107,25 @@ namespace {
 
 } // namespace
 
+ProcessImageLoader::ProcessImageLoader(std::filesystem::path rootfs,
+    ArmArchitectureVersion architecture, ExecutableCatalog* catalog)
+    : rootfs_ { std::move(rootfs) }
+    , architecture_ { architecture }
+    , catalog_ { catalog }
+{
+}
+
 ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
     ArmArchitectureVersion architecture, ExecutableCatalog* catalog,
     DarwinVersion version)
-    : rootfs_ { std::move(rootfs) }
+    : images_ { std::move(rootfs), architecture, catalog }
     , memory_ { memory }
-    , architecture_ { architecture }
     , catalog_ { catalog }
     , version_ { version }
 {
 }
 
-std::filesystem::path ProcessLoader::host_path(
+std::filesystem::path ProcessImageLoader::host_path(
     const std::string& guest_path) const
 {
     std::filesystem::path relative { guest_path };
@@ -138,32 +145,26 @@ std::filesystem::path ProcessLoader::host_path(
     return RootfsPathResolver { rootfs_ }.resolve(guest_path);
 }
 
-MachOImage ProcessLoader::parse_catalogued(
+MachOImage ProcessImageLoader::parse_catalogued(
     const std::filesystem::path& path) const
 {
     const auto* entry = catalog_ ? catalog_->find_path(path) : nullptr;
-    const auto parse_and_refresh = [&]() {
-        auto image = MachOImage::parse(path, architecture_);
-        if (catalog_ != nullptr) {
-            static_cast<void>(catalog_->register_image(image));
-        }
-        return image;
-    };
     if (catalog_ == nullptr || entry == nullptr || entry->file_size == 0U ||
         !entry->uuid || !catalog_->path_is_current(path)) {
-        return parse_and_refresh();
+        return MachOImage::parse(path, architecture_);
     }
     auto image =
         MachOImage::parse(path, architecture_, entry->content_identity);
     if (image.file_size() != entry->file_size || image.uuid() != entry->uuid) {
-        return parse_and_refresh();
+        return MachOImage::parse(path, architecture_);
     }
     return image;
 }
 
-LoadedProcess ProcessLoader::load(std::string guest_executable,
-    std::vector<std::string> arguments, std::vector<std::string> environment)
+PreparedProcessImage ProcessImageLoader::prepare(std::string guest_executable,
+    std::vector<std::string> arguments) const
 {
+    const auto requested_path = guest_executable;
     auto invocation =
         resolve_invocation(std::move(guest_executable), std::move(arguments));
     auto mapped_executable = std::move(invocation.executable_path);
@@ -179,6 +180,28 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
         parse_catalogued(host_path(*executable.dynamic_linker()));
     if (!dynamic_linker.entry_point()) {
         throw std::runtime_error { "dynamic linker lacks LC_UNIXTHREAD" };
+    }
+    return { requested_path, std::move(mapped_executable), std::move(arguments),
+        std::move(executable), std::move(dynamic_linker), { } };
+}
+
+LoadedProcess ProcessLoader::load(std::string guest_executable,
+    std::vector<std::string> arguments, std::vector<std::string> environment)
+{
+    return load(images_.prepare(std::move(guest_executable),
+                    std::move(arguments)), std::move(environment));
+}
+
+LoadedProcess ProcessLoader::load(PreparedProcessImage prepared,
+    std::vector<std::string> environment)
+{
+    auto mapped_executable = std::move(prepared.executable_path);
+    auto arguments = std::move(prepared.arguments);
+    auto executable = std::move(prepared.executable);
+    auto dynamic_linker = std::move(prepared.dynamic_linker);
+    if (catalog_) {
+        static_cast<void>(catalog_->register_image(executable));
+        static_cast<void>(catalog_->register_image(dynamic_linker));
     }
     // Each image can have several executable segments. Keep the first
     // validated file backing for that image so later segments reuse its open
@@ -365,7 +388,7 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     };
 }
 
-ProcessLoader::ResolvedInvocation ProcessLoader::resolve_invocation(
+ProcessImageLoader::ResolvedInvocation ProcessImageLoader::resolve_invocation(
     std::string guest_executable, std::vector<std::string> arguments) const
 {
     if (arguments.empty()) {
@@ -404,16 +427,8 @@ ProcessLoader::ResolvedInvocation ProcessLoader::resolve_invocation(
 bool ProcessLoader::validate(std::string guest_executable) const
 {
     try {
-        const auto invocation =
-            resolve_invocation(std::move(guest_executable), { });
-        const auto executable =
-            parse_catalogued(host_path(invocation.executable_path));
-        if (!executable.dynamic_linker() || !executable.entry_point()) {
-            return false;
-        }
-        const auto dynamic_linker =
-            parse_catalogued(host_path(*executable.dynamic_linker()));
-        return dynamic_linker.entry_point().has_value();
+        static_cast<void>(images_.prepare(std::move(guest_executable)));
+        return true;
     } catch (const std::exception&) {
         return false;
     }

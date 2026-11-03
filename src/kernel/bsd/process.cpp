@@ -145,6 +145,7 @@ void CompatibilityKernel::release_process_descriptors()
     pending_filesystem_dispatches_.clear();
     file_rename_effects_.clear();
     pending_file_mappings_.clear();
+    pending_process_images_.clear();
     pending_baseband_writes_.clear();
     wifi_driver_event_streams_.clear();
     scheduled_wifi_driver_events_.clear();
@@ -548,34 +549,27 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        std::error_code path_error;
-        const auto host_path = resolve_guest_path(cpu, *path);
-        if (!std::filesystem::is_regular_file(host_path, path_error)) {
-            bsd_error(cpu, 2); // ENOENT; execvp will continue its PATH search
-            return;
-        }
-        // The loader accepts root-relative guest paths. Resolve a relative
-        // executable using the caller's CWD before crossing that boundary.
-        if (std::filesystem::path { *path }.is_relative())
-            *path = (std::filesystem::path { "/" } /
-                     host_path.lexically_relative(rootfs_)).generic_string();
-        std::ostringstream exec_message;
-        exec_message << "[process] exec pid=" << process_.pid << " " << *path
-                     << " argv=";
-        for (std::size_t index = 0; index < arguments->size(); ++index) {
-            if (index != 0)
-                exec_message << ',';
-            exec_message << '"' << (*arguments)[index] << '"';
-        }
-        exec_message << '\n';
-        output_.write(exec_message.str());
-        if (!exec_handler_ ||
-            !exec_handler_(cpu, *path, *arguments, *environment)) {
-            bsd_error(cpu, 2); // ENOENT
-            return;
-        }
-        performance_counters().record_exec();
-        cpu.halt(Dynarmic::HaltReason::UserDefined6);
+        prepare_process_image(cpu, std::move(*path), *arguments, 2,
+            [this, environment = *environment](Cpu& cpu,
+                PreparedProcessImage image) mutable {
+                std::ostringstream message;
+                message << "[process] exec pid=" << process_.pid << " "
+                        << image.requested_path << " argv=";
+                for (std::size_t index = 0; index < image.arguments.size(); ++index) {
+                    if (index != 0)
+                        message << ',';
+                    message << '"' << image.arguments[index] << '"';
+                }
+                message << '\n';
+                output_.write(message.str());
+                if (!exec_handler_ ||
+                    !exec_handler_(cpu, std::move(image), std::move(environment))) {
+                    bsd_error(cpu, 2);
+                    return;
+                }
+                performance_counters().record_exec();
+                cpu.halt(Dynarmic::HaltReason::UserDefined6);
+            });
         return;
     }
     case 96: // setpriority

@@ -1031,6 +1031,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_file_renames_.clear();
     pending_filesystem_dispatches_.clear();
     pending_file_mappings_.clear();
+    pending_process_images_.clear();
     pending_baseband_writes_.clear();
     pending_unix_accepts_.clear();
     pending_flocks_.clear();
@@ -1050,7 +1051,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
     const std::filesystem::path& image_path, std::uint32_t mapping_address,
     std::uint32_t mapping_size, std::uint64_t file_offset,
-    bool shared_cache_mapping)
+    bool shared_cache_mapping, std::shared_ptr<const MachOImage> prepared_image)
 {
     const auto diagnostics_enabled =
         performance_counters().cpu_source_diagnostics_enabled();
@@ -1218,7 +1219,8 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
     } else if (!shared_cache_mapping) {
         installed =
             userland_hle_.install_mapped_image(cpu, process_.pid, image_path,
-                mapping_address, mapping_size, file_offset, architecture);
+                mapping_address, mapping_size, file_offset, architecture,
+                prepared_image);
     }
     const auto cache_mapping = shared_cache_mapping || cache != nullptr;
     checkpoint(1U);
@@ -1232,24 +1234,21 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
         return installed;
     }
     apply_image_abi(
-        image_path.generic_string(), image_path, std::nullopt, std::nullopt);
+        image_path.generic_string(), image_path, std::nullopt, std::nullopt,
+        std::move(prepared_image));
     checkpoint(3U);
     return installed;
 }
 
 void CompatibilityKernel::install_main_image_hle(
-    Cpu& cpu, std::string_view mapped_guest_path)
+    Cpu& cpu, std::shared_ptr<const MachOImage> image)
 {
-    const auto host_path = resolve_guest_path(mapped_guest_path.empty()
-            ? process_image_
-            : std::string { mapped_guest_path });
-    const auto image = MachOImage::parse(
-        host_path, arm_architecture_for_model(device_model_.processor.model));
-    for (const auto& segment : image.segments()) {
+    for (const auto& segment : image->segments()) {
         if (segment.file_size == 0)
             continue;
-        static_cast<void>(install_mapped_user_image(cpu, host_path,
-            segment.vm_address, segment.file_size, segment.file_offset));
+        static_cast<void>(install_mapped_user_image(cpu, image->path(),
+            segment.vm_address, segment.file_size, segment.file_offset,
+            false, image));
     }
 }
 
@@ -1924,6 +1923,7 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_file_renames_.contains(processor) ||
            pending_filesystem_dispatches_.contains(processor) ||
            pending_file_mappings_.contains(processor) ||
+           pending_process_images_.contains(processor) ||
            pending_baseband_writes_.contains(processor) ||
            pending_unix_accepts_.contains(processor) ||
            pending_semaphore_waits_.contains(processor) ||
@@ -2148,6 +2148,7 @@ bool CompatibilityKernel::pending_io_requires_host_poll_locked(
     if (pending_file_ios_.contains(processor) ||
         pending_aio_suspends_.contains(processor) ||
         pending_file_mappings_.contains(processor) ||
+        pending_process_images_.contains(processor) ||
         pending_file_renames_.contains(processor) ||
         pending_filesystem_dispatches_.contains(processor) ||
         pending_baseband_writes_.contains(processor)) {
@@ -2355,6 +2356,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         return deliver_pending_file_io(cpu);
     if (pending_aio_suspends_.contains(cpu.processor_id()))
         return deliver_pending_aio_suspend(cpu);
+    if (pending_process_images_.contains(cpu.processor_id()))
+        return deliver_pending_process_image(cpu);
     if (pending_file_mappings_.contains(cpu.processor_id()))
         return deliver_pending_file_mapping(cpu);
     if (pending_filesystem_dispatches_.contains(cpu.processor_id()))
@@ -2757,6 +2760,8 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
         return "rename";
     if (pending_filesystem_dispatches_.contains(processor))
         return "filesystem namespace";
+    if (pending_process_images_.contains(processor))
+        return "process-image";
     if (const auto pending = pending_file_mappings_.find(processor);
         pending != pending_file_mappings_.end()) {
         return "mmap(fd=" + std::to_string(pending->second.arguments[4]) + ")";

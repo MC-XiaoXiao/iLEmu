@@ -47,6 +47,7 @@ add_library(ilemu_foundation STATIC
     guest_exclusive_address_resolver.cpp
     host_resource_controller.cpp
     host_memory.cpp
+    host_process_image.cpp
     host_file_mapping.cpp
     host_file_io.cpp
     host_file_sync.cpp

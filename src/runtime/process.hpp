@@ -68,8 +68,7 @@ constexpr std::size_t arm_breakpoint_size = 4;
 
 struct PendingExec {
     std::size_t processor { };
-    std::string path;
-    std::vector<std::string> arguments;
+    PreparedProcessImage image;
     std::vector<std::string> environment;
 };
 

@@ -2351,11 +2351,13 @@ UserlandHleStats userland_hle_stats() noexcept
 std::size_t UserlandHleRegistry::install_mapped_image(Cpu& cpu,
     std::uint32_t process_id, const std::filesystem::path& image_path,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
-    std::uint64_t file_offset, ArmArchitectureVersion architecture)
+    std::uint64_t file_offset, ArmArchitectureVersion architecture,
+    std::shared_ptr<const MachOImage> parsed_image)
 {
     return install_mapped_image_impl(cpu, process_id,
         image_path.generic_string(), image_path, std::nullopt, std::nullopt,
-        mapping_address, mapping_size, file_offset, architecture);
+        mapping_address, mapping_size, file_offset, architecture,
+        std::move(parsed_image));
 }
 
 std::size_t UserlandHleRegistry::install_mapped_shared_cache_image(Cpu& cpu,

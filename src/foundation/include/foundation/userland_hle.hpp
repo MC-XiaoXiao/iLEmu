@@ -242,7 +242,8 @@ public:
         std::uint32_t process_id, const std::filesystem::path& image_path,
         std::uint32_t mapping_address, std::uint32_t mapping_size,
         std::uint64_t file_offset,
-        ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+        ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
+        std::shared_ptr<const MachOImage> parsed_image = { });
 
     // Shared-cache images keep their Mach-O header and linkedit data in a
     // container file, while registration matching must use the image's logical

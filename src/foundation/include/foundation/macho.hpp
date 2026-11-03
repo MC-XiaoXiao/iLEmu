@@ -131,6 +131,10 @@ public:
     {
         return uuid_;
     }
+    [[nodiscard]] const std::optional<GuestFileGeneration>& file_generation() const
+    {
+        return file_generation_;
+    }
     [[nodiscard]] bool fat_container() const { return fat_container_; }
     [[nodiscard]] const std::vector<MachSegment>& segments() const
     {

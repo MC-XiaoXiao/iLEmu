@@ -238,111 +238,104 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
     // must run through dyld and suspend itself in userspace. Only the actual
     // POSIX_SPAWN_START_SUSPENDED flag places the initial thread on hold.
 
-    std::error_code path_error;
-    const auto host_path = resolve_guest_path(cpu, *path);
-    if (!std::filesystem::is_regular_file(host_path, path_error)) {
-        bsd_error(cpu, 2); // ENOENT
-        return true;
-    }
+    prepare_process_image(cpu, std::move(*path), *arguments, 8,
+        [this, pid_address, environment = std::move(*environment),
+            attributes = std::move(*attributes), arguments = std::move(*arguments)](Cpu& cpu,
+            PreparedProcessImage image) mutable {
+        const auto path = image.requested_path;
+        if (attributes.setexec) {
+            if (!exec_handler_ ||
+                !exec_handler_(cpu, std::move(image), environment)) {
+                bsd_error(cpu, 8); // ENOEXEC
+                return;
+            }
+            if (const auto error = apply_special_port_actions(
+                    *shared_state_, process_, attributes); error != 0U) {
+                bsd_error(cpu, error);
+                return;
+            }
+            apply_spawn_signal_attributes(attributes.signals);
+            output_.write("[process] spawn-port-actions pid=" +
+                std::to_string(process_.pid) + " count=" +
+                std::to_string(attributes.port_actions.size()) +
+                " bootstrap=" + std::to_string(process_.bootstrap_port) + "\n");
+            // SpringBoard's older launch path forks a helper and asks that child to
+            // SETEXEC the application. There is no separate child-return path
+            // below, so observe the successful PID-bound spawn here after exec has
+            // assigned the new process identity.
+            graphics_services_input::record_application_spawn(*shared_state_,
+                process_.parent_pid, process_.pid, path, arguments,
+                scene_coordinator_.get(), true);
+            performance_counters().record_exec();
+            std::ostringstream message;
+            message << "[process] spawn-setexec pid=" << process_.pid
+                    << " parent=" << process_.parent_pid
+                    << " suspended=" << attributes.start_suspended << " " << path
+                    << " argv=";
+            for (std::size_t index = 0; index < arguments.size(); ++index) {
+                if (index != 0)
+                    message << ',';
+                message << '"' << arguments[index] << '"';
+            }
+            message << '\n';
+            output_.write(message.str());
+            cpu.halt(Dynarmic::HaltReason::UserDefined6);
+            return;
+        }
 
-    // Freeze the caller's effective CWD into the loader's absolute guest path
-    // for both spawn and SETEXEC; argv remains exactly as supplied.
-    if (std::filesystem::path { *path }.is_relative())
-        *path = (std::filesystem::path { "/" } /
-                 host_path.lexically_relative(rootfs_)).generic_string();
-
-    if (attributes->setexec) {
-        if (!exec_handler_ ||
-            !exec_handler_(cpu, *path, *arguments, *environment)) {
+        std::optional<std::uint32_t> child;
+        if (spawn_create_handler_) {
+            PerformanceLatencyScope create_latency {
+                PerfLatencyKind::PosixSpawnCreate
+            };
+            child = spawn_create_handler_(cpu);
+        } else {
+            PerformanceLatencyScope fork_latency {
+                PerfLatencyKind::PosixSpawnFork
+            };
+            child = fork_handler_ ? fork_handler_(cpu) : std::nullopt;
+        }
+        if (!child) {
+            bsd_error(cpu, 11); // EAGAIN
+            return;
+        }
+        performance_counters().record_fork();
+        if (!spawn_exec_handler_ ||
+            !spawn_exec_handler_(*child, std::move(image), environment,
+                attributes.start_suspended, attributes.signals)) {
             bsd_error(cpu, 8); // ENOEXEC
-            return true;
+            return;
         }
-        if (const auto error = apply_special_port_actions(
-                *shared_state_, process_, *attributes); error != 0U) {
-            bsd_error(cpu, error);
-            return true;
+        if (scheduler_preemption_query_ &&
+            scheduler_preemption_query_(cpu.processor_id())) {
+            // A successful non-suspended spawn leaves a new runnable child visible
+            // to the scheduler before the parent returns to Guest code. A suspended
+            // child is already blocked by spawn_exec_handler_ and therefore does
+            // not trigger this query unless another runnable candidate wins
+            // ordering.
+            cpu.request_guest_preemption();
         }
-        apply_spawn_signal_attributes(attributes->signals);
-        output_.write("[process] spawn-port-actions pid=" +
-            std::to_string(process_.pid) + " count=" +
-            std::to_string(attributes->port_actions.size()) +
-            " bootstrap=" + std::to_string(process_.bootstrap_port) + "\n");
-        // SpringBoard's older launch path forks a helper and asks that child to
-        // SETEXEC the application. There is no separate child-return path
-        // below, so observe the successful PID-bound spawn here after exec has
-        // assigned the new process identity.
         graphics_services_input::record_application_spawn(*shared_state_,
-            process_.parent_pid, process_.pid, *path, *arguments,
-            scene_coordinator_.get(), true);
+            process_.pid, *child, path, arguments, scene_coordinator_.get());
         performance_counters().record_exec();
+        if (!memory_.write32(pid_address, *child)) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+
         std::ostringstream message;
-        message << "[process] spawn-setexec pid=" << process_.pid
-                << " parent=" << process_.parent_pid
-                << " suspended=" << attributes->start_suspended << " " << *path
+        message << "[process] spawn parent=" << process_.pid << " child=" << *child
+                << " suspended=" << attributes.start_suspended << " " << path
                 << " argv=";
-        for (std::size_t index = 0; index < arguments->size(); ++index) {
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
             if (index != 0)
                 message << ',';
-            message << '"' << (*arguments)[index] << '"';
+            message << '"' << arguments[index] << '"';
         }
         message << '\n';
         output_.write(message.str());
-        cpu.halt(Dynarmic::HaltReason::UserDefined6);
-        return true;
-    }
-
-    std::optional<std::uint32_t> child;
-    if (spawn_create_handler_) {
-        PerformanceLatencyScope create_latency {
-            PerfLatencyKind::PosixSpawnCreate
-        };
-        child = spawn_create_handler_(cpu);
-    } else {
-        PerformanceLatencyScope fork_latency {
-            PerfLatencyKind::PosixSpawnFork
-        };
-        child = fork_handler_ ? fork_handler_(cpu) : std::nullopt;
-    }
-    if (!child) {
-        bsd_error(cpu, 11); // EAGAIN
-        return true;
-    }
-    performance_counters().record_fork();
-    if (!spawn_exec_handler_ ||
-        !spawn_exec_handler_(*child, *path, *arguments, *environment,
-            attributes->start_suspended, attributes->signals)) {
-        bsd_error(cpu, 8); // ENOEXEC
-        return true;
-    }
-    if (scheduler_preemption_query_ &&
-        scheduler_preemption_query_(cpu.processor_id())) {
-        // A successful non-suspended spawn leaves a new runnable child visible
-        // to the scheduler before the parent returns to Guest code. A suspended
-        // child is already blocked by spawn_exec_handler_ and therefore does
-        // not trigger this query unless another runnable candidate wins
-        // ordering.
-        cpu.request_guest_preemption();
-    }
-    graphics_services_input::record_application_spawn(*shared_state_,
-        process_.pid, *child, *path, *arguments, scene_coordinator_.get());
-    performance_counters().record_exec();
-    if (!memory_.write32(pid_address, *child)) {
-        bsd_error(cpu, bsd_support::bad_address);
-        return true;
-    }
-
-    std::ostringstream message;
-    message << "[process] spawn parent=" << process_.pid << " child=" << *child
-            << " suspended=" << attributes->start_suspended << " " << *path
-            << " argv=";
-    for (std::size_t index = 0; index < arguments->size(); ++index) {
-        if (index != 0)
-            message << ',';
-        message << '"' << (*arguments)[index] << '"';
-    }
-    message << '\n';
-    output_.write(message.str());
-    bsd_success(cpu, 0);
+        bsd_success(cpu, 0);
+    });
     return true;
 }
 

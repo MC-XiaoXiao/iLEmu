@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -32,6 +33,42 @@ struct LoadedProcess {
     std::uint32_t main_header { };
 };
 
+// A frozen invocation and its immutable Mach-O snapshots. Preparation performs
+// no guest-memory or CPU operations; mapping consumes this result exactly once.
+struct PreparedProcessImage {
+    std::string requested_path;
+    std::string executable_path;
+    std::vector<std::string> arguments;
+    MachOImage executable;
+    MachOImage dynamic_linker;
+    // Retain admission until VM commit, including the runtime handoff.
+    std::shared_ptr<void> preparation_admission;
+};
+
+class ProcessImageLoader {
+public:
+    ProcessImageLoader(std::filesystem::path rootfs,
+        ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
+        ExecutableCatalog* catalog = nullptr);
+    [[nodiscard]] PreparedProcessImage prepare(std::string guest_executable,
+        std::vector<std::string> arguments = { }) const;
+
+private:
+    struct ResolvedInvocation {
+        std::string executable_path;
+        std::vector<std::string> arguments;
+    };
+    [[nodiscard]] std::filesystem::path host_path(
+        const std::string& guest_path) const;
+    [[nodiscard]] MachOImage parse_catalogued(
+        const std::filesystem::path& path) const;
+    [[nodiscard]] ResolvedInvocation resolve_invocation(
+        std::string guest_executable, std::vector<std::string> arguments) const;
+    std::filesystem::path rootfs_;
+    ArmArchitectureVersion architecture_;
+    ExecutableCatalog* catalog_ { };
+};
+
 class ProcessLoader {
 public:
     ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
@@ -41,24 +78,13 @@ public:
     LoadedProcess load(std::string guest_executable,
         std::vector<std::string> arguments = { },
         std::vector<std::string> environment = { });
+    LoadedProcess load(PreparedProcessImage prepared,
+        std::vector<std::string> environment = { });
     [[nodiscard]] bool validate(std::string guest_executable) const;
 
 private:
-    struct ResolvedInvocation {
-        std::string executable_path;
-        std::vector<std::string> arguments;
-    };
-
-    [[nodiscard]] std::filesystem::path host_path(
-        const std::string& guest_path) const;
-    [[nodiscard]] MachOImage parse_catalogued(
-        const std::filesystem::path& path) const;
-    [[nodiscard]] ResolvedInvocation resolve_invocation(
-        std::string guest_executable, std::vector<std::string> arguments) const;
-
-    std::filesystem::path rootfs_;
+    ProcessImageLoader images_;
     AddressSpace& memory_;
-    ArmArchitectureVersion architecture_;
     ExecutableCatalog* catalog_ { };
     DarwinVersion version_;
 };

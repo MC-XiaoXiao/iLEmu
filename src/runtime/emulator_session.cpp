@@ -1509,6 +1509,8 @@ void EmulatorSession::run()
     std::array<std::atomic<std::uint64_t>, jit_precompile_target_count>
         precompile_blocks_by_target { };
     auto file_mapping_preparer = std::make_shared<HostFileMappingPreparer>();
+    auto process_image_preparer =
+        std::make_shared<HostProcessImagePreparer>(rootfs, guest_architecture);
     // A captured deferred SVC has entered the kernel even before its serial
     // dispatch. Track the uncommitted suffix without per-slice allocation.
     std::span<const PreparedGuestSlice> pending_kernel_entries;
@@ -1527,6 +1529,7 @@ void EmulatorSession::run()
     configure_runtime = [&](Runtime& runtime) {
         auto* runtime_ptr = &runtime;
         runtime.kernel->set_file_mapping_preparer(file_mapping_preparer);
+        runtime.kernel->set_process_image_preparer(process_image_preparer);
         runtime.kernel->set_host_network_policy(network_policy);
         runtime.kernel->set_mapped_executable_handler(
             [runtime_ptr, &session_catalog, &catalog_mapped_executable_ranges,
@@ -1862,38 +1865,18 @@ void EmulatorSession::run()
                 source, CompatibilityKernel::ProcessInheritance::SpawnExec);
         });
         runtime.kernel->set_exec_handler(
-            [&, runtime_ptr](Cpu& source, std::string path,
-                std::vector<std::string> arguments,
+            [runtime_ptr](Cpu& source, PreparedProcessImage image,
                 std::vector<std::string> environment) {
-                catalog_maintenance.poll(*initial_runtime->kernel, true);
-                ProcessLoader validator { rootfs, *runtime_ptr->memory,
-                    guest_architecture, session_catalog.index(),
-                    darwin_version };
-                if (!validator.validate(path)) {
-                    output.line(
-                        "[process] exec rejected pid=" +
-                        std::to_string(runtime_ptr->kernel->process().pid) +
-                        " path=" + path);
-                    return false;
-                }
                 runtime_ptr->pending_exec = PendingExec {
-                    source.processor_id(),
-                    std::move(path),
-                    std::move(arguments),
-                    std::move(environment),
-                };
+                    source.processor_id(), std::move(image),
+                    std::move(environment) };
                 return true;
             });
         runtime.kernel->set_spawn_exec_handler([&](std::uint32_t child_pid,
-                                                   std::string path,
-                                                   std::vector<std::string>
-                                                       arguments,
-                                                   std::vector<std::string>
-                                                       environment,
-                                                   bool start_suspended,
-                                                   const CompatibilityKernel::
-                                                       SpawnSignalAttributes&
-                                                           signal_attributes) {
+            PreparedProcessImage image, std::vector<std::string> environment,
+            bool start_suspended,
+            const CompatibilityKernel::SpawnSignalAttributes& signal_attributes) {
+            const auto path = image.requested_path;
             auto* child_runtime = runtime_index.find(child_pid);
             if (child_runtime == nullptr)
                 return false;
@@ -1929,7 +1912,7 @@ void EmulatorSession::run()
                         guest_architecture, session_catalog.index(),
                         darwin_version };
                     loaded =
-                        loader.load(path, std::move(arguments), environment);
+                        loader.load(std::move(image), environment);
                 }
                 {
                     PerformanceLatencyScope latency {
@@ -1959,7 +1942,7 @@ void EmulatorSession::run()
                     assign_jit_process_profile(*child_runtime, loaded,
                         precompile_phase_for_lifecycle(interactive_activation));
                     child_runtime->kernel->install_main_image_hle(
-                        child_cpu, loaded.executable_path);
+                        child_cpu, std::make_shared<MachOImage>(std::move(loaded.executable)));
                     precompile_startup_profile(
                         *child_runtime, loaded.executable_path);
                     observe_runtime_jit_memory_counted(*child_runtime);
@@ -4010,6 +3993,11 @@ void EmulatorSession::run()
                 static_cast<std::size_t>(scheduled_value.thread.thread);
             auto& cpu = selected_runtime->cpus->cpu(index);
             cpu.clear_halt();
+            // A completed image preparation resumes at the lifecycle commit,
+            // before any further instruction from the old address space.
+            if (selected_runtime->pending_exec &&
+                selected_runtime->pending_exec->processor == index)
+                cpu.halt(Dynarmic::HaltReason::UserDefined6);
             const auto host_slice_budget = guest_execution_policy.budget(
                 scheduler,
                 GuestExecutionBudgetRequest {
@@ -4298,6 +4286,7 @@ void EmulatorSession::run()
                        runtime.pending_exec) {
                 auto pending = std::move(*runtime.pending_exec);
                 runtime.pending_exec.reset();
+                const auto path = pending.image.requested_path;
                 const auto image_epoch =
                     runtime.begin_image_transition(host_resources);
                 try {
@@ -4307,11 +4296,11 @@ void EmulatorSession::run()
                     ProcessLoader exec_loader { rootfs, *runtime.memory,
                         guest_architecture, session_catalog.index(),
                         darwin_version };
-                    auto loaded = exec_loader.load(pending.path,
-                        std::move(pending.arguments), pending.environment);
+                    auto loaded = exec_loader.load(
+                        std::move(pending.image), pending.environment);
                     runtime.kernel->set_process_arguments(
                         loaded.arguments, pending.environment);
-                    runtime.kernel->set_process_image(pending.path,
+                    runtime.kernel->set_process_image(path,
                         loaded.executable.code_signature_entitlements(),
                         &loaded.dynamic_linker, &loaded.executable);
                     runtime.kernel->prepare_exec(pending.processor);
@@ -4349,7 +4338,7 @@ void EmulatorSession::run()
                     assign_jit_process_profile(runtime, loaded,
                         precompile_phase_for_lifecycle(interactive_activation));
                     runtime.kernel->install_main_image_hle(
-                        exec_cpu, loaded.executable_path);
+                        exec_cpu, std::make_shared<MachOImage>(std::move(loaded.executable)));
                     precompile_startup_profile(runtime, loaded.executable_path);
                     observe_runtime_jit_memory_counted(runtime);
                     runtime.activate_image_epoch(image_epoch);
@@ -4371,7 +4360,7 @@ void EmulatorSession::run()
                 } catch (const std::exception& error) {
                     output.line("[process] exec failed pid=" +
                                 std::to_string(runtime.kernel->process().pid) +
-                                " path=" + pending.path +
+                                " path=" + path +
                                 " error=" + error.what());
                     runtime.kernel->exit_process(127);
                     completion = XnuSliceCompletion::Terminate;
