@@ -276,14 +276,33 @@ public:
 
     ~RuntimeReaper() { finish(); }
 
-    void retire(std::unique_ptr<Runtime> runtime)
+    // During execution, a full reaper leaves ownership with the coordinator.
+    // One queued resource plus one being destroyed bounds detached work.
+    bool try_retire(std::unique_ptr<Runtime>& runtime, RuntimeIndex& index)
     {
-        retire_resource(std::move(runtime));
+        std::lock_guard lock { mutex_ };
+        if (!pending_.empty())
+            return false;
+        index.erase(*runtime);
+        enqueue_locked(std::move(runtime));
+        return true;
     }
 
-    void retire_execution_resources(std::shared_ptr<CpuExecutionPool> resources)
+    bool try_retire_execution_resources(CpuCluster& cpus)
     {
-        retire_resource(std::move(resources));
+        std::lock_guard lock { mutex_ };
+        if (!pending_.empty())
+            return false;
+        enqueue_locked(cpus.release_execution_resources());
+        return true;
+    }
+
+    // Shutdown only, after guest execution and kernel commits have stopped.
+    void drain(std::unique_ptr<Runtime> runtime)
+    {
+        std::unique_lock lock { mutex_ };
+        idle_.wait(lock, [this] { return pending_.empty(); });
+        enqueue_locked(std::move(runtime));
     }
 
     void finish()
@@ -309,18 +328,11 @@ private:
     using RetiredResource = std::variant<std::monostate,
         std::unique_ptr<Runtime>, std::shared_ptr<CpuExecutionPool>>;
 
-    template <typename Resource> void retire_resource(Resource resource)
+    template <typename Resource> void enqueue_locked(Resource resource)
     {
         if (!resource)
             return;
-        {
-            std::lock_guard lock { mutex_ };
-            if (stopping_)
-                throw std::logic_error {
-                    "cannot retire a Runtime after reaper stop"
-                };
-            pending_.push_back(std::move(resource));
-        }
+        pending_.push_back(std::move(resource));
         work_available_.notify_one();
     }
 
@@ -338,6 +350,7 @@ private:
             auto resource = std::move(pending_.front());
             pending_.pop_front();
             active_ = true;
+            idle_.notify_all();
             lock.unlock();
             resource = std::monostate { };
             lock.lock();

@@ -3588,9 +3588,8 @@ void EmulatorSession::run()
                 if (!precompile_finished(*runtime))
                     continue;
                 account_runtime_jit_memory(*runtime);
-                runtime_reaper.retire_execution_resources(
-                    runtime->cpus->release_execution_resources());
-                runtime->execution_reclaim_after.reset();
+                if (runtime_reaper.try_retire_execution_resources(*runtime->cpus))
+                    runtime->execution_reclaim_after.reset();
             }
         }
         for (auto& parent : runtimes) {
@@ -3618,8 +3617,10 @@ void EmulatorSession::run()
                 }
                 account_runtime_jit_memory(**runtime);
                 guest_deadlines.erase((*runtime)->kernel->process().pid);
-                runtime_index.erase(**runtime);
-                runtime_reaper.retire(std::move(*runtime));
+                if (!runtime_reaper.try_retire(*runtime, runtime_index)) {
+                    ++runtime;
+                    continue;
+                }
                 runtime = runtimes.erase(runtime);
             } else {
                 ++runtime;
@@ -5562,7 +5563,7 @@ void EmulatorSession::run()
     for (auto& runtime : runtimes) {
         account_runtime_jit_memory(*runtime, true);
         runtime_index.erase(*runtime);
-        runtime_reaper.retire(std::move(runtime));
+        runtime_reaper.drain(std::move(runtime));
     }
     runtimes.clear();
     runtime_reaper.finish();
