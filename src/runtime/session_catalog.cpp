@@ -7,7 +7,6 @@
 
 #include "session_catalog.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <utility>
@@ -77,10 +76,7 @@ CatalogMaintenance::CatalogMaintenance(SessionCatalog& catalog,
 void CatalogMaintenance::queue_path(const std::filesystem::path& path,
     std::optional<ExecutableCatalogKnownIdentity> known_identity)
 {
-    if (std::find(refresh_paths_.begin(), refresh_paths_.end(), path) ==
-        refresh_paths_.end()) {
-        refresh_paths_.push_back(path);
-    }
+    refresh_paths_.insert(path);
     if (known_identity) {
         refresh_identities_[path] = std::move(*known_identity);
     }
@@ -262,7 +258,7 @@ void CatalogMaintenance::schedule()
     if (task_ || HostResourceController::Clock::now() < next_submission_) {
         return;
     }
-    auto refresh_paths = std::make_shared<std::vector<std::filesystem::path>>(
+    auto refresh_paths = std::make_shared<std::unordered_set<std::filesystem::path>>(
         std::move(refresh_paths_));
     refresh_paths_.clear();
     auto refresh_identities = std::make_shared<
@@ -285,7 +281,8 @@ void CatalogMaintenance::schedule()
             known_identities = refresh_identities]() mutable {
             Completion completion;
             completion.base_revision = base_revision;
-            completion.paths = std::move(*paths);
+            // Build the scan API's contiguous path batch on this worker.
+            completion.paths.assign(paths->begin(), paths->end());
             completion.known_identities = *known_identities;
             completion.catalog = std::move(catalog);
             completion.staged_manifest = staged_manifest;

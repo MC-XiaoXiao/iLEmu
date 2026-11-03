@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "foundation/executable_catalog.hpp"
@@ -105,7 +106,7 @@ private:
     HostFileWatcher watcher_;
     bool registration_reported_ { };
     bool refresh_pending_ { };
-    std::vector<std::filesystem::path> refresh_paths_;
+    std::unordered_set<std::filesystem::path> refresh_paths_;
     std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>
         refresh_identities_;
     std::shared_ptr<SharedState> state_ { std::make_shared<SharedState>() };
