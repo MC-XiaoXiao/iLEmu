@@ -296,6 +296,12 @@ private:
     Dynarmic::HaltReason requested_halt_reason_ { };
 };
 
+struct CpuNativeCodeSnapshot {
+    std::uint64_t context_id { };
+    std::uint32_t process_id { };
+    Dynarmic::A32::NativeCodeSlab::CodeRangeSnapshot code;
+};
+
 class CpuCluster {
 public:
     using PrecompileStopCondition = std::function<bool()>;
@@ -361,6 +367,9 @@ public:
     void set_jit_work_signal(
         std::shared_ptr<JitWorkObservationSignal> signal);
     [[nodiscard]] std::uint64_t jit_code_cache_bytes();
+    // Diagnostic copy only; does not construct an executor or a JIT.
+    [[nodiscard]] CpuNativeCodeSnapshot native_code_ranges(
+        std::size_t maximum_ranges) const;
     void clear_cache();
     // Reclaim one cold segment from a shared native-code slab. Backends that
     // do not expose segmented storage fall back to their normal full clear.

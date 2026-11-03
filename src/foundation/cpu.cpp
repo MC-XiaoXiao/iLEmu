@@ -4158,6 +4158,16 @@ public:
             executor->set_code_cache_size(bytes);
     }
 
+    [[nodiscard]] CpuNativeCodeSnapshot native_code_ranges(
+        std::size_t maximum_ranges) const
+    {
+        const auto* slab = execution_context_->native_code_slab();
+        return { execution_context_->context_id(),
+            execution_context_->process_id(),
+            slab ? slab->GetCodeRanges(maximum_ranges)
+                 : Dynarmic::A32::NativeCodeSlab::CodeRangeSnapshot { } };
+    }
+
     [[nodiscard]] std::uint64_t code_cache_used()
     {
         if (!independent_executors_.empty()) {
@@ -6165,6 +6175,13 @@ void CpuCluster::set_jit_work_signal(
 std::uint64_t CpuCluster::jit_code_cache_bytes()
 {
     return execution_pool_ ? execution_pool_->code_cache_used() : 0U;
+}
+
+CpuNativeCodeSnapshot CpuCluster::native_code_ranges(
+    std::size_t maximum_ranges) const
+{
+    return execution_pool_ ? execution_pool_->native_code_ranges(maximum_ranges)
+                           : CpuNativeCodeSnapshot { };
 }
 
 void CpuCluster::clear_cache() { execution_pool_->clear_cache(); }

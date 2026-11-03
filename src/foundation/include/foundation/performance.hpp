@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace ilemu {
@@ -426,6 +427,17 @@ public:
                                 std::memory_order_acquire);
     }
 
+    // Configured before a session starts; read only at explicit perf-window
+    // boundaries. Empty disables native code metadata export entirely.
+    void set_native_code_map_output(std::string path)
+    {
+        native_code_map_output_ = std::move(path);
+    }
+    [[nodiscard]] const std::string& native_code_map_output() const
+    {
+        return native_code_map_output_;
+    }
+
     void record_jit(std::uint64_t creation_nanoseconds = 0);
     // Background precompilation uses this always-on history to reserve time
     // for one non-preemptible Dynarmic block even when verbose perf output is
@@ -637,6 +649,7 @@ private:
     std::atomic<bool> frame_content_diagnostics_enabled_ { false };
     std::atomic<bool> cpu_source_diagnostics_configured_ { false };
     std::atomic<bool> native_lookup_diagnostics_configured_ { false };
+    std::string native_code_map_output_;
     std::atomic<std::uint64_t> jit_instances_ { };
     std::atomic<std::uint64_t> jit_live_instances_ { };
     std::atomic<std::uint64_t> jit_live_peak_instances_ { };

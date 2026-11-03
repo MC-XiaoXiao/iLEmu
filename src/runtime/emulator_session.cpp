@@ -2301,6 +2301,94 @@ void EmulatorSession::run()
         }
     };
     std::optional<std::string> display_performance_window;
+    const auto native_code_map_output =
+        performance_counters().native_code_map_output();
+    std::vector<CpuNativeCodeSnapshot> native_code_map_begins;
+    bool native_code_map_begin_complete { };
+    std::uint64_t native_code_map_started_at { };
+    const auto capture_native_code_map_begin = [&]() {
+        native_code_map_begins.clear();
+        native_code_map_begin_complete = false;
+        try {
+            for (const auto& runtime : runtimes) {
+                if (runtime->cpus) {
+                    // Zero records reads validity stamps without scanning or
+                    // allocating a native range table before the timed window.
+                    native_code_map_begins.push_back(
+                        runtime->cpus->native_code_ranges(0));
+                }
+            }
+            native_code_map_begin_complete = true;
+        } catch (const std::exception& error) {
+            output.marker(std::string { "[perf-native-map] begin-error=" } + error.what());
+        }
+        native_code_map_started_at = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+    const auto write_native_code_map = [&](const std::string& label,
+                                          std::chrono::steady_clock::time_point ended_at) {
+        if (native_code_map_output.empty())
+            return;
+        try {
+            std::ofstream map;
+            map.exceptions(std::ios::failbit | std::ios::badbit);
+            map.open(native_code_map_output, std::ios::trunc);
+            map << "ilemu-native-code-map 1\nwindow " << std::quoted(label)
+                << ' ' << native_code_map_started_at << ' '
+                << std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       ended_at.time_since_epoch()).count()
+                << ' ' << native_code_map_begin_complete << '\n';
+            std::size_t contexts { }, retained { }, dropped { };
+            constexpr std::size_t maximum_ranges_per_context = 65'536;
+            for (const auto& runtime : runtimes) {
+                if (!runtime->cpus)
+                    continue;
+                const auto snapshot = runtime->cpus->native_code_ranges(
+                    maximum_ranges_per_context);
+                if (snapshot.context_id == 0)
+                    continue;
+                ++contexts;
+                const auto begin = std::find_if(native_code_map_begins.begin(),
+                    native_code_map_begins.end(), [&](const auto& entry) {
+                        return entry.context_id == snapshot.context_id;
+                    });
+                const bool found = begin != native_code_map_begins.end();
+                const auto before = found ? begin->code
+                                          : Dynarmic::A32::NativeCodeSlab::CodeRangeSnapshot { };
+                const auto& after = snapshot.code;
+                const auto count = after.ranges.size();
+                const auto omitted = after.total_ranges - count;
+                // "pool" contains begin/end validity stamps. "range" rows
+                // are descriptor, native start, length, kind. Runtime ranges
+                // have no Guest owner PC; no nearest-symbol guess is made.
+                map << "pool " << snapshot.process_id << ' ' << snapshot.context_id
+                    << ' ' << found << ' ' << before.initialized
+                    << ' ' << before.generation << ' ' << before.storage_generation
+                    << ' ' << before.segment_recycles << ' ' << before.full_generation_clears
+                    << ' ' << after.initialized << ' ' << after.generation
+                    << ' ' << after.storage_generation << ' ' << after.segment_recycles
+                    << ' ' << after.full_generation_clears << ' ' << after.pending_invalidation
+                    << ' ' << after.retains_invalidated << ' ' << after.total_ranges
+                    << ' ' << count << ' ' << omitted << '\n';
+                for (const auto& range : after.ranges) {
+                    map << "range " << range.location_descriptor << ' '
+                        << range.entrypoint << ' ' << range.size << ' '
+                        << static_cast<unsigned>(range.kind) << '\n';
+                }
+                retained += count;
+                dropped += omitted;
+            }
+            map << "end " << contexts << ' ' << retained << ' ' << dropped << '\n';
+            map.close();
+            output.marker("[perf-native-map] label=" + label + " path=" +
+                native_code_map_output + " retained=" + std::to_string(retained) +
+                " dropped=" + std::to_string(dropped));
+        } catch (const std::exception& error) {
+            output.marker(std::string { "[perf-native-map] write-error=" } + error.what());
+        }
+        native_code_map_begins.clear();
+    };
     struct DisplayClockWindow {
         std::chrono::steady_clock::time_point started_at;
         std::uint64_t guest_started_at { };
@@ -3033,6 +3121,8 @@ void EmulatorSession::run()
                     } else {
                         if (display_presenter)
                             display_presenter->flush_presentation();
+                        if (!native_code_map_output.empty())
+                            capture_native_code_map_begin();
                         if (!performance_counters().begin_display_window()) {
                             output.marker(
                                 "[control] error: perf window could not begin");
@@ -3092,6 +3182,8 @@ void EmulatorSession::run()
                             output.marker(
                                 "[control] error: perf window could not end");
                         }
+                        write_native_code_map(*display_performance_window,
+                            clock_ended_at);
                         if (display_clock_window) {
                             const auto host_elapsed =
                                 static_cast<std::uint64_t>(

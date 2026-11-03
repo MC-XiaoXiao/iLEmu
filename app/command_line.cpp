@@ -120,7 +120,7 @@ std::string usage()
            "[--baseband-input FILE] [--baseband-output FILE] "
            "[--disable-scheduler-preemption] "
            "[--perf-summary] [--jit-observer-only] [--perf-frame-content] "
-           "[--perf-cpu-phases] "
+           "[--perf-cpu-phases] [--perf-native-map-output FILE] "
            "[--perf-jit-native-lookups] [--executor dynarmic|interpreter|arm64] "
            "[--jit-tiered] "
            "[--jit-compile-mode optimized|baseline] "
@@ -1204,6 +1204,14 @@ int ilemu::run_command_line(int argc, char** argv, SessionHost& host)
         }
         performance_counters().set_native_lookup_diagnostics(
             perf_jit_native_lookups);
+        const auto native_map_output = option(args, "--perf-native-map-output");
+        if (native_map_output && !perf_summary) {
+            throw std::runtime_error {
+                "--perf-native-map-output requires --perf-summary"
+            };
+        }
+        performance_counters().set_native_code_map_output(
+            native_map_output.value_or(""));
         try {
             if (command == "profile") {
                 profile(args, *output);
