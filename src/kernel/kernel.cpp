@@ -1987,7 +1987,7 @@ bool CompatibilityKernel::pending_io_wait_ignores_mach_locked(
 }
 
 bool CompatibilityKernel::pending_io_poll_required_locked(
-    std::size_t processor) const
+    std::size_t processor)
 {
     if (const auto fault = pending_file_page_faults_.find(processor);
         fault != pending_file_page_faults_.end())
@@ -1999,8 +1999,9 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
         shared_state_->io_event_generation_snapshot()) {
         return true;
     }
-    if (cached->second.mach_generation !=
-        shared_state_->mach_queue_generation_snapshot()) {
+    const auto mach_generation =
+        shared_state_->mach_queue_generation_snapshot();
+    if (cached->second.mach_generation != mach_generation) {
         if (const auto kevent = pending_kevents_.find(processor);
             kevent != pending_kevents_.end()) {
             if (kevent_mach_poll_required(kevent->second.queue_fd))
@@ -2029,6 +2030,9 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
         } else if (!pending_io_wait_ignores_mach_locked(processor)) {
             return true;
         }
+        // The scoped observations also cover this unrelated IPC generation.
+        // Retain the pre-check snapshot so a racing enqueue stays visible.
+        cached->second.mach_generation = mach_generation;
     }
     if (const auto deadline = pending_io_deadline_locked(processor);
         deadline && shared_state_->clock.now() >= *deadline) {

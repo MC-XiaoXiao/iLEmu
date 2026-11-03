@@ -949,7 +949,7 @@ private:
     [[nodiscard]] bool append_pending_io_mach_dependencies_locked(
         std::size_t processor, std::uint64_t io_generation);
     [[nodiscard]] bool pending_io_poll_required_locked(
-        std::size_t processor) const;
+        std::size_t processor);
     [[nodiscard]] bool pending_io_wait_ignores_mach_locked(
         std::size_t processor) const;
     void remember_pending_io_not_ready_locked(std::size_t processor,
