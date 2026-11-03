@@ -6,6 +6,7 @@
 // executable backing identities.
 
 #include "foundation/address_space.hpp"
+#include "foundation/shared_file_writeback.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -234,6 +235,7 @@ void AddressSpace::set_file_generation_registry(
 void AddressSpace::share_file_page_cache(const AddressSpace& source)
 {
     file_page_cache_ = source.file_page_cache_;
+    shared_file_writer_ = source.shared_file_writer_;
 }
 
 std::optional<SharedMemoryIdentity> AddressSpace::shared_memory_identity(
@@ -762,39 +764,39 @@ void AddressSpace::unmap_range_locked(
 AddressSpace::FileSyncResult AddressSpace::synchronize_file_mappings(
     std::uint32_t address, std::uint32_t size, bool synchronous)
 {
-    if (size == 0 || range_overflows(address, size))
+    const auto request = prepare_file_mappings_sync(address, size, synchronous);
+    if (!request)
         return FileSyncResult::Unmapped;
+    (*request)->wait();
+    return (*request)->succeeded() ? FileSyncResult::Success : FileSyncResult::IoError;
+}
+
+std::optional<std::shared_ptr<FileWritebackRequest>>
+AddressSpace::prepare_file_mappings_sync(
+    std::uint32_t address, std::uint32_t size, bool synchronous)
+{
+    if (size == 0 || range_overflows(address, size))
+        return std::nullopt;
     const auto first = page_base(address);
     const auto end = page_range_end(address, size);
     auto lock = write_lock();
     if (!vm_map_.accessible(first, end, MemoryPermission::None))
-        return FileSyncResult::Unmapped;
-    return flush_shared_file_pages_locked(first, end, synchronous)
-               ? FileSyncResult::Success
-               : FileSyncResult::IoError;
+        return std::nullopt;
+    return flush_shared_file_pages_locked(first, end, synchronous);
 }
 
-bool AddressSpace::flush_shared_file_pages_locked(
+std::shared_ptr<FileWritebackRequest> AddressSpace::flush_shared_file_pages_locked(
     std::uint32_t address, std::uint64_t end, bool synchronous)
 {
-    bool succeeded = true;
-    std::set<std::shared_ptr<GuestFileIoState>> files;
+    SharedFileWriteback writeback { shared_file_writer_ };
     auto page = pages_->lower_bound(address);
     while (page != pages_->end() && page->first < end) {
         if (page->second.file_writeback && page->second.backing &&
-            page->second.backing->file_backed()) {
-            if (!page->second.backing->flush_file())
-                succeeded = false;
-            if (synchronous)
-                files.insert(page->second.backing->writeback_io_state());
-        }
+            page->second.backing->file_backed())
+            writeback.append(page->second.backing);
         ++page;
     }
-    for (const auto& file : files) {
-        if (!file->synchronize())
-            succeeded = false;
-    }
-    return succeeded;
+    return writeback.finish(synchronous);
 }
 
 void AddressSpace::invalidate_mapping_leases_locked(
@@ -2917,6 +2919,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     });
     result->next_mapping_lease_token_ = next_mapping_lease_token_;
     result->file_page_cache_ = file_page_cache_;
+    result->shared_file_writer_ = shared_file_writer_;
     result->exclusive_write_tracked_pages_ = exclusive_write_tracked_pages_;
     result->exclusive_write_backings_ = exclusive_write_backings_;
     result->exclusive_write_tracking_active_.store(

@@ -1494,7 +1494,8 @@ GuestFileIoState::~GuestFileIoState()
 
 bool GuestFileIoState::synchronize()
 {
-    const std::scoped_lock file_lock { mutex };
+    // Published descriptors are immutable and the caller retains this owner.
+    // A persistence wait must not hold the lazy-page/prefetch mutex.
     if (file_descriptor < 0)
         return false;
     int result;
@@ -1594,6 +1595,8 @@ void GuestPageBacking::materialize() const
         return;
     }
     const auto io_state = file->io_state;
+    const auto& vnode = file->object_identity;
+    const std::scoped_lock pending_lock { vnode->writeback_mutex };
     const std::scoped_lock file_lock { io_state->mutex };
     if (const auto prefetched_page =
             io_state->prefetched_pages.find(file_offset_);
@@ -1641,6 +1644,12 @@ void GuestPageBacking::materialize() const
                 }
                 const auto page_offset =
                     read_start + static_cast<std::uint64_t>(offset);
+                if (const auto pending = vnode->pending_writeback_pages.find(page_offset);
+                    pending != vnode->pending_writeback_pages.end()) {
+                    const auto count = std::min<std::uint64_t>(guest_memory_page_size,
+                        read_size - offset);
+                    std::copy_n(pending->second->begin(), count, page_bytes.begin());
+                }
                 if (page_offset == file_offset_) {
                     bytes = page_bytes;
                 } else if (received > offset) {
@@ -1710,48 +1719,6 @@ std::optional<SharedMemoryIdentity> GuestPageBacking::shared_file_identity(
         return std::nullopt;
     return SharedMemoryIdentity { file_writeback_->object_identity,
         file_offset_ + offset };
-}
-
-bool GuestPageBacking::flush_file()
-{
-    if (!file_writeback_)
-        return true;
-
-    GuestPageBytes snapshot { };
-    {
-        const std::scoped_lock page_lock { mutex_ };
-        snapshot = bytes;
-    }
-
-    const auto file = file_writeback_;
-    const auto io_state = file->io_state;
-    const std::scoped_lock file_lock { io_state->mutex };
-    const auto descriptor = io_state->file_descriptor;
-    if (descriptor < 0)
-        return false;
-
-    std::size_t written = 0;
-    while (written < file_byte_count_) {
-        const auto result = ::pwrite(descriptor,
-            reinterpret_cast<const char*>(snapshot.data()) + written,
-            file_byte_count_ - written,
-            static_cast<off_t>(file_offset_ + written));
-        if (result < 0 && errno == EINTR)
-            continue;
-        if (result <= 0)
-            break;
-        written += static_cast<std::size_t>(result);
-    }
-    const bool complete = written == file_byte_count_;
-    if (written && file->object_identity)
-        file->object_identity->writeback_revision.fetch_add(1, std::memory_order_release);
-    if (complete) {
-        if (const auto registry = file->generation_registry.lock()) {
-            static_cast<void>(registry->publish_descriptor(file->path,
-                descriptor, GuestFileMutationKind::SharedWriteback));
-        }
-    }
-    return complete;
 }
 
 bool FilePageCache::Key::operator<(const Key& other) const
@@ -2470,6 +2437,7 @@ std::size_t FilePageCache::reflect_descriptor_write(int file_descriptor,
                 bytes.begin() + static_cast<std::ptrdiff_t>(source_offset),
                 count,
                 page->bytes.begin() + static_cast<std::ptrdiff_t>(page_offset));
+            page->file_flushed_bytes_.reset();
         }
         page->invalidate_reservation_identity(
             static_cast<std::uint32_t>(page_offset), count);

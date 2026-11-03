@@ -218,6 +218,12 @@ public:
     // and anonymous pages have no persistent writeback obligation.
     [[nodiscard]] FileSyncResult synchronize_file_mappings(
         std::uint32_t address, std::uint32_t size, bool synchronous);
+    [[nodiscard]] std::optional<std::shared_ptr<FileWritebackRequest>>
+    prepare_file_mappings_sync(std::uint32_t address, std::uint32_t size, bool synchronous);
+    void set_shared_file_writer(std::shared_ptr<HostSharedFileWriter> writer)
+    {
+        shared_file_writer_ = std::move(writer);
+    }
     void clear();
     class RetiredMappings;
     // Flush shared data and revoke live pointers/leases before detaching VM
@@ -572,7 +578,7 @@ private:
     [[nodiscard]] bool fault_file_pages(
         std::uint32_t address, std::size_t size);
     void unmap_file_mappings_locked(std::uint32_t address, std::uint64_t end);
-    bool flush_shared_file_pages_locked(
+    std::shared_ptr<FileWritebackRequest> flush_shared_file_pages_locked(
         std::uint32_t address, std::uint64_t end, bool synchronous = false);
     void map_range_locked(std::uint32_t address, std::uint64_t end,
         MemoryPermission permissions, VmMappingAttributes attributes);
@@ -719,6 +725,7 @@ private:
     std::map<std::uint64_t, MappingLease> mapping_leases_;
     std::uint64_t next_mapping_lease_token_ { 1 };
     std::shared_ptr<FilePageCache> file_page_cache_;
+    std::shared_ptr<HostSharedFileWriter> shared_file_writer_;
     std::function<void()> exclusive_write_observer_;
 };
 

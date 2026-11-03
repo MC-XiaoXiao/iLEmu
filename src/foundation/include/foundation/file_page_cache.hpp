@@ -240,6 +240,10 @@ struct GuestFileIoState {
     // A shared-file mapping keeps this descriptor open so writeback remains
     // attached to the original vnode/file object after pathname replacement.
     mutable std::map<std::uint64_t, GuestPageBytes> prefetched_pages;
+    // The vnode's logical bytes remain visible to lazy faults while immutable
+    // writeback snapshots are queued. Independent of descriptor/prefetch I/O.
+    mutable std::mutex writeback_mutex;
+    mutable std::map<std::uint64_t, std::shared_ptr<const GuestPageBytes>> pending_writeback_pages;
 };
 
 struct GuestFileBacking {
@@ -276,6 +280,9 @@ struct GuestFileBacking {
 };
 
 class FilePageCache;
+class SharedFileWriteback;
+class HostSharedFileWriter;
+class FileWritebackRequest;
 
 // A pinned file range awaiting identity verification. A pending preparation
 // does not expose a backing; completion publishes only a fully validated one.
@@ -369,13 +376,12 @@ struct GuestPageBacking {
     [[nodiscard]] bool file_backed() const;
     [[nodiscard]] std::optional<SharedMemoryIdentity> shared_file_identity(
         std::uint32_t offset) const;
-    // Persists a MAP_SHARED page without affecting private file mappings.
-    [[nodiscard]] bool flush_file();
     [[nodiscard]] std::shared_ptr<GuestFileIoState> writeback_io_state() const;
 
 private:
     friend class FilePageCache;
     friend class FileMappingPreparation;
+    friend class SharedFileWriteback;
 
     mutable std::mutex mutex_;
     mutable std::shared_mutex instruction_mutex_;
@@ -383,6 +389,8 @@ private:
     std::shared_ptr<GuestFileBacking> file_writeback_;
     std::uint64_t file_offset_ { };
     std::uint32_t file_byte_count_ { };
+    std::shared_ptr<const GuestPageBytes> file_flushed_bytes_;
+    std::shared_ptr<FileWritebackRequest> file_writeback_request_;
     std::atomic<std::uint64_t> reservation_identity_ { };
     using ReservationGranules = std::array<std::atomic<std::uint64_t>,
         guest_memory_page_size / guest_exclusive_granule_size>;
