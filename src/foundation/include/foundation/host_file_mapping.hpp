@@ -10,7 +10,8 @@
 namespace ilemu {
 
 // Cold file identities are mandatory I/O, independent of optional compilation.
-// The worker never accesses guest memory or publishes guest mappings.
+// A separate lane keeps full-file hashing off the warm preparation queue.
+// Workers never access guest memory or publish guest mappings.
 class HostFileMappingPreparer {
 public:
     ~HostFileMappingPreparer();
@@ -28,6 +29,7 @@ private:
         std::make_shared<std::atomic<std::size_t>>(0)
     };
     HostResourceController worker_;
+    HostResourceController identity_worker_;
 };
 
 } // namespace ilemu

@@ -2170,6 +2170,7 @@ std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
     }
     auto preparation = std::make_shared<FileMappingPreparation>();
     const auto cached_identity = content_identity.has_value();
+    preparation->requires_identity_ = !cached_identity;
     preparation->completion_ =
         [this, path, file_offset, size, expected_content_identity,
             immutable_snapshot = std::move(immutable_snapshot),

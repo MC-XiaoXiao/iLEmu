@@ -293,6 +293,10 @@ public:
         std::uint64_t file_offset, std::uint32_t size, int source_descriptor = -1,
         bool defer_completion = false);
     [[nodiscard]] bool ready() const noexcept;
+    [[nodiscard]] bool requires_identity() const noexcept
+    {
+        return requires_identity_;
+    }
     [[nodiscard]] std::optional<std::shared_ptr<GuestFileBacking>> result() const;
     void complete();
     // Serial kernel boundary releases the retained admission ticket.
@@ -308,6 +312,7 @@ private:
     std::function<std::shared_ptr<GuestFileBacking>()> completion_;
     std::shared_ptr<GuestFileBacking> result_;
     std::shared_ptr<void> admission_;
+    bool requires_identity_ { };
     std::atomic_flag started_ { };
     std::atomic<bool> ready_ { false };
 };

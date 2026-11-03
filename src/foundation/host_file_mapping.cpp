@@ -23,6 +23,7 @@ struct HostFileMappingPreparer::Admission {
 
 HostFileMappingPreparer::~HostFileMappingPreparer()
 {
+    identity_worker_.wait_idle();
     worker_.wait_idle();
 }
 
@@ -39,7 +40,9 @@ HostFileMappingPreparer::prepare(
         std::move(cache), path, file_offset, size, source_descriptor, true);
     if (preparation) {
         preparation->retain_admission(admission);
-        const auto task = worker_.submit(HostWorkKind::Maintenance, std::nullopt,
+        auto& worker =
+            preparation->requires_identity() ? identity_worker_ : worker_;
+        const auto task = worker.submit(HostWorkKind::Maintenance, std::nullopt,
             [pending = std::weak_ptr { preparation },
                 admission = std::move(admission)] {
                 if (auto preparation = pending.lock())
