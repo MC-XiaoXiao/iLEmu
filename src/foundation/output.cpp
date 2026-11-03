@@ -32,6 +32,7 @@ namespace {
             "[perf-clock]",
             "[perf-artifact]",
             "[perf-artifact-validation]",
+            "[perf-reclamation]",
             "[perf-jit-profile]",
             "[jit-tiered]",
             "[precompile]",

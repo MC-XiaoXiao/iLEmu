@@ -149,7 +149,7 @@ struct Runtime {
     RuntimeWorkEpoch work_epoch;
     std::shared_ptr<JitWorkObservationSignal::Activity> activation_activity;
     std::optional<std::chrono::steady_clock::time_point>
-        execution_reclaim_after;
+        retirement_after;
     bool fresh_spawn_address_space { };
     bool resume_after_execution_prepare { };
     bool image_activation_pending { };
@@ -262,124 +262,6 @@ public:
 
 private:
     std::unordered_map<std::uint32_t, Runtime*> runtimes_;
-};
-
-class RuntimeReaper {
-public:
-    RuntimeReaper()
-        : worker_ { [this] { worker_loop(); } }
-    {
-    }
-    RuntimeReaper(const RuntimeReaper&) = delete;
-    RuntimeReaper& operator=(const RuntimeReaper&) = delete;
-
-    ~RuntimeReaper() { finish(); }
-
-    // During execution, a full reaper leaves ownership with the coordinator.
-    // One queued resource plus one being destroyed bounds detached work.
-    bool try_retire(std::unique_ptr<Runtime>& runtime, RuntimeIndex& index)
-    {
-        std::lock_guard lock { mutex_ };
-        if (!pending_.empty())
-            return false;
-        index.erase(*runtime);
-        enqueue_locked(std::move(runtime));
-        return true;
-    }
-
-    bool try_retire_execution_resources(CpuCluster& cpus)
-    {
-        std::lock_guard lock { mutex_ };
-        if (!pending_.empty())
-            return false;
-        enqueue_locked(cpus.release_execution_resources());
-        return true;
-    }
-
-    void clear_address_space(AddressSpace& memory)
-    {
-        {
-            std::lock_guard lock { mutex_ };
-            if (pending_.empty()) {
-                enqueue_locked(memory.retire_mappings());
-                return;
-            }
-        }
-        memory.clear();
-    }
-
-    // Shutdown only, after guest execution and kernel commits have stopped.
-    void drain(std::unique_ptr<Runtime> runtime)
-    {
-        std::unique_lock lock { mutex_ };
-        idle_.wait(lock, [this] { return pending_.empty(); });
-        enqueue_locked(std::move(runtime));
-    }
-
-    void finish()
-    {
-        {
-            std::lock_guard lock { mutex_ };
-            if (joined_)
-                return;
-            stopping_ = true;
-        }
-        work_available_.notify_one();
-        {
-            std::unique_lock lock { mutex_ };
-            idle_.wait(lock, [this] { return pending_.empty() && !active_; });
-        }
-        if (worker_.joinable())
-            worker_.join();
-        std::lock_guard lock { mutex_ };
-        joined_ = true;
-    }
-
-private:
-    using RetiredResource = std::variant<std::monostate,
-        std::unique_ptr<Runtime>, std::shared_ptr<CpuExecutionPool>,
-        std::shared_ptr<AddressSpace::RetiredMappings>>;
-
-    template <typename Resource> void enqueue_locked(Resource resource)
-    {
-        if (!resource)
-            return;
-        pending_.push_back(std::move(resource));
-        work_available_.notify_one();
-    }
-
-    void worker_loop()
-    {
-        std::unique_lock lock { mutex_ };
-        for (;;) {
-            work_available_.wait(
-                lock, [this] { return stopping_ || !pending_.empty(); });
-            if (pending_.empty()) {
-                if (stopping_)
-                    break;
-                continue;
-            }
-            auto resource = std::move(pending_.front());
-            pending_.pop_front();
-            active_ = true;
-            idle_.notify_all();
-            lock.unlock();
-            resource = std::monostate { };
-            lock.lock();
-            active_ = false;
-            idle_.notify_all();
-        }
-        idle_.notify_all();
-    }
-
-    std::mutex mutex_;
-    std::condition_variable work_available_;
-    std::condition_variable idle_;
-    std::deque<RetiredResource> pending_;
-    bool active_ { };
-    bool stopping_ { };
-    bool joined_ { };
-    std::thread worker_;
 };
 
 } // namespace ilemu::runtime_detail

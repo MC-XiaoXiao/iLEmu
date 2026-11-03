@@ -20,6 +20,7 @@
 #include "jit_diagnostics.hpp"
 #include "jit_policy.hpp"
 #include "process.hpp"
+#include "runtime_reaper.hpp"
 #include "resource_policy.hpp"
 #include "runtime/live_button_scheduler.hpp"
 #include "runtime/live_touch_scheduler.hpp"
@@ -3487,9 +3488,9 @@ void EmulatorSession::run()
         // the dead task's translated host code has no guest-visible lifetime.
         // Give the compositor a short, generic grace interval before background
         // reclamation: destroying a large JIT immediately after Home otherwise
-        // competes with the exit animation for host CPU. The FIFO reaper
-        // destroys the pool before any later retirement of the owning Runtime,
-        // preserving the AddressSpace and exclusive-monitor lifetimes.
+        // competes with the exit animation for host CPU. Retire the entire
+        // Runtime together so its CPU, AddressSpace and exclusive monitor keep
+        // their normal ownership order without a second queue admission.
         constexpr auto execution_reclaim_grace =
             std::chrono::milliseconds { 1500 };
         const auto activation_prepare_lead =
@@ -3559,23 +3560,13 @@ void EmulatorSession::run()
                     !runtime->execution_prepare_task->finished()) {
                     continue;
                 }
-                if (!runtime->execution_reclaim_after) {
+                if (!runtime->retirement_after) {
                     if (runtime->kernel->process().termination_signal != 0)
                         diagnostics.threads(std::to_string(
                             runtime->kernel->process().pid));
-                    runtime->execution_reclaim_after =
+                    runtime->retirement_after =
                         reclaim_now + execution_reclaim_grace;
                 }
-                if (reclaim_now < *runtime->execution_reclaim_after ||
-                    scheduler.process_runnable_count(
-                        runtime->kernel->process().pid) != 0) {
-                    continue;
-                }
-                if (!precompile_finished(*runtime))
-                    continue;
-                account_runtime_jit_memory(*runtime);
-                if (runtime_reaper.try_retire_execution_resources(*runtime->cpus))
-                    runtime->execution_reclaim_after.reset();
             }
         }
         for (auto& parent : runtimes) {
@@ -3594,7 +3585,12 @@ void EmulatorSession::run()
         for (auto runtime = runtimes.begin(); runtime != runtimes.end();) {
             if (runtime->get() != initial_runtime &&
                 (*runtime)->kernel->process().exited &&
-                !(*runtime)->cpus->has_execution_resources()) {
+                (*runtime)->retirement_after &&
+                reclaim_now >= *(*runtime)->retirement_after &&
+                scheduler.process_runnable_count(
+                    (*runtime)->kernel->process().pid) == 0 &&
+                (!(*runtime)->execution_prepare_task ||
+                    (*runtime)->execution_prepare_task->finished())) {
                 if (runtime->get() == display_scanout_owner)
                     display_scanout_owner = nullptr;
                 if (!precompile_finished(**runtime)) {
@@ -3603,10 +3599,8 @@ void EmulatorSession::run()
                 }
                 account_runtime_jit_memory(**runtime);
                 guest_deadlines.erase((*runtime)->kernel->process().pid);
-                if (!runtime_reaper.try_retire(*runtime, runtime_index)) {
-                    ++runtime;
-                    continue;
-                }
+                runtime_index.erase(**runtime);
+                runtime_reaper.retire(std::move(*runtime));
                 runtime = runtimes.erase(runtime);
             } else {
                 ++runtime;
@@ -5557,10 +5551,19 @@ void EmulatorSession::run()
     for (auto& runtime : runtimes) {
         account_runtime_jit_memory(*runtime, true);
         runtime_index.erase(*runtime);
-        runtime_reaper.drain(std::move(runtime));
+        runtime_reaper.retire(std::move(runtime));
     }
     runtimes.clear();
     runtime_reaper.finish();
+    if (report_performance) {
+        const auto& reclamation = runtime_reaper.statistics();
+        output.line("[perf-reclamation] runtimes=" +
+            std::to_string(reclamation.runtimes) + " mappings=" +
+            std::to_string(reclamation.mappings) + " synchronous-clears=" +
+            std::to_string(reclamation.synchronous_clears) + " peak-runtimes=" +
+            std::to_string(reclamation.peak_runtimes) + " drain-ns=" +
+            std::to_string(reclamation.drain_nanoseconds));
+    }
     if (activation != LockdownActivation::Preserve) {
         // Native lockdownd may publish its runtime decision back into data_ark
         // during boot. Reapply the explicit simulator profile only after every
