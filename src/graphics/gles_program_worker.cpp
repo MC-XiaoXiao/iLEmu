@@ -84,6 +84,16 @@ namespace {
             thread_.join();
         }
 
+        // Called on the render worker. The first Guest backend takes ownership
+        // of the context prepared before this queue starts serving frames.
+        std::unique_ptr<GlesProgramRenderer> create_program_renderer(
+            std::string* error)
+        {
+            if (startup_renderer_)
+                return std::move(startup_renderer_);
+            return create_gles_program_renderer(error);
+        }
+
         bool capacity(std::size_t bytes, std::size_t command_bytes = 0)
         {
             std::lock_guard lock { credits_->mutex };
@@ -257,6 +267,10 @@ namespace {
         };
         void run()
         {
+            // Driver/display initialization can take several display periods.
+            // Do it with the first host graphics work, before a Guest shader
+            // call has to wait for it. Reuse the same factory and worker.
+            startup_renderer_ = create_gles_program_renderer(nullptr);
             for (;;) {
                 Command command;
                 {
@@ -295,6 +309,7 @@ namespace {
             }
             backends_.clear();
             owners_.fill(nullptr);
+            startup_renderer_.reset();
         }
 
         void retire_ready_backends()
@@ -349,6 +364,7 @@ namespace {
             }
         }
 
+        std::unique_ptr<GlesProgramRenderer> startup_renderer_;
         std::array<std::shared_ptr<RendererOwnerRecord>, owner_limit> owners_;
         std::size_t owners_used_ { }, owners_retiring_ { };
         std::shared_ptr<Credits> credits_ { std::make_shared<Credits>() };
@@ -688,7 +704,7 @@ std::unique_ptr<GlesProgramWorker> GlesProgramWorker::begin_create(
             Initialization& info) {
             // Publish retention before anything can create a driver object.
             executor->retain(backend);
-            backend->renderer = create_gles_program_renderer(&info.error);
+            backend->renderer = executor->create_program_renderer(&info.error);
             if (backend->renderer)
                 info.name = std::string { backend->renderer->name() };
             if (info.name.size() > initialization_bytes - sizeof(info) ||
