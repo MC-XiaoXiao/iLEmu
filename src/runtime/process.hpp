@@ -296,6 +296,18 @@ public:
         return true;
     }
 
+    void clear_address_space(AddressSpace& memory)
+    {
+        {
+            std::lock_guard lock { mutex_ };
+            if (pending_.empty()) {
+                enqueue_locked(memory.retire_mappings());
+                return;
+            }
+        }
+        memory.clear();
+    }
+
     // Shutdown only, after guest execution and kernel commits have stopped.
     void drain(std::unique_ptr<Runtime> runtime)
     {
@@ -325,7 +337,8 @@ public:
 
 private:
     using RetiredResource = std::variant<std::monostate,
-        std::unique_ptr<Runtime>, std::shared_ptr<CpuExecutionPool>>;
+        std::unique_ptr<Runtime>, std::shared_ptr<CpuExecutionPool>,
+        std::shared_ptr<AddressSpace::RetiredMappings>>;
 
     template <typename Resource> void enqueue_locked(Resource resource)
     {

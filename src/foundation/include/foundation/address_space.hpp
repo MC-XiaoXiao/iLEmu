@@ -219,6 +219,10 @@ public:
     [[nodiscard]] FileSyncResult synchronize_file_mappings(
         std::uint32_t address, std::uint32_t size, bool synchronous);
     void clear();
+    class RetiredMappings;
+    // Flush shared data and revoke live pointers/leases before detaching VM
+    // ownership. The returned object only releases already-retired storage.
+    [[nodiscard]] std::shared_ptr<RetiredMappings> retire_mappings();
     struct ProtectResult {
         bool succeeded { };
         bool protection_failure { };

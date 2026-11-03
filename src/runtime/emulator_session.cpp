@@ -1901,7 +1901,7 @@ void EmulatorSession::run()
                     PerformanceLatencyScope latency {
                         PerfLatencyKind::SpawnMemoryClear
                     };
-                    child_runtime->memory->clear();
+                    runtime_reaper.clear_address_space(*child_runtime->memory);
                 }
                 LoadedProcess loaded;
                 {
@@ -4292,7 +4292,7 @@ void EmulatorSession::run()
                 try {
                     catalog_maintenance.poll(*initial_runtime->kernel, true);
                     debug_target.notify_exec(runtime.kernel->process().pid);
-                    runtime.memory->clear();
+                    runtime_reaper.clear_address_space(*runtime.memory);
                     ProcessLoader exec_loader { rootfs, *runtime.memory,
                         guest_architecture, session_catalog.index(),
                         darwin_version };

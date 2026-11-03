@@ -813,23 +813,37 @@ void AddressSpace::invalidate_mapping_leases_locked(
     });
 }
 
+class AddressSpace::RetiredMappings {
+public:
+    VmMap vm_map;
+    VmMap translation_profile_map;
+    std::shared_ptr<PageMap> pages { std::make_shared<PageMap>() };
+    std::map<std::uint32_t, FileMapping> file_mappings;
+    std::array<std::unique_ptr<PageLookupChunk>, page_lookup_chunk_count> page_lookup;
+    std::array<std::shared_ptr<PagePermissionChunk>, page_permission_chunk_count> page_permissions;
+    std::array<std::unique_ptr<PagePermissionChunk>, page_permission_chunk_count> vm_translations;
+};
+
 void AddressSpace::clear()
 {
+    static_cast<void>(retire_mappings());
+}
+
+std::shared_ptr<AddressSpace::RetiredMappings> AddressSpace::retire_mappings()
+{
+    auto retired = std::make_shared<RetiredMappings>();
     auto lock = write_lock();
-    flush_shared_file_pages_locked(0,
-        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) +
-            1U);
-    vm_map_.clear();
-    translation_profile_map_.clear();
-    pages_ = std::make_shared<PageMap>();
+    flush_shared_file_pages_locked(0, std::uint64_t { 1 } << 32U);
+    // Revoke every live lookup before the serial commit can publish a new VM.
+    // JIT table addresses remain stable because executors retain those tables.
+    std::swap(vm_map_, retired->vm_map);
+    std::swap(translation_profile_map_, retired->translation_profile_map);
+    pages_.swap(retired->pages);
+    file_mappings_.swap(retired->file_mappings);
+    page_lookup_.swap(retired->page_lookup);
+    page_permissions_.swap(retired->page_permissions);
+    vm_translations_.swap(retired->vm_translations);
     resident_pages_ = { };
-    file_mappings_.clear();
-    for (auto& chunk : page_lookup_)
-        chunk.reset();
-    for (auto& chunk : page_permissions_)
-        chunk.reset();
-    for (auto& chunk : vm_translations_)
-        chunk.reset();
     clear_jit_page_table_locked();
     exclusive_write_tracked_pages_.clear();
     exclusive_guard_stamps_.clear();
@@ -839,6 +853,7 @@ void AddressSpace::clear()
     write_tracked_pages_.clear();
     invalidate_mapping_leases_locked(0, std::uint64_t { 1 } << 32U);
     bump_executable_content_generation_locked();
+    return retired;
 }
 
 bool AddressSpace::inherit(std::uint32_t address, std::uint32_t size,
