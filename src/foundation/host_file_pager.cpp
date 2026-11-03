@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "foundation/host_file_pager.hpp"
+#include "foundation/performance.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -32,6 +33,7 @@ void FilePageRead::read()
 
 void FilePageRead::commit()
 {
+    const PerformanceLatencyScope timing { PerfLatencyKind::VmPageCommit };
     if (consumed_)
         return;
     consumed_ = true;
@@ -39,6 +41,7 @@ void FilePageRead::commit()
     if (generation_ &&
         generation_ == file_descriptor_generation(file_->io_state->file_descriptor) &&
         writeback_revision_ == vnode->writeback_revision.load(std::memory_order_acquire)) {
+        const PerformanceLatencyScope publish { PerfLatencyKind::VmCachePublish };
         for (std::size_t offset = 0; offset < bytes_.size();
              offset += guest_memory_page_size) {
             const auto count = static_cast<std::uint32_t>(

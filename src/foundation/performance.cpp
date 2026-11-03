@@ -3283,6 +3283,18 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind)
         return "scheduler-preemption-request-return";
     case PerfLatencyKind::MachMessageSendToReceive:
         return "mach-message-send-to-receive";
+    case PerfLatencyKind::VmMappingCommit:
+        return "vm-mapping-commit";
+    case PerfLatencyKind::VmPageCommit:
+        return "vm-page-commit";
+    case PerfLatencyKind::VmCachePublish:
+        return "vm-cache-publish";
+    case PerfLatencyKind::VmCachePrune:
+        return "vm-cache-prune";
+    case PerfLatencyKind::VmFileMap:
+        return "vm-file-map";
+    case PerfLatencyKind::VmFileFault:
+        return "vm-file-fault";
     case PerfLatencyKind::Count:
         break;
     }
@@ -3490,6 +3502,14 @@ std::string format_performance_summary(const PerformanceSnapshot& snapshot)
              << latency.maximum_nanoseconds << '/' << latency.over_16_7ms << '/'
              << latency.over_20ms << '/' << latency.over_33_3ms << '/'
              << latency.over_50ms;
+    }
+    text << " vm-total-ns=";
+    for (auto index = static_cast<std::size_t>(PerfLatencyKind::VmMappingCommit);
+         index <= static_cast<std::size_t>(PerfLatencyKind::VmFileFault); ++index) {
+        if (index != static_cast<std::size_t>(PerfLatencyKind::VmMappingCommit))
+            text << ',';
+        text << perf_latency_kind_name(static_cast<PerfLatencyKind>(index))
+             << ':' << snapshot.latencies[index].total_nanoseconds;
     }
     const auto& jit_demand = snapshot.latencies[static_cast<std::size_t>(
         PerfLatencyKind::JitDemandTranslation)];

@@ -153,6 +153,12 @@ enum class PerfLatencyKind : std::uint8_t {
     SchedulerRunnableToDispatch,
     SchedulerPreemptionRequestToReturn,
     MachMessageSendToReceive,
+    VmMappingCommit,
+    VmPageCommit,
+    VmCachePublish,
+    VmCachePrune,
+    VmFileMap,
+    VmFileFault,
     Count,
 };
 

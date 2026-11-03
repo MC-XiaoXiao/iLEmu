@@ -6,6 +6,7 @@
 // and writeback identity.
 
 #include "foundation/file_page_cache.hpp"
+#include "foundation/performance.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -1866,6 +1867,7 @@ std::shared_ptr<GuestPageBacking> FilePageCache::find_page_locked(
 
 void FilePageCache::prune_mutable_pages_locked()
 {
+    const PerformanceLatencyScope timing { PerfLatencyKind::VmCachePrune };
     std::erase_if(mutable_pages_,
         [](const auto& entry) { return entry.second.expired(); });
     mutable_page_insertions_since_prune_ = 0;
@@ -1971,11 +1973,13 @@ void FileMappingPreparation::complete(std::size_t prepare_bytes)
 
 void FileMappingPreparation::commit_pages(bool shared_vnode)
 {
+    const PerformanceLatencyScope timing { PerfLatencyKind::VmMappingCommit };
     if (!prepared_bytes_.empty()) {
         struct stat status { };
         const auto& file = result_;
         if (::fstat(file->io_state->file_descriptor, &status) == 0 &&
             generation_from_stat(status) == file->generation) {
+            const PerformanceLatencyScope publish { PerfLatencyKind::VmCachePublish };
             for (std::size_t offset = 0; offset < prepared_bytes_.size();
                 offset += guest_memory_page_size) {
                 const auto count = static_cast<std::uint32_t>(

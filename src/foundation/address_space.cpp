@@ -1123,6 +1123,7 @@ bool AddressSpace::map_file_backing(std::uint32_t address, std::uint32_t size,
     std::shared_ptr<FilePageCache> cache, PageMappingMode mode,
     VmMappingAttributes attributes)
 {
+    const PerformanceLatencyScope timing { PerfLatencyKind::VmFileMap };
     if (!backing || !cache || size == 0 || range_overflows(address, size) ||
         address % page_size != 0 || backing->first_offset % page_size != 0 ||
         backing->end_offset <= backing->first_offset ||
@@ -1550,6 +1551,7 @@ bool AddressSpace::range_needs_file_fault_locked(
 
 bool AddressSpace::fault_file_pages(std::uint32_t address, std::size_t size)
 {
+    const PerformanceLatencyScope timing { PerfLatencyKind::VmFileFault };
     if (size == 0 || range_overflows(address, size))
         return size == 0;
     auto lock = write_lock();
