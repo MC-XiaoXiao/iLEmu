@@ -11,6 +11,7 @@
 
 #pragma once
 #include <network/socket_receive_target.hpp>
+#include <network/host_socket_events.hpp>
 
 #include <array>
 #include <atomic>
@@ -102,6 +103,9 @@ public:
     [[nodiscard]] HostSocketResult shutdown(std::uint32_t how);
     [[nodiscard]] bool readable() const;
     [[nodiscard]] bool writable() const;
+    [[nodiscard]] std::uint8_t readiness() const;
+    [[nodiscard]] std::shared_ptr<HostSocketEvents::Subscription> observe(
+        std::uint8_t events) const;
 
     [[nodiscard]] HostNetworkPolicy policy() const { return policy_; }
     [[nodiscard]] std::uint32_t darwin_family() const { return darwin_family_; }
@@ -124,6 +128,7 @@ private:
     [[nodiscard]] HostSocketResult accept_locked();
 
     int descriptor_ { -1 };
+    std::uint64_t event_resource_ {};
     mutable std::mutex accept_mutex_;
     std::unique_ptr<std::deque<HostSocketResult>> preserved_accepts_;
     bool listener_shutdown_ {};

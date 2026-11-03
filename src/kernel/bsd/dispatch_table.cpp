@@ -72,11 +72,13 @@ BsdDispatchTable::Adapter BsdDispatchTable::adapter_for(
         };
     case Handler::BsdEvents:
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
-            static_cast<void>(kernel.dispatch_bsd_events(cpu, number));
+            if (!kernel.defer_host_readiness(cpu, number))
+                static_cast<void>(kernel.dispatch_bsd_events(cpu, number));
         };
     case Handler::BsdKqueue:
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
-            static_cast<void>(kernel.dispatch_bsd_kqueue(cpu, number));
+            if (!kernel.defer_host_readiness(cpu, number))
+                static_cast<void>(kernel.dispatch_bsd_kqueue(cpu, number));
         };
     case Handler::BsdSecurity:
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {

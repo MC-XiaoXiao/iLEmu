@@ -136,6 +136,9 @@ void CompatibilityKernel::release_process_descriptors()
     posix_semaphore_descriptors_.clear();
     baseband_open_descriptions_.clear();
     bpf_descriptors_.clear();
+    host_socket_watches_.clear();
+    pending_host_readiness_.clear();
+    closed_host_socket_waits_.clear();
     host_sockets_.clear();
     pending_host_writes_.clear();
     pending_file_renames_.clear();

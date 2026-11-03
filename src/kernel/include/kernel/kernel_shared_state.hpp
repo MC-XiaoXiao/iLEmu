@@ -22,6 +22,7 @@
 #include <kernel/guest_read_buffer.hpp>
 #include <kernel/guest_receive_message.hpp>
 #include <kernel/guest_socket_address_output.hpp>
+#include <network/host_socket_events.hpp>
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/ioaccel_event_abi.hpp"
@@ -1503,8 +1504,7 @@ struct KernelSharedState {
     std::optional<std::uint64_t> shared_timer_deadline_cache;
     bool shared_timer_deadline_cache_valid { };
     // Non-Mach readiness producers advance this generation at the mutation
-    // boundary. Asynchronous host descriptors remain protected by their
-    // bounded wall-clock probe cadence.
+    // boundary. Host socket notifications carry their own producer generation.
     std::atomic_uint64_t io_event_generation { 1 };
 
     // The caller holds mach_mutex. Centralizing enqueue makes it impossible for
@@ -1624,6 +1624,7 @@ struct KernelSharedState {
     [[nodiscard]] std::uint64_t io_event_generation_snapshot() const
     {
         return io_event_generation.load(std::memory_order_acquire) +
+               HostSocketEvents::instance().generation() +
                guest_file_generation_registry->mutation_generation();
     }
     // launchd remains the authority for the bootstrap namespace. These caches

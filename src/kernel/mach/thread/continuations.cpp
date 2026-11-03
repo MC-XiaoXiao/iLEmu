@@ -67,6 +67,9 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     pending_kevents_.erase(processor);
     pending_recvmsgs_.erase(processor);
     pending_socket_reads_.erase(processor);
+    pending_host_readiness_.erase(processor);
+    host_socket_watches_.erase(processor);
+    closed_host_socket_waits_.erase(processor);
     pending_host_connects_.erase(processor);
     pending_host_accepts_.erase(processor);
     pending_host_writes_.erase(processor);

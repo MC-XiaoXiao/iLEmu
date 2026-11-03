@@ -1025,6 +1025,9 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_host_connects_.clear();
     pending_host_accepts_.clear();
     pending_host_writes_.clear();
+    pending_host_readiness_.clear();
+    host_socket_watches_.clear();
+    closed_host_socket_waits_.clear();
     pending_file_renames_.clear();
     pending_filesystem_dispatches_.clear();
     pending_file_mappings_.clear();
@@ -1656,6 +1659,7 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
             shared_state_->io_event_generation_snapshot();
         const auto mach_generation =
             shared_state_->mach_queue_generation_snapshot();
+        HostSocketEvents::instance().commit();
         delivered = deliver_pending_io_locked(cpu);
         if (delivered) {
             pending_io_poll_cache_.erase(processor);
@@ -1681,6 +1685,10 @@ std::vector<std::size_t>
 CompatibilityKernel::pending_event_poll_candidates()
 {
     std::lock_guard lock { mutex_ };
+    // Capture before committing notifications. A publication racing the
+    // commit must remain newer than any negative wait observation below.
+    const auto io_generation = shared_state_->io_event_generation_snapshot();
+    HostSocketEvents::instance().commit();
     service_completed_file_renames();
     service_file_io();
     opengles_hle_.service_graphics_completions(!process_.exited);
@@ -1694,13 +1702,13 @@ CompatibilityKernel::pending_event_poll_candidates()
         else
             core_surface_hle_.discard_default_scanout();
     }
-    const auto io_generation = shared_state_->io_event_generation_snapshot();
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
     // A Mach message can be enqueued by another task after every workqueue
     // worker has parked. Redrive the process-private kqueue on that transition
     // so EVFILT_MACHPORT can schedule its libpthread event worker.
-    if (pending_event_poll_mach_generation_ != mach_generation &&
+    if ((pending_event_poll_mach_generation_ != mach_generation ||
+            pending_event_poll_io_generation_ != io_generation) &&
         kqueues_.contains(darwin::kqueue::workqueue_descriptor))
         static_cast<void>(request_workqueue_kevents(nullptr));
     const auto host_now = std::chrono::steady_clock::now();
@@ -1907,6 +1915,7 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_mach_receives_.contains(processor) ||
            pending_record_locks_.contains(processor) ||
            pending_flocks_.contains(processor) ||
+           pending_host_readiness_.contains(processor) ||
            pending_host_connects_.contains(processor) ||
            pending_host_accepts_.contains(processor) ||
            pending_host_writes_.contains(processor) ||
@@ -1933,6 +1942,7 @@ bool CompatibilityKernel::has_pending_event_locked(
 void CompatibilityKernel::refresh_pending_event_processor_locked(
     std::size_t processor, const BsdSyscallContext* entry)
 {
+    refresh_host_socket_watches(processor);
     const auto event = has_pending_event_locked(processor);
     const auto blocked = event || pending_waits_.contains(processor);
     // Reuse the continuation walk: ordinary BSD calls retain no snapshot or
@@ -2140,9 +2150,6 @@ bool CompatibilityKernel::pending_io_requires_host_poll_locked(
         pending_file_mappings_.contains(processor) ||
         pending_file_renames_.contains(processor) ||
         pending_filesystem_dispatches_.contains(processor) ||
-        pending_host_connects_.contains(processor) ||
-        pending_host_accepts_.contains(processor) ||
-        pending_host_writes_.contains(processor) ||
         pending_baseband_writes_.contains(processor)) {
         return true;
     }
@@ -2228,6 +2235,28 @@ void CompatibilityKernel::complete_timer(Cpu& cpu, const PendingTimer& pending,
 
 bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
 {
+    if (const auto result = deliver_host_readiness(cpu))
+        return *result;
+    if (closed_host_socket_waits_.erase(cpu.processor_id())) {
+        const auto processor = cpu.processor_id();
+        pending_host_connects_.erase(processor);
+        pending_host_accepts_.erase(processor);
+        pending_socket_reads_.erase(processor);
+        pending_recvmsgs_.erase(processor);
+        bsd_error(cpu, 9U);
+        cpu.clear_halt();
+        process_.waiting_for_events = false;
+        return true;
+    }
+    // Another guest thread can change a watched kqueue or consume a shared
+    // socket before this waiter is selected. Subscribe to its current resource
+    // versions before allowing readiness or a timeout to complete the wait.
+    refresh_host_socket_watches(cpu.processor_id());
+    if (const auto watches = host_socket_watches_.find(cpu.processor_id());
+        watches != host_socket_watches_.end() &&
+        !std::all_of(watches->second.begin(), watches->second.end(),
+            [](const auto& watch) { return watch.subscription->sampled(); }))
+        return false;
     bool timer_topology_changed = false;
     for (auto event = scheduled_wifi_driver_events_.begin();
         event != scheduled_wifi_driver_events_.end();) {
@@ -2311,6 +2340,10 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     }
     if (const auto pending = pending_host_accepts_.find(cpu.processor_id());
         pending != pending_host_accepts_.end()) {
+        if (const auto host = host_sockets_.find(pending->second.fd);
+            host != host_sockets_.end() && !socket_defunct(pending->second.fd) &&
+            !host->second->readable())
+            return false;
         if (!complete_host_accept(cpu, pending->second.fd, pending->second.output))
             return false;
         pending_host_accepts_.erase(pending);
@@ -2337,6 +2370,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         } else if (options && options->defunct()) {
             error = darwin::error::broken_pipe;
         } else {
+            if (!pending->second.socket->writable())
+                return false;
             const auto sent = pending->second.socket->send(
                 pending->second.bytes, pending->second.destination);
             if (sent.status == HostSocketStatus::WouldBlock)
@@ -2533,6 +2568,15 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
                     static_cast<std::uint32_t>(word_index * 32U + bit);
                 if (fd >= pending->second.descriptor_count)
                     continue;
+                const auto requested = (pending->second.read_words[word_index] |
+                    pending->second.write_words[word_index]) & (1U << bit);
+                if (requested && !descriptor_valid(fd)) {
+                    bsd_error(cpu, ebadf);
+                    pending_selects_.erase(pending);
+                    process_.waiting_for_events = false;
+                    cpu.clear_halt();
+                    return true;
+                }
                 if ((pending->second.read_words[word_index] & (1U << bit)) !=
                         0 &&
                     descriptor_readable(fd)) {
@@ -2648,6 +2692,10 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
             cpu.clear_halt();
             return true;
         }
+        if (const auto host = host_sockets_.find(pending->second.fd);
+            host != host_sockets_.end() && !socket_defunct(pending->second.fd) &&
+            !host->second->readable())
+            return false;
         if (!receive_socket_bytes(cpu, pending->second.fd,
                 pending->second.address, pending->second.size,
                 pending->second.source, pending->second.vectors)) {
@@ -2660,6 +2708,10 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     }
     if (const auto pending = pending_recvmsgs_.find(cpu.processor_id());
         pending != pending_recvmsgs_.end()) {
+        if (const auto host = host_sockets_.find(pending->second.fd);
+            host != host_sockets_.end() && !socket_defunct(pending->second.fd) &&
+            !host->second->readable())
+            return false;
         if (!receive_socket_message(
                 cpu, pending->second.fd, pending->second.message)) {
             return false;

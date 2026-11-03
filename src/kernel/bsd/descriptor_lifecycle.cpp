@@ -23,6 +23,8 @@ bool CompatibilityKernel::release_file_descriptor(std::uint32_t descriptor)
     if (descriptor == darwin::kqueue::workqueue_descriptor)
         return false;
     release_record_locks_for_descriptor(descriptor);
+    if (host_sockets_.contains(descriptor))
+        close_host_socket_waits(descriptor);
     const auto erased = file_descriptors_.erase(descriptor) +
                         virtual_descriptors_.erase(descriptor) +
                         baseband_open_descriptions_.erase(descriptor) +

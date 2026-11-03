@@ -463,17 +463,31 @@ void EmulatorSession::run()
     }
     // The callback is host-only and is unregistered before either adapter is
     // destroyed. Its mutex serializes unregister with an in-flight publisher.
-    set_gles_completion_wake(
-        [display = display_presenter.get(), control = live_control.get(),
+    std::mutex host_activity_mutex;
+    std::condition_variable host_activity_changed;
+    std::uint64_t host_activity_generation = 1;
+    const auto host_completion_wake = [&host_activity_mutex, &host_activity_changed,
+        &host_activity_generation, display = display_presenter.get(), control = live_control.get(),
             execution = guest_execution_coordinator.get()] {
+            {
+                std::lock_guard lock { host_activity_mutex };
+                ++host_activity_generation;
+            }
+            host_activity_changed.notify_all();
             execution->notify_host_completion();
             if (display)
                 display->wake_event_wait();
             if (control)
                 control->wake_event_wait();
-        });
+        };
+    set_gles_completion_wake(host_completion_wake);
+    HostSocketEvents::instance().set_wake(host_completion_wake);
     struct CompletionWakeLifetime {
-        ~CompletionWakeLifetime() { set_gles_completion_wake({ }); }
+        ~CompletionWakeLifetime()
+        {
+            HostSocketEvents::instance().set_wake({ });
+            set_gles_completion_wake({ });
+        }
     } completion_wake_lifetime;
     const auto gdb_port = options.gdb_port;
     const bool gdb_enabled = gdb_port.has_value() || options.gdb_socket.has_value();
@@ -2249,11 +2263,15 @@ void EmulatorSession::run()
         refresh_host_deadlines();
         return host_deadlines.next_deadline();
     };
-    auto polled_graphics_generation = gles_completion_generation();
+    std::uint64_t polled_host_activity_generation;
+    {
+        std::lock_guard lock { host_activity_mutex };
+        polled_host_activity_generation = host_activity_generation;
+    }
     const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
         // Sample before the serial readiness scan, not after it. Headless
         // sessions have no retained SDL/control event to cover that window.
-        const auto graphics_generation = polled_graphics_generation;
+        const auto activity_generation = polled_host_activity_generation;
         if (delay <= std::chrono::nanoseconds::zero())
             return;
         // Preserve deadlines for host sources which still require probes.
@@ -2285,8 +2303,11 @@ void EmulatorSession::run()
         // Native wake events are level retained by SDL/the control pipe. A
         // completion before this comparison returns immediately; one after it
         // interrupts the impending wait, including before wait entry.
-        if (gles_completion_generation() != graphics_generation)
-            return;
+        {
+            std::lock_guard lock { host_activity_mutex };
+            if (host_activity_generation != activity_generation)
+                return;
+        }
         if (waitable_window_session) {
             static_cast<void>(display_presenter->wait_for_event(delay));
         } else if (display_presenter) {
@@ -2297,7 +2318,10 @@ void EmulatorSession::run()
         if (live_control && !live_control->closed()) {
             live_control->wait_for(delay);
         } else {
-            wait_gles_host_activity(graphics_generation, delay);
+            std::unique_lock lock { host_activity_mutex };
+            host_activity_changed.wait_for(lock, delay, [&] {
+                return host_activity_generation != activity_generation;
+            });
         }
     };
     std::optional<std::string> display_performance_window;
@@ -3344,7 +3368,10 @@ void EmulatorSession::run()
         // execute while the guest is ahead.
         const auto polled_mach_generation =
             initial_runtime->kernel->mach_message_generation();
-        polled_graphics_generation = gles_completion_generation();
+        {
+            std::lock_guard lock { host_activity_mutex };
+            polled_host_activity_generation = host_activity_generation;
+        }
         snapshots.poll();
         if (quit_after_snapshots && snapshots.empty()) {
             hard_stop = true;

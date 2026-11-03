@@ -10,6 +10,7 @@
 #include "device_state/pthread_contract.hpp"
 #include <algorithm>
 #include <set>
+#include <limits>
 
 namespace ilemu {
 namespace {
@@ -53,6 +54,11 @@ namespace {
 
 bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
 {
+    HostSocketRequests requests;
+    std::set<std::uint32_t> visited;
+    collect_host_socket_requests(darwin::kqueue::workqueue_descriptor,
+        SocketReadable, requests, visited);
+    update_host_socket_watches(std::numeric_limits<std::size_t>::max(), requests);
     if (!pthread_runtime_.workqueue_open() || workqueue_kevent_queued_ ||
         !kqueues_.contains(darwin::kqueue::workqueue_descriptor)) {
         return true;

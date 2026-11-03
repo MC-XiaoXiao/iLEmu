@@ -940,6 +940,24 @@ private:
         std::size_t processor) const;
     void remember_pending_io_not_ready_locked(std::size_t processor,
         std::uint64_t io_generation, std::uint64_t mach_generation);
+    struct HostSocketWatch {
+        std::uint32_t fd;
+        std::shared_ptr<HostSocket> socket;
+        std::uint8_t events;
+        std::shared_ptr<HostSocketEvents::Subscription> subscription;
+    };
+    using HostSocketRequests = std::map<std::uint32_t,
+        std::pair<std::shared_ptr<HostSocket>, std::uint8_t>>;
+    void collect_host_socket_requests(std::uint32_t fd, std::uint8_t events,
+        HostSocketRequests& requests, std::set<std::uint32_t>& visited) const;
+    [[nodiscard]] HostSocketRequests host_readiness_requests(
+        const std::array<std::uint32_t, 16>& registers, std::uint32_t number) const;
+    void update_host_socket_watches(std::size_t processor,
+        const HostSocketRequests& requests, bool snapshot = false);
+    void refresh_host_socket_watches(std::size_t processor);
+    [[nodiscard]] bool defer_host_readiness(Cpu& cpu, std::uint32_t number);
+    [[nodiscard]] std::optional<bool> deliver_host_readiness(Cpu& cpu);
+    void close_host_socket_waits(std::uint32_t fd);
     [[nodiscard]] std::optional<std::uint64_t>
     pending_io_deadline_locked(std::size_t processor) const;
     [[nodiscard]] bool pending_io_requires_host_poll_locked(
@@ -1249,6 +1267,14 @@ private:
     std::map<std::size_t, PendingHostConnect> pending_host_connects_;
     std::map<std::size_t, PendingHostAccept> pending_host_accepts_;
     std::map<std::size_t, PendingHostWrite> pending_host_writes_;
+    struct PendingHostReadiness {
+        std::uint32_t number;
+        std::array<std::uint32_t, 16> registers;
+        std::uint64_t guest_time;
+    };
+    std::map<std::size_t, PendingHostReadiness> pending_host_readiness_;
+    std::map<std::size_t, std::vector<HostSocketWatch>> host_socket_watches_;
+    std::set<std::size_t> closed_host_socket_waits_;
     std::map<std::size_t, std::shared_ptr<FileIoOperation>> pending_file_ios_;
     struct PendingAioSuspend {
         std::vector<std::shared_ptr<FileIoOperation>> operations;

@@ -30,13 +30,17 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
-#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 namespace ilemu {
 namespace {
+
+    struct ReadinessMutation {
+        std::uint64_t resource;
+        ~ReadinessMutation() { HostSocketEvents::instance().invalidate(resource); }
+    };
 
     constexpr std::uint32_t darwin_socket_stream = 1;
     constexpr std::uint32_t darwin_socket_datagram = 2;
@@ -543,16 +547,19 @@ HostSocket::HostSocket(int descriptor, HostNetworkPolicy policy,
     , darwin_type_ { darwin_type }
     , stream_state_ { stream_state }
 {
+    event_resource_ = HostSocketEvents::instance().attach(descriptor_);
 }
 
 HostSocket::~HostSocket()
 {
+    HostSocketEvents::instance().detach(event_resource_);
     if (descriptor_ >= 0)
         ::close(descriptor_);
 }
 
 HostSocketResult HostSocket::connect(std::span<const std::byte> darwin_address)
 {
+    const ReadinessMutation mutation { event_resource_ };
     std::uint32_t address_error = 0;
     bool dns_redirected = false;
     const auto address = to_host_address(
@@ -592,6 +599,7 @@ HostSocketResult HostSocket::connect(std::span<const std::byte> darwin_address)
 
 HostSocketResult HostSocket::finish_connect()
 {
+    const ReadinessMutation mutation { event_resource_ };
     int socket_error = 0;
     socklen_t size = sizeof(socket_error);
     if (::getsockopt(descriptor_, SOL_SOCKET, SO_ERROR, &socket_error, &size) !=
@@ -614,6 +622,7 @@ HostSocketResult HostSocket::finish_connect()
 
 HostSocketResult HostSocket::bind(std::span<const std::byte> darwin_address)
 {
+    const ReadinessMutation mutation { event_resource_ };
     std::uint32_t address_error = 0;
     bool local_address_redirected = false;
     const auto address = to_host_address(darwin_address, policy_, true,
@@ -631,6 +640,7 @@ HostSocketResult HostSocket::bind(std::span<const std::byte> darwin_address)
 
 HostSocketResult HostSocket::listen(std::uint32_t backlog)
 {
+    const ReadinessMutation mutation { event_resource_ };
     const auto host_backlog = static_cast<int>(std::min<std::uint32_t>(
         backlog, static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
     if (::listen(descriptor_, host_backlog) != 0)
@@ -643,6 +653,7 @@ HostSocketResult HostSocket::listen(std::uint32_t backlog)
 
 HostSocketResult HostSocket::accept()
 {
+    const ReadinessMutation mutation { event_resource_ };
     std::lock_guard lock { accept_mutex_ };
     if (preserved_accepts_ && !preserved_accepts_->empty()) {
         auto result = std::move(preserved_accepts_->front());
@@ -656,6 +667,7 @@ HostSocketResult HostSocket::accept()
 
 void HostSocket::restore_accept(HostSocketResult accepted)
 {
+    const ReadinessMutation mutation { event_resource_ };
     std::lock_guard lock { accept_mutex_ };
     if (!preserved_accepts_)
         preserved_accepts_ = std::make_unique<std::deque<HostSocketResult>>();
@@ -692,6 +704,7 @@ HostSocketResult HostSocket::accept_locked()
 HostSocketResult HostSocket::send(std::span<const std::byte> bytes,
     std::span<const std::byte> darwin_destination)
 {
+    const ReadinessMutation mutation { event_resource_ };
     ssize_t transferred = -1;
     constexpr int send_flags =
 #ifdef MSG_NOSIGNAL
@@ -729,6 +742,7 @@ HostSocketResult HostSocket::send(std::span<const std::byte> bytes,
 HostSocketResult HostSocket::receive(
     std::size_t capacity, SocketReceiveTarget* target)
 {
+    const ReadinessMutation mutation { event_resource_ };
     std::lock_guard lock {receive_mutex_};
     const bool stable_destination = target && target->can_copy_without_fault(capacity);
     auto result = receive_locked(capacity, target && !stable_destination ? MSG_PEEK : 0);
@@ -873,6 +887,7 @@ HostSocketResult HostSocket::receive_locked(std::size_t capacity, int flags)
 HostSocketResult HostSocket::set_option(std::uint32_t darwin_level,
     std::uint32_t darwin_option, std::span<const std::byte> value)
 {
+    const ReadinessMutation mutation { event_resource_ };
     int integer_value = 0;
     if (!value.empty()) {
         std::memcpy(&integer_value, value.data(),
@@ -1133,6 +1148,7 @@ HostSocketResult HostSocket::pending_bytes() const
 
 HostSocketResult HostSocket::socket_error()
 {
+    const ReadinessMutation mutation { event_resource_ };
     int socket_error = 0;
     socklen_t size = sizeof(socket_error);
     if (::getsockopt(descriptor_, SOL_SOCKET, SO_ERROR, &socket_error, &size) !=
@@ -1153,6 +1169,7 @@ HostSocketResult HostSocket::socket_error()
 
 HostSocketResult HostSocket::shutdown(std::uint32_t how)
 {
+    const ReadinessMutation mutation { event_resource_ };
     if (how > 2) {
         return darwin_error_result(darwin_error_invalid_argument);
     }
@@ -1192,9 +1209,7 @@ bool HostSocket::readable() const
         stream_state_.load(std::memory_order_relaxed) == StreamState::Initial) {
         return false;
     }
-    pollfd descriptor { descriptor_, POLLIN, 0 };
-    return ::poll(&descriptor, 1, 0) > 0 &&
-           (descriptor.revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+    return (readiness() & (SocketReadable | SocketDisconnected | SocketError)) != 0;
 }
 
 bool HostSocket::writable() const
@@ -1204,9 +1219,20 @@ bool HostSocket::writable() const
         if (state == StreamState::Initial || state == StreamState::Listening)
             return false;
     }
-    pollfd descriptor { descriptor_, POLLOUT, 0 };
-    return ::poll(&descriptor, 1, 0) > 0 &&
-           (descriptor.revents & (POLLOUT | POLLHUP | POLLERR)) != 0;
+    return (readiness() & (SocketWritable | SocketDisconnected | SocketError)) != 0;
+}
+
+std::uint8_t HostSocket::readiness() const
+{
+    if (darwin_type_ == darwin_socket_stream &&
+        stream_state_.load(std::memory_order_relaxed) == StreamState::Initial)
+        return 0;
+    return HostSocketEvents::instance().readiness(event_resource_);
+}
+
+std::shared_ptr<HostSocketEvents::Subscription> HostSocket::observe(std::uint8_t events) const
+{
+    return HostSocketEvents::instance().subscribe(event_resource_, events);
 }
 
 } // namespace ilemu

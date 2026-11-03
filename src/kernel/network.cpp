@@ -1420,7 +1420,7 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd) const
     // guard for those immutable terminal cases; recursive traversal handles
     // dup chains and kqueues with active read/write knotes.
     if (!duplicated_descriptors_.contains(fd)) {
-        if (host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
+        if (virtual_udp_sockets_.contains(fd) ||
             bpf_descriptors_.contains(fd) ||
             wifi_driver_event_streams_.contains(fd)) {
             return true;
@@ -1454,7 +1454,7 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd,
     const auto duplicate = duplicated_descriptors_.find(fd);
     const auto queue = kqueues_.find(fd);
     if (duplicate == duplicated_descriptors_.end()) {
-        if (host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
+        if (virtual_udp_sockets_.contains(fd) ||
             bpf_descriptors_.contains(fd) || wifi_driver_event_streams_.contains(fd)) {
             return true;
         }
@@ -1499,7 +1499,7 @@ bool CompatibilityKernel::descriptor_valid(std::uint32_t fd) const
            virtual_descriptors_.contains(fd) ||
            duplicated_descriptors_.contains(fd) ||
            descriptor_flags_.contains(fd) || bpf_descriptors_.contains(fd) ||
-           host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
+           virtual_udp_sockets_.contains(fd) ||
            kernel_control_endpoints_.contains(fd) ||
            socket_pair_endpoints_.contains(fd);
 }
@@ -1516,6 +1516,15 @@ std::uint16_t CompatibilityKernel::descriptor_poll_revents(
         return darwin::poll::invalid;
 
     std::uint16_t revents = 0;
+    if (const auto socket = host_sockets_.find(descriptor); socket != host_sockets_.end()) {
+        const auto ready = socket->second->readiness();
+        if ((ready & SocketDisconnected) ||
+            ((ready & SocketReadClosed) &&
+                (events & (darwin::poll::in | darwin::poll::read_normal |
+                    darwin::poll::read_band | darwin::poll::hangup))))
+            revents |= darwin::poll::hangup;
+        if (ready & SocketError) revents |= darwin::poll::error;
+    }
     constexpr auto readable_events = static_cast<std::uint16_t>(
         darwin::poll::in | darwin::poll::read_normal | darwin::poll::read_band);
     constexpr auto writable_events = static_cast<std::uint16_t>(
@@ -1912,6 +1921,20 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 listener != unix_listener_states_.end()) {
                 available = static_cast<std::uint32_t>(
                     listener->second->pending_endpoints.size());
+            }
+        }
+        if ((registration->filter == darwin::kqueue::filter_read ||
+                registration->filter == darwin::kqueue::filter_write) &&
+            host_sockets_.contains(descriptor) && !socket_listening(descriptor)) {
+            const auto& socket = host_sockets_.at(descriptor);
+            const auto socket_events = socket->readiness();
+            if (registration->filter == darwin::kqueue::filter_read) {
+                const auto pending = socket->pending_bytes();
+                available = static_cast<std::uint32_t>(pending.transferred);
+                if (socket_events & (SocketDisconnected | SocketReadClosed | SocketError))
+                    result_flags |= darwin::kqueue::event_end_of_file;
+            } else if (socket_events & (SocketDisconnected | SocketError)) {
+                result_flags |= darwin::kqueue::event_end_of_file;
             }
         }
         // Process readiness is already edge-consumed by its observed

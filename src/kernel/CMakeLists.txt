@@ -52,6 +52,7 @@ add_library(ilemu_kernel STATIC
     vnode_watch.cpp
     kevent_timer.cpp
     network.cpp)
+target_sources(ilemu_kernel PRIVATE host_socket_waits.cpp)
 set(CONSOLE_PROGRESS_ASSET
     "${PROJECT_SOURCE_DIR}/external/xnu-console/GearImage.bin")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
