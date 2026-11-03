@@ -21,9 +21,8 @@ private:
     std::shared_ptr<FilePageCache> cache_;
     std::shared_ptr<GuestFileBacking> file_;
     std::uint64_t offset_ { };
-    std::vector<std::byte> bytes_;
-    std::optional<GuestFileGeneration> generation_;
-    std::uint64_t writeback_revision_ { };
+    std::size_t size_ { };
+    std::shared_ptr<PreparedFilePages> prepared_pages_;
     bool shared_ { };
     bool consumed_ { };
     std::atomic<bool> ready_ { false };

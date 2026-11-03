@@ -38,7 +38,7 @@ bool AddressSpace::prepare_file_access(std::uint32_t address,
         for (auto file_page = begin; file_page < finish; file_page += page_size) {
             const auto count = static_cast<std::uint32_t>(
                 std::min<std::uint64_t>(page_size, finish - file_page));
-            if (mapping.cache->load_page(mapping.backing, file_page, count, shared)->needs_file_read()) {
+            if (mapping.cache->needs_file_read(mapping.backing, file_page, count, shared)) {
                 needs_read = true;
                 break;
             }

@@ -285,6 +285,7 @@ class FilePageCache;
 class SharedFileWriteback;
 class HostSharedFileWriter;
 class FileWritebackRequest;
+class PreparedFilePages;
 
 // A pinned file range awaiting identity verification. A pending preparation
 // does not expose a backing; completion publishes only a fully validated one.
@@ -310,7 +311,7 @@ private:
     std::shared_ptr<FilePageCache> cache_;
     std::function<std::shared_ptr<GuestFileBacking>()> completion_;
     std::shared_ptr<GuestFileBacking> result_;
-    std::vector<std::byte> prepared_bytes_;
+    std::shared_ptr<PreparedFilePages> prepared_pages_;
     std::shared_ptr<void> admission_;
     std::atomic_flag started_ { };
     std::atomic<bool> ready_ { false };
@@ -386,6 +387,7 @@ private:
     friend class FileMappingPreparation;
     friend class SharedFileWriteback;
     friend class FilePageRead;
+    friend class PreparedFilePages;
 
     mutable std::mutex mutex_;
     mutable std::shared_mutex instruction_mutex_;
@@ -566,6 +568,11 @@ public:
         std::uint64_t file_offset, std::uint32_t byte_count,
         bool shared_vnode = false);
 
+    // Probe a cold range without allocating placeholder pages on a guest lane.
+    [[nodiscard]] bool needs_file_read(
+        const std::shared_ptr<GuestFileBacking>& mapping,
+        std::uint64_t file_offset, std::uint32_t byte_count, bool shared_vnode);
+
     [[nodiscard]] std::optional<std::vector<std::shared_ptr<GuestPageBacking>>>
     load_pages(const std::filesystem::path& path, std::uint64_t file_offset,
         std::uint32_t size);
@@ -581,6 +588,8 @@ public:
 
 private:
     friend class FileMappingPreparation;
+    friend class PreparedFilePages;
+    void publish_pages(PreparedFilePages& prepared, bool shared_vnode);
     [[nodiscard]] std::shared_ptr<FileMappingPreparation> prepare_mapping(
         const std::filesystem::path& path, std::uint64_t file_offset,
         std::uint32_t size, std::optional<GuestFileGeneration> expected_generation,
@@ -625,6 +634,10 @@ private:
             const MutablePageKey&, const MutablePageKey&) = default;
     };
 
+    [[nodiscard]] static Key file_page_key(const GuestFileBacking& mapping,
+        std::uint64_t file_offset, std::uint32_t byte_count, bool shared_vnode);
+    void insert_page_locked(const Key& key, std::shared_ptr<GuestPageBacking> page);
+    void maintain_pages_locked();
     void touch_locked(std::map<Key, PageRecord>::iterator iterator);
     void erase_path_locked(const std::string& path);
     void touch_identity_locked(
@@ -653,6 +666,7 @@ private:
     std::multimap<MutablePageKey, std::weak_ptr<GuestPageBacking>>
         mutable_pages_;
     std::size_t mutable_page_insertions_since_prune_ { };
+    std::size_t mutable_page_prune_interval_ { 1024U };
     std::map<std::pair<std::uint64_t, std::uint64_t>,
         std::weak_ptr<const GuestFileIoState>> file_objects_;
     std::size_t file_object_insertions_since_prune_ { };

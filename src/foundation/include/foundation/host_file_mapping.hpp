@@ -20,7 +20,8 @@ public:
         std::uint64_t file_offset, std::uint32_t size, int source_descriptor = -1);
 
 private:
-    // At most 64 retained descriptors/tasks and 32 MiB of prepared bytes.
+    // At most 64 retained descriptors/tasks and 32 MiB of prepared page bytes
+    // plus page metadata. The single worker uses at most 512 KiB of scratch.
     // Cancelled guest continuations release admission when the host work ends.
     struct Admission;
     std::shared_ptr<std::atomic<std::size_t>> admitted_ {

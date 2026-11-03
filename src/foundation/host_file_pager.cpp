@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "foundation/host_file_pager.hpp"
 #include "foundation/performance.hpp"
+#include "foundation/prepared_file_pages.hpp"
 
-#include <algorithm>
 #include <cerrno>
 #include <utility>
 #include <unistd.h>
@@ -13,12 +13,13 @@ void FilePageRead::read()
 {
     const auto descriptor = file_->io_state->file_descriptor;
     const auto before = file_descriptor_generation(descriptor);
-    writeback_revision_ = file_->object_identity->writeback_revision.load(
+    const auto revision = file_->object_identity->writeback_revision.load(
         std::memory_order_acquire);
+    std::vector<std::byte> bytes(size_);
     std::size_t received = 0;
-    while (received < bytes_.size()) {
-        const auto count = ::pread(descriptor, bytes_.data() + received,
-            bytes_.size() - received, static_cast<off_t>(offset_ + received));
+    while (received < bytes.size()) {
+        const auto count = ::pread(descriptor, bytes.data() + received,
+            bytes.size() - received, static_cast<off_t>(offset_ + received));
         if (count < 0 && errno == EINTR)
             continue;
         if (count <= 0)
@@ -27,7 +28,8 @@ void FilePageRead::read()
     }
     const auto after = file_descriptor_generation(descriptor);
     if (before && before == after)
-        generation_ = after;
+        prepared_pages_ = std::make_shared<PreparedFilePages>(
+            file_, offset_, bytes, *after, revision);
     ready_.store(true, std::memory_order_release);
 }
 
@@ -37,30 +39,10 @@ void FilePageRead::commit()
     if (consumed_)
         return;
     consumed_ = true;
-    const auto& vnode = file_->object_identity;
-    if (generation_ &&
-        generation_ == file_descriptor_generation(file_->io_state->file_descriptor) &&
-        writeback_revision_ == vnode->writeback_revision.load(std::memory_order_acquire)) {
-        const PerformanceLatencyScope publish { PerfLatencyKind::VmCachePublish };
-        for (std::size_t offset = 0; offset < bytes_.size();
-             offset += guest_memory_page_size) {
-            const auto count = static_cast<std::uint32_t>(
-                std::min<std::size_t>(guest_memory_page_size, bytes_.size() - offset));
-            auto page = cache_->load_page(file_, offset_ + offset, count, shared_);
-            const std::lock_guard page_lock { page->mutex_ };
-            const std::lock_guard pending_lock { vnode->writeback_mutex };
-            // Resident aliases and descriptor reflection always win.
-            if (!page->file_backing_)
-                continue;
-            std::copy_n(bytes_.data() + offset, count, page->bytes.begin());
-            std::fill(page->bytes.begin() + count, page->bytes.end(), std::byte {});
-            if (const auto pending = vnode->pending_writeback_pages.find(offset_ + offset);
-                pending != vnode->pending_writeback_pages.end())
-                std::copy_n(pending->second->begin(), count, page->bytes.begin());
-            page->file_backing_.reset();
-        }
+    if (prepared_pages_) {
+        prepared_pages_->commit(*cache_, shared_);
+        prepared_pages_.reset();
     }
-    std::vector<std::byte> {}.swap(bytes_);
 }
 
 HostFilePager::~HostFilePager() { worker_.wait_idle(); }
@@ -74,7 +56,7 @@ std::shared_ptr<FilePageRead> HostFilePager::prepare(
     for (const auto& read : reads_)
         if (read->file_->object_identity == file->object_identity &&
             read->cache_ == cache && read->offset_ == offset &&
-            read->bytes_.size() == size && read->shared_ == shared)
+            read->size_ == size && read->shared_ == shared)
             return read;
     if (reads_.size() == maximum_reads)
         return reads_.front();
@@ -82,7 +64,7 @@ std::shared_ptr<FilePageRead> HostFilePager::prepare(
     read->cache_ = std::move(cache);
     read->file_ = std::move(file);
     read->offset_ = offset;
-    read->bytes_.resize(size);
+    read->size_ = size;
     read->shared_ = shared;
     reads_.push_back(read);
     static_cast<void>(worker_.submit(HostWorkKind::Maintenance, std::nullopt,
