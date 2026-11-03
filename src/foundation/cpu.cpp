@@ -2008,10 +2008,11 @@ private:
             key.backend_abi_version = jit_artifact_backend_abi_version;
             key.dynarmic_build_fingerprint =
                 jit_artifact_dynarmic_build_fingerprint;
-            // Keep baseline artifacts out of optimized comparison runs and
-            // retain the existing optimized artifact key unchanged.
+            // Block boundaries are part of the code-generation identity.
             key.codegen_options = jit_artifact_codegen_options |
-                (compilation_mode_ == JitCompilationMode::Baseline ? 2U << 8U : 0U);
+                (compilation_mode_ == JitCompilationMode::Baseline ? 2U << 8U : 0U) |
+                (static_cast<std::uint64_t>(
+                     jit_compilation_block_limit(compilation_mode_)) << 32U);
             key.host_isa = jit_artifact_host_isa();
             key.host_feature_mask = jit_artifact_host_feature_mask();
             key.artifact_format_version = jit_artifact_format_version;
@@ -3388,8 +3389,8 @@ private:
         config.fast_compilation =
             callbacks_->compilation_mode() == JitCompilationMode::Baseline;
         config.tiered_compilation = native_code_versions_;
-        config.maximum_block_instructions = native_code_versions_
-            ? (config.fast_compilation ? 64U : 256U) : 0U;
+        config.maximum_block_instructions =
+            jit_compilation_block_limit(callbacks_->compilation_mode());
         config.native_code_slab = execution_context_->native_code_slab();
         config.enable_native_code_templates = native_code_versions_ || callbacks_->native_template_reuse_enabled();
         config.callbacks_link = runtime_link_cell_address_;
