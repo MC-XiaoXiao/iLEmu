@@ -265,6 +265,7 @@ public:
     {
         thread_statistics_query_ = std::move(query);
     }
+    void wait_for_file_page(Cpu& cpu, FilePageFault fault);
     [[nodiscard]] bool thread_wait_uninterruptible(std::size_t processor) const
     {
         return userland_hle_.pending_call(processor) ||
@@ -272,6 +273,7 @@ public:
                pending_file_renames_.contains(processor) ||
                pending_filesystem_dispatches_.contains(processor) ||
                pending_file_mappings_.contains(processor) ||
+               pending_file_page_faults_.contains(processor) ||
                pending_process_images_.contains(processor);
     }
     [[nodiscard]] bool thread_awaits_host(std::size_t processor) const
@@ -1304,6 +1306,7 @@ private:
     std::vector<std::shared_ptr<PendingFileRename>> file_rename_effects_;
     std::map<std::size_t, PendingFilesystemDispatch> pending_filesystem_dispatches_;
     std::map<std::size_t, PendingFileMapping> pending_file_mappings_;
+    std::map<std::size_t, FilePageFault> pending_file_page_faults_;
     std::map<std::size_t, PendingBasebandWrite> pending_baseband_writes_;
     std::map<std::size_t, PendingUnixAccept> pending_unix_accepts_;
     std::map<std::size_t, PendingFlock> pending_flocks_;

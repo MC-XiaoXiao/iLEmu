@@ -10,6 +10,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-1228.15.4/bsd/sys/mount.h
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/syscall_sw.c
 
+#include "foundation/host_file_pager.hpp"
 #include "kernel/kernel.hpp"
 #include "kernel/task_syscall_counters.hpp"
 #include "bsd/security/extensions.hpp"
@@ -1033,6 +1034,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_file_renames_.clear();
     pending_filesystem_dispatches_.clear();
     pending_file_mappings_.clear();
+    pending_file_page_faults_.clear();
     pending_process_images_.clear();
     pending_baseband_writes_.clear();
     pending_unix_accepts_.clear();
@@ -1925,6 +1927,7 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_file_renames_.contains(processor) ||
            pending_filesystem_dispatches_.contains(processor) ||
            pending_file_mappings_.contains(processor) ||
+           pending_file_page_faults_.contains(processor) ||
            pending_process_images_.contains(processor) ||
            pending_baseband_writes_.contains(processor) ||
            pending_unix_accepts_.contains(processor) ||
@@ -1981,6 +1984,9 @@ bool CompatibilityKernel::pending_io_wait_ignores_mach_locked(
 bool CompatibilityKernel::pending_io_poll_required_locked(
     std::size_t processor) const
 {
+    if (const auto fault = pending_file_page_faults_.find(processor);
+        fault != pending_file_page_faults_.end())
+        return fault->second.read->ready();
     const auto cached = pending_io_poll_cache_.find(processor);
     if (cached == pending_io_poll_cache_.end())
         return true;
@@ -2150,6 +2156,7 @@ bool CompatibilityKernel::pending_io_requires_host_poll_locked(
     if (pending_file_ios_.contains(processor) ||
         pending_aio_suspends_.contains(processor) ||
         pending_file_mappings_.contains(processor) ||
+        pending_file_page_faults_.contains(processor) ||
         pending_process_images_.contains(processor) ||
         pending_file_renames_.contains(processor) ||
         pending_filesystem_dispatches_.contains(processor) ||
@@ -2360,6 +2367,18 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         return deliver_pending_aio_suspend(cpu);
     if (pending_process_images_.contains(cpu.processor_id()))
         return deliver_pending_process_image(cpu);
+    if (const auto pending = pending_file_page_faults_.find(cpu.processor_id());
+        pending != pending_file_page_faults_.end()) {
+        if (!pending->second.read->ready())
+            return false;
+        pending->second.read->commit();
+        if (pending->second.access == MemoryPermission::Execute)
+            cpu.invalidate_cache_range(pending->second.address, pending->second.size);
+        pending_file_page_faults_.erase(pending);
+        process_.waiting_for_events = false;
+        cpu.clear_halt();
+        return true;
+    }
     if (pending_file_mappings_.contains(cpu.processor_id()))
         return deliver_pending_file_mapping(cpu);
     if (pending_filesystem_dispatches_.contains(cpu.processor_id()))
@@ -2764,6 +2783,9 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
         return "filesystem namespace";
     if (pending_process_images_.contains(processor))
         return "process-image";
+    if (const auto pending = pending_file_page_faults_.find(processor);
+        pending != pending_file_page_faults_.end())
+        return "file-page(address=" + std::to_string(pending->second.address) + ")";
     if (const auto pending = pending_file_mappings_.find(processor);
         pending != pending_file_mappings_.end()) {
         return "mmap(fd=" + std::to_string(pending->second.arguments[4]) + ")";

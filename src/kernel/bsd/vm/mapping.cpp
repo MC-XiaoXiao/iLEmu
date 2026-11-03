@@ -16,6 +16,15 @@
 
 namespace ilemu {
 
+void CompatibilityKernel::wait_for_file_page(Cpu& cpu, FilePageFault fault)
+{
+    const std::lock_guard lock { mutex_ };
+    pending_file_page_faults_.insert_or_assign(cpu.processor_id(), std::move(fault));
+    process_.waiting_for_events = true;
+    cpu.halt(Dynarmic::HaltReason::UserDefined5);
+    refresh_pending_event_processor_locked(cpu.processor_id());
+}
+
 void CompatibilityKernel::dispatch_bsd_mmap(Cpu& cpu)
 {
     if (shared_state_->shared_file_writer->pending()) {

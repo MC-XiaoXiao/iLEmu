@@ -5,6 +5,7 @@
 // Own a boot session and coordinate guest scheduling, lifecycle, time
 // and shutdown.
 
+#include "foundation/host_file_pager.hpp"
 #include "runtime/emulator_session.hpp"
 #include "crypto/key_store.hpp"
 #include "debug/control_channel.hpp"
@@ -1509,6 +1510,7 @@ void EmulatorSession::run()
     std::array<std::atomic<std::uint64_t>, jit_precompile_target_count>
         precompile_blocks_by_target { };
     auto file_mapping_preparer = std::make_shared<HostFileMappingPreparer>();
+    auto file_pager = std::make_shared<HostFilePager>();
     auto process_image_preparer =
         std::make_shared<HostProcessImagePreparer>(rootfs, guest_architecture);
     // A captured deferred SVC has entered the kernel even before its serial
@@ -1529,6 +1531,7 @@ void EmulatorSession::run()
     configure_runtime = [&](Runtime& runtime) {
         auto* runtime_ptr = &runtime;
         runtime.kernel->set_file_mapping_preparer(file_mapping_preparer);
+        runtime.memory->set_file_pager(file_pager);
         runtime.kernel->set_process_image_preparer(process_image_preparer);
         runtime.kernel->set_host_network_policy(network_policy);
         runtime.kernel->set_mapped_executable_handler(
@@ -4209,6 +4212,8 @@ void EmulatorSession::run()
                 result.ticks_consumed, result.svc_calls,
                 result.host_execution_ns, parallel_guest_batch,
                 result.translated_code);
+            if (result.file_page_fault)
+                runtime.kernel->wait_for_file_page(cpu, *result.file_page_fault);
             if (prepared.deferred_svc && result.svc) {
                 const auto dispatch_started = std::chrono::steady_clock::now();
                 active_thread_accounting = std::pair {
@@ -4239,7 +4244,7 @@ void EmulatorSession::run()
                     std::min(remaining_ticks, result.ticks_consumed);
             }
             bool debug_stop = result.debug_breakpoint.has_value() ||
-                              prepared.execution.single_step;
+                              (prepared.execution.single_step && !result.file_page_fault);
             std::uint8_t debug_signal = gdb_signal::trap;
             const auto fatal_result = result.fault ||
                                       result.architectural_exception ||
