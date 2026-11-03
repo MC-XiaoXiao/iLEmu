@@ -283,16 +283,26 @@ class FileMappingPreparation {
 public:
     [[nodiscard]] static std::shared_ptr<FileMappingPreparation> begin(
         std::shared_ptr<FilePageCache> cache, const std::filesystem::path& path,
-        std::uint64_t file_offset, std::uint32_t size, int source_descriptor = -1);
+        std::uint64_t file_offset, std::uint32_t size, int source_descriptor = -1,
+        bool defer_completion = false);
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] std::optional<std::shared_ptr<GuestFileBacking>> result() const;
-    void complete();
+    void complete(std::size_t prepare_bytes = 0);
+    // Serial kernel boundary only: seed byte-lazy cache pages, never replace
+    // resident/shared bytes. Discard a snapshot if the retained vnode changed.
+    void commit_pages(bool shared_vnode);
+    void retain_admission(std::shared_ptr<void> admission)
+    {
+        admission_ = std::move(admission);
+    }
 
 private:
     friend class FilePageCache;
     std::shared_ptr<FilePageCache> cache_;
     std::function<std::shared_ptr<GuestFileBacking>()> completion_;
     std::shared_ptr<GuestFileBacking> result_;
+    std::vector<std::byte> prepared_bytes_;
+    std::shared_ptr<void> admission_;
     std::atomic_flag started_ { };
     std::atomic<bool> ready_ { false };
 };
@@ -365,6 +375,7 @@ struct GuestPageBacking {
 
 private:
     friend class FilePageCache;
+    friend class FileMappingPreparation;
 
     mutable std::mutex mutex_;
     mutable std::shared_mutex instruction_mutex_;
@@ -565,7 +576,7 @@ private:
         std::shared_ptr<const std::vector<std::byte>> immutable_snapshot,
         std::shared_ptr<const ImmutableFileView> immutable_file_view,
         std::shared_ptr<const GuestFileBacking> reusable_mapping,
-        int source_descriptor = -1);
+        int source_descriptor = -1, bool defer_completion = false);
 
     struct Identity {
         GuestFileGeneration generation;

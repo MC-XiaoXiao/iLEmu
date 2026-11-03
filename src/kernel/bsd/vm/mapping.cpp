@@ -80,8 +80,10 @@ void CompatibilityKernel::complete_bsd_mapping(
             mapping.path = found->second;
             const auto descriptor_flags = file_status_flags_.contains(fd)
                 ? file_status_flags_.at(fd) : darwin::open_flag::read_only;
-            mapping.cache = shared ? shared_state_->shared_mapping_page_cache
-                                   : memory_.file_page_cache();
+            // Clean private file pages follow descriptor writes too; COW
+            // detaches on the first private store. Use the vnode cache whose
+            // mutation boundary already reflects completed descriptor I/O.
+            mapping.cache = shared_state_->shared_mapping_page_cache;
             std::shared_ptr<HostFileMappingPreparer> preparer;
             bool posix_shared_memory;
             {
@@ -132,13 +134,19 @@ void CompatibilityKernel::complete_bsd_mapping(
             // Retain the descriptor's limits across asynchronous preparation;
             // completion must not re-read a closed or reused descriptor.
             mapping.attributes = access.attributes;
-            mapping.preparation =
-                preparer ? preparer->prepare(
-                               mapping.cache, mapping.path, range->file_offset,
-                               mapped_size, source_descriptor)
-                         : FileMappingPreparation::begin(mapping.cache,
-                               mapping.path, range->file_offset, mapped_size,
-                               source_descriptor);
+            if (preparer) {
+                auto request = preparer->prepare(mapping.cache, mapping.path,
+                    range->file_offset, mapped_size, source_descriptor);
+                if (!request) {
+                    bsd_error(cpu, darwin::error::no_memory);
+                    return;
+                }
+                mapping.preparation = std::move(*request);
+            } else {
+                mapping.preparation = FileMappingPreparation::begin(
+                    mapping.cache, mapping.path, range->file_offset,
+                    mapped_size, source_descriptor);
+            }
             if (!preparer && mapping.preparation)
                 mapping.preparation->complete();
             if (!mapping.preparation) {
@@ -163,6 +171,7 @@ void CompatibilityKernel::complete_bsd_mapping(
                                : darwin::error::no_memory);
             return;
         }
+        mapping.preparation->commit_pages(shared);
     }
     if (mapped_size == 0U) {
         bsd_success(cpu, 0U);

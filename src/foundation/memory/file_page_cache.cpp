@@ -1928,13 +1928,14 @@ std::optional<std::shared_ptr<GuestFileBacking>> FilePageCache::open_mapping(
 
 std::shared_ptr<FileMappingPreparation> FileMappingPreparation::begin(
     std::shared_ptr<FilePageCache> cache, const std::filesystem::path& path,
-    std::uint64_t file_offset, std::uint32_t size, int source_descriptor)
+    std::uint64_t file_offset, std::uint32_t size, int source_descriptor,
+    bool defer_completion)
 {
     if (!cache)
         return { };
     auto preparation = cache->prepare_mapping(
         path, file_offset, size, std::nullopt, std::nullopt, { }, { }, { },
-        source_descriptor);
+        source_descriptor, defer_completion);
     if (preparation)
         preparation->cache_ = std::move(cache);
     return preparation;
@@ -1951,17 +1952,68 @@ FileMappingPreparation::result() const
     return ready() ? std::optional { result_ } : std::nullopt;
 }
 
-void FileMappingPreparation::complete()
+void FileMappingPreparation::complete(std::size_t prepare_bytes)
 {
     if (started_.test_and_set(std::memory_order_acq_rel))
         return;
     try {
         result_ = completion_();
+        if (result_ && prepare_bytes && !result_->immutable_snapshot &&
+            !result_->immutable_file_view) {
+            const auto& file = *result_;
+            prepared_bytes_.resize(std::min<std::uint64_t>(
+                prepare_bytes, file.end_offset - file.first_offset));
+            std::size_t received = 0;
+            while (received < prepared_bytes_.size()) {
+                const auto count = ::pread(file.io_state->file_descriptor,
+                    prepared_bytes_.data() + received,
+                    prepared_bytes_.size() - received,
+                    static_cast<off_t>(file.first_offset + received));
+                if (count < 0 && errno == EINTR)
+                    continue;
+                if (count <= 0) {
+                    prepared_bytes_.clear();
+                    break;
+                }
+                received += static_cast<std::size_t>(count);
+            }
+        }
     } catch (...) {
         result_.reset();
     }
     completion_ = { };
     ready_.store(true, std::memory_order_release);
+}
+
+void FileMappingPreparation::commit_pages(bool shared_vnode)
+{
+    if (!prepared_bytes_.empty()) {
+        struct stat status { };
+        const auto& file = result_;
+        if (::fstat(file->io_state->file_descriptor, &status) == 0 &&
+            generation_from_stat(status) == file->generation) {
+            for (std::size_t offset = 0; offset < prepared_bytes_.size();
+                offset += guest_memory_page_size) {
+                const auto count = static_cast<std::uint32_t>(
+                    std::min<std::size_t>(guest_memory_page_size,
+                        prepared_bytes_.size() - offset));
+                auto page = cache_->load_page(
+                    file, file->first_offset + offset, count, shared_vnode);
+                const std::scoped_lock lock { page->mutex_ };
+                // Active aliases and completed descriptor writes win over
+                // speculative bytes. Only a still byte-lazy page is seeded.
+                if (page->file_backing_) {
+                    std::copy_n(prepared_bytes_.data() + offset, count,
+                        page->bytes.begin());
+                    std::fill(page->bytes.begin() + count, page->bytes.end(),
+                        std::byte { });
+                    page->file_backing_.reset();
+                }
+            }
+        }
+        std::vector<std::byte> { }.swap(prepared_bytes_);
+    }
+    admission_.reset();
 }
 
 std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
@@ -1971,7 +2023,7 @@ std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
     std::shared_ptr<const std::vector<std::byte>> immutable_snapshot,
     std::shared_ptr<const ImmutableFileView> immutable_file_view,
     std::shared_ptr<const GuestFileBacking> reusable_mapping,
-    int source_descriptor)
+    int source_descriptor, bool defer_completion)
 {
     if (size == 0 || file_offset % guest_memory_page_size != 0) {
         return { };
@@ -2235,7 +2287,7 @@ std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
         }
         return mapping;
     };
-    if (cached_identity)
+    if (cached_identity && !defer_completion)
         preparation->complete();
     return preparation;
 }
