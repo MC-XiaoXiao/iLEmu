@@ -17,6 +17,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "foundation/content_identity.hpp"
@@ -197,6 +198,7 @@ private:
         // entry order so preferred-file and last-fallback lookup is unchanged.
         std::unordered_map<std::filesystem::path, std::vector<ContentIdentity>>
             path_index;
+        std::unordered_set<std::filesystem::path> generation_paths;
     };
     void detach_storage();
     std::shared_ptr<Storage> storage_ { std::make_shared<Storage>() };

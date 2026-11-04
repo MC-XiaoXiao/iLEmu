@@ -636,6 +636,7 @@ const ExecutableCatalogEntry& ExecutableCatalog::register_image(
         } else {
             existing->generation = generation;
         }
+        storage_->generation_paths.insert(normalized);
     }
     for (const auto& segment : image.segments()) {
         if ((segment.initial_protection & 4) == 0 || segment.file_size == 0) {
@@ -695,6 +696,7 @@ const ExecutableCatalogEntry& ExecutableCatalog::register_path_alias(
         } else {
             existing->generation = *generation;
         }
+        storage_->generation_paths.insert(alias_path);
     }
     return entry;
 }
@@ -730,6 +732,7 @@ const ExecutableCatalogEntry& ExecutableCatalog::register_mapping(
         } else {
             existing->generation = *generation;
         }
+        storage_->generation_paths.insert(normalized_path);
     }
     const auto mapping =
         ExecutableMappingIdentity { file_offset, byte_count, 0U, 0U };
@@ -1130,6 +1133,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
                 entry.file_generations.push_back(
                     ExecutableCatalogPathGeneration {
                         normalized, *current_generation });
+                storage_->generation_paths.insert(normalized);
                 ++summary.mach_o_images;
                 ++summary.reused_mach_o_images;
                 continue;
@@ -1245,6 +1249,8 @@ bool ExecutableCatalog::load(const std::filesystem::path& path) noexcept
         for (const auto& entry : storage->entries) {
             for (const auto& alias : entry.aliases)
                 storage->path_index[alias].push_back(entry.content_identity);
+            for (const auto& record : entry.file_generations)
+                storage->generation_paths.insert(record.path);
         }
         storage_ = std::move(storage);
         reliable_entry_points_current_ = reliable_entry_points_current;
@@ -1589,22 +1595,15 @@ void ExecutableCatalog::add_alias(ExecutableCatalogEntry& entry,
 
 void ExecutableCatalog::remove_path(const std::filesystem::path& path)
 {
-    // Data-file notifications usually leave the index unchanged. Preserve the
-    // snapshot unless the original removal pass would change any entry,
-    // including orphaned generation records in older manifests.
-    const auto changes_entry = [&path](const ExecutableCatalogEntry& entry) {
-        return entry.aliases.empty() ||
-               std::find(entry.aliases.begin(), entry.aliases.end(), path) !=
-                   entry.aliases.end() ||
-               std::any_of(entry.file_generations.begin(),
-                   entry.file_generations.end(),
-                   [&path](const auto& record) { return record.path == path; });
-    };
-    if (std::none_of(
-            storage_->entries.begin(), storage_->entries.end(), changes_entry))
+    // Data notifications need neither a scan nor a detached snapshot. Index
+    // generation records separately because manifests can retain paths that
+    // are no longer aliases.
+    if (!storage_->path_index.contains(path) &&
+        !storage_->generation_paths.contains(path))
         return;
     detach_storage();
     storage_->path_index.erase(path);
+    storage_->generation_paths.erase(path);
     bool changed = false;
     bool removed_entry = false;
     for (auto entry = storage_->entries.begin();
@@ -1627,9 +1626,12 @@ void ExecutableCatalog::remove_path(const std::filesystem::path& path)
         return;
     storage_->identity_index.clear();
     storage_->identity_index.reserve(storage_->entries.size());
+    storage_->generation_paths.clear();
     for (std::size_t index = 0; index < storage_->entries.size(); ++index) {
         storage_->identity_index.emplace(
             storage_->entries[index].content_identity, index);
+        for (const auto& record : storage_->entries[index].file_generations)
+            storage_->generation_paths.insert(record.path);
     }
 }
 
@@ -1674,6 +1676,11 @@ std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept
         add_path(path);
         add(owners.capacity() * sizeof(ContentIdentity));
     }
+    add(storage_->generation_paths.bucket_count() * sizeof(void*));
+    add(storage_->generation_paths.size() *
+        (sizeof(std::filesystem::path) + 2U * sizeof(void*)));
+    for (const auto& path : storage_->generation_paths)
+        add_path(path);
     return total;
 }
 
