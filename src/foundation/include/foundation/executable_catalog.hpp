@@ -196,7 +196,7 @@ private:
             identity_index;
         // Cache containers may own several image entries. Keep owners in
         // entry order so preferred-file and last-fallback lookup is unchanged.
-        std::unordered_map<std::filesystem::path, std::vector<ContentIdentity>>
+        std::map<std::filesystem::path, std::vector<ContentIdentity>>
             path_index;
         std::unordered_set<std::filesystem::path> generation_paths;
     };

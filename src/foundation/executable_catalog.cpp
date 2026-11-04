@@ -819,20 +819,15 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
                relative.begin() != relative.end() && *relative.begin() != "..";
     };
 
-    // Snapshot the aliases once. Descendants form a contiguous range in path
-    // order, so only the first alias after a subtree can establish its old
-    // directory shape. Avoid scanning every image for every data notification.
-    std::set<std::filesystem::path> catalog_paths;
-    for (const auto& entry : storage_->entries) {
-        catalog_paths.insert(entry.aliases.begin(), entry.aliases.end());
-    }
+    // Descendants form a contiguous range in the existing path index. Data
+    // notifications need only their requested paths, not every image alias.
     std::set<std::filesystem::path> requested_files;
     std::set<std::filesystem::path> requested_subtrees;
     const auto has_catalog_descendant =
-        [&catalog_paths, &is_in_subtree](const std::filesystem::path& subtree) {
-            const auto descendant = catalog_paths.upper_bound(subtree);
-            return descendant != catalog_paths.end() &&
-                   is_in_subtree(*descendant, subtree);
+        [this, &is_in_subtree](const std::filesystem::path& subtree) {
+            const auto descendant = storage_->path_index.upper_bound(subtree);
+            return descendant != storage_->path_index.end() &&
+                   is_in_subtree(descendant->first, subtree);
         };
     for (const auto& path : paths) {
         const auto normalized = normalize_path(path);
@@ -909,12 +904,15 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
     }
 
     std::set<std::filesystem::path> old_paths;
-    for (const auto& alias : catalog_paths) {
-        const auto next_scope = removal_subtrees.upper_bound(alias);
-        if (requested_files.contains(alias) ||
-            (next_scope != removal_subtrees.begin() &&
-                is_in_subtree(alias, *std::prev(next_scope)))) {
-            old_paths.insert(alias);
+    for (const auto& path : requested_files) {
+        if (storage_->path_index.contains(path))
+            old_paths.insert(path);
+    }
+    for (const auto& subtree : removal_subtrees) {
+        for (auto alias = storage_->path_index.lower_bound(subtree);
+            alias != storage_->path_index.end() &&
+            is_in_subtree(alias->first, subtree); ++alias) {
+            old_paths.insert(alias->first);
         }
     }
     for (const auto& old_path : old_paths) {
@@ -1245,7 +1243,6 @@ bool ExecutableCatalog::load(const std::filesystem::path& path) noexcept
         auto storage = std::make_shared<Storage>();
         storage->entries = std::move(entries);
         storage->identity_index = std::move(identity_index);
-        storage->path_index.reserve(storage->entries.size());
         for (const auto& entry : storage->entries) {
             for (const auto& alias : entry.aliases)
                 storage->path_index[alias].push_back(entry.content_identity);
@@ -1668,10 +1665,9 @@ std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept
     add(storage_->identity_index.size() *
         (sizeof(typename decltype(storage_->identity_index)::value_type) +
             2U * sizeof(void*)));
-    add(storage_->path_index.bucket_count() * sizeof(void*));
     add(storage_->path_index.size() *
         (sizeof(typename decltype(storage_->path_index)::value_type) +
-            2U * sizeof(void*)));
+            4U * sizeof(void*)));
     for (const auto& [path, owners] : storage_->path_index) {
         add_path(path);
         add(owners.capacity() * sizeof(ContentIdentity));
