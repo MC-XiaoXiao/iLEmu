@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -105,7 +106,7 @@ private:
     HostFileWatcher watcher_;
     bool registration_reported_ { };
     bool refresh_pending_ { };
-    std::vector<std::filesystem::path> refresh_paths_;
+    std::set<std::filesystem::path> refresh_paths_;
     std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>
         refresh_identities_;
     std::shared_ptr<SharedState> state_ { std::make_shared<SharedState>() };

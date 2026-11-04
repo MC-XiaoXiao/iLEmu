@@ -77,10 +77,7 @@ CatalogMaintenance::CatalogMaintenance(SessionCatalog& catalog,
 void CatalogMaintenance::queue_path(const std::filesystem::path& path,
     std::optional<ExecutableCatalogKnownIdentity> known_identity)
 {
-    if (std::find(refresh_paths_.begin(), refresh_paths_.end(), path) ==
-        refresh_paths_.end()) {
-        refresh_paths_.push_back(path);
-    }
+    refresh_paths_.insert(path);
     if (known_identity) {
         refresh_identities_[path] = std::move(*known_identity);
     }
@@ -263,7 +260,7 @@ void CatalogMaintenance::schedule()
         return;
     }
     auto refresh_paths = std::make_shared<std::vector<std::filesystem::path>>(
-        std::move(refresh_paths_));
+        refresh_paths_.begin(), refresh_paths_.end());
     refresh_paths_.clear();
     auto refresh_identities = std::make_shared<
         std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>>(
