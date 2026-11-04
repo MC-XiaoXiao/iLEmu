@@ -2351,7 +2351,10 @@ void EmulatorSession::run()
                        ended_at.time_since_epoch()).count()
                 << ' ' << native_code_map_begin_complete << '\n';
             std::size_t contexts { }, retained { }, dropped { };
-            constexpr std::size_t maximum_ranges_per_context = 65'536;
+            // This explicit diagnostic export runs after the measured window.
+            // Truncation loses attribution for code emitted later in a pool.
+            constexpr auto maximum_ranges_per_context =
+                std::numeric_limits<std::size_t>::max();
             for (const auto& runtime : runtimes) {
                 if (!runtime->cpus)
                     continue;
