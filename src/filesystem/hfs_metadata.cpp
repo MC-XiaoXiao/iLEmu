@@ -123,7 +123,7 @@ namespace {
         if (const auto original = numeric_xattr(
                 path, "user.hfsfuse.record.cnid", follow_symlink, descriptor))
             return *original;
-        if (status.st_nlink > 1)
+        if (!S_ISDIR(status.st_mode) && status.st_nlink > 1)
             return path_catalog_id(root, path);
         return inode_catalog_id(status);
     }
@@ -344,11 +344,6 @@ namespace {
 
 } // namespace
 
-MetadataProvider::MetadataProvider(std::filesystem::path root)
-    : root_ { std::move(root) }
-{
-}
-
 std::optional<DirectoryEntryMetadata> MetadataProvider::query_directory_entry(
     const std::filesystem::path& path, bool follow_symlink) const
 {
@@ -369,9 +364,12 @@ std::optional<DirectoryEntryMetadata> MetadataProvider::query_directory_entry(
     // Enumeration only needs identity and type. Full attribute queries may
     // walk ancestors and read resource forks; none of that changes these
     // fields.
-    return DirectoryEntryMetadata {
-        catalog_id(root_, path, status, follow_symlink), type
-    };
+    const auto id = catalog_id(root_, path, status, follow_symlink);
+    const auto permanent = !S_ISDIR(status.st_mode) && status.st_nlink > 1
+        ? inode_catalog_id(status) : id;
+    if (is_within_root(root_, path))
+        remember_catalog_path(id, permanent, path);
+    return DirectoryEntryMetadata { id, type, permanent };
 }
 
 std::optional<Metadata> MetadataProvider::query(
@@ -423,13 +421,12 @@ std::optional<Metadata> MetadataProvider::query(
     // that identity for ordinary vnodes; only true hard links need the host
     // inode to share one identity across multiple catalog names.
     const auto hardlinked_file = !result.directory && status.st_nlink > 1;
-    result.permanent_id = hardlinked_file
-                              ? inode_catalog_id(status)
-                              : numeric_xattr(path, "user.hfsfuse.record.cnid",
-                                    follow_symlink, host_descriptor)
-                                    .value_or(inode_catalog_id(status));
     result.catalog_id =
         catalog_id(root_, path, status, follow_symlink, host_descriptor);
+    result.permanent_id = hardlinked_file
+        ? inode_catalog_id(status) : result.catalog_id;
+    if (is_within_root(root_, path))
+        remember_catalog_path(result.catalog_id, result.permanent_id, path);
     if (is_root) {
         result.parent_catalog_id = hfs_root_parent_id;
     } else {

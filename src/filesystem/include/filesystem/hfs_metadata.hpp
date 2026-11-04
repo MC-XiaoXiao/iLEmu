@@ -15,11 +15,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <mutex>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace ilemu::hfs {
@@ -150,6 +149,7 @@ struct Metadata {
 struct DirectoryEntryMetadata {
     std::uint32_t catalog_id { };
     std::filesystem::file_type type { std::filesystem::file_type::none };
+    std::uint32_t permanent_id { };
 };
 
 struct MetadataOverride {
@@ -252,10 +252,12 @@ public:
         const std::filesystem::path& path);
 
 private:
+    struct CatalogIndex;
+    void remember_catalog_path(std::uint32_t catalog_id,
+        std::uint32_t permanent_id, const std::filesystem::path& path) const;
     std::filesystem::path root_;
-    mutable std::mutex catalog_mutex_;
-    mutable std::unordered_map<std::uint32_t, std::filesystem::path>
-        catalog_paths_;
+    // Copies belong to the same mounted volume and share observed vnode paths.
+    std::shared_ptr<CatalogIndex> catalog_;
 };
 
 } // namespace ilemu::hfs
