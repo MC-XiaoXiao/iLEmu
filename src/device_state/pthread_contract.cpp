@@ -34,11 +34,16 @@ namespace {
         PthreadPriorityEncoding::FineClassBitsV2, 4U, fine_priority_features,
         true, true,
     };
+    constexpr PthreadContract register_v1_expanded_tsd_resource_qos {
+        PthreadRegistrationLayout::Arm32RegisterV1, 0xa4U,
+        PthreadPriorityEncoding::FineClassBitsV2, 4U, fine_priority_features,
+        true, true, true, false,
+    };
     constexpr PthreadContract register_v1_expanded_tsd_kevent {
         PthreadRegistrationLayout::Arm32RegisterV1, 0xa4U,
         PthreadPriorityEncoding::FineClassBitsWithMaintenance, 4U,
         fine_priority_features | maintenance_feature | 0x01U | 0x40U,
-        true, true,
+        true, true, true, true,
     };
 
 } // namespace
@@ -59,8 +64,9 @@ const PthreadContract& resolve_pthread_contract(DarwinVersion version)
     case DarwinGeneration::Ios7:
         return register_v1_expanded_tsd_four_queues;
     case DarwinGeneration::Ios8:
-    case DarwinGeneration::Ios9:
         return register_v1_expanded_tsd_fine_priority;
+    case DarwinGeneration::Ios9:
+        return register_v1_expanded_tsd_resource_qos;
     case DarwinGeneration::Ios10:
         return register_v1_expanded_tsd_kevent;
     }
