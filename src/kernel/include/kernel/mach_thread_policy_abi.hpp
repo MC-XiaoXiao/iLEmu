@@ -37,6 +37,8 @@ constexpr std::size_t legacy_maximum_policy_word_count = 5;
 constexpr std::uint32_t extended_policy = 1;
 constexpr std::uint32_t time_constraint_policy = 2;
 constexpr std::uint32_t precedence_policy = 3;
+constexpr std::uint32_t qos_policy = 9;
+constexpr std::size_t qos_policy_word_count = 2;
 
 constexpr std::size_t request_flavor_offset = 32;
 constexpr std::size_t request_count_offset = 36;

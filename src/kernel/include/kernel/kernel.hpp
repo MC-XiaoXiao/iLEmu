@@ -139,13 +139,16 @@ public:
         std::function<std::optional<std::uint32_t>(Cpu&)>;
     using ExecHandler = std::function<bool(
         Cpu&, PreparedProcessImage, std::vector<std::string>)>;
-    struct SpawnSignalAttributes {
+    struct SpawnAttributes {
         std::optional<std::uint32_t> mask;
         std::uint32_t defaults { };
+        DarwinProcessType process_type { };
+        XnuQosTier qos_clamp { };
+        std::optional<DarwinProcessRole> role;
     };
     using SpawnExecHandler = std::function<bool(std::uint32_t, PreparedProcessImage,
         std::vector<std::string>, bool,
-        const SpawnSignalAttributes&)>;
+        const SpawnAttributes&)>;
     using SchedulerRunnableQuery = std::function<bool(std::size_t)>;
     using LegacyThreadPolicyHandler =
         std::function<bool(std::uint32_t, std::uint32_t, std::uint32_t, std::int32_t)>;
@@ -516,7 +519,7 @@ public:
         ProcessInheritance inheritance = ProcessInheritance::Fork,
         std::size_t parent_processor = 0);
     void prepare_exec(std::size_t processor_id);
-    void apply_spawn_signal_attributes(const SpawnSignalAttributes& attributes);
+    void apply_spawn_attributes(const SpawnAttributes& attributes);
     void install_main_image_hle(
         Cpu& cpu, std::shared_ptr<const MachOImage> image);
     void set_process_image(std::string_view guest_path,
@@ -642,6 +645,10 @@ private:
     [[nodiscard]] bool dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_ulock(Cpu& cpu, std::uint32_t number);
+    bool register_bsd_pthread(Cpu& cpu);
+    bool set_bsd_pthread_qos(Cpu& cpu);
+    [[nodiscard]] bool apply_workqueue_qos_policy(
+        std::uint32_t processor, const DarwinWorkqueueItem& item);
     [[nodiscard]] bool service_bsd_workqueue(Cpu* requesting_cpu);
     [[nodiscard]] bool request_workqueue_kevents(Cpu* requesting_cpu);
     [[nodiscard]] bool prepare_workqueue_kevent_upcall(

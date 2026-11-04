@@ -2,6 +2,7 @@
 #pragma once
 
 #include "foundation/darwin_version.hpp"
+#include "mach/xnu_qos_policy.hpp"
 #include <atomic>
 #include <cstdint>
 #include <optional>
@@ -16,6 +17,11 @@ enum class DarwinProcessRole : std::int32_t {
     NonUi,
     NonFocalUi,
     ThrottledLaunch,
+};
+
+enum class DarwinProcessType : std::uint32_t {
+    Unspecified, App, TalApp, StandardDaemon, InteractiveDaemon,
+    BackgroundDaemon, AdaptiveDaemon,
 };
 
 struct ProcessPriorityProfile {
@@ -42,6 +48,52 @@ public:
     {
         role_.store(role, std::memory_order_relaxed);
     }
+    void set_spawn_policy(DarwinProcessType type, XnuQosTier clamp) noexcept
+    {
+        if (type != DarwinProcessType::Unspecified)
+            type_.store(type, std::memory_order_relaxed);
+        if (clamp != XnuQosTier::Unspecified)
+            clamp_.store(clamp, std::memory_order_relaxed);
+    }
+    [[nodiscard]] DarwinProcessType type() const noexcept
+    {
+        return type_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] XnuTaskQosPolicy qos_policy() const noexcept
+    {
+        XnuTaskQosPolicy result { XnuQosTier::UserInitiated,
+            clamp_.load(std::memory_order_relaxed) };
+        if (type() == DarwinProcessType::App || type() == DarwinProcessType::TalApp) {
+            switch (role()) {
+            case DarwinProcessRole::FocalUi:
+                result.urgent_ui = true;
+                [[fallthrough]];
+            case DarwinProcessRole::Ui:
+            case DarwinProcessRole::NonFocalUi:
+                result.ceiling = XnuQosTier::Unspecified;
+                break;
+            case DarwinProcessRole::ThrottledLaunch:
+                result.ceiling = XnuQosTier::Utility;
+                break;
+            default:
+                result.ceiling = XnuQosTier::Default;
+                break;
+            }
+        }
+        return result;
+    }
+    [[nodiscard]] XnuThreadQosPolicy main_thread_qos() const noexcept
+    {
+        const auto process_type = type();
+        auto tier = process_type == DarwinProcessType::App || process_type == DarwinProcessType::TalApp
+            ? XnuQosTier::UserInteractive
+            : process_type == DarwinProcessType::BackgroundDaemon
+                ? XnuQosTier::Background : XnuQosTier::Default;
+        const auto clamp = clamp_.load(std::memory_order_relaxed);
+        if (clamp != XnuQosTier::Unspecified)
+            tier = std::min(tier, clamp);
+        return { tier };
+    }
     [[nodiscard]] std::optional<bool> visible() const noexcept
     {
         const auto value = role();
@@ -53,6 +105,8 @@ public:
 
 private:
     std::atomic<DarwinProcessRole> role_ { DarwinProcessRole::Default };
+    std::atomic<DarwinProcessType> type_ { DarwinProcessType::Unspecified };
+    std::atomic<XnuQosTier> clamp_ { XnuQosTier::Unspecified };
 };
 
 } // namespace ilemu

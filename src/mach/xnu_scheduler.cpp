@@ -106,9 +106,14 @@ bool XnuScheduler::register_thread(
     if (usage_records_.capacity() < threads_.size())
         usage_records_.reserve(std::bit_ceil(threads_.size()));
     record.info.base_priority = clamp_priority(base_priority);
+    record.legacy_base_priority = record.info.base_priority;
+    if (const auto policy = task_qos_policies_.find(thread.process);
+        policy != task_qos_policies_.end())
+        record.task_qos = policy->second;
     record.info.scheduled_priority = record.info.base_priority;
     record.info.remaining_quantum = quantum_ticks_;
     record.info.scheduler_stamp = scheduler_tick_;
+    recompute_priority(thread, record);
     process_threads_[thread.process].insert(thread);
     process_runnable_counts_.try_emplace(thread.process, 0);
     task_history_.try_emplace(thread.process);
@@ -154,6 +159,7 @@ std::size_t XnuScheduler::remove_process(std::uint32_t process)
     const auto process_iterator = process_threads_.find(process);
     if (process_iterator == process_threads_.end()) {
         task_history_.erase(process);
+        task_qos_policies_.erase(process);
         return 0;
     }
     const std::vector<XnuThreadId> process_threads {
@@ -163,6 +169,7 @@ std::size_t XnuScheduler::remove_process(std::uint32_t process)
         static_cast<void>(remove_thread(thread));
     }
     task_history_.erase(process);
+    task_qos_policies_.erase(process);
     return process_threads.size();
 }
 
@@ -530,7 +537,11 @@ bool XnuScheduler::set_base_priority(XnuThreadId thread, std::int32_t priority)
     if (iterator == threads_.end())
         return false;
     const auto clamped = clamp_priority(priority);
-    if (iterator->second.info.base_priority == clamped)
+    const auto previous_qos = iterator->second.info.requested_qos;
+    iterator->second.info.requested_qos = { };
+    iterator->second.legacy_base_priority = clamped;
+    if (iterator->second.info.base_priority == clamped &&
+        previous_qos.tier == XnuQosTier::Unspecified)
         return true;
     iterator->second.info.base_priority = clamped;
     recompute_priority(thread, iterator->second);
@@ -560,8 +571,16 @@ bool XnuScheduler::set_precedence(XnuThreadId thread,
 bool XnuScheduler::set_task_priority(XnuThreadId thread, std::int32_t priority)
 {
     const auto iterator = threads_.find(thread);
-    return iterator != threads_.end() &&
-           set_precedence(thread, priority, iterator->second.importance);
+    if (iterator == threads_.end())
+        return false;
+    auto& record = iterator->second;
+    if (record.info.requested_qos.tier == XnuQosTier::Unspecified)
+        return set_precedence(thread, priority, record.importance);
+    record.legacy_base_priority = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+        static_cast<std::int64_t>(priority) + std::clamp(record.importance,
+            -xnu::scheduler::maximum_priority, xnu::scheduler::maximum_priority),
+        minimum_user_priority_, xnu::scheduler::maximum_user_priority));
+    return true;
 }
 
 bool XnuScheduler::set_legacy_policy(XnuThreadId thread, bool timeshare,
@@ -585,6 +604,39 @@ bool XnuScheduler::set_legacy_policy(XnuThreadId thread, bool timeshare,
               xnu::scheduler::minimum_priority, xnu::scheduler::maximum_user_priority));
     return set_timeshare(thread, timeshare) &&
            set_precedence(thread, task_priority, base - task_priority);
+}
+
+bool XnuScheduler::set_requested_qos(XnuThreadId thread, XnuThreadQosPolicy policy)
+{
+    const auto iterator = threads_.find(thread);
+    if (iterator == threads_.end() || !policy.valid())
+        return false;
+    auto& record = iterator->second;
+    record.info.requested_qos = policy;
+    const auto priority = policy.tier == XnuQosTier::Unspecified
+        ? record.legacy_base_priority : policy.priority();
+    if (record.info.failsafe)
+        record.failsafe_saved_base_priority = priority;
+    else
+        record.info.base_priority = priority;
+    recompute_priority(thread, record);
+    return true;
+}
+
+void XnuScheduler::set_task_qos_policy(std::uint32_t process, XnuTaskQosPolicy policy)
+{
+    const auto previous = task_qos_policies_.find(process);
+    if (previous != task_qos_policies_.end() && previous->second == policy)
+        return;
+    task_qos_policies_.insert_or_assign(process, policy);
+    const auto owned = process_threads_.find(process);
+    if (owned == process_threads_.end())
+        return;
+    for (const auto thread : owned->second) {
+        auto& record = threads_.at(thread);
+        record.task_qos = policy;
+        recompute_priority(thread, record);
+    }
 }
 
 bool XnuScheduler::set_qos_override_priority(
@@ -1367,9 +1419,9 @@ void XnuScheduler::recompute_priority(XnuThreadId thread, ThreadRecord& record)
     // timeshare accounting applies to the effective base, including donations.
     const auto effective_base = record.info.failsafe
         ? record.info.base_priority
-        : std::max(record.info.base_priority,
-              record.info.qos_override_priority.value_or(
-                  xnu::scheduler::minimum_priority));
+        : record.task_qos.effective_priority(record.info.requested_qos,
+              record.info.base_priority, record.info.qos_override_priority
+                  ? &*record.info.qos_override_priority : nullptr);
     const auto priority = record.info.realtime
                               ? xnu::scheduler::realtime_queue_priority
                           : record.info.timeshare

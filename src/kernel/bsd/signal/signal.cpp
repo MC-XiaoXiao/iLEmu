@@ -94,18 +94,6 @@ void CompatibilityKernel::reset_signal_actions_for_exec()
     }
 }
 
-void CompatibilityKernel::apply_spawn_signal_attributes(
-    const SpawnSignalAttributes& attributes)
-{
-    if (attributes.mask)
-        static_cast<void>(signal_state_.update(0, 3, *attributes.mask,
-            DarwinSignalState::Scope::Process));
-    for (std::size_t signal = 1; signal < signal_actions_.size(); ++signal) {
-        if ((attributes.defaults & (1U << (signal - 1U))) != 0U)
-            signal_actions_[signal] = { };
-    }
-}
-
 std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal,
     std::uint32_t sender_pid, std::uint32_t sender_uid)
 {

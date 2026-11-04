@@ -3366,6 +3366,9 @@ void CompatibilityKernel::inherit_process_state(
     process_ = parent.process_;
     process_.membership = std::make_shared<ProcessMembership>(*parent.process_.membership);
     process_.execution_policy = std::make_shared<ProcessExecutionPolicy>();
+    const auto& inherited_policy = *parent.process_.execution_policy;
+    process_.execution_policy->set_spawn_policy(
+        inherited_policy.type(), inherited_policy.qos_policy().clamp);
     process_.parent_pid = parent.process_.pid;
     process_.pid = child_pid;
     process_.exited = false;

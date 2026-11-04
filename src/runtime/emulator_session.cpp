@@ -96,6 +96,7 @@
 #include "kernel/kernel.hpp"
 #include "kernel/mach_arm_thread_state.hpp"
 #include "kernel/mach_thread_policy_abi.hpp"
+#include "device_state/pthread_contract.hpp"
 #include "mach/guest_dispatch_policy.hpp"
 #include "mach/guest_execution_policy.hpp"
 #include "mach/guest_parallelism_policy.hpp"
@@ -155,6 +156,7 @@ void EmulatorSession::run()
     device.input.system_gestures.unlock_interaction =
         darwin_configuration.unlock_interaction;
     const auto& darwin_version = darwin_configuration.version;
+    const auto native_thread_qos = resolve_pthread_contract(darwin_version).supports_bsdthread_ctl;
     SessionCatalog session_catalog { rootfs,
         arm_architecture_for_model(device.processor.model), catalog_manifest,
         output };
@@ -1856,6 +1858,15 @@ void EmulatorSession::run()
             static_cast<void>(
                 scheduler.register_thread(XnuThreadId { child_pid, 0 },
                     child->kernel->process().thread_base_priority));
+            if (native_thread_qos && inheritance == CompatibilityKernel::ProcessInheritance::Fork) {
+                scheduler.set_task_qos_policy(child_pid,
+                    child->kernel->process().execution_policy->qos_policy());
+                const auto parent = scheduler.info({ runtime_ptr->kernel->process().pid,
+                    static_cast<std::uint32_t>(parent_cpu.processor_id()) });
+                if (parent)
+                    static_cast<void>(scheduler.set_requested_qos(
+                        { child_pid, 0 }, parent->requested_qos));
+            }
             observe_runtime_jit_memory_counted(*child);
             runtime_index.insert(*child);
             runtimes.push_back(std::move(child));
@@ -1881,7 +1892,7 @@ void EmulatorSession::run()
         runtime.kernel->set_spawn_exec_handler([&](std::uint32_t child_pid,
             PreparedProcessImage image, std::vector<std::string> environment,
             bool start_suspended,
-            const CompatibilityKernel::SpawnSignalAttributes& signal_attributes) {
+            const CompatibilityKernel::SpawnAttributes& spawn_attributes) {
             const auto path = image.requested_path;
             auto* child_runtime = runtime_index.find(child_pid);
             if (child_runtime == nullptr)
@@ -1930,8 +1941,14 @@ void EmulatorSession::run()
                         path, loaded.executable.code_signature_entitlements(),
                         &loaded.dynamic_linker, &loaded.executable);
                     child_runtime->kernel->prepare_exec(0);
-                    child_runtime->kernel->apply_spawn_signal_attributes(
-                        signal_attributes);
+                    child_runtime->kernel->apply_spawn_attributes(
+                        spawn_attributes);
+                    if (native_thread_qos) {
+                        const auto& policy = *child_runtime->kernel->process().execution_policy;
+                        scheduler.set_task_qos_policy(child_pid, policy.qos_policy());
+                        static_cast<void>(scheduler.set_requested_qos(
+                            { child_pid, 0 }, policy.main_thread_qos()));
+                    }
                     auto& child_cpu = child_runtime->cpus->cpu(0);
                     child_cpu.reset();
                     child_cpu.clear_cache();
@@ -2117,24 +2134,33 @@ void EmulatorSession::run()
                 if (!target)
                     return false;
                 const XnuThreadId thread { pid, processor };
+                if (flavor == qos_policy && policy.size() >= qos_policy_word_count) {
+                    scheduler.set_task_qos_policy(pid,
+                        target->kernel->process().execution_policy->qos_policy());
+                    return scheduler.set_requested_qos(thread, {
+                        static_cast<XnuQosTier>(policy[0]),
+                        std::bit_cast<std::int32_t>(policy[1]) });
+                }
                 if (flavor == extended_policy) {
                     const auto timeshare =
                         policy.empty() ||
                         ((timeshare_version >= DarwinGeneration::Ios7)
                                 ? policy[0] == 1U
                                 : policy[0] != 0U);
-                    return scheduler.set_timeshare(thread, timeshare);
+                    return scheduler.set_requested_qos(thread, { }) &&
+                        scheduler.set_timeshare(thread, timeshare);
                 }
                 if (flavor == time_constraint_policy &&
                     policy.size() >= time_constraint_policy_word_count) {
                     scheduler.set_realtime_clock_ticks(duration_to_guest_ticks(
                         runtime_ptr->kernel->current_absolute_time(),
                         absolute_time_units_per_second, guest_ticks_per_second));
-                    return scheduler.set_realtime_policy(thread, {
+                    const auto applied = scheduler.set_realtime_policy(thread, {
                         policy[realtime_period_index],
                         policy[realtime_computation_index],
                         policy[realtime_constraint_index],
                         policy[realtime_preemptible_index] });
+                    return applied && scheduler.set_requested_qos(thread, { });
                 }
                 if (flavor == precedence_policy &&
                     policy.size() >= precedence_policy_word_count) {
@@ -2154,6 +2180,12 @@ void EmulatorSession::run()
     static_cast<void>(scheduler.register_thread(
         XnuThreadId { initial_runtime->kernel->process().pid, 0 },
         initial_runtime->kernel->process().thread_base_priority));
+    if (native_thread_qos) {
+        scheduler.set_task_qos_policy(initial_runtime->kernel->process().pid,
+            initial_runtime->kernel->process().execution_policy->qos_policy());
+        static_cast<void>(scheduler.set_requested_qos(
+            { initial_runtime->kernel->process().pid, 0 }, { XnuQosTier::UserInitiated }));
+    }
     initial_cpu.registers()[13] = process.stack_pointer;
     initial_cpu.registers()[15] = process.entry_point;
     initial_cpu.set_cpsr(0x10);
@@ -2431,6 +2463,8 @@ void EmulatorSession::run()
                 continue;
             const auto process_id = runtime->kernel->process().pid;
             const auto& policy = *runtime->kernel->process().execution_policy;
+            if (native_thread_qos)
+                scheduler.set_task_qos_policy(process_id, policy.qos_policy());
             if (policy.role() == DarwinProcessRole::FocalUi)
                 foreground_processes.push_back(process_id);
             const auto critical = runtime.get() == initial_runtime ||
@@ -4398,6 +4432,12 @@ void EmulatorSession::run()
                     static_cast<void>(scheduler.replace_process_threads(
                         scheduled->thread, runtime.kernel->process().thread_base_priority,
                         pending_thread_ticks));
+                    if (native_thread_qos) {
+                        const auto& policy = *runtime.kernel->process().execution_policy;
+                        scheduler.set_task_qos_policy(process_id, policy.qos_policy());
+                        static_cast<void>(scheduler.set_requested_qos(
+                            scheduled->thread, policy.main_thread_qos()));
+                    }
                     guest_execution_policy.forget_process(
                         runtime.kernel->process().pid);
                     guest_parallelism_policy.forget_process(

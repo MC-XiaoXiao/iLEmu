@@ -39,11 +39,18 @@ namespace {
     // wire object to six words in the later spawn contract (XNU1228+).
     struct SpawnDescriptorProfile {
         bool port_actions;
+        bool process_type;
+        bool qos_clamp;
+        std::int32_t maximum_role;
 
         static constexpr SpawnDescriptorProfile for_version(
             DarwinVersion version)
         {
-            return { (version >= DarwinGeneration::IphoneOs2) };
+            return { version >= DarwinGeneration::IphoneOs2,
+                version >= DarwinGeneration::Ios7,
+                version >= DarwinGeneration::Ios8,
+                version >= DarwinGeneration::Ios9
+                    ? ProcessPriorityProfile::for_version(version).maximum_role : 0 };
         }
     };
 
@@ -56,7 +63,7 @@ namespace {
     struct PosixSpawnAttributes {
         bool setexec { };
         bool start_suspended { };
-        CompatibilityKernel::SpawnSignalAttributes signals;
+        CompatibilityKernel::SpawnAttributes task;
         std::vector<SpawnPortAction> port_actions;
     };
 
@@ -117,12 +124,41 @@ namespace {
                 const auto defaults = read_signal_set(4U);
                 if (!defaults)
                     return std::nullopt;
-                result.signals.defaults = *defaults;
+                result.task.defaults = *defaults;
             }
             if ((*flags & posix_spawn_setsigmask) != 0U) {
-                result.signals.mask = read_signal_set(8U);
-                if (!result.signals.mask)
+                result.task.mask = read_signal_set(8U);
+                if (!result.task.mask)
                     return std::nullopt;
+            }
+        }
+        if (*attribute_address != 0U) {
+            // New fields are appended to the fixed spawnattr ABI. Short older
+            // structures retain their zero defaults, as XNU's copyin does.
+            if (profile.process_type && *attribute_size >= 40U) {
+                const auto encoded = memory.read32(*attribute_address + 36U);
+                if (!encoded)
+                    return std::nullopt;
+                const auto type = (*encoded & 0xf00U) >> 8U;
+                if (type <= static_cast<std::uint32_t>(DarwinProcessType::AdaptiveDaemon))
+                    result.task.process_type = static_cast<DarwinProcessType>(type);
+            }
+            if (profile.qos_clamp && *attribute_size >= 88U) {
+                const auto clamp = memory.read64(*attribute_address + 80U);
+                if (!clamp)
+                    return std::nullopt;
+                switch (*clamp) {
+                case 1: result.task.qos_clamp = XnuQosTier::Utility; break;
+                case 2: result.task.qos_clamp = XnuQosTier::Background; break;
+                case 3: result.task.qos_clamp = XnuQosTier::Maintenance; break;
+                }
+            }
+            if (profile.maximum_role != 0 && *attribute_size >= 96U) {
+                const auto role = memory.read64(*attribute_address + 88U);
+                if (!role)
+                    return std::nullopt;
+                if (*role != 0U && *role <= static_cast<std::uint64_t>(profile.maximum_role))
+                    result.task.role = static_cast<DarwinProcessRole>(*role);
             }
         }
         if (!profile.port_actions)
@@ -204,6 +240,21 @@ namespace {
 
 } // namespace
 
+void CompatibilityKernel::apply_spawn_attributes(
+    const SpawnAttributes& attributes)
+{
+    process_.execution_policy->set_spawn_policy(attributes.process_type, attributes.qos_clamp);
+    if (attributes.role)
+        process_.execution_policy->set_role(*attributes.role);
+    if (attributes.mask)
+        static_cast<void>(signal_state_.update(0, 3, *attributes.mask,
+            DarwinSignalState::Scope::Process));
+    for (std::size_t signal = 1; signal < signal_actions_.size(); ++signal) {
+        if ((attributes.defaults & (1U << (signal - 1U))) != 0U)
+            signal_actions_[signal] = { };
+    }
+}
+
 bool CompatibilityKernel::dispatch_bsd_process_spawn(
     Cpu& cpu, std::uint32_t number)
 {
@@ -254,7 +305,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
                 bsd_error(cpu, error);
                 return;
             }
-            apply_spawn_signal_attributes(attributes.signals);
+            apply_spawn_attributes(attributes.task);
             output_.write("[process] spawn-port-actions pid=" +
                 std::to_string(process_.pid) + " count=" +
                 std::to_string(attributes.port_actions.size()) +
@@ -302,7 +353,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
         performance_counters().record_fork();
         if (!spawn_exec_handler_ ||
             !spawn_exec_handler_(*child, std::move(image), environment,
-                attributes.start_suspended, attributes.signals)) {
+                attributes.start_suspended, attributes.task)) {
             bsd_error(cpu, 8); // ENOEXEC
             return;
         }

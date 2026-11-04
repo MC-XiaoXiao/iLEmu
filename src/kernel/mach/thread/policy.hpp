@@ -59,6 +59,8 @@ public:
             for (std::uint32_t index = 0; index < count; ++index)
                 values[index] =
                     read_little_word(request.bytes, 40U + index * 4U);
+            if (flavor == qos_policy)
+                return error(darwin::mach::invalid_argument);
             return error(apply && apply(owner->first, owner->second, flavor,
                                       std::span { values }.first(count))
                              ? darwin::mach::success
@@ -99,6 +101,16 @@ public:
             payload[7] = realtime.preemptible;
             break;
         }
+        case qos_policy:
+            if (!state.pthread_contract.supports_bsdthread_ctl)
+                return error(darwin::mach::invalid_argument);
+            if (output_count < qos_policy_word_count)
+                return error(darwin::mach::invalid_argument);
+            if (!get_default) {
+                payload[4] = static_cast<std::uint32_t>(statistics->scheduling.requested_qos.tier);
+                payload[5] = static_cast<std::uint32_t>(statistics->scheduling.requested_qos.relative_priority);
+            }
+            break;
         case precedence_policy:
             if (output_count < precedence_policy_word_count)
                 return error(darwin::mach::invalid_argument);

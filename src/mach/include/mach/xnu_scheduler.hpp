@@ -13,6 +13,7 @@
 #pragma once
 
 #include "mach/xnu_task_statistics.hpp"
+#include "mach/xnu_qos_policy.hpp"
 #include <array>
 #include <chrono>
 #include <compare>
@@ -131,6 +132,7 @@ struct XnuThreadSchedulingInfo {
     std::int32_t scheduled_priority {
         xnu::scheduler::default_base_priority
     };
+    XnuThreadQosPolicy requested_qos;
     // QoS donations never overwrite the requested base priority.
     std::optional<std::int32_t> qos_override_priority;
     std::uint64_t remaining_quantum {
@@ -239,6 +241,8 @@ public:
     bool set_task_priority(XnuThreadId thread, std::int32_t priority);
     bool set_legacy_policy(XnuThreadId thread, bool timeshare,
         std::int32_t task_priority, std::int32_t priority);
+    bool set_requested_qos(XnuThreadId thread, XnuThreadQosPolicy policy);
+    void set_task_qos_policy(std::uint32_t process, XnuTaskQosPolicy policy);
     bool set_qos_override_priority(
         XnuThreadId thread, std::optional<std::int32_t> priority);
     bool depress(XnuThreadId thread, std::uint64_t duration_ticks = 0);
@@ -374,6 +378,8 @@ private:
     struct ThreadRecord : mcl::intrusive_list_node<ThreadRecord> {
         XnuThreadSchedulingInfo info;
         std::int32_t importance { };
+        std::int32_t legacy_base_priority { };
+        XnuTaskQosPolicy task_qos;
         XnuRealtimePolicy realtime_policy;
         bool queued { };
         // A hold can change visible state before the dispatched slice returns.
@@ -462,6 +468,7 @@ private:
         std::uint32_t context_switches { };
     };
     std::unordered_map<std::uint32_t, TaskHistory> task_history_;
+    std::unordered_map<std::uint32_t, XnuTaskQosPolicy> task_qos_policies_;
     // Host slices do not imply a native context switch. Track the last guest
     // context installed on each emulated processor until a real wait/hold.
     std::vector<std::optional<XnuThreadId>> processor_contexts_;

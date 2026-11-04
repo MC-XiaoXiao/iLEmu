@@ -28,6 +28,7 @@ struct DarwinPthreadRegistration {
     std::uint32_t reserved { };
     std::uint32_t target_concurrency { };
     std::uint32_t dispatch_queue_offset { };
+    std::uint32_t tsd_offset { };
 };
 
 enum class DarwinWorkqueueDelivery { WorkItem, DispatchThread, Kevent };
