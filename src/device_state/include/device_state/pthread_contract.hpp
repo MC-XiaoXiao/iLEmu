@@ -30,6 +30,7 @@ struct PthreadContract {
     bool supports_bsdthread_ctl;
     bool resource_qos_overrides { };
     bool dispatch_override_owner_check { };
+    std::uint32_t registration_data_size { };
 
     [[nodiscard]] constexpr bool supports_registration_v1() const noexcept
     {

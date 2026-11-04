@@ -32,18 +32,18 @@ namespace {
     constexpr PthreadContract register_v1_expanded_tsd_fine_priority {
         PthreadRegistrationLayout::Arm32RegisterV1, 0xa4U,
         PthreadPriorityEncoding::FineClassBitsV2, 4U, fine_priority_features,
-        true, true,
+        true, true, false, false, 24U,
     };
     constexpr PthreadContract register_v1_expanded_tsd_resource_qos {
         PthreadRegistrationLayout::Arm32RegisterV1, 0xa4U,
         PthreadPriorityEncoding::FineClassBitsV2, 4U, fine_priority_features,
-        true, true, true, false,
+        true, true, true, false, 24U,
     };
     constexpr PthreadContract register_v1_expanded_tsd_kevent {
         PthreadRegistrationLayout::Arm32RegisterV1, 0xa4U,
         PthreadPriorityEncoding::FineClassBitsWithMaintenance, 4U,
         fine_priority_features | maintenance_feature | 0x01U | 0x40U,
-        true, true, true, true,
+        true, true, true, true, 28U,
     };
 
 } // namespace
