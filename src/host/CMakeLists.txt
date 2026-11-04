@@ -20,8 +20,9 @@ ilemu_configure_module(ilemu_host_graphics)
 target_link_libraries(ilemu_host_graphics PUBLIC iLEmu::graphics)
 if(ANDROID)
     target_sources(ilemu_host_graphics PRIVATE
-        graphics/egl_program_renderer.cpp graphics/egl_framebuffer_fetch.cpp)
-    target_link_libraries(ilemu_host_graphics PRIVATE EGL GLESv2)
+        graphics/egl_program_renderer.cpp graphics/egl_framebuffer_fetch.cpp
+        graphics/egl_android_program_target.cpp)
+    target_link_libraries(ilemu_host_graphics PRIVATE EGL GLESv2 android)
     target_compile_definitions(ilemu_host_graphics PRIVATE ILEMU_HAS_HOST_GLES=1)
 elseif(UNIX AND NOT APPLE AND PkgConfig_FOUND)
     pkg_check_modules(HOST_GLES QUIET IMPORTED_TARGET egl glesv2)
@@ -72,6 +73,10 @@ if(ILEMU_ENABLE_VULKAN AND Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
         graphics/vulkan_submission_fence.cpp
         graphics/vulkan_image_allocation.cpp
         graphics/vulkan_memory_allocator.cpp)
+    if(ANDROID)
+        target_sources(ilemu_host_graphics PRIVATE
+            graphics/vulkan_android_program_target.cpp)
+    endif()
     add_dependencies(ilemu_host_graphics ilemu_vulkan_shaders)
     target_include_directories(ilemu_host_graphics PRIVATE
         "${ILEMU_VULKAN_SHADER_DIR}")

@@ -418,6 +418,7 @@ namespace {
         GlesRasterState raster;
         GlesPreparedTextures textures;
         SurfaceCpuReadback target_capture;
+        std::shared_ptr<GlesProgramTarget> shared_target;
         std::uint32_t mode;
     };
 
@@ -471,13 +472,13 @@ namespace {
         GlesRenderTargetKey target, const GlesProgramDraw& draw,
         std::uint32_t mode, const GlesRasterState& raster,
         std::shared_ptr<PayloadCredit> credit, const SurfaceStore& surfaces,
-        bool native_input)
+        bool native_display_input)
     {
         auto packet = std::make_shared<DrawPacket>();
         packet->credit = std::move(credit);
         // EGL consumes owned CPU pixels. Its input preparation reads a native
         // display source or target before draw admission, without guest readers.
-        if (native_input) {
+        if (native_display_input) {
             if (!frame.presentation_lease)
                 throw std::invalid_argument { "unowned GLES display input" };
             packet->frame_input = frame.host_surface;
@@ -646,6 +647,7 @@ struct GlesProgramWorker::State {
     std::shared_ptr<ProgramExecutor> executor { shared_executor() };
     std::shared_ptr<Backend> backend { std::make_shared<Backend>() };
     std::string name;
+    GlesProgramTarget::Api target_api { GlesProgramTarget::Api::None };
     bool published { }, initialized { };
     std::set<std::uint32_t> linked;
     struct Pending {
@@ -689,8 +691,10 @@ std::unique_ptr<GlesProgramWorker> GlesProgramWorker::begin_create(
             // Publish retention before anything can create a driver object.
             executor->retain(backend);
             backend->renderer = create_gles_program_renderer(&info.error);
-            if (backend->renderer)
+            if (backend->renderer) {
                 info.name = std::string { backend->renderer->name() };
+                info.target_api = backend->renderer->program_target_api();
+            }
             if (info.name.size() > initialization_bytes - sizeof(info) ||
                 info.error.size() >
                     initialization_bytes - sizeof(info) - info.name.size()) {
@@ -707,11 +711,18 @@ std::unique_ptr<GlesProgramWorker> GlesProgramWorker::begin_create(
 
 void GlesProgramWorker::complete_initialization(Initialization result)
 {
+    state_->target_api = result.target_api;
     state_->name = std::move(result.name) + " [render-worker]";
     state_->initialized = true;
 }
 
 bool GlesProgramWorker::initialized() const { return state_->initialized; }
+
+bool GlesProgramWorker::shares_target_with(const GlesRenderer& renderer) const
+{
+    return state_->target_api != GlesProgramTarget::Api::None &&
+           state_->target_api == renderer.program_target_api();
+}
 
 std::shared_ptr<GlesValueResult<std::optional<GlesProgramWorker::Limits>>>
 GlesProgramWorker::enqueue_limits()
@@ -848,8 +859,8 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_input_readback(
     const auto input = draw->packet->frame_input;
     auto result = state_->executor->submit_host(
         0,
-        [packet = draw->packet, read_target = draw->read_target,
-            renderer = std::move(renderer),
+        [backend = state_->backend, packet = draw->packet,
+            read_target = draw->read_target, renderer = std::move(renderer),
             surface = std::move(surface)](DisplayFrame&) {
             if (!packet->textures.capture(renderer))
                 return false;
@@ -859,6 +870,14 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_input_readback(
             const auto height = packet->frame.height;
             if (surface) {
                 std::vector<std::uint32_t>().swap(packet->frame.pixels);
+                const auto api = renderer->program_target_api();
+                if (api != GlesProgramTarget::Api::None &&
+                    api == backend->renderer->program_target_api()) {
+                    packet->shared_target =
+                        renderer->capture_program_target(surface,
+                            packet->raster.render_target_inverted_vertical);
+                    return packet->shared_target != nullptr;
+                }
                 packet->target_capture.renderer = renderer;
                 packet->target_capture.surface = surface;
                 if (!packet->target_capture.capture())
@@ -957,6 +976,10 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_draw(
         auto result = state_->executor->submit_host(
             0,
             [backend = state_->backend, packet = draw->packet](DisplayFrame&) {
+                if (packet->shared_target)
+                    return backend->renderer->draw_shared_target(packet->frame,
+                        packet->target, packet->draw, packet->mode,
+                        packet->raster, packet->shared_target);
                 return backend->renderer->draw(packet->frame, packet->target,
                     packet->draw, packet->mode, packet->raster);
             },
@@ -1007,16 +1030,26 @@ bool GlesProgramWorker::issuer_ready(
 }
 std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_readback(
     GlesRenderTargetKey target, std::size_t bytes,
-    std::shared_ptr<GlesRenderer> invalidate_renderer)
+    std::shared_ptr<GlesRenderer> invalidate_renderer,
+    std::shared_ptr<HostSurface> surface, std::shared_ptr<void> target_lifetime)
 {
-    return state_->executor->submit_host(bytes,
-        [backend = state_->backend, target,
+    const bool shared = surface && invalidate_renderer &&
+                        shares_target_with(*invalidate_renderer);
+    return state_->executor->submit_host(
+        bytes,
+        [backend = state_->backend, target, surface,
+            target_lifetime = std::move(target_lifetime),
             renderer = std::move(invalidate_renderer)](DisplayFrame& frame) {
+            // Retain the core transport/native owner through GPU publication.
+            static_cast<void>(target_lifetime);
             if (!backend->renderer->readback(frame, target))
                 return false;
+            if (frame.host_surface)
+                return frame.host_surface == surface;
             if (renderer)
                 renderer->invalidate(target);
             return true;
-        });
+        },
+        0, shared ? surface : nullptr);
 }
 } // namespace ilemu

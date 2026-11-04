@@ -67,6 +67,16 @@ public:
         std::vector<GlesProgramState::ActiveVariable> active_uniforms;
     };
     virtual ~GlesProgramRenderer() = default;
+    [[nodiscard]] virtual GlesProgramTarget::Api program_target_api() const
+    {
+        return GlesProgramTarget::Api::None;
+    }
+    [[nodiscard]] virtual bool draw_shared_target(const DisplayFrame&,
+        GlesRenderTargetKey, const GlesProgramDraw&, std::uint32_t,
+        const GlesRasterState&, std::shared_ptr<GlesProgramTarget>)
+    {
+        return false;
+    }
     [[nodiscard]] virtual std::optional<Limits> limits() = 0;
     [[nodiscard]] virtual LinkResult link(std::uint32_t program,
         std::string_view vertex, std::string_view fragment,
@@ -80,6 +90,7 @@ public:
         GlesRenderTargetKey target, const GlesProgramDraw& program,
         std::uint32_t mode, const GlesRasterState& state) = 0;
     // Publish queued GPU contents at a guest-visible synchronization boundary.
+    // Shared targets return their HostSurface; other targets return CPU pixels.
     [[nodiscard]] virtual bool readback(
         DisplayFrame& frame, GlesRenderTargetKey target) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
@@ -171,6 +182,7 @@ public:
     using LinkResult = GlesProgramRenderer::LinkResult;
     struct Initialization {
         std::string name, error;
+        GlesProgramTarget::Api target_api { GlesProgramTarget::Api::None };
     };
     struct LinkedProgram {
         LinkResult result;
@@ -185,6 +197,7 @@ public:
         std::shared_ptr<GlesValueResult<Initialization>>& result);
     void complete_initialization(Initialization result);
     [[nodiscard]] bool initialized() const;
+    [[nodiscard]] bool shares_target_with(const GlesRenderer& renderer) const;
     [[nodiscard]] std::shared_ptr<GlesValueResult<std::optional<Limits>>>
     enqueue_limits();
     [[nodiscard]] std::shared_ptr<GlesValueResult<LinkedProgram>> enqueue_link(
@@ -237,7 +250,9 @@ public:
         std::size_t issuer, std::uint64_t through = ~std::uint64_t { 0 }) const;
     [[nodiscard]] std::shared_ptr<GlesWorkResult> enqueue_readback(
         GlesRenderTargetKey target, std::size_t result_bytes,
-        std::shared_ptr<GlesRenderer> invalidate_renderer = { });
+        std::shared_ptr<GlesRenderer> invalidate_renderer = { },
+        std::shared_ptr<HostSurface> surface = { },
+        std::shared_ptr<void> target_lifetime = { });
     [[nodiscard]] std::string_view name() const;
 
 private:

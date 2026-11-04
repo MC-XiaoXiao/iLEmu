@@ -20,25 +20,6 @@ struct OpenGlesHle::FrameDraw {
     std::shared_ptr<GlesWorkResult> result;
     std::shared_ptr<SyncLease> lease;
     bool indexed { };
-
-    static bool target_live(const GlesResourceStore& resources,
-        const SurfaceStore& surfaces, const RenderTargetBinding& binding)
-    {
-        if (binding.kind == RenderTargetKind::Pixmap)
-            return binding.backing_identifier &&
-                   surfaces.host_surface(*binding.backing_identifier) ==
-                       binding.host_surface;
-        const auto* texture = resources.texture(binding.framebuffer_texture);
-        if (!texture)
-            return false;
-        const auto level = texture->levels.find(0U);
-        return level != texture->levels.end() &&
-               level->second.host_surface == binding.host_surface &&
-               (binding.backing_identifier
-                       ? level->second.surface_id == binding.backing_identifier
-                       : !level->second.surface_id &&
-                             level->second.native_lifetime);
-    }
 };
 
 void OpenGlesHle::draw_frame_async(UserlandHleCall& call,
@@ -47,19 +28,8 @@ void OpenGlesHle::draw_frame_async(UserlandHleCall& call,
     const GlesRasterState& raster, bool indexed)
 try {
     std::size_t bytes = 0;
-    std::shared_ptr<void> native_lifetime;
-    if (binding.host_surface) {
-        if (!FrameDraw::target_live(resources_, *surface_store_, binding))
-            throw std::runtime_error { "stale native GLES frame target" };
-        native_lifetime = binding.backing_identifier
-                              ? surface_store_->acquire_transport_lease(
-                                    *binding.backing_identifier)
-                              : std::shared_ptr<void> {
-                                    resources_.texture(binding.framebuffer_texture)
-                                        ->levels.at(0U).native_lifetime };
-        if (!native_lifetime)
-            throw std::runtime_error { "missing GLES frame target owner" };
-    }
+    auto native_lifetime =
+        binding.host_surface ? retain_native_target(binding) : nullptr;
     auto host = GlesFrameDraw::prepare(
         frame, binding.key, vertices, mode, raster, *surface_store_, bytes,
         binding.host_surface != nullptr, std::move(native_lifetime));
@@ -90,8 +60,7 @@ try {
         complete_native = [this, binding, owner = pending->owner,
                               host = pending->host] {
             if (host->complete() && owner == renderer_owner_ &&
-                binding_live(binding) &&
-                FrameDraw::target_live(resources_, *surface_store_, binding) &&
+                binding_live(binding) && native_target_live(binding) &&
                 binding.framebuffer_texture != 0U)
                 resources_.update_texture_render_target_generation(
                     binding.framebuffer_texture, 0U);
@@ -111,10 +80,9 @@ try {
 void OpenGlesHle::await_frame_draw(
     UserlandHleCall& call, std::shared_ptr<FrameDraw> pending)
 try {
-    if (pending->owner != renderer_owner_ ||
-        !binding_live(pending->binding) ||
+    if (pending->owner != renderer_owner_ || !binding_live(pending->binding) ||
         (pending->binding.host_surface &&
-            !FrameDraw::target_live(resources_, *surface_store_, pending->binding)))
+            !native_target_live(pending->binding)))
         throw std::runtime_error { "stale GLES frame target" };
     if (!pending->result) {
         pending->result = pending->host->enqueue(renderer_);
@@ -154,8 +122,7 @@ try {
                     !binding_live(pending->binding) ||
                     !pending->result->succeeded() ||
                     (pending->binding.host_surface
-                            ? !FrameDraw::target_live(
-                                  resources_, *surface_store_, pending->binding)
+                            ? !native_target_live(pending->binding)
                             : !commit_render_target(resumed, pending->binding,
                                   std::move(pending->result->frame))))
                     set_gl_error(resumed, gles_abi::invalid_operation);
