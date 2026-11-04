@@ -823,9 +823,24 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
     // order, so only the first alias after a subtree can establish its old
     // directory shape. Avoid scanning every image for every data notification.
     std::set<std::filesystem::path> catalog_paths;
+    std::set<std::filesystem::path> removal_paths;
+    bool has_orphaned_entries = false;
     for (const auto& entry : storage_->entries) {
         catalog_paths.insert(entry.aliases.begin(), entry.aliases.end());
+        removal_paths.insert(entry.aliases.begin(), entry.aliases.end());
+        for (const auto& record : entry.file_generations)
+            removal_paths.insert(record.path);
+        has_orphaned_entries |= entry.aliases.empty();
     }
+    // Data changes are usually absent from the executable catalog. Reuse the
+    // batch snapshot instead of scanning every entry for each missing path.
+    // Include legacy generation-only paths and the removal pass's orphan sweep.
+    const auto remove_catalog_path = [&](const std::filesystem::path& path) {
+        if (has_orphaned_entries || removal_paths.contains(path)) {
+            remove_path(path);
+            has_orphaned_entries = false;
+        }
+    };
     std::set<std::filesystem::path> requested_files;
     std::set<std::filesystem::path> requested_subtrees;
     const auto has_catalog_descendant =
@@ -919,7 +934,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
     }
     for (const auto& old_path : old_paths) {
         if (!files.contains(old_path))
-            remove_path(old_path);
+            remove_catalog_path(old_path);
     }
 
     for (const auto& path : files) {
@@ -932,7 +947,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
         const auto target = symlink_target.value_or(path);
         if (status_error ||
             (!std::filesystem::is_regular_file(status) && !symlink_target)) {
-            remove_path(path);
+            remove_catalog_path(path);
             if (status_error)
                 ++summary.failed_files;
             continue;
@@ -940,11 +955,12 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
         ++summary.regular_files;
         const auto generation = read_file_generation(path);
         if (!generation) {
-            remove_path(path);
+            remove_catalog_path(path);
             ++summary.failed_files;
             continue;
         }
-        const auto* old_entry = find_path(path);
+        const auto* old_entry =
+            catalog_paths.contains(path) ? find_path(path) : nullptr;
         bool unchanged = false;
         if (old_entry != nullptr) {
             unchanged = std::any_of(old_entry->file_generations.begin(),
@@ -958,7 +974,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
         if (unchanged)
             continue;
 
-        remove_path(path);
+        remove_catalog_path(path);
         const auto prefix = read_file_prefix(target);
         if (!prefix) {
             ++summary.failed_files;
@@ -968,6 +984,12 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
             // rebuild for those inputs; do not synchronously rescan the whole
             // root here.
         } else if (has_macho_magic(*prefix)) {
+            // Registering a symlink can first register its target. Include both
+            // possible additions for later files, even if registration throws.
+            catalog_paths.insert(path);
+            catalog_paths.insert(target);
+            removal_paths.insert(path);
+            removal_paths.insert(target);
             try {
                 std::optional<ContentIdentity> known_identity;
                 if (const auto known = known_identities.find(path);
