@@ -1800,7 +1800,9 @@ void PerformanceCounters::record_diagnostic_input(std::string_view kind,
     std::uint64_t input_sequence,
     std::chrono::steady_clock::time_point enqueued_at)
 {
-    if (!enabled() || !frame_content_diagnostics_enabled() ||
+    if (!enabled() ||
+        !(frame_content_diagnostics_enabled() ||
+            cpu_source_diagnostics_enabled()) ||
         !display_window_active_.load(std::memory_order_acquire)) {
         return;
     }
@@ -1818,7 +1820,9 @@ void PerformanceCounters::record_diagnostic_input_guest(
     std::uint64_t input_sequence, std::uint32_t process_id,
     std::uint32_t thread, std::chrono::steady_clock::time_point entered_at)
 {
-    if (!enabled() || !frame_content_diagnostics_enabled() ||
+    if (!enabled() ||
+        !(frame_content_diagnostics_enabled() ||
+            cpu_source_diagnostics_enabled()) ||
         !display_window_active_.load(std::memory_order_acquire) ||
         input_sequence == 0) {
         return;
@@ -1841,7 +1845,9 @@ void PerformanceCounters::record_diagnostic_input_runnable(
     std::uint64_t input_sequence, std::uint32_t process_id,
     std::uint32_t thread, std::chrono::steady_clock::time_point runnable_at)
 {
-    if (!enabled() || !frame_content_diagnostics_enabled() ||
+    if (!enabled() ||
+        !(frame_content_diagnostics_enabled() ||
+            cpu_source_diagnostics_enabled()) ||
         !display_window_active_.load(std::memory_order_acquire) ||
         input_sequence == 0) {
         return;
@@ -1864,7 +1870,9 @@ void PerformanceCounters::record_diagnostic_input_execute(
     std::uint32_t process_id, std::uint32_t thread,
     std::chrono::steady_clock::time_point executed_at)
 {
-    if (!enabled() || !frame_content_diagnostics_enabled() ||
+    if (!enabled() ||
+        !(frame_content_diagnostics_enabled() ||
+            cpu_source_diagnostics_enabled()) ||
         !display_window_active_.load(std::memory_order_acquire)) {
         return;
     }
