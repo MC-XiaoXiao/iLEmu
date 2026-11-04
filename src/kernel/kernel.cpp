@@ -1710,10 +1710,23 @@ CompatibilityKernel::pending_event_poll_candidates()
     // A Mach message can be enqueued by another task after every workqueue
     // worker has parked. Redrive the process-private kqueue on that transition
     // so EVFILT_MACHPORT can schedule its libpthread event worker.
-    if ((pending_event_poll_mach_generation_ != mach_generation ||
-            pending_event_poll_io_generation_ != io_generation) &&
-        kqueues_.contains(darwin::kqueue::workqueue_descriptor))
-        static_cast<void>(request_workqueue_kevents(nullptr));
+    // Empty Mach-only queues can reuse their receive-object observations;
+    // unrelated IPC does not require knote or host socket watch collection.
+    if (const auto queue = kqueues_.find(darwin::kqueue::workqueue_descriptor);
+        queue != kqueues_.end() &&
+        (pending_event_poll_mach_generation_ != mach_generation ||
+            pending_event_poll_io_generation_ != io_generation)) {
+        const auto unchanged_mach_queue =
+            pending_event_poll_io_generation_ == io_generation &&
+            std::all_of(queue->second.begin(), queue->second.end(),
+                [](const auto& registration) {
+                    return !registration.enabled ||
+                        (registration.filter == darwin::kqueue::filter_mach_port &&
+                            !registration.deferred_delete);
+                }) && !kevent_mach_poll_required(darwin::kqueue::workqueue_descriptor);
+        if (!unchanged_mach_queue)
+            static_cast<void>(request_workqueue_kevents(nullptr));
+    }
     const auto host_now = std::chrono::steady_clock::now();
     const auto guest_now = shared_state_->clock.now();
     const auto graphics_generation = gles_completion_generation();
