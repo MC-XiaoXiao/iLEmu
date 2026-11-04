@@ -1790,6 +1790,8 @@ void EmulatorSession::run()
                     PerfLatencyKind::ProcessCloneMemory
                 };
                 child->memory = runtime_ptr->memory->clone();
+                if (!child->memory)
+                    return std::nullopt;
                 debug_target.prepare_fork_child(
                     runtime_ptr->kernel->process().pid, *child->memory);
             }

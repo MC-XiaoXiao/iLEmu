@@ -34,6 +34,7 @@
 #include "foundation/shared_memory_identity.hpp"
 
 namespace ilemu {
+class FilePageTransform;
 
 class HostFilePager;
 
@@ -303,6 +304,10 @@ public:
         MemoryPermission permissions, std::shared_ptr<GuestFileBacking> backing,
         std::shared_ptr<FilePageCache> cache, PageMappingMode mode,
         VmMappingAttributes attributes = {});
+    // Install a loader recipe on a private file interval before its first
+    // page fault. No untransformed resident page may already be visible.
+    bool transform_file_mapping(std::uint32_t address,
+        std::shared_ptr<const FilePageTransform> transform);
     // Exposes an existing page-aligned range as a Mach named-memory object.
     // Existing fork/file-cache COW backings are detached first; subsequent
     // mappings of the returned pages observe shared writes like XNU vm_map.
@@ -535,6 +540,7 @@ private:
         PageMappingMode mode { PageMappingMode::CopyOnWrite };
         // Retain the original object/cache when VM_PROT_COPY shadows a file.
         bool needs_copy { };
+        std::shared_ptr<const FilePageTransform> transform { };
     };
     struct TrackedWriteRange {
         std::uint32_t begin { };
@@ -580,7 +586,7 @@ private:
     [[nodiscard]] Page* find_page_locked(std::uint32_t address);
     [[nodiscard]] const FileMapping* find_file_mapping_locked(
         std::uint32_t address) const;
-    [[nodiscard]] Page& ensure_page_locked(std::uint32_t address);
+    [[nodiscard]] Page* ensure_page_locked(std::uint32_t address);
     [[nodiscard]] bool range_needs_file_fault_locked(
         std::uint32_t address, std::size_t size) const;
     [[nodiscard]] bool fault_file_pages(
@@ -599,9 +605,9 @@ private:
         std::span<const std::shared_ptr<GuestPageBacking>> backings,
         std::span<const MappingRegion> regions, PageMappingMode mode,
         VmInheritance inheritance, std::uint64_t* mapping_lease_token);
-    void share_pages_locked(std::uint32_t address, std::uint64_t end,
+    bool share_pages_locked(std::uint32_t address, std::uint64_t end,
         std::vector<std::shared_ptr<GuestPageBacking>>* output);
-    void fault_file_page_locked(std::uint32_t address, Page& page,
+    bool fault_file_page_locked(std::uint32_t address, Page& page,
         const FileMapping& mapping, std::uint64_t file_offset,
         std::uint32_t byte_count);
     void cache_page_locked(std::uint32_t address, Page& page);

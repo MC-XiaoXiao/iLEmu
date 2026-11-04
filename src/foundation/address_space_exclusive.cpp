@@ -12,7 +12,10 @@ AddressSpace::load_exclusive(std::uint32_t address, unsigned size)
     account_vm_access_locked(address, size, MemoryPermission::Read);
     if (!range_accessible_locked(address, size, MemoryPermission::Read))
         return std::nullopt;
-    auto& page = ensure_page_locked(address);
+    auto* initialized = ensure_page_locked(address);
+    if (!initialized)
+        return std::nullopt;
+    auto& page = *initialized;
     // Resolve lazy/zero/COW storage before publishing the stamp, just as the
     // existing shared synchronization-identity path does. No guest write.
     bool changed = false;

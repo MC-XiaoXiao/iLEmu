@@ -42,7 +42,10 @@ bool AddressSpace::copy_in_immutable_page(std::uint32_t address,
     if (!range_accessible_locked(address, page_size, MemoryPermission::None))
         return false;
     ensure_unique_page_map_locked();
-    auto& page = ensure_page_locked(address);
+    auto* initialized = ensure_page_locked(address);
+    if (!initialized)
+        return false;
+    auto& page = *initialized;
     if (page.shared_writable || page.file_writeback_capable) {
         const CopyInOperation operation { address, data };
         return copy_in_batch_locked(std::span { &operation, 1U }, false);

@@ -38,7 +38,8 @@ std::optional<AddressSpace::SharedMapping> AddressSpace::share_mapping(
     }
     // Reject a hole before sharing any pages or changing COW metadata.
     result.pages.reserve(size / page_size);
-    share_pages_locked(address, end, &result.pages);
+    if (!share_pages_locked(address, end, &result.pages))
+        return std::nullopt;
     return result;
 }
 
