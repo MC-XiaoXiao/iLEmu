@@ -191,6 +191,10 @@ private:
         std::vector<ExecutableCatalogEntry> entries;
         std::unordered_map<ContentIdentity, std::size_t, ContentIdentityHash>
             identity_index;
+        // Own the path keys so vector growth and immutable snapshot copies
+        // leave the index valid. Several entries may name one shared cache.
+        std::unordered_multimap<std::filesystem::path, std::size_t> path_index;
+        void rebuild_path_index();
     };
     void detach_storage();
     std::shared_ptr<Storage> storage_ { std::make_shared<Storage>() };

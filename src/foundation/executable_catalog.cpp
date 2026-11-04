@@ -764,6 +764,8 @@ std::size_t ExecutableCatalog::register_shared_cache(
                 if (std::find(entry.aliases.begin(), entry.aliases.end(),
                         file_path) == entry.aliases.end()) {
                     entry.aliases.push_back(file_path);
+                    storage_->path_index.emplace(file_path,
+                        storage_->identity_index.at(entry.content_identity));
                 }
             }
         }
@@ -1266,6 +1268,7 @@ bool ExecutableCatalog::load(const std::filesystem::path& path) noexcept
         auto storage = std::make_shared<Storage>();
         storage->entries = std::move(entries);
         storage->identity_index = std::move(identity_index);
+        storage->rebuild_path_index();
         storage_ = std::move(storage);
         reliable_entry_points_current_ = reliable_entry_points_current;
         ++mutation_revision_;
@@ -1421,18 +1424,29 @@ const ExecutableCatalogEntry* ExecutableCatalog::find_path(
     const std::filesystem::path& path) const
 {
     const auto normalized = normalize_path(path);
-    const ExecutableCatalogEntry* fallback = nullptr;
-    for (const auto& entry : storage_->entries) {
-        if (std::find(entry.aliases.begin(), entry.aliases.end(), normalized) ==
-            entry.aliases.end()) {
-            continue;
+    const auto [begin, end] = storage_->path_index.equal_range(normalized);
+    std::optional<std::size_t> preferred, fallback;
+    for (auto match = begin; match != end; ++match) {
+        const auto index = match->second;
+        // Preserve the vector scan's first preferred file, otherwise its last
+        // fallback, independently of unordered equivalent-key iteration order.
+        if (preferred_file_entry(storage_->entries[index])) {
+            preferred = preferred ? std::min(*preferred, index) : index;
+        } else {
+            fallback = fallback ? std::max(*fallback, index) : index;
         }
-        if (preferred_file_entry(entry)) {
-            return &entry;
-        }
-        fallback = &entry;
     }
-    return fallback;
+    const auto selected = preferred ? preferred : fallback;
+    return selected ? &storage_->entries[*selected] : nullptr;
+}
+
+void ExecutableCatalog::Storage::rebuild_path_index()
+{
+    path_index.clear();
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        for (const auto& alias : entries[index].aliases)
+            path_index.emplace(alias, index);
+    }
 }
 
 bool ExecutableCatalog::path_is_current(const std::filesystem::path& path) const
@@ -1581,12 +1595,14 @@ ExecutableCatalogEntry& ExecutableCatalog::upsert(ContentIdentity identity,
             .reliable_entry_points = { },
         });
         storage_->identity_index.emplace(std::move(identity), index);
+        storage_->path_index.emplace(path, index);
         return storage_->entries.back();
     }
     auto& entry = storage_->entries[existing->second];
     if (std::find(entry.aliases.begin(), entry.aliases.end(), path) ==
         entry.aliases.end()) {
         entry.aliases.push_back(path);
+        storage_->path_index.emplace(path, existing->second);
     }
     entry.kinds.insert(kind);
     return entry;
@@ -1609,6 +1625,7 @@ void ExecutableCatalog::remove_path(const std::filesystem::path& path)
             storage_->entries.begin(), storage_->entries.end(), changes_entry))
         return;
     detach_storage();
+    storage_->path_index.erase(path);
     bool changed = false;
     bool removed_entry = false;
     for (auto entry = storage_->entries.begin();
@@ -1635,6 +1652,7 @@ void ExecutableCatalog::remove_path(const std::filesystem::path& path)
         storage_->identity_index.emplace(
             storage_->entries[index].content_identity, index);
     }
+    storage_->rebuild_path_index();
 }
 
 std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept
@@ -1670,6 +1688,14 @@ std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept
     add(storage_->identity_index.size() *
         (sizeof(typename decltype(storage_->identity_index)::value_type) +
             2U * sizeof(void*)));
+    add(storage_->path_index.bucket_count() * sizeof(void*));
+    add(storage_->path_index.size() *
+        (sizeof(typename decltype(storage_->path_index)::value_type) +
+            2U * sizeof(void*)));
+    for (const auto& [path, index] : storage_->path_index) {
+        static_cast<void>(index);
+        add_path(path);
+    }
     return total;
 }
 
