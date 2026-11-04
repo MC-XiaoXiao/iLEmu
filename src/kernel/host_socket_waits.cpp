@@ -176,7 +176,7 @@ void CompatibilityKernel::refresh_host_socket_watches(std::size_t processor)
 
 bool CompatibilityKernel::defer_host_readiness(Cpu& cpu, std::uint32_t number)
 {
-    if (host_sockets_.empty() && kqueues_.empty() && duplicated_descriptors_.empty())
+    if (host_sockets_.empty())
         return false;
     if (number != 93U && number != darwin::syscall::poll &&
         number != 363U && number != 369U && number != 374U)
