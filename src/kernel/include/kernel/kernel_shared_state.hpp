@@ -995,9 +995,10 @@ struct KernelSharedState {
         // A runnable receive continuation can outlive one pulse. Validate the
         // real thread object before reusing its slot for a later notification.
         std::uint32_t last_receiver_thread_object { };
-        // A queued pulse grants only a bounded host scheduling hint. Coalesced
-        // pulses do not renew it; guest clocks and notification bytes are untouched.
-        std::chrono::steady_clock::time_point receiver_hint_deadline { };
+        // Pending notification age selects the dependency across clients.
+        // Dispatch policy bounds preference; queued work retains its owner
+        // until receive/callback consumption, rather than losing it to a timer.
+        std::chrono::steady_clock::time_point notification_queued_at { };
         std::uint64_t receiver_sequence { };
         // Host-only completion watermark for queued VSync notifications. The
         // sequence advances only when a real Mach message is enqueued, and this

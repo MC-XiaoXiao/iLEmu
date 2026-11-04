@@ -102,6 +102,19 @@ std::optional<std::uint32_t>
 CompatibilityKernel::next_display_vsync_process() const
 {
     std::lock_guard mach_lock { shared_state_->mach_mutex };
+    const KernelSharedState::IOKitDisplayVSync* pending = nullptr;
+    for (const auto& [connection, registration] :
+        shared_state_->iokit_display_vsync) {
+        if (registration.enabled &&
+            registration.callback_sequence < registration.sequence &&
+            (!pending || registration.notification_queued_at <
+                             pending->notification_queued_at))
+            pending = &registration;
+    }
+    // Follow work already queued before choosing the next future pulse. The
+    // dispatch policy bounds service turns independently of message lifetime.
+    if (pending)
+        return pending->owner_pid;
     if (shared_state_->iokit_display_vsync_deadlines.empty())
         return std::nullopt;
     const auto connection =
@@ -220,9 +233,7 @@ CompatibilityKernel::display_vsync_scheduling_snapshot()
             delivered_receiver = *registration.last_receiver_processor;
         if (!unread_receiver && registration.last_receiver_processor &&
             registration.last_receiver_thread_object != 0U &&
-            registration.sequence > registration.receiver_sequence &&
-            std::chrono::steady_clock::now() <
-                registration.receiver_hint_deadline) {
+            registration.sequence > registration.receiver_sequence) {
             const auto task =
                 shared_state_->task_thread_port_objects.find(process_.pid);
             if (task == shared_state_->task_thread_port_objects.end())
