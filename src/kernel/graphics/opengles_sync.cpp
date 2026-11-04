@@ -109,11 +109,14 @@ void OpenGlesHle::cancel_pending_work(std::optional<std::size_t> processor)
 void OpenGlesHle::enter_graphics_call(
     UserlandHleCall& call, UserlandHleRegistry::Handler handler)
 {
-    // Public wrappers only resolve TLS before their prefixed driver entry.
-    // The actual driver entry captures output before any graphics wait.
-    if (call.symbol().starts_with("_gl") && !call.prefix_argument(0U) &&
+    // All public GL wrappers resolve TLS before their prefixed driver entry,
+    // including programmable and query calls. GLI entries already name their
+    // context and must enter the store gate directly.
+    const auto symbol = call.symbol();
+    if (symbol.starts_with("_gl") && symbol.size() > 3U &&
+        symbol[3] >= 'A' && symbol[3] <= 'Z' && !call.prefix_argument(0U) &&
         dispatch_hle_->uses_context_first_dispatch()) {
-        handler(call);
+        call.resume_original_persistently();
         return;
     }
     if (call.symbol() == "_glReadPixels") {
