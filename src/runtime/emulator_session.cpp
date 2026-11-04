@@ -3023,6 +3023,14 @@ void EmulatorSession::run()
                         pending_button_input_completion.reset();
                     }
                     break;
+                case LiveControlCommandKind::ButtonClicks:
+                    note_interactive_host_activity();
+                    live_button_scheduler.schedule_clicks(
+                        command.system_button.button, command.button_click_count);
+                    pending_button_input_completion = "button-clicks";
+                    output.marker("[control] button clicks scheduled count=" +
+                        std::to_string(command.button_click_count));
+                    break;
                 case LiveControlCommandKind::UnlockHome: {
                     note_interactive_host_activity();
                     const bool needs_wake = !initial_runtime->kernel->display_powered_on();
@@ -3258,7 +3266,7 @@ void EmulatorSession::run()
                         "tap x y [hold-ms]; unlock; "
                         "drag x1 y1 x2 y2 [duration-ms] [steps]; "
                         "button home|lock|volume-up|volume-down down|up; "
-                        "hold BUTTON DURATION-MS; home; lock [hold-ms]; "
+                        "hold BUTTON DURATION-MS; click BUTTON COUNT; home; lock [hold-ms]; "
                         "volume-up; volume-down; snapshot PATH; "
                         "ringer ring|silent; "
                         "snapshot-sequence PATH-PREFIX INTERVAL-MS COUNT; "

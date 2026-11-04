@@ -323,6 +323,23 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line)
         command.system_button = SystemButtonInput { *button, *phase };
         return { std::move(command) };
     }
+    if (operation == "click") {
+        std::string button_name;
+        std::size_t count = 0;
+        std::string trailing;
+        constexpr std::size_t maximum_button_clicks = 64;
+        if (!(parser >> button_name >> count) || (parser >> trailing) ||
+            count == 0 || count > maximum_button_clicks) {
+            return { error_command("click requires BUTTON COUNT (1..64)") };
+        }
+        const auto button = parse_system_button(button_name);
+        if (!button)
+            return { error_command("click requires a supported BUTTON") };
+        auto command = simple_command(LiveControlCommandKind::ButtonClicks);
+        command.system_button = { *button, SystemButtonPhase::Down };
+        command.button_click_count = count;
+        return { std::move(command) };
+    }
     if (operation == "hold") {
         std::string button_name;
         std::string duration_token;

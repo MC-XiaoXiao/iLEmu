@@ -40,6 +40,14 @@ void LiveButtonScheduler::schedule_press(SystemButton button,
         { button, SystemButtonPhase::Up } });
 }
 
+void LiveButtonScheduler::schedule_clicks(SystemButton button, std::size_t count)
+{
+    constexpr auto hold = std::chrono::milliseconds { 120 };
+    constexpr auto pause = std::chrono::milliseconds { 60 };
+    for (std::size_t click = 0; click < count; ++click)
+        schedule_press(button, click == 0 ? std::chrono::milliseconds { 0 } : pause, hold);
+}
+
 std::vector<SystemButtonInput> LiveButtonScheduler::poll()
 {
     std::vector<SystemButtonInput> result;

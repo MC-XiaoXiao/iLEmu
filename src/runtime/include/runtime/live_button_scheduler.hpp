@@ -8,6 +8,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <deque>
 #include <optional>
 #include <vector>
@@ -23,6 +24,7 @@ public:
     void schedule(SystemButtonInput down, std::chrono::milliseconds hold);
     void schedule_press(SystemButton button, std::chrono::milliseconds delay,
         std::chrono::milliseconds hold);
+    void schedule_clicks(SystemButton button, std::size_t count);
     [[nodiscard]] std::vector<SystemButtonInput> poll();
     [[nodiscard]] bool empty() const { return events_.empty(); }
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>

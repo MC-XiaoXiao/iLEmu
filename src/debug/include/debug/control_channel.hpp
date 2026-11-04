@@ -23,6 +23,7 @@ enum class LiveControlCommandKind {
     Gesture,
     Button,
     ButtonHold,
+    ButtonClicks,
     UnlockHome,
     Home,
     Lock,
@@ -54,6 +55,7 @@ struct LiveControlCommand {
     std::vector<LiveTouchEvent> gesture;
     SystemButtonInput system_button;
     std::chrono::milliseconds button_hold { };
+    std::size_t button_click_count { };
     std::chrono::milliseconds button_delay { };
     bool wake_display { };
     std::filesystem::path path;
