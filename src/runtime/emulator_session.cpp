@@ -3903,7 +3903,33 @@ void EmulatorSession::run()
                                 preferred_thread &&
                                 *preferred_thread == scheduled->thread) +
                             " display-pending=" +
-                            std::to_string(display_callback_pending));
+                            std::to_string(display_callback_pending) +
+                            " receive-pending=" +
+                            std::to_string(display_receive_pending) +
+                            " realtime-process=" +
+                            (display_urgent_process
+                                    ? std::to_string(*display_urgent_process)
+                                    : "none") +
+                            " receiver-thread=" +
+                            (display_urgent_receiver_thread
+                                    ? std::to_string(
+                                          display_urgent_receiver_thread->thread)
+                                    : "none") +
+                            " callback-thread=" +
+                            (display_urgent_thread
+                                    ? std::to_string(
+                                          display_urgent_thread->thread)
+                                    : "none") +
+                            " dependency-processor=" +
+                            (display_dispatch_snapshot.dependency
+                                    ? std::to_string(
+                                          *display_dispatch_snapshot.dependency)
+                                    : "none") +
+                            " transition-terminal=" +
+                            (transition
+                                    ? std::to_string(static_cast<unsigned>(
+                                          transition->terminal_state))
+                                    : "none"));
                     }
                 }
                 scheduled_batch.push_back(*scheduled);
