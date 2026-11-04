@@ -3689,7 +3689,8 @@ void EmulatorSession::run()
             display_callback_pending_since.reset();
             display_callback_pending_reported = false;
         }
-        if (display_urgent_lease_deadline && !display_callback_pending &&
+        if (display_urgent_lease_deadline && !display_receive_pending &&
+            !display_callback_pending &&
             std::chrono::steady_clock::now() >=
                 *display_urgent_lease_deadline) {
             display_urgent_thread.reset();
@@ -4606,22 +4607,16 @@ void EmulatorSession::run()
                     display_scanout_owner->kernel->refresh_display_scanout());
         }
         refresh_jit_runtime_classes();
-        if (display_scanout_owner != nullptr) {
-            // A realtime host-sync step at the top of the loop can advance the
-            // device clock and enqueue a VSync message without passing through
-            // the guest-time advance above. Keep the scanout owner marked for
-            // the next polling iteration in both cases;
-            // resolve_display_urgent_threads() still selects a thread only when
-            // it has a pending VSync receive.
-            // The deadline is global shared-device state. Its registration
-            // supplies the owner; querying it through each task would select
-            // the first runtime even when that task has no display connection.
+        // Host synchronization can queue VSync without advancing guest ticks.
+        // Keep its registration owner for the next poll independently of
+        // direct framebuffer scanout: native GLES can receive notifications
+        // without a mapped scanout buffer. Thread hints still require a real
+        // pending receive or callback in that task.
+        display_urgent_process =
+            initial_runtime->kernel->next_display_vsync_process();
+        if (!display_urgent_process && display_scanout_owner != nullptr)
             display_urgent_process =
-                initial_runtime->kernel->next_display_vsync_process();
-            if (!display_urgent_process)
-                display_urgent_process =
-                    display_scanout_owner->kernel->process().pid;
-        }
+                display_scanout_owner->kernel->process().pid;
         const auto display_submissions =
             initial_runtime->kernel->display_submitted_frames();
         if (display_submissions != observed_display_submissions) {
