@@ -183,6 +183,8 @@ void bind_bsd_entries(Table& table, DarwinVersion version)
         "bsd/signal/signal.cpp" });
     add(darwin::syscall::pthread_kill, "pthread_kill", Handler::BsdSignal);
     add(darwin::syscall::kill, "kill", Handler::BsdSignal);
+    add(darwin::syscall::terminate_with_payload, "terminate_with_payload",
+        Handler::BsdSignal);
     add(darwin::syscall::get_host_uuid, "get_host_uuid", Handler::BsdPlatform);
     add(9, "link", Handler::BsdFilesystem);
     add(10, "unlink", Handler::BsdFilesystem);

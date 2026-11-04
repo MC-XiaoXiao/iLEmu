@@ -248,6 +248,7 @@ namespace syscall {
     inline constexpr std::uint32_t set_user_id = 23;
     inline constexpr std::uint32_t ptrace = 26;
     inline constexpr std::uint32_t kill = 37;
+    inline constexpr std::uint32_t terminate_with_payload = 520;
     inline constexpr std::uint32_t alternate_signal_stack = 53;
     inline constexpr std::uint32_t get_process_group = 81;
     inline constexpr std::uint32_t set_process_group = 82;

@@ -668,6 +668,8 @@ private:
     void dispatch_bsd_fileport(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_signal_mask(Cpu& cpu, std::uint32_t number);
+    [[nodiscard]] std::uint32_t signal_process(
+        std::uint32_t target_pid, std::uint32_t signal);
     void dispatch_bsd_signal_wait(Cpu& cpu);
     void dispatch_bsd_signal_return(Cpu& cpu);
     bool complete_signal_wait(Cpu& cpu, bool interrupted = false);

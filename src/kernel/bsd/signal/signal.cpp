@@ -236,6 +236,25 @@ bool CompatibilityKernel::process_pending_signals(std::size_t processor)
     return false;
 }
 
+std::uint32_t CompatibilityKernel::signal_process(
+    std::uint32_t target_pid, std::uint32_t signal)
+{
+    const auto target = shared_state_->processes.find(target_pid);
+    if (target == shared_state_->processes.end())
+        return darwin::error::no_such_process;
+    if (target->second.exited)
+        return 0;
+    if (process_.effective_uid != 0 && process_.effective_uid != target->second.uid)
+        return darwin::error::operation_not_permitted;
+    if (signal == 0)
+        return 0;
+    return signal_delivery_handler_
+               ? signal_delivery_handler_(target_pid, signal)
+           : target_pid == process_.pid
+               ? deliver_signal(signal, process_.pid, process_.uid)
+               : darwin::error::no_such_process;
+}
+
 void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
 {
     if (number == darwin::signal_context::syscall) {
@@ -366,6 +385,38 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
             cpu.halt(Dynarmic::HaltReason::UserDefined1);
         return;
     }
+    if (number == darwin::syscall::terminate_with_payload) {
+        // XNU3789 kern_sig.c: exit-reason data accompanies SIGKILL; it does
+        // not change signal delivery or permit self/group termination.
+        constexpr std::uint32_t aggregated_reason_namespace = 14;
+        const auto& registers = cpu.registers();
+        const auto pid = static_cast<std::int32_t>(registers[0]);
+        const auto reason_namespace = registers[1];
+        if (pid <= 0 || static_cast<std::uint32_t>(pid) == process_.pid ||
+            reason_namespace == 0 || reason_namespace > aggregated_reason_namespace) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        const auto target_pid = static_cast<std::uint32_t>(pid);
+        const auto target = shared_state_->processes.find(target_pid);
+        if (target == shared_state_->processes.end() || target->second.exited) {
+            bsd_error(cpu, darwin::error::no_such_process);
+            return;
+        }
+        const auto reason_code = static_cast<std::uint64_t>(registers[2]) |
+                                 (static_cast<std::uint64_t>(registers[3]) << 32U);
+        const auto error = signal_process(target_pid, darwin::signal::kill);
+        output_.marker("[process] terminate-with-payload caller=" +
+            std::to_string(process_.pid) + " target=" + std::to_string(pid) +
+            " namespace=" + std::to_string(reason_namespace) +
+            " code=" + std::to_string(reason_code) +
+            " result=" + std::to_string(error));
+        if (error != 0)
+            bsd_error(cpu, error);
+        else
+            bsd_success(cpu, 0);
+        return;
+    }
     if (number != darwin::syscall::kill) {
         trace_unknown(cpu, "BSD signal syscall", number);
         bsd_error(cpu, bsd_support::not_implemented);
@@ -410,23 +461,11 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
             continue;
         }
         found = true;
-        if (target->second.exited) {
-            permitted = true;
-            continue;
-        }
-        if (process_.effective_uid != 0 &&
-            process_.effective_uid != target->second.uid) {
+        const auto error = signal_process(target_pid, signal);
+        if (error == darwin::error::operation_not_permitted) {
             continue;
         }
         permitted = true;
-        if (signal == 0) {
-            continue;
-        }
-        const auto error = signal_delivery_handler_
-                               ? signal_delivery_handler_(target_pid, signal)
-                           : target_pid == process_.pid
-                               ? deliver_signal(signal, process_.pid, process_.uid)
-                               : darwin::error::no_such_process;
         if (error != 0) {
             bsd_error(cpu, error);
             return;
