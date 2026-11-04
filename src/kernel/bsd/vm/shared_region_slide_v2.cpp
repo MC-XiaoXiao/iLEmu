@@ -8,6 +8,7 @@
 #include "shared_region_slide_v2.hpp"
 
 #include "foundation/address_space.hpp"
+#include "foundation/file_page_transform.hpp"
 #include "foundation/memory_permission.hpp"
 
 #include <bit>
@@ -16,11 +17,12 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <utility>
+#include <vector>
 
 namespace ilemu {
 namespace {
     constexpr std::uint32_t invalid_argument = 22U;
-    constexpr std::uint32_t bad_address = 14U;
     constexpr std::uint32_t header_size = 40U;
     constexpr std::uint32_t maximum_slide_info_size = 2560U * 1024U;
     constexpr std::uint16_t no_rebase = 0x4000U;
@@ -106,68 +108,91 @@ namespace {
         return invalid_argument;
     }
 
-    [[nodiscard]] std::uint32_t decode_page(const AddressSpace& memory,
+    [[nodiscard]] std::uint16_t table_entry(
+        std::span<const std::byte> metadata, std::uint32_t offset)
+    {
+        return static_cast<std::uint16_t>(
+            std::to_integer<std::uint16_t>(metadata[offset]) |
+            (std::to_integer<std::uint16_t>(metadata[offset + 1U]) << 8U));
+    }
+
+    [[nodiscard]] std::uint32_t decode_page(std::span<const std::byte> metadata,
         std::span<std::byte> page, std::uint16_t entry, const SlideInfo& info,
-        std::uint32_t slide, std::uint32_t slide_info_address)
+        std::uint32_t slide)
     {
         if ((entry & extra_chain) == 0U)
             return decode_chain(
                 page, static_cast<std::uint32_t>(entry) << 2U, info, slide);
         auto index = static_cast<std::uint32_t>(entry & chain_value);
         while (index < info.page_extras_count) {
-            const auto extra = memory.read16(
-                slide_info_address + info.page_extras_offset + index * 2U);
-            if (!extra)
-                return bad_address;
+            const auto extra =
+                table_entry(metadata, info.page_extras_offset + index * 2U);
             const auto error = decode_chain(page,
-                static_cast<std::uint32_t>(*extra & chain_value) << 2U, info,
+                static_cast<std::uint32_t>(extra & chain_value) << 2U, info,
                 slide);
             if (error != 0U)
                 return error;
-            if ((*extra & extra_chain) != 0U)
+            if ((extra & extra_chain) != 0U)
                 return 0U;
             ++index;
         }
         return invalid_argument;
     }
+
+    class SharedRegionSlideV2 final : public FilePageTransform {
+    public:
+        SharedRegionSlideV2(std::vector<std::byte> metadata, SlideInfo info,
+            std::uint64_t file_offset, std::uint32_t slide)
+            : metadata_ { std::move(metadata) }
+            , info_ { info }
+            , file_offset_ { file_offset }
+            , slide_ { slide }
+        {
+        }
+
+        std::shared_ptr<GuestPageBacking> apply(FilePageCache& cache,
+            std::shared_ptr<GuestPageBacking> source,
+            std::uint64_t file_offset) const override
+        {
+            const auto page =
+                (file_offset - file_offset_) / AddressSpace::page_size;
+            // The mapping can extend beyond the firmware's rebase table.
+            if (page >= info_.page_starts_count)
+                return source;
+            const auto entry = table_entry(
+                metadata_, info_.page_starts_offset +
+                               static_cast<std::uint32_t>(page) * 2U);
+            if (entry == no_rebase)
+                return source;
+            auto bytes = source->bytes;
+            if (decode_page(metadata_, bytes, entry, info_, slide_) != 0U)
+                return { };
+            return cache.intern_immutable_page(bytes);
+        }
+
+    private:
+        std::vector<std::byte> metadata_;
+        SlideInfo info_;
+        std::uint64_t file_offset_;
+        std::uint32_t slide_;
+    };
 } // namespace
 
-std::uint32_t apply_shared_region_slide_v2(AddressSpace& memory,
-    std::uint32_t mapping_address, std::uint32_t mapping_size,
-    std::uint32_t slide, std::uint32_t slide_info_address,
-    std::uint32_t slide_info_size)
+std::shared_ptr<const FilePageTransform> prepare_shared_region_slide_v2(
+    const AddressSpace& memory, std::uint32_t mapping_size,
+    std::uint64_t file_offset, std::uint32_t slide,
+    std::uint32_t slide_info_address, std::uint32_t slide_info_size)
 {
-    if (mapping_size == 0U ||
-        mapping_size >
-            std::numeric_limits<std::uint32_t>::max() - mapping_address)
-        return invalid_argument;
+    if (mapping_size == 0U)
+        return { };
     const auto info =
         read_info(memory, slide_info_address, slide_info_size, mapping_size);
     if (!info)
-        return invalid_argument;
-
-    for (std::uint32_t page = 0U; page < info->page_starts_count; ++page) {
-        const auto entry = memory.read16(
-            slide_info_address + info->page_starts_offset + page * 2U);
-        if (!entry)
-            return bad_address;
-        if (*entry == no_rebase)
-            continue;
-        const auto page_address =
-            mapping_address + page * AddressSpace::page_size;
-        auto bytes = memory.read_bytes(page_address, AddressSpace::page_size);
-        if (!bytes)
-            return bad_address;
-        // Extra chains observe earlier changes in this same page, as in XNU.
-        // Copy, intern and publish once per page, including a modified prefix
-        // on error. Loader copy-in preserves the mapping's guest permissions.
-        const auto error = decode_page(
-            memory, *bytes, *entry, *info, slide, slide_info_address);
-        if (!memory.copy_in_immutable_page(page_address, *bytes))
-            return bad_address;
-        if (error != 0U)
-            return error;
-    }
-    return 0U;
+        return { };
+    auto metadata = memory.read_bytes(slide_info_address, slide_info_size);
+    if (!metadata)
+        return { };
+    return std::make_shared<SharedRegionSlideV2>(
+        std::move(*metadata), *info, file_offset, slide);
 }
 } // namespace ilemu

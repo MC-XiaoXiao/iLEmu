@@ -957,8 +957,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
             const auto zero_fill_size = mapping.size - file_backed_size;
             if (file_backed_size != 0U) {
                 mapped = memory_.map_file(address, file_backed_size,
-                    mapping_permissions, source->path,
-                    source->file_offset, source->expected_generation,
+                    mapping_permissions, source->path, source->file_offset,
+                    source->expected_generation,
                     source->expected_content_identity, { },
                     source->immutable_file_view,
                     shared_cache == nullptr ? &file_mapping_context : nullptr);
@@ -991,18 +991,25 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
             diagnostics.enabled() ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point { };
         const auto version = memory_.read32(slide_info_address);
-        const auto slide_mapping = std::find_if(mappings->begin(), mappings->end(),
-            [](const Mapping& mapping) {
+        const auto slide_mapping = std::find_if(
+            mappings->begin(), mappings->end(), [](const Mapping& mapping) {
                 return (mapping.initial_protection & vm_protection_slide) != 0U;
             });
-        const auto slide_error = version && *version == 2U &&
-                slide_mapping != mappings->end()
-            ? apply_shared_region_slide_v2(memory_,
-                  slide_mapping->address + *address_slide,
-                  slide_mapping->size, content_slide, slide_info_address,
-                  slide_info_size)
-            : apply_slide_info_v1(memory_, *mappings, content_slide,
-                  slide_info_address, slide_info_size);
+        std::uint32_t slide_error;
+        if (version && *version == 2U && slide_mapping != mappings->end()) {
+            auto transform = prepare_shared_region_slide_v2(memory_,
+                slide_mapping->size, slide_mapping->file_offset, content_slide,
+                slide_info_address, slide_info_size);
+            slide_error =
+                transform && memory_.transform_file_mapping(
+                                 slide_mapping->address + *address_slide,
+                                 std::move(transform))
+                    ? 0U
+                    : bsd_support::invalid_argument;
+        } else {
+            slide_error = apply_slide_info_v1(memory_, *mappings, content_slide,
+                slide_info_address, slide_info_size);
+        }
         if (diagnostics.enabled())
             diagnostics.record(SharedRegionDiagnosticPhase::ApplySlide,
                 std::chrono::steady_clock::now() - slide_started);
@@ -1015,8 +1022,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
 
     // A late copyout fault leaves both the mappings and their executable
     // bookkeeping committed. Report it after completing image installation.
-    const auto slide_copyout_failed = slide_address != 0 &&
-        !memory_.write32(slide_address, *address_slide);
+    const auto slide_copyout_failed =
+        slide_address != 0 && !memory_.write32(slide_address, *address_slide);
     for (const auto& mapping : *mappings) {
         if ((mapping.initial_protection & vm_protection_zero_fill) != 0)
             continue;
