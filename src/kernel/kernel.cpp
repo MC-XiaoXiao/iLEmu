@@ -3310,6 +3310,7 @@ void CompatibilityKernel::inherit_process_state(
 {
     const auto inherit_fork_state = inheritance == ProcessInheritance::Fork;
     shared_state_ = parent.shared_state_;
+    hfs_metadata_ = parent.hfs_metadata_;
     memory_.share_file_page_cache(parent.memory_);
     memory_.set_file_generation_registry(
         shared_state_->guest_file_generation_registry);
