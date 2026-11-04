@@ -186,12 +186,17 @@ struct KeventRegistration {
     std::uint32_t filter_flags { };
     std::int64_t data { };
     std::uint64_t user_data { };
-    std::uint64_t process_exec_generation { };
-    std::uint64_t process_exit_generation { };
+    // Readiness walks inspect these fields for every filter. Keep them in
+    // the first cache line instead of beyond the optional vnode/timer state.
+    std::uint32_t qos { };
     bool user_triggered { };
     bool enabled { true };
     bool clear_delivered { };
+    // XNU defers deletion of a disabled EV_DISPATCH2 knote until EV_ENABLE.
+    bool deferred_delete { };
     std::uint32_t clear_available { };
+    std::uint64_t process_exec_generation { };
+    std::uint64_t process_exit_generation { };
     // EVFILT_MACHPORT readiness is immutable while its receive-object queue
     // generation is unchanged. Cache only a negative observation; positive
     // readiness is always re-evaluated so consuming a message cannot leave a
@@ -202,9 +207,6 @@ struct KeventRegistration {
     std::optional<VnodeWatch> vnode_watch;
     std::array<std::uint64_t, 2> extension { };
     std::optional<KeventTimer> timer;
-    std::uint32_t qos { };
-    // XNU defers deletion of a disabled EV_DISPATCH2 knote until EV_ENABLE.
-    bool deferred_delete { };
 };
 
 struct PendingWait {
