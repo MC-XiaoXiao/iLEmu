@@ -171,7 +171,13 @@ std::size_t JitWorkPolicy::recommended_artifact_resident_bytes(
     }
     const bool spacious = *effective >= maximum_effective_memory_floor &&
         available >= maximum_available_memory_floor;
-    return (spacious ? 256U : 64U) * 1024U * 1024U;
+    if (spacious)
+        return 256U * 1024U * 1024U;
+    // Keep shared translations resident across runtimes on hosts with
+    // moderate headroom, rather than repeatedly rebuilding an evicted set.
+    const bool expanded = *effective >= expanded_effective_memory_floor &&
+        available >= expanded_available_memory_floor;
+    return (expanded ? 128U : 64U) * 1024U * 1024U;
 }
 
 std::size_t JitWorkPolicy::recommended_translation_lanes(
