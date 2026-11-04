@@ -235,23 +235,31 @@ std::size_t XnuScheduler::runnable_count_at_or_above_priority(
 std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread(
     std::uint32_t process, std::optional<XnuThreadId> excluded) const
 {
+    const std::array processes { process };
+    return oldest_runnable_thread(std::span { processes }, excluded);
+}
+
+std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread(
+    std::span<const std::uint32_t> processes,
+    std::optional<XnuThreadId> excluded) const
+{
     std::optional<XnuThreadId> oldest;
     std::uint64_t oldest_enqueue_sequence =
         std::numeric_limits<std::uint64_t>::max();
-    const auto process_iterator = process_threads_.find(process);
-    if (process_iterator == process_threads_.end())
-        return std::nullopt;
-
-    for (const auto thread : process_iterator->second) {
-        if (excluded && thread == *excluded)
+    for (const auto process : processes) {
+        const auto process_iterator = process_threads_.find(process);
+        if (process_iterator == process_threads_.end())
             continue;
-        const auto iterator = threads_.find(thread);
-        if (iterator == threads_.end() || !iterator->second.queued)
-            continue;
-        if (!oldest ||
-            iterator->second.runnable_enqueue_sequence < oldest_enqueue_sequence) {
-            oldest = thread;
-            oldest_enqueue_sequence = iterator->second.runnable_enqueue_sequence;
+        for (const auto thread : process_iterator->second) {
+            if (excluded && thread == *excluded)
+                continue;
+            const auto iterator = threads_.find(thread);
+            if (iterator == threads_.end() || !iterator->second.queued)
+                continue;
+            if (!oldest || iterator->second.runnable_enqueue_sequence < oldest_enqueue_sequence) {
+                oldest = thread;
+                oldest_enqueue_sequence = iterator->second.runnable_enqueue_sequence;
+            }
         }
     }
     return oldest;

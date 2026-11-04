@@ -2412,6 +2412,7 @@ void EmulatorSession::run()
     };
     std::optional<DisplayClockWindow> display_clock_window;
     Runtime* display_scanout_owner = nullptr;
+    std::vector<std::uint32_t> foreground_processes;
     const auto refresh_jit_runtime_classes = [&]() {
         const auto active_process =
             initial_runtime->kernel->active_client_process_id();
@@ -2424,17 +2425,21 @@ void EmulatorSession::run()
             transition->terminal_state == TransitionTerminal::Pending) {
             transition_destination = transition->destination->process_id;
         }
+        foreground_processes.clear();
         for (auto& runtime : runtimes) {
             if (runtime->kernel->process().exited)
                 continue;
             const auto process_id = runtime->kernel->process().pid;
+            const auto& policy = *runtime->kernel->process().execution_policy;
+            if (policy.role() == DarwinProcessRole::FocalUi)
+                foreground_processes.push_back(process_id);
             const auto critical = runtime.get() == initial_runtime ||
                                   runtime.get() == display_scanout_owner;
             const auto interactive =
                 runtime->image_activation_pending ||
-                (active_process && *active_process == process_id) ||
-                (transition_destination &&
-                    *transition_destination == process_id);
+                policy.visible().value_or(
+                    (active_process && *active_process == process_id) ||
+                    (transition_destination && *transition_destination == process_id));
             apply_jit_runtime_class(
                 *runtime, critical      ? JitCodeCacheClass::BootCritical
                           : interactive ? JitCodeCacheClass::Foreground
@@ -3719,13 +3724,20 @@ void EmulatorSession::run()
             initial_runtime->kernel->foreground_transition_snapshot();
         using TransitionTerminal =
             KernelSharedState::ForegroundTransitionTerminalState;
-        const auto transition_process =
+        auto transition_process =
             transition && transition->destination &&
                     transition->terminal_state == TransitionTerminal::Pending &&
                     !transition->destination_first_frame
                 ? std::optional<std::uint32_t> { transition->destination
                           ->process_id }
                 : std::nullopt;
+        if (transition_process) {
+            if (const auto* runtime = runtime_index.find(*transition_process)) {
+                const auto role = runtime->kernel->process().execution_policy->role();
+                if (role != DarwinProcessRole::Default && role != DarwinProcessRole::FocalUi)
+                    transition_process.reset();
+            }
+        }
         if (!input_preferred_thread) {
             for (const auto& runtime : runtimes) {
                 const auto processor =
@@ -3781,6 +3793,7 @@ void EmulatorSession::run()
                 .input_receiver_process = input_receiver_process,
                 .foreground_transition_process = transition_process,
                 .active_process = active_process,
+                .foreground_processes = foreground_processes,
                 .interaction_generation = interaction_generation,
                 .realtime_notification_pending =
                     display_receive_pending || display_callback_pending,

@@ -22,6 +22,7 @@
 #include <mcl/container/intrusive_list.hpp>
 #include <optional>
 #include <set>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -312,6 +313,9 @@ public:
     // same-process dependency make progress.
     [[nodiscard]] std::optional<XnuThreadId> oldest_runnable_thread(
         std::uint32_t process,
+        std::optional<XnuThreadId> excluded = std::nullopt) const;
+    [[nodiscard]] std::optional<XnuThreadId> oldest_runnable_thread(
+        std::span<const std::uint32_t> processes,
         std::optional<XnuThreadId> excluded = std::nullopt) const;
     // A bounded foreground handoff can depend on a lower-priority worker in
     // another task. Query FIFO runnable age without changing guest priority,

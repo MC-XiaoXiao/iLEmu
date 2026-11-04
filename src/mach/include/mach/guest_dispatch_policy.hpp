@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "mach/xnu_scheduler.hpp"
@@ -36,6 +37,7 @@ struct GuestDispatchObservation {
     std::optional<std::uint32_t> input_receiver_process;
     std::optional<std::uint32_t> foreground_transition_process;
     std::optional<std::uint32_t> active_process;
+    std::span<const std::uint32_t> foreground_processes;
     std::uint64_t interaction_generation { };
     bool realtime_notification_pending { };
     bool realtime_work_pending { };
@@ -58,6 +60,7 @@ enum class GuestDispatchReason : std::uint8_t {
     InteractiveProcess,
     FrameDependency,
     HostContinuation,
+    ForegroundProcess,
 };
 
 struct GuestDispatchDecision {

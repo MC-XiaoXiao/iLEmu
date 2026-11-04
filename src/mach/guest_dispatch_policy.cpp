@@ -341,6 +341,13 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
         }
         input_process_.reset();
     }
+    if (const auto foreground = scheduler.oldest_runnable_thread(
+            observation.foreground_processes)) {
+        auto decision = decide_interactive_process(scheduler,
+            foreground->process, GuestDispatchReason::ForegroundProcess);
+        decision.explicit_handoff_stale = result.explicit_handoff_stale;
+        return decision;
+    }
     if (observation.active_process &&
         observation.now < interaction_deadline_) {
         auto decision = decide_interactive_process(scheduler,
