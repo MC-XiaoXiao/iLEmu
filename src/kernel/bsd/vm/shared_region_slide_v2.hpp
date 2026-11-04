@@ -13,6 +13,6 @@ class AddressSpace;
 // the requested address slide is zero.
 [[nodiscard]] std::uint32_t apply_shared_region_slide_v2(AddressSpace& memory,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
-    std::uint32_t initial_protection, std::uint32_t slide,
-    std::uint32_t slide_info_address, std::uint32_t slide_info_size);
+    std::uint32_t slide, std::uint32_t slide_info_address,
+    std::uint32_t slide_info_size);
 } // namespace ilemu

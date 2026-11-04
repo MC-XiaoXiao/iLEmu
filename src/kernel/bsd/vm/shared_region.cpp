@@ -109,6 +109,7 @@ namespace {
         ResolveSource,
         Map,
         InstallImage,
+        ApplySlide,
     };
 
     class SharedRegionDiagnostics {
@@ -986,6 +987,9 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     }
 
     if (fixed_mapping_contract) {
+        const auto slide_started =
+            diagnostics.enabled() ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point { };
         const auto version = memory_.read32(slide_info_address);
         const auto slide_mapping = std::find_if(mappings->begin(), mappings->end(),
             [](const Mapping& mapping) {
@@ -995,10 +999,13 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
                 slide_mapping != mappings->end()
             ? apply_shared_region_slide_v2(memory_,
                   slide_mapping->address + *address_slide,
-                  slide_mapping->size, slide_mapping->initial_protection,
-                  content_slide, slide_info_address, slide_info_size)
+                  slide_mapping->size, content_slide, slide_info_address,
+                  slide_info_size)
             : apply_slide_info_v1(memory_, *mappings, content_slide,
                   slide_info_address, slide_info_size);
+        if (diagnostics.enabled())
+            diagnostics.record(SharedRegionDiagnosticPhase::ApplySlide,
+                std::chrono::steady_clock::now() - slide_started);
         if (slide_error != 0) {
             rollback(memory_, applied);
             bsd_error(cpu, slide_error);

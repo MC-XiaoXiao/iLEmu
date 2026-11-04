@@ -379,9 +379,10 @@ namespace {
                    std::to_string(source.number);
             break;
         case PerfDiagnosticSourceKind::SharedRegionPhase: {
-            constexpr std::array<std::string_view, 9> phase_names { "unknown",
+            constexpr std::array<std::string_view, 10> phase_names { "unknown",
                 "preflight", "cache-probe", "cache-parse", "read-mappings",
-                "choose-slide", "resolve-source", "map", "install-image" };
+                "choose-slide", "resolve-source", "map", "install-image",
+                "apply-slide" };
             const auto phase = source.number < phase_names.size()
                                    ? phase_names[source.number]
                                    : phase_names.front();
