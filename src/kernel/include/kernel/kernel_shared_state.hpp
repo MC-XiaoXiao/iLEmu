@@ -1957,7 +1957,7 @@ struct KernelSharedState {
     // EVFILT_PROC is edge-triggered and may outlive the process-table zombie.
     // Retain compact per-PID generations so an exec/exit between kevent
     // registration and the next scheduler poll cannot be lost.
-    std::map<std::uint32_t, ProcessKeventState> process_kevent_states;
+    std::unordered_map<std::uint32_t, ProcessKeventState> process_kevent_states;
     std::shared_ptr<bsd::AdvisoryFileLockRegistry> advisory_file_locks {
         std::make_shared<bsd::AdvisoryFileLockRegistry>()
     };
