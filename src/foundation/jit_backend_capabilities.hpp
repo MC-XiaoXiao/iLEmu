@@ -12,10 +12,8 @@ namespace ilemu {
 struct JitBackendCapabilities {
 #if defined(__aarch64__) || defined(_M_ARM64)
     static constexpr bool native_code_versions = true;
-    static constexpr bool cycle_budget_replenishment = true;
 #else
     static constexpr bool native_code_versions = false;
-    static constexpr bool cycle_budget_replenishment = false;
 #endif
 #if defined(__x86_64__) || defined(_M_X64)
     static constexpr bool shared_native_cache = true;
@@ -34,6 +32,8 @@ struct JitBackendCapabilities {
 #endif
     static constexpr bool dispatch_counters = false;
 #endif
+    // Both native backends refill the existing cycle countdown inside Run.
+    static constexpr bool cycle_budget_replenishment = shared_native_cache;
     // Runtime links allow guarded page-table views to change between entries.
 #if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
     static constexpr bool runtime_memory_table_links = true;
