@@ -1717,13 +1717,13 @@ CompatibilityKernel::pending_event_poll_candidates()
         (pending_event_poll_mach_generation_ != mach_generation ||
             pending_event_poll_io_generation_ != io_generation)) {
         const auto unchanged_mach_queue =
-            pending_event_poll_io_generation_ == io_generation &&
             std::all_of(queue->second.begin(), queue->second.end(),
-                [](const auto& registration) {
+                [this](const auto& registration) {
                     return !registration.enabled ||
                         (registration.filter == darwin::kqueue::filter_mach_port &&
-                            !registration.deferred_delete);
-                }) && !kevent_mach_poll_required(darwin::kqueue::workqueue_descriptor);
+                            !registration.deferred_delete &&
+                            mach_kevent_observation_current(registration));
+                });
         if (!unchanged_mach_queue)
             static_cast<void>(request_workqueue_kevents(nullptr));
     }
