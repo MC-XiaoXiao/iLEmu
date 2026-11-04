@@ -185,26 +185,6 @@ void DarwinPthreadRuntime::remove_worker(std::uint32_t processor)
     reset_qos_overrides(processor);
 }
 
-bool DarwinPthreadQosOverride::start(
-    std::optional<std::int32_t> priority) noexcept
-{
-    if (count_ == maximum_depth)
-        return false;
-    ++count_;
-    if (priority && (!priority_ || *priority > *priority_))
-        priority_ = priority;
-    return true;
-}
-
-bool DarwinPthreadQosOverride::end() noexcept
-{
-    if (count_ == 0U)
-        return false;
-    if (--count_ == 0U)
-        priority_.reset();
-    return true;
-}
-
 DarwinPthreadQosOverride DarwinPthreadRuntime::qos_override(
     std::uint32_t processor) const noexcept
 {
@@ -222,9 +202,37 @@ void DarwinPthreadRuntime::set_qos_override(
         qos_overrides_.insert_or_assign(processor, state);
 }
 
+DarwinPthreadResourceQosOverrides DarwinPthreadRuntime::resource_qos_overrides(
+    std::uint32_t processor) const
+{
+    const auto found = resource_qos_overrides_.find(processor);
+    return found == resource_qos_overrides_.end() ? DarwinPthreadResourceQosOverrides { }
+                                                : found->second;
+}
+
+void DarwinPthreadRuntime::set_resource_qos_overrides(
+    std::uint32_t processor, DarwinPthreadResourceQosOverrides state)
+{
+    if (state.empty())
+        resource_qos_overrides_.erase(processor);
+    else
+        resource_qos_overrides_.insert_or_assign(processor, std::move(state));
+}
+
+std::optional<std::int32_t> DarwinPthreadRuntime::effective_qos_override_priority(
+    std::uint32_t processor) const noexcept
+{
+    auto result = qos_override(processor).priority();
+    if (const auto resource = resource_qos_overrides_.find(processor);
+        resource != resource_qos_overrides_.end())
+        result = std::max(result, resource->second.priority());
+    return result;
+}
+
 void DarwinPthreadRuntime::reset_qos_overrides(std::uint32_t processor)
 {
     qos_overrides_.erase(processor);
+    resource_qos_overrides_.erase(processor);
 }
 
 bool DarwinPthreadRuntime::set_target_concurrency(

@@ -276,6 +276,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/pthread_runtime.cpp
     bsd/workqueue_kevents.cpp
     bsd/pthread_state.cpp
+    bsd/pthread_qos_overrides.cpp
     bsd/psynch_runtime.cpp
     bsd/psynch.cpp
     bsd/ulock.cpp

@@ -338,8 +338,8 @@ void CompatibilityKernel::reset_pthread_runtime()
 {
     if (thread_qos_override_handler_) {
         for (const auto& [processor, port] : thread_ports_) {
-            if (!pthread_runtime_.qos_override(
-                     static_cast<std::uint32_t>(processor)).empty()) {
+            if (pthread_runtime_.effective_qos_override_priority(
+                    static_cast<std::uint32_t>(processor))) {
                 static_cast<void>(thread_qos_override_handler_(
                     processor, std::nullopt));
             }
@@ -386,6 +386,23 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         number == 372 && contract.supports_thread_identity;
     if (!contract.supports_registration_v1() && !supports_thread_identity)
         return false;
+
+    const auto reset_dispatch_override = [&](std::uint32_t processor) {
+        auto resources = pthread_runtime_.resource_qos_overrides(processor);
+        if (!resources.dispatch_active())
+            return true;
+        auto anonymous = pthread_runtime_.qos_override(processor);
+        resources.reset_dispatch();
+        if (!contract.resource_qos_overrides)
+            anonymous.clear_peak_if_balanced();
+        const auto priority = std::max(anonymous.priority(), resources.priority());
+        if (!thread_qos_override_handler_ ||
+            !thread_qos_override_handler_(processor, priority))
+            return false;
+        pthread_runtime_.set_qos_override(processor, anonymous);
+        pthread_runtime_.set_resource_qos_overrides(processor, std::move(resources));
+        return true;
+    };
 
     auto& registers = cpu.registers();
     switch (number) {
@@ -725,6 +742,12 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return true;
             }
+            // Workqueue return also retires dispatch donations when userspace
+            // has not issued a separate reset. Explicit lock donations survive.
+            if (!reset_dispatch_override(processor)) {
+                bsd_error(cpu, darwin::error::no_such_process);
+                return true;
+            }
             if (operation == thread_kevent_return && affinity != 0U) {
                 const KeventWireFormat wire {
                     darwin::kqueue::WireFormat::QualityOfService };
@@ -845,23 +868,32 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         return true;
     }
     case 478: { // bsdthread_ctl, split-libpthread QoS contract
-        if (!contract.supports_bsdthread_ctl) {
+        if (!contract.supports_bsdthread_ctl)
             return false;
-        }
         constexpr std::uint32_t qos_override_start = 0x40U;
         constexpr std::uint32_t qos_override_end = 0x80U;
+        constexpr std::uint32_t qos_override_reset = 0x200U;
+        constexpr std::uint32_t qos_override_dispatch = 0x400U;
         const auto operation = registers[0];
-        if (operation != qos_override_start && operation != qos_override_end) {
+        const auto reset = operation == qos_override_reset;
+        const auto dispatch = operation == qos_override_dispatch;
+        if (operation != qos_override_start && operation != qos_override_end &&
+            !reset && !dispatch) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
-        if (registers[3] != 0U ||
-            (operation == qos_override_end && registers[2] != 0U)) {
+        if ((reset && (registers[1] != 0U || registers[2] != 0U || registers[3] != 0U)) ||
+            (dispatch && !contract.dispatch_override_owner_check && registers[3] != 0U) ||
+            (operation == qos_override_start && !contract.resource_qos_overrides && registers[3] != 0U) ||
+            (operation == qos_override_end &&
+                (registers[3] != 0U || (!contract.resource_qos_overrides && registers[2] != 0U)))) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
         std::optional<std::pair<std::uint32_t, std::uint32_t>> target;
-        {
+        if (reset) {
+            target = { process_.pid, static_cast<std::uint32_t>(cpu.processor_id()) };
+        } else {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto object = mach_support::resolve_name_with_right(
                 *shared_state_, process_.pid, registers[1], xnu::ipc::Right::Send);
@@ -873,27 +905,67 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             return true;
         }
         const auto processor = target->second;
-        auto state = pthread_runtime_.qos_override(processor);
-        if (operation == qos_override_start) {
-            // XNU's anonymous override consumes the class only. Unknown class
-            // encodings donate no QoS, but still require a matching end.
+        if ((reset || dispatch) && !pthread_runtime_.worker(processor)) {
+            bsd_error(cpu, darwin::error::operation_not_permitted);
+            return true;
+        }
+        if (reset) {
+            if (!reset_dispatch_override(processor)) {
+                bsd_error(cpu, darwin::error::no_such_process);
+                return true;
+            }
+            if (scheduler_preemption_query_ &&
+                scheduler_preemption_query_(cpu.processor_id()))
+                cpu.request_guest_preemption();
+            bsd_success(cpu, 0);
+            return true;
+        }
+        if (dispatch && registers[3] != 0U) {
+            const auto owner = memory_.read32(registers[3]);
+            if (!owner) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return true;
+            }
+            // XNU reconstructs the Mach name from an unfair-lock owner word;
+            // its low two bits belong to userspace lock flags.
+            if ((*owner | 3U) != registers[1]) {
+                bsd_error(cpu, 70U); // ESTALE: the lock changed owners.
+                return true;
+            }
+        }
+        auto anonymous = pthread_runtime_.qos_override(processor);
+        auto resources = pthread_runtime_.resource_qos_overrides(processor);
+        if (dispatch) {
             const auto priority = qos_override_priority(contract, registers[2]);
-            if (!state.start(priority)) {
+            resources.boost_dispatch(priority);
+            // The anonymous ABI coalesces explicit and dispatch peaks until
+            // both source counts are balanced; resource ABIs keep them separate.
+            if (!contract.resource_qos_overrides)
+                anonymous.observe_priority(priority);
+        } else if (contract.resource_qos_overrides) {
+            if (operation == qos_override_start)
+                resources.start(registers[3], qos_override_priority(contract, registers[2]));
+            else
+                resources.end(registers[2]);
+        } else if (operation == qos_override_start) {
+            if (!anonymous.start(qos_override_priority(contract, registers[2]))) {
                 bsd_error(cpu, darwin::error::no_memory);
                 return true;
             }
-        } else if (!state.end()) {
+        } else if (!anonymous.end(resources.dispatch_active())) {
             bsd_error(cpu, bsd_support::bad_address);
             return true;
         }
-        // Publish only after the scheduler accepts the live target. A failed
-        // update must not consume a start/end or leave a donated priority.
+        // Publish only after accepting the live target. Dispatch reset leaves
+        // independent explicit donations intact, including the legacy resource.
+        const auto priority = std::max(anonymous.priority(), resources.priority());
         if (!thread_qos_override_handler_ ||
-            !thread_qos_override_handler_(processor, state.priority())) {
+            !thread_qos_override_handler_(processor, priority)) {
             bsd_error(cpu, darwin::error::no_such_process);
             return true;
         }
-        pthread_runtime_.set_qos_override(processor, state);
+        pthread_runtime_.set_qos_override(processor, anonymous);
+        pthread_runtime_.set_resource_qos_overrides(processor, std::move(resources));
         if (scheduler_preemption_query_ &&
             scheduler_preemption_query_(cpu.processor_id()))
             cpu.request_guest_preemption();
