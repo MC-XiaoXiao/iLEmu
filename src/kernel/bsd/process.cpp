@@ -262,6 +262,8 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         return;
     if (dispatch_bsd_memorystatus(cpu, number))
         return;
+    if (dispatch_bsd_process_role(cpu, number))
+        return;
     if (dispatch_bsd_process_policy(cpu, number))
         return;
     if (dispatch_bsd_process_spawn(cpu, number))

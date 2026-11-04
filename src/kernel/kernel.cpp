@@ -513,6 +513,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
                     "SHELL=/bin/sh" },
                 KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, 0U, { },
                 { }, DisplayOrientation::Portrait, { }, 0U };
+        shared_state_->processes[process_.pid].execution_policy = process_.execution_policy;
         shared_state_->processes[process_.pid].memory_status =
             darwin::memorystatus::initial_state(shared_state_->darwin_version);
         shared_state_->processes[process_.pid].syscall_counters =
@@ -1281,6 +1282,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         record.incarnation == 0U || record.exited;
     record.parent_pid = process_.parent_pid;
     record.membership = process_.membership;
+    record.execution_policy = process_.execution_policy;
     record.uid = process_.uid;
     record.effective_uid = process_.effective_uid;
     record.gid = process_.gid;
@@ -3363,6 +3365,7 @@ void CompatibilityKernel::inherit_process_state(
         process_image_ = parent.process_image_;
     process_ = parent.process_;
     process_.membership = std::make_shared<ProcessMembership>(*parent.process_.membership);
+    process_.execution_policy = std::make_shared<ProcessExecutionPolicy>();
     process_.parent_pid = parent.process_.pid;
     process_.pid = child_pid;
     process_.exited = false;
@@ -3450,6 +3453,7 @@ void CompatibilityKernel::inherit_process_state(
                             : KernelSharedState::ProcessRecord { };
     child_record.parent_pid = process_.parent_pid;
     child_record.membership = process_.membership;
+    child_record.execution_policy = process_.execution_policy;
     child_record.uid = process_.uid;
     child_record.effective_uid = process_.effective_uid;
     child_record.gid = process_.gid;

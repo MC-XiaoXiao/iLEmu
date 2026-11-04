@@ -695,6 +695,7 @@ private:
         Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_memorystatus(
         Cpu& cpu, std::uint32_t number);
+    [[nodiscard]] bool dispatch_bsd_process_role(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_process_policy(
         Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_process_spawn(

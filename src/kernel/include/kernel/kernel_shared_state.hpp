@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "kernel/process_execution_policy.hpp"
 #include "crypto/host_uuid.hpp"
 #include <mach/xnu_mig_reference.hpp>
 #include <kernel/credential_groups.hpp>
@@ -139,6 +140,7 @@ struct ProcessContext {
     std::uint32_t pid { 1 };
     std::uint32_t parent_pid { };
     std::shared_ptr<ProcessMembership> membership { std::make_shared<ProcessMembership>() };
+    std::shared_ptr<ProcessExecutionPolicy> execution_policy { std::make_shared<ProcessExecutionPolicy>() };
     std::uint32_t audit_session_id { 1U };
     std::uint32_t uid { };
     std::uint32_t effective_uid { };
@@ -831,6 +833,9 @@ struct KernelSharedState {
         // P_INVFORK/P_LINVFORK survives a failed exec attempt.
         bool in_vfork { };
         bool has_executed { };
+        std::shared_ptr<ProcessExecutionPolicy> execution_policy {
+            std::make_shared<ProcessExecutionPolicy>()
+        };
     };
     struct ProcessKeventState {
         std::uint64_t exec_generation { };
