@@ -1714,8 +1714,9 @@ CompatibilityKernel::pending_event_poll_candidates()
     // so EVFILT_MACHPORT can schedule its libpthread event worker.
     // Empty Mach-only queues can reuse their receive-object observations;
     // unrelated IPC does not require knote or host socket watch collection.
-    if (const auto queue = kqueues_.find(darwin::kqueue::workqueue_descriptor);
-        queue != kqueues_.end() &&
+    if (const auto queue = kqueues_.rbegin();
+        queue != kqueues_.rend() &&
+        queue->first == darwin::kqueue::workqueue_descriptor &&
         (pending_event_poll_mach_generation_ != mach_generation ||
             pending_event_poll_io_generation_ != io_generation)) {
         const auto unchanged_mach_queue =
