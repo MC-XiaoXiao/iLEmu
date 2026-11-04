@@ -37,6 +37,24 @@ enum class ArmUnpredictableInstructionPolicy : std::uint8_t {
     CortexA8,
 };
 
+// Darwin CPUFAMILY values, also published at commpage +0x80 for the
+// firmware's memory-routine resolvers (mach/machine.h).
+[[nodiscard]] constexpr std::uint32_t darwin_cpu_family_for_model(
+    ArmCpuModelKind kind) noexcept
+{
+    switch (kind) {
+    case ArmCpuModelKind::Arm1176JzfS:
+        return 0x8ff620d8U; // CPUFAMILY_ARM_11
+    case ArmCpuModelKind::CortexA8:
+        return 0x0cc90e64U; // CPUFAMILY_ARM_13
+    case ArmCpuModelKind::CortexA9:
+        return 0x96077ef1U; // CPUFAMILY_ARM_14
+    case ArmCpuModelKind::AppleSwift:
+        return 0x1e2d6381U; // CPUFAMILY_ARM_SWIFT
+    }
+    return 0U;
+}
+
 [[nodiscard]] constexpr ArmArchitectureVersion arm_architecture_for_model(
     ArmCpuModelKind kind) noexcept
 {

@@ -31,6 +31,10 @@ void CompatibilityKernel::install_commpage()
     page[0x34] = static_cast<std::byte>(count);
     page[0x35] = static_cast<std::byte>(count);
     page[0x36] = static_cast<std::byte>(count);
+    const auto cpu_family =
+        darwin_cpu_family_for_model(device_model_.processor.model);
+    for (std::size_t index = 0; index < sizeof(cpu_family); ++index)
+        page[0x80 + index] = static_cast<std::byte>(cpu_family >> (index * 8U));
     if (shared_state_->darwin_version >= DarwinGeneration::Ios7) {
         // ARM's high data commpage publishes user and kernel VM page shifts.
         // libsystem derives vm_page_size from the kernel shift during mach_init.
