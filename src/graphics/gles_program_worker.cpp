@@ -708,6 +708,7 @@ std::unique_ptr<GlesProgramWorker> GlesProgramWorker::begin_create(
             executor->retain(backend);
             backend->renderer = executor->create_program_renderer(&info.error);
             if (backend->renderer) {
+                backend->renderer->use_dedicated_thread();
                 info.name = std::string { backend->renderer->name() };
                 info.target_api = backend->renderer->program_target_api();
             }
