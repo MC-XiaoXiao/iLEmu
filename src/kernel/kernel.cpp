@@ -1745,12 +1745,12 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto mach_changed = !pending_event_poll_observed_ ||
                               pending_event_poll_mach_generation_ !=
                                   mach_generation;
-    const auto mach_snapshot_current = mach_changed &&
+    const auto io_changed = !pending_event_poll_observed_ ||
+                            pending_event_poll_io_generation_ != io_generation;
+    const auto mach_snapshot_current = (mach_changed || io_changed) &&
         pending_mach_poll_snapshot_current_locked(io_generation);
-    const auto readiness_changed = !pending_event_poll_observed_ ||
-                                   pending_event_poll_io_generation_ !=
-                                       io_generation ||
-                                   (mach_changed && !mach_snapshot_current);
+    const auto readiness_changed =
+        (mach_changed || io_changed) && !mach_snapshot_current;
     const auto deadline_due = pending_event_poll_deadline_ &&
                               guest_now >= *pending_event_poll_deadline_;
     const auto sample_deadline = hid_event_system_hle_.next_sample_deadline();
@@ -1766,6 +1766,7 @@ CompatibilityKernel::pending_event_poll_candidates()
         // Keep the captured outer generation, not a later producer snapshot.
         // A racing enqueue will still differ on the next scheduler pass.
         if (mach_snapshot_current) {
+            pending_event_poll_io_generation_ = io_generation;
             pending_event_poll_mach_generation_ = mach_generation;
             return pending_event_mach_candidates_;
         }
@@ -1862,18 +1863,30 @@ CompatibilityKernel::pending_event_poll_candidates()
 bool CompatibilityKernel::pending_mach_poll_snapshot_current_locked(
     std::uint64_t io_generation) const
 {
-    return pending_event_mach_snapshot_valid_ &&
-        pending_event_poll_topology_generation_ == pending_event_topology_generation_ &&
-        pending_event_poll_io_generation_ == io_generation &&
+    if (!pending_event_mach_snapshot_valid_ ||
+        pending_event_poll_topology_generation_ != pending_event_topology_generation_ ||
         // Receiver registration can change outside this task's wait topology.
-        pending_event_mach_snapshot_receiver_generation_ ==
-            shared_state_->hid_event_queue.receiver_generation_snapshot() &&
-        pending_thread_aborts_.empty() &&
-        std::all_of(pending_event_mach_dependencies_.begin(),
-            pending_event_mach_dependencies_.end(), [this](const auto& dependency) {
-                return dependency.generation ==
-                    shared_state_->mach_receive_generation_snapshot(dependency.object);
-            });
+        pending_event_mach_snapshot_receiver_generation_ !=
+            shared_state_->hid_event_queue.receiver_generation_snapshot() ||
+        !pending_thread_aborts_.empty())
+        return false;
+    if (pending_event_poll_io_generation_ != io_generation &&
+        !std::all_of(pending_event_processors_.begin(),
+            pending_event_processors_.end(), [this](const auto processor) {
+                // Ordinary Mach receivers depend on their port objects. Other
+                // waits and native/HID receivers retain the I/O generation.
+                return pending_mach_receives_.contains(processor) &&
+                    !userland_hle_.pending_call(processor) &&
+                    !exception_delivery_.waiting(processor) &&
+                    !caught_signal_ready(processor) &&
+                    !hid_event_system_hle_.is_event_consumer(process_.pid, processor);
+            }))
+        return false;
+    return std::all_of(pending_event_mach_dependencies_.begin(),
+        pending_event_mach_dependencies_.end(), [this](const auto& dependency) {
+            return dependency.generation ==
+                shared_state_->mach_receive_generation_snapshot(dependency.object);
+        });
 }
 
 bool CompatibilityKernel::append_pending_io_mach_dependencies_locked(
