@@ -1781,7 +1781,6 @@ CompatibilityKernel::pending_event_poll_candidates()
     pending_event_mach_dependencies_.clear();
     pending_event_mach_snapshot_receiver_generation_ =
         shared_state_->hid_event_queue.receiver_generation_snapshot();
-    pending_event_mach_snapshot_timer_generation_ = local_timer_deadline_generation_;
     for (const auto processor : pending_event_processors_) {
         if (userland_hle_.pending_call(processor)) {
             if (userland_hle_.pending_call_ready(processor))
@@ -1864,7 +1863,6 @@ bool CompatibilityKernel::pending_mach_poll_snapshot_current_locked(
         // Receiver registration can change outside this task's wait topology.
         pending_event_mach_snapshot_receiver_generation_ ==
             shared_state_->hid_event_queue.receiver_generation_snapshot() &&
-        pending_event_mach_snapshot_timer_generation_ == local_timer_deadline_generation_ &&
         pending_thread_aborts_.empty() &&
         std::all_of(pending_event_mach_dependencies_.begin(),
             pending_event_mach_dependencies_.end(), [this](const auto& dependency) {

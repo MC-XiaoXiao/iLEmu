@@ -1357,7 +1357,6 @@ private:
     std::vector<MachPollDependency> pending_event_mach_dependencies_;
     std::vector<std::size_t> pending_event_mach_candidates_;
     std::uint64_t pending_event_mach_snapshot_receiver_generation_ { };
-    std::uint64_t pending_event_mach_snapshot_timer_generation_ { };
     bool pending_event_mach_snapshot_valid_ { };
     struct PendingIoDeadlineCache {
         std::uint64_t generation { };
