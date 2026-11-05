@@ -115,6 +115,15 @@ GuestDispatchDecision GuestDispatchPolicy::decide_interactive_process(
         preferred_process_burst_ = 0U;
         return { };
     }
+    if (reason == GuestDispatchReason::ForegroundProcess) {
+        const auto info = scheduler.info(*candidate);
+        const auto head = scheduler.peek_next_for_processor(
+            info->bound_processor.value_or(0U));
+        // Task roles already feed XNU QoS. A locality hint must not undo
+        // the resulting priority order or spend a turn it cannot receive.
+        if (head && scheduler.info(*head)->scheduled_priority > info->scheduled_priority)
+            return { };
+    }
     if (preferred_process_ != process) {
         preferred_process_ = process;
         preferred_process_burst_ = 0U;
