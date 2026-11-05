@@ -302,6 +302,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/apple80211.cpp
     bsd/kqueue.cpp
     bsd/kqueue_changes.cpp
+    bsd/kevent_sources.cpp
     bsd/device/offline_serial.cpp
     bsd/device/compass.cpp
     bsd/support.cpp)

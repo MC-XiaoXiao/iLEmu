@@ -154,6 +154,12 @@ bool CompatibilityKernel::workqueue_kevent_poll_required(
                 return false;
             if (registration.filter == darwin::kqueue::filter_mach_port)
                 return mach_kevent_observation_current(registration);
+            // Match delivery's readiness and bucket eligibility before
+            // asking the workqueue to rescan unrelated I/O.
+            if (const auto source = kevent_source_state(registration))
+                return !source->ready ||
+                    workqueue_kevent_bucket_active(
+                        workqueue_kevent_qos(registration, { }).bucket);
             if (io_changed)
                 return false;
             if (registration.filter == darwin::kqueue::filter_read ||

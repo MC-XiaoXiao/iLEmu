@@ -1830,11 +1830,11 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             ++registration;
             continue;
         }
-        std::uint32_t filter_flags = 0;
-        std::uint32_t available = 1;
-        std::uint64_t process_exec_generation_at_evaluation = 0;
-        std::uint64_t process_exit_generation_at_evaluation = 0;
-        std::uint16_t result_flags = 0;
+        const auto source_state =
+            kevent_source_state(*registration).value_or(KeventSourceState { });
+        auto filter_flags = source_state.filter_flags;
+        auto available = source_state.available;
+        auto result_flags = source_state.result_flags;
         std::optional<std::uint32_t> terminal_listener_pending;
         const auto descriptor = static_cast<std::uint32_t>(registration->ident);
         if (registration->filter == darwin::kqueue::filter_read &&
@@ -1853,47 +1853,11 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                     listener->second->pending_endpoints.size());
             }
         }
-        if (registration->filter == darwin::kqueue::filter_process) {
-            std::lock_guard lock { shared_state_->mach_mutex };
-            const auto process =
-                shared_state_->process_kevent_states.find(static_cast<std::uint32_t>(registration->ident));
-            if (process != shared_state_->process_kevent_states.end()) {
-                process_exec_generation_at_evaluation =
-                    process->second.exec_generation;
-                process_exit_generation_at_evaluation =
-                    process->second.exit_generation;
-                if ((registration->filter_flags &
-                        darwin::kqueue::process_note_exec) != 0U &&
-                    process->second.exec_generation !=
-                        registration->process_exec_generation) {
-                    filter_flags |= darwin::kqueue::process_note_exec;
-                }
-                if ((registration->filter_flags &
-                        darwin::kqueue::process_note_exit) != 0U &&
-                    process->second.exit_generation !=
-                        registration->process_exit_generation) {
-                    filter_flags |= darwin::kqueue::process_note_exit;
-                    available = process->second.wait_status;
-                    result_flags |= darwin::kqueue::event_end_of_file |
-                                    darwin::kqueue::event_one_shot;
-                }
-            }
-            result_flags |= darwin::kqueue::event_clear;
-        } else if (registration->filter == darwin::kqueue::filter_vnode) {
-            if (registration->vnode_watch) {
-                filter_flags = registration->vnode_watch->pending(
-                                   *shared_state_->guest_file_generation_registry) &
-                               registration->filter_flags;
-            }
-            available = 0U;
-        } else if (registration->filter == darwin::kqueue::filter_mach_port) {
+        if (registration->filter == darwin::kqueue::filter_mach_port) {
             if (!qos_readiness)
                 ready_mach_name = ready_mach_kevent_name(*registration);
             if (ready_mach_name)
                 available = *ready_mach_name;
-        } else if (registration->filter == darwin::kqueue::filter_user) {
-            filter_flags = registration->filter_flags;
-            available = static_cast<std::uint32_t>(registration->data);
         }
         const auto ready =
             registration->filter == darwin::kqueue::filter_read
@@ -1901,18 +1865,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                     : descriptor_readable(descriptor))
             : registration->filter == darwin::kqueue::filter_write
                 ? descriptor_writable(static_cast<std::uint32_t>(registration->ident))
-            : registration->filter == darwin::kqueue::filter_process
-                ? filter_flags != 0U
-            : registration->filter == darwin::kqueue::filter_vnode
-                ? filter_flags != 0U
             : registration->filter == darwin::kqueue::filter_mach_port
                 ? ready_mach_name.has_value()
-            : registration->filter == darwin::kqueue::filter_timer
-                ? registration->timer &&
-                    registration->timer->expirations(shared_state_->clock.now()) != 0
-            : registration->filter == darwin::kqueue::filter_user
-                ? registration->user_triggered
-                : false;
+                : source_state.ready;
         if (!ready) {
             registration->clear_delivered = false;
             ++registration;
@@ -2094,11 +2049,11 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 // that was never returned to the guest.
                 if ((filter_flags & darwin::kqueue::process_note_exec) != 0U) {
                     registration->process_exec_generation =
-                        process_exec_generation_at_evaluation;
+                        source_state.process_exec_generation;
                 }
                 if ((filter_flags & darwin::kqueue::process_note_exit) != 0U) {
                     registration->process_exit_generation =
-                        process_exit_generation_at_evaluation;
+                        source_state.process_exit_generation;
                 }
             }
             ++registration;

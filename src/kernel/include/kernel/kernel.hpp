@@ -1076,6 +1076,17 @@ private:
     [[nodiscard]] std::optional<std::uint32_t> ready_mach_kevent_name(
         const KeventRegistration& registration,
         MachMessageQos* message_qos = nullptr) const;
+    struct KeventSourceState {
+        bool ready { };
+        std::uint32_t filter_flags { };
+        std::uint32_t available { 1U };
+        std::uint16_t result_flags { };
+        // Acknowledge only generations represented by a successful copyout.
+        std::uint64_t process_exec_generation { };
+        std::uint64_t process_exit_generation { };
+    };
+    [[nodiscard]] std::optional<KeventSourceState> kevent_source_state(
+        const KeventRegistration& registration) const;
     struct WorkqueueKeventQos {
         std::uint32_t bucket;
         std::optional<std::int32_t> override_priority;
