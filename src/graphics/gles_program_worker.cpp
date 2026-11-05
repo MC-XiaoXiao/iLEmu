@@ -303,9 +303,11 @@ namespace {
                     --credits_->count;
                     credits_->bytes -= command.bytes;
                 }
+                notify_completion();
+                // Wake completed command observers before native retirement
+                // can wait for unrelated GPU submissions.
                 retire_ready_backends();
                 retire_ready_owners();
-                notify_completion();
             }
             backends_.clear();
             owners_.fill(nullptr);
