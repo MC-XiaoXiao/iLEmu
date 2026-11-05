@@ -12,6 +12,7 @@
 #include <optional>
 #include <set>
 #include <utility>
+#include <vector>
 
 namespace ilemu {
 
@@ -66,6 +67,15 @@ public:
     }
 
     [[nodiscard]] std::size_t size() const { return deadlines_.size(); }
+
+    [[nodiscard]] std::vector<Key> keys_due(Deadline now) const
+    {
+        std::vector<Key> keys;
+        for (auto entry = order_.begin();
+            entry != order_.end() && entry->first <= now; ++entry)
+            keys.insert(keys.end(), entry->second.begin(), entry->second.end());
+        return keys;
+    }
 
 private:
     using KeyIndex = std::map<Key, Deadline, KeyCompare>;

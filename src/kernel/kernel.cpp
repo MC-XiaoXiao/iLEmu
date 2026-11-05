@@ -3128,9 +3128,10 @@ void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline)
         return;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
-        for (auto& [port, timer] : shared_state_->mach_timers) {
-            if (!timer.deadline || *timer.deadline > deadline)
-                continue;
+        auto due_ports = shared_state_->mach_timer_deadlines.keys_due(deadline);
+        std::sort(due_ports.begin(), due_ports.end());
+        for (const auto port : due_ports) {
+            auto& timer = shared_state_->mach_timers.at(port);
             KernelSharedState::MachMessage message;
             message.bytes.resize(48);
             const auto put32 = [&](std::size_t offset, std::uint32_t value) {
