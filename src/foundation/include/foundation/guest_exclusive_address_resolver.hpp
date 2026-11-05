@@ -9,8 +9,8 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <shared_mutex>
+#include <vector>
 
 #include <dynarmic/interface/exclusive_monitor.h>
 
@@ -36,12 +36,13 @@ public:
 
 private:
     struct Binding {
+        std::size_t begin { };
         std::size_t end { };
         AddressSpace* memory { };
     };
 
     mutable std::shared_mutex mutex_;
-    std::map<std::size_t, Binding> bindings_;
+    std::vector<Binding> bindings_;
 };
 
 } // namespace ilemu

@@ -7,6 +7,7 @@
 
 #include "foundation/guest_exclusive_address_resolver.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -25,17 +26,20 @@ void GuestExclusiveAddressResolver::bind(std::size_t processor_base,
     }
     const auto end = processor_base + processor_count;
     const std::unique_lock lock { mutex_ };
-    const auto next = bindings_.lower_bound(processor_base);
-    if (next != bindings_.end() && next->first < end) {
+    const auto next = std::lower_bound(bindings_.begin(), bindings_.end(),
+        processor_base, [](const Binding& binding, std::size_t base) {
+            return binding.begin < base;
+        });
+    if (next != bindings_.end() && next->begin < end) {
         throw std::logic_error { "overlapping exclusive monitor binding" };
     }
     if (next != bindings_.begin()) {
         const auto previous = std::prev(next);
-        if (previous->second.end > processor_base) {
+        if (previous->end > processor_base) {
             throw std::logic_error { "overlapping exclusive monitor binding" };
         }
     }
-    bindings_.emplace(processor_base, Binding { end, &memory });
+    bindings_.insert(next, Binding { processor_base, end, &memory });
 }
 
 void GuestExclusiveAddressResolver::unbind(std::size_t processor_base,
@@ -48,9 +52,12 @@ void GuestExclusiveAddressResolver::unbind(std::size_t processor_base,
     }
     const auto end = processor_base + processor_count;
     const std::unique_lock lock { mutex_ };
-    const auto binding = bindings_.find(processor_base);
-    if (binding != bindings_.end() && binding->second.end == end &&
-        binding->second.memory == &memory) {
+    const auto binding = std::lower_bound(bindings_.begin(), bindings_.end(),
+        processor_base, [](const Binding& candidate, std::size_t base) {
+            return candidate.begin < base;
+        });
+    if (binding != bindings_.end() && binding->begin == processor_base &&
+        binding->end == end && binding->memory == &memory) {
         bindings_.erase(binding);
     }
 }
@@ -60,14 +67,16 @@ Dynarmic::VAddr GuestExclusiveAddressResolver::resolve(
 {
     try {
         const std::shared_lock lock { mutex_ };
-        const auto next = bindings_.upper_bound(processor_id);
+        const auto next = std::upper_bound(bindings_.begin(), bindings_.end(),
+            processor_id, [](std::size_t processor, const Binding& binding) {
+                return processor < binding.begin;
+            });
         if (next == bindings_.begin())
             return address;
         const auto binding = std::prev(next);
-        if (processor_id >= binding->second.end ||
-            binding->second.memory == nullptr)
+        if (processor_id >= binding->end || binding->memory == nullptr)
             return address;
-        return binding->second.memory->exclusive_reservation_key(
+        return binding->memory->exclusive_reservation_key(
             static_cast<std::uint32_t>(address));
     } catch (...) {
         return address;
