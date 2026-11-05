@@ -1217,8 +1217,33 @@ void GuestFileGenerationRegistry::touch_entry_locked(
 void GuestFileGenerationRegistry::erase_entry_locked(
     std::map<std::string, Entry>::iterator iterator)
 {
+    set_snapshot_locked(iterator, { });
     entry_lru_.erase(iterator->second.lru_position);
     entries_.erase(iterator);
+}
+
+void GuestFileGenerationRegistry::set_snapshot_locked(
+    EntryMap::iterator iterator, GuestFileGenerationSnapshot snapshot)
+{
+    const auto identity = [](const std::optional<GuestFileGeneration>& generation)
+        -> std::optional<VnodeIdentity> {
+        if (!generation)
+            return std::nullopt;
+        return VnodeIdentity { generation->device, generation->inode };
+    };
+    const auto previous = identity(iterator->second.snapshot.generation);
+    const auto next = identity(snapshot.generation);
+    if (previous != next) {
+        if (next)
+            vnode_aliases_[*next].insert(iterator);
+        if (previous) {
+            auto& aliases = vnode_aliases_.at(*previous);
+            aliases.erase(iterator);
+            if (aliases.empty())
+                vnode_aliases_.erase(*previous);
+        }
+    }
+    iterator->second.snapshot = std::move(snapshot);
 }
 
 void GuestFileGenerationRegistry::erase_subtree_entries_locked(
@@ -1245,11 +1270,7 @@ void GuestFileGenerationRegistry::erase_subtree_entries_locked(
 void GuestFileGenerationRegistry::evict_entries_locked()
 {
     while (entries_.size() > maximum_tracked_paths && !entry_lru_.empty()) {
-        const auto key = std::move(entry_lru_.front());
-        entry_lru_.pop_front();
-        const auto entry = entries_.find(key);
-        if (entry != entries_.end())
-            entries_.erase(entry);
+        erase_entry_locked(entries_.find(entry_lru_.front()));
     }
 }
 
@@ -1261,13 +1282,14 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record(
 {
     const auto key = normalize_path(path);
     std::lock_guard lock { mutex_ };
-    auto& entry = ensure_entry_locked(key)->second;
+    const auto iterator = ensure_entry_locked(key);
+    auto& entry = iterator->second;
     if (!force_revision && entry.snapshot.revision != 0 &&
         entry.snapshot.generation == generation) {
         return entry.snapshot;
     }
-    entry.snapshot = GuestFileGenerationSnapshot { next_revision_++,
-        std::move(generation), mutation, std::move(content_identity) };
+    set_snapshot_locked(iterator, { next_revision_++,
+        std::move(generation), mutation, std::move(content_identity) });
     invalidate_global_identity(key);
     enqueue_mutation_locked(key, mutation);
     evict_entries_locked();
@@ -1310,13 +1332,14 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
 {
     const auto key = normalized_path;
     std::lock_guard lock { mutex_ };
-    auto& entry = ensure_entry_locked(normalized_path)->second;
+    const auto iterator = ensure_entry_locked(normalized_path);
+    auto& entry = iterator->second;
     if (entry.snapshot.revision != 0 &&
         entry.snapshot.generation == generation) {
         return entry.snapshot;
     }
-    entry.snapshot = GuestFileGenerationSnapshot { next_revision_++, generation,
-        GuestFileMutationKind::Observation, std::nullopt };
+    set_snapshot_locked(iterator, { next_revision_++, generation,
+        GuestFileMutationKind::Observation, std::nullopt });
     invalidate_global_identity(key);
     evict_entries_locked();
     return entry.snapshot;
@@ -1342,32 +1365,31 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     }
     std::optional<GuestFileGenerationSnapshot> result;
     bool matched_key = false;
-    for (auto iterator = entries_.begin(); iterator != entries_.end();
-        ++iterator) {
-        auto& [entry_path, entry] = *iterator;
-        if (!entry.snapshot.generation ||
-            entry.snapshot.generation->device != generation.device ||
-            entry.snapshot.generation->inode != generation.inode) {
-            continue;
+    const auto aliases = vnode_aliases_.find(
+        { generation.device, generation.inode });
+    if (aliases != vnode_aliases_.end()) {
+        for (const auto iterator : aliases->second) {
+            auto& [entry_path, entry] = *iterator;
+            if (entry_path == key)
+                matched_key = true;
+            touch_entry_locked(iterator);
+            set_snapshot_locked(iterator, { next_revision_++,
+                generation, mutation, content_identity });
+            invalidate_global_identity(entry_path);
+            enqueue_mutation_locked(entry_path, mutation);
+            if (entry_path == key || !result)
+                result = entry.snapshot;
         }
-        if (entry_path == key)
-            matched_key = true;
-        touch_entry_locked(iterator);
-        entry.snapshot = GuestFileGenerationSnapshot { next_revision_++,
-            generation, mutation, content_identity };
-        invalidate_global_identity(entry_path);
-        enqueue_mutation_locked(entry_path, mutation);
-        if (entry_path == key || !result)
-            result = entry.snapshot;
     }
     if (!matched_key) {
         // Descriptor identity and namespace identity are separate. A descriptor
         // may refer to an inode already known through another alias, but the
         // event's pathname still needs its own generation record. The
         // current-path check above has already ruled out a detached old vnode.
-        auto& entry = ensure_entry_locked(key)->second;
-        entry.snapshot = GuestFileGenerationSnapshot { next_revision_++,
-            generation, mutation, std::move(content_identity) };
+        const auto iterator = ensure_entry_locked(key);
+        auto& entry = iterator->second;
+        set_snapshot_locked(iterator, { next_revision_++,
+            generation, mutation, std::move(content_identity) });
         invalidate_global_identity(key);
         enqueue_mutation_locked(key, mutation);
         result = entry.snapshot;

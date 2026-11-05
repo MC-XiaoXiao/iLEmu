@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <shared_mutex>
 #include <span>
 #include <string>
@@ -194,6 +195,14 @@ private:
         GuestFileGenerationSnapshot snapshot;
         std::list<std::string>::iterator lru_position;
     };
+    using EntryMap = std::map<std::string, Entry>;
+    using VnodeIdentity = std::pair<std::uint64_t, std::uint64_t>;
+    struct EntryPathLess {
+        bool operator()(EntryMap::iterator left, EntryMap::iterator right) const
+        {
+            return left->first < right->first;
+        }
+    };
 
     [[nodiscard]] static std::string normalize_path(
         const std::filesystem::path& path);
@@ -214,6 +223,8 @@ private:
         const std::string& normalized_path);
     void touch_entry_locked(std::map<std::string, Entry>::iterator iterator);
     void erase_entry_locked(std::map<std::string, Entry>::iterator iterator);
+    void set_snapshot_locked(EntryMap::iterator iterator,
+        GuestFileGenerationSnapshot snapshot);
     void erase_subtree_entries_locked(const std::string& normalized_path);
     void evict_entries_locked();
     void enqueue_mutation_locked(
@@ -223,7 +234,10 @@ private:
     std::uint64_t next_revision_ { 1 };
     std::uint64_t next_mutation_sequence_ { 1 };
     std::atomic_uint64_t mutation_generation_ { 1 };
-    std::map<std::string, Entry> entries_;
+    EntryMap entries_;
+    // Borrow stable canonical entries; alias notifications retain path order.
+    std::map<VnodeIdentity, std::set<EntryMap::iterator, EntryPathLess>>
+        vnode_aliases_;
     std::list<std::string> entry_lru_;
     static constexpr std::size_t maximum_tracked_paths = 32U * 1024U;
     static constexpr std::size_t maximum_pending_mutations = 512;
