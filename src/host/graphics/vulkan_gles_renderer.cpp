@@ -555,7 +555,23 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::map<GlesRenderTargetKey, Target> targets;
             std::map<TextureKey, CachedTexture> textures;
             std::shared_ptr<VulkanSubmissionFence> completion;
+            bool detached { };
         };
+
+        void collect_retired_resources()
+        {
+            std::erase_if(retired_resources_, [this](const auto& retired) {
+                if (!retired->detached ||
+                    (retired->completion &&
+                        retired->completion->status() != VK_SUCCESS))
+                    return false;
+                for (auto& [key, target] : retired->targets) {
+                    static_cast<void>(key);
+                    pool_target(std::move(target));
+                }
+                return true;
+            });
+        }
 
         struct CommandSlot {
             VkCommandBuffer command { };
@@ -2032,6 +2048,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::numeric_limits<std::uint64_t>::max())
             throw std::overflow_error("Vulkan target incarnation exhausted");
         const auto incarnation = next_target_incarnation_++;
+        collect_retired_resources();
         if (auto pooled = take_pooled_target(width, height)) {
             pooled->incarnation = incarnation;
             pooled->revision = 1;
@@ -2298,6 +2315,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         collect_readbacks();
         if (command_recording_)
             return;
+        collect_retired_resources();
         auto& slot = command_slot();
         wait_for_slot(slot);
         require_success(
@@ -2321,6 +2339,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 #if defined(__ANDROID__)
         slot.program_targets.clear();
 #endif
+        collect_retired_resources();
     }
 
     void VulkanGlesRenderer::wait_for_all_slots()
@@ -3111,14 +3130,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         const PerformanceLatencyScope latency {
             PerfLatencyKind::GlesTargetRelease
         };
-        std::unique_lock lock { mutex_ };
+        std::lock_guard lock { mutex_ };
+        collect_retired_resources();
         if (owner != 0 && std::ranges::any_of(retired_resources_,
                 [owner](const auto& entry) {
-                    return entry->owner == owner ||
+                    return !entry->detached && (entry->owner == owner ||
                            std::ranges::any_of(entry->targets,
                                [owner](const auto& target) {
                                    return target.first.owner == owner;
-                               });
+                               }));
                 }))
             return false;
         const auto owns = [owner](const auto& entry) {
@@ -3140,8 +3160,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         try {
             retired = std::make_shared<RetiredResources>();
             retired->owner = owner;
-            // Install retention before submission or detachment. A failed wait
-            // keeps the real native resources, not just their old names.
+            // Retain native objects through the exact queue submission before
+            // detaching their names. Partial failures remain quarantined.
             retired_resources_.push_back(retired);
             submit_commands(false, PerfSubmitReason::ResourceLifetime);
             retired->completion = last_submission_;
@@ -3181,19 +3201,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         detach_target(entry);
                 }
             }
-            lock.unlock();
-            if (retired->completion)
-                require_success(
-                    retired->completion->wait(fence_timeout_nanoseconds),
-                    "vkWaitForFences(resource retirement)");
-            lock.lock();
-            for (auto& [key, target] : retired->targets) {
-                static_cast<void>(key);
-                pool_target(std::move(target));
-            }
-            retired->targets.clear();
-            retired->textures.clear();
-            std::erase(retired_resources_, retired);
+            // Queue order protects all earlier uses. Reclaim only after the
+            // retained fence signals, without holding up subsequent host work.
+            retired->detached = true;
+            collect_retired_resources();
             return true;
         } catch (...) {
             last_failure_reason_.store(
