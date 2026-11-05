@@ -13,7 +13,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -121,10 +120,10 @@ private:
 
     struct Space {
         MachName next_name { first_dynamic_name };
-        std::map<MachName, NameEntry> entries;
+        std::unordered_map<MachName, NameEntry> entries;
         // Most ipc objects have one name in a task, but aliases are legal. Keep
         // the names sorted so name_for/copyout preserve the same lowest-name
-        // result as the authoritative ipc_entry map without scanning that map.
+        // result as namespace enumeration without scanning the name table.
         // Union of alias rights, maintained at namespace mutations, avoids
         // re-reading every ipc_entry for blocked receive capability checks.
         std::unordered_map<MachObject, ObjectNames> names_by_object;
@@ -136,7 +135,7 @@ private:
     [[nodiscard]] static const std::vector<MachName>* indexed_names(
         const Space& space, MachObject object);
     [[nodiscard]] static bool valid_name(MachName name);
-    std::map<TaskId, Space> spaces_;
+    std::unordered_map<TaskId, Space> spaces_;
 };
 
 } // namespace ilemu::xnu::ipc

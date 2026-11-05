@@ -301,6 +301,7 @@ std::vector<NamedEntry> MachNamespaceTable::entries(TaskId task) const
     for (const auto& [name, entry] : space->second.entries) {
         result.push_back(NamedEntry { task, name, entry });
     }
+    std::ranges::sort(result, {}, &NamedEntry::name);
     return result;
 }
 
@@ -459,6 +460,10 @@ std::vector<NamedEntry> MachNamespaceTable::mark_object_dead(MachObject object)
         if ((rights & converted) != 0U)
             rights = (rights & ~converted) | type_mask(Right::DeadName);
     }
+    std::ranges::sort(affected, [](const NamedEntry& left, const NamedEntry& right) {
+        return left.task < right.task ||
+               (left.task == right.task && left.name < right.name);
+    });
     return affected;
 }
 
