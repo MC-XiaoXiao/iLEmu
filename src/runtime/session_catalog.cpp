@@ -215,7 +215,7 @@ bool CatalogMaintenance::collect_mutations(
         }
         const auto guest_path = "/" + relative.generic_string();
         const auto application_path =
-            is_application_executable_path(guest_path);
+            is_application_path(guest_path);
         const auto known_executable =
             catalog_.index() != nullptr &&
             catalog_.index()->find_path(mutation.path) != nullptr;

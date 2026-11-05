@@ -298,7 +298,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
                 const auto owner = state->processes.find(owner_process_id);
                 const auto owner_is_application =
                     owner != state->processes.end() &&
-                    is_application_executable_path(
+                    is_application_path(
                         owner->second.executable_path);
                 if (!owner_is_application && active_scene &&
                     active_scene->state == ClientSceneState::Active) {
@@ -1264,7 +1264,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     const MachOImage* dynamic_linker, const MachOImage* executable)
 {
     process_image_ = guest_path;
-    if (is_application_executable_path(guest_path) &&
+    if (is_application_path(guest_path) &&
         guest_working_directory_ == std::filesystem::path { "/" }) {
         guest_working_directory_ =
             std::filesystem::path { guest_path }

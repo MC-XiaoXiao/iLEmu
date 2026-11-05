@@ -586,7 +586,7 @@ std::uint32_t CoreSurfaceHle::create_buffer(UserlandHleCall& call,
             const auto process =
                 shared_state_->processes.find(call.process_id());
             if (process != shared_state_->processes.end() &&
-                is_application_executable_path(
+                is_application_path(
                     process->second.executable_path)) {
                 const auto publication_sequence =
                     published->provenance.publication_sequence;
@@ -760,7 +760,7 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call)
         std::lock_guard lock { shared_state_->mach_mutex };
         const auto process = shared_state_->processes.find(call.process_id());
         if (process != shared_state_->processes.end() &&
-            is_application_executable_path(process->second.executable_path)) {
+            is_application_path(process->second.executable_path)) {
             if (!active_application_owns_display_locked(*shared_state_,
                 call.process_id(),
                 scene_coordinator_

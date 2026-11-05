@@ -21,14 +21,26 @@ inline constexpr std::array<std::string_view, 3> application_path_prefixes {
     "/private/var/mobile/Applications/"
 };
 
-[[nodiscard]] constexpr bool is_application_executable_path(
-    std::string_view path)
+[[nodiscard]] constexpr bool is_application_path(std::string_view path)
 {
     for (const auto prefix : application_path_prefixes) {
         if (path.starts_with(prefix))
             return true;
     }
     return false;
+}
+
+[[nodiscard]] constexpr bool is_application_executable_path(
+    std::string_view path)
+{
+    if (!is_application_path(path))
+        return false;
+    // An iOS application's executable is at the top of its .app bundle.
+    // Embedded extensions, frameworks and helpers belong to that installation
+    // but are not the containing application's fullscreen/event-route owner.
+    const auto bundle = path.find(".app/");
+    return bundle != std::string_view::npos && bundle + 5U < path.size() &&
+           path.find('/', bundle + 5U) == std::string_view::npos;
 }
 
 // The setup assistant is a system-owned display client during foreground

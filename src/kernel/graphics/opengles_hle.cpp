@@ -332,7 +332,7 @@ bool OpenGlesHle::display_write_allowed(UserlandHleCall& call) const
     std::lock_guard lock { shared_state_->mach_mutex };
     const auto process = shared_state_->processes.find(call.process_id());
     if (process == shared_state_->processes.end() ||
-        !is_application_executable_path(process->second.executable_path)) {
+        !is_application_path(process->second.executable_path)) {
         return true;
     }
     return active_application_owns_display_locked(*shared_state_,
