@@ -1639,19 +1639,15 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
                !queue->second.empty();
     };
     if ((entry->type & xnu::ipc::type_mask(Right::PortSet)) != 0U) {
-        const auto set = shared_state_->mach_port_sets.find(entry->object);
-        if (set == shared_state_->mach_port_sets.end())
-            return remember_empty();
-        // Enqueue, dequeue and membership changes maintain the same prepost
-        // FIFO used by Mach receive under mach_mutex. An empty FIFO rules out
-        // queued messages; a populated set retains its existing member order.
+        // XNU ipc_mqueue_set_peek walks preposts, not the full membership.
+        // Reuse the ready-member order maintained for Mach receive.
         const auto preposts =
             shared_state_->mach_port_set_preposts.find(entry->object);
         if (preposts == shared_state_->mach_port_set_preposts.end() ||
             preposts->second.empty()) {
             return remember_empty();
         }
-        for (const auto member_object : set->second) {
+        for (const auto member_object : preposts->second) {
             if (!queue_has_message(member_object))
                 continue;
             if (const auto member_name =
