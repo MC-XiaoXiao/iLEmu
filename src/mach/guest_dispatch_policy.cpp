@@ -13,6 +13,16 @@
 namespace ilemu {
 namespace {
 
+    [[nodiscard]] bool outranked_by_run_queue(
+        const XnuScheduler& scheduler, XnuThreadId thread)
+    {
+        const auto info = scheduler.info(thread);
+        const auto head = scheduler.peek_next_for_processor(
+            info->bound_processor.value_or(0U));
+        return head && scheduler.info(*head)->scheduled_priority >
+                           info->scheduled_priority;
+    }
+
     [[nodiscard]] bool runnable(
         const XnuScheduler& scheduler, XnuThreadId thread)
     {
@@ -115,15 +125,11 @@ GuestDispatchDecision GuestDispatchPolicy::decide_interactive_process(
         preferred_process_burst_ = 0U;
         return { };
     }
-    if (reason == GuestDispatchReason::ForegroundProcess) {
-        const auto info = scheduler.info(*candidate);
-        const auto head = scheduler.peek_next_for_processor(
-            info->bound_processor.value_or(0U));
-        // Task roles already feed XNU QoS. A locality hint must not undo
-        // the resulting priority order or spend a turn it cannot receive.
-        if (head && scheduler.info(*head)->scheduled_priority > info->scheduled_priority)
-            return { };
-    }
+    // Task roles already feed XNU QoS. A locality hint must not undo
+    // the resulting priority order or spend a turn it cannot receive.
+    if (reason == GuestDispatchReason::ForegroundProcess &&
+        outranked_by_run_queue(scheduler, *candidate))
+        return { };
     if (preferred_process_ != process) {
         preferred_process_ = process;
         preferred_process_burst_ = 0U;
@@ -273,6 +279,12 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
         observation.realtime_inflight_thread !=
             observation.realtime_yielded_thread &&
         runnable(scheduler, *observation.realtime_inflight_thread)) {
+        // Inflight ownership can outlive a callback that submits no frame.
+        // It preserves locality, not a Guest priority donation. Let the native
+        // queue preempt it without discarding the callback watermark.
+        if (outranked_by_run_queue(
+                scheduler, *observation.realtime_inflight_thread))
+            return direct(std::nullopt, GuestDispatchReason::Ordinary);
         return realtime(observation.realtime_inflight_thread,
             GuestDispatchReason::RealtimeInflight);
     }
