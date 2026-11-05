@@ -147,13 +147,6 @@ void CompatibilityKernel::service_file_io()
         const auto operation = queue.front();
         if (!operation)
             break;
-        if (operation->committed) {
-            if (operation->abandoned) {
-                queue.pop();
-                continue;
-            }
-            break; // Keep a synchronous completion ordered through wakeup.
-        }
         if (!operation->ready() ||
             (!operation->abandoned && operation->owner != process_.pid))
             break;
@@ -217,8 +210,9 @@ void CompatibilityKernel::service_file_io()
         operation->description.reset();
         operation->mapping_identity.reset();
         operation->committed = true;
-        if (!operation->synchronous || operation->abandoned)
-            queue.pop();
+        // Commit finishes the ordered file effects. The parked continuation
+        // retains its result without holding up the next host transfer.
+        queue.pop();
         shared_state_->note_io_event_transition();
         if (!operation->abandoned && operation->notification_signal)
             static_cast<void>(deliver_signal(operation->notification_signal));
@@ -244,8 +238,6 @@ bool CompatibilityKernel::deliver_pending_file_io(Cpu& cpu)
         return false;
     const auto operation = found->second;
     pending_file_ios_.erase(found);
-    if (shared_state_->file_io.front() == operation)
-        shared_state_->file_io.pop();
     if (operation->error)
         bsd_error(cpu, operation->error);
     else
