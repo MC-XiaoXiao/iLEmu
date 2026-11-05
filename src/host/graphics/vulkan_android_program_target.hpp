@@ -26,6 +26,10 @@ public:
     void encode_publish(VkCommandBuffer command, VkImage destination,
         std::uint32_t queue_family, bool inverted_vertical) const;
     [[nodiscard]] AHardwareBuffer* buffer() const { return buffer_; }
+    void retain_import(std::shared_ptr<void> image)
+    {
+        import_ = std::move(image);
+    }
 
 private:
     void transfer(VkCommandBuffer command, VkImage canonical,
@@ -37,6 +41,7 @@ private:
     VkImage image_ { };
     VkDeviceMemory memory_ { };
     std::uint32_t width_, height_;
+    std::shared_ptr<void> import_;
 };
 
 [[nodiscard]] bool configure_android_program_target(VkPhysicalDevice physical,

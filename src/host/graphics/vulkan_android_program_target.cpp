@@ -38,6 +38,10 @@ namespace {
             return allocation_->buffer();
         }
         int take_ready_fd() override { return std::exchange(fd_, -1); }
+        void retain_import(std::shared_ptr<void> image) override
+        {
+            allocation_->retain_import(std::move(image));
+        }
         bool publish(int fd) override { return publish_(fd); }
 
     private:

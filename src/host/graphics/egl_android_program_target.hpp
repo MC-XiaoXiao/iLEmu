@@ -14,8 +14,9 @@ struct DisplayFrame;
 class EglAndroidProgramTarget final {
 public:
     [[nodiscard]] static bool supported(EGLDisplay display);
-    EglAndroidProgramTarget(
-        EGLDisplay display, std::shared_ptr<GlesProgramTarget> input);
+    EglAndroidProgramTarget(EGLDisplay display,
+        std::shared_ptr<void> display_owner,
+        std::shared_ptr<GlesProgramTarget> input);
     ~EglAndroidProgramTarget();
     EglAndroidProgramTarget(const EglAndroidProgramTarget&) = delete;
     EglAndroidProgramTarget& operator=(const EglAndroidProgramTarget&) = delete;
@@ -23,7 +24,8 @@ public:
 
 private:
     EGLDisplay display_;
-    EGLImageKHR image_ { EGL_NO_IMAGE_KHR };
+    class Image;
+    std::shared_ptr<Image> image_;
     std::shared_ptr<GlesProgramTarget> input_;
 };
 }

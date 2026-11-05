@@ -493,7 +493,7 @@ namespace {
                 glBindTexture(GL_TEXTURE_2D, target.color);
                 target.shared_target =
                     std::make_unique<EglAndroidProgramTarget>(
-                        display_, std::move(input));
+                        display_, display_owner_, std::move(input));
             } else if (!frame.pixels.empty() && target.shared_target) {
                 target.shared_target.reset();
                 glActiveTexture(GL_TEXTURE0);

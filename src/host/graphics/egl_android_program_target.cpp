@@ -37,54 +37,70 @@ bool EglAndroidProgramTarget::supported(EGLDisplay display)
     return gl_extensions.find(" GL_OES_EGL_image ") != std::string::npos;
 }
 
-EglAndroidProgramTarget::EglAndroidProgramTarget(
-    EGLDisplay display, std::shared_ptr<GlesProgramTarget> input)
+class EglAndroidProgramTarget::Image final {
+public:
+    Image(EGLDisplay display, std::shared_ptr<void> display_owner,
+        AHardwareBuffer* buffer)
+        : display_ { display }
+        , display_owner_ { std::move(display_owner) }
+    {
+        const auto client_buffer = proc<PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC>(
+            "eglGetNativeClientBufferANDROID");
+        const auto create_image =
+            proc<PFNEGLCREATEIMAGEKHRPROC>("eglCreateImageKHR");
+        const EGLint attributes[] { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
+        image_ = create_image(display_, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
+            client_buffer(buffer), attributes);
+        if (image_ == EGL_NO_IMAGE_KHR)
+            throw std::runtime_error { "import shader input into EGL" };
+    }
+    ~Image()
+    {
+        proc<PFNEGLDESTROYIMAGEKHRPROC>("eglDestroyImageKHR")(display_, image_);
+    }
+    [[nodiscard]] EGLImageKHR get() const { return image_; }
+
+private:
+    EGLDisplay display_;
+    std::shared_ptr<void> display_owner_;
+    EGLImageKHR image_;
+};
+
+EglAndroidProgramTarget::EglAndroidProgramTarget(EGLDisplay display,
+    std::shared_ptr<void> display_owner,
+    std::shared_ptr<GlesProgramTarget> input)
     : display_ { display }
     , input_ { std::move(input) }
 {
     auto& native = static_cast<AndroidProgramTarget&>(*input_);
-    const auto client_buffer = proc<PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC>(
-        "eglGetNativeClientBufferANDROID");
-    const auto create_image =
-        proc<PFNEGLCREATEIMAGEKHRPROC>("eglCreateImageKHR");
-    const EGLint attributes[] { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
-    image_ = create_image(display_, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
-        client_buffer(native.buffer()), attributes);
-    if (image_ == EGL_NO_IMAGE_KHR)
-        throw std::runtime_error { "import shader input into EGL" };
-    try {
-        const auto fd = native.take_ready_fd();
-        if (fd >= 0) {
-            const EGLint sync_attributes[] { EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
-                fd, EGL_NONE };
-            const auto create_sync =
-                proc<PFNEGLCREATESYNCKHRPROC>("eglCreateSyncKHR");
-            const auto sync = create_sync(
-                display_, EGL_SYNC_NATIVE_FENCE_ANDROID, sync_attributes);
-            if (sync == EGL_NO_SYNC_KHR) {
-                close(fd);
-                throw std::runtime_error { "import shader input fence" };
-            }
-            const auto wait_sync =
-                proc<PFNEGLWAITSYNCKHRPROC>("eglWaitSyncKHR");
-            const auto waited = wait_sync(display_, sync, 0);
-            proc<PFNEGLDESTROYSYNCKHRPROC>("eglDestroySyncKHR")(display_, sync);
-            check(waited, "queue shader input GPU wait");
+    image_ = std::make_shared<Image>(
+        display_, std::move(display_owner), native.buffer());
+    const auto fd = native.take_ready_fd();
+    if (fd >= 0) {
+        const EGLint sync_attributes[] { EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
+            fd, EGL_NONE };
+        const auto create_sync =
+            proc<PFNEGLCREATESYNCKHRPROC>("eglCreateSyncKHR");
+        const auto sync = create_sync(
+            display_, EGL_SYNC_NATIVE_FENCE_ANDROID, sync_attributes);
+        if (sync == EGL_NO_SYNC_KHR) {
+            close(fd);
+            throw std::runtime_error { "import shader input fence" };
         }
-        proc<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
-            "glEGLImageTargetTexture2DOES")(GL_TEXTURE_2D, image_);
-        if (glGetError() != GL_NO_ERROR)
-            throw std::runtime_error { "bind shader input image" };
-    } catch (...) {
-        proc<PFNEGLDESTROYIMAGEKHRPROC>("eglDestroyImageKHR")(display_, image_);
-        throw;
+        const auto wait_sync =
+            proc<PFNEGLWAITSYNCKHRPROC>("eglWaitSyncKHR");
+        const auto waited = wait_sync(display_, sync, 0);
+        proc<PFNEGLDESTROYSYNCKHRPROC>("eglDestroySyncKHR")(display_, sync);
+        check(waited, "queue shader input GPU wait");
     }
+    proc<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
+        "glEGLImageTargetTexture2DOES")(GL_TEXTURE_2D, image_->get());
+    if (glGetError() != GL_NO_ERROR)
+        throw std::runtime_error { "bind shader input image" };
+    native.retain_import(image_);
 }
 
-EglAndroidProgramTarget::~EglAndroidProgramTarget()
-{
-    proc<PFNEGLDESTROYIMAGEKHRPROC>("eglDestroyImageKHR")(display_, image_);
-}
+EglAndroidProgramTarget::~EglAndroidProgramTarget() = default;
 
 bool EglAndroidProgramTarget::publish(DisplayFrame& frame)
 {
