@@ -1807,17 +1807,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         }
         std::uint32_t filter_flags = 0;
         std::uint32_t available = 1;
-        auto process_exec_generation_at_evaluation =
-            registration->process_exec_generation;
-        auto process_exit_generation_at_evaluation =
-            registration->process_exit_generation;
-        auto result_flags = static_cast<std::uint16_t>(
-            registration->flags &
-            (darwin::kqueue::event_add | darwin::kqueue::event_enable |
-                darwin::kqueue::event_clear |
-                darwin::kqueue::event_dispatch |
-                darwin::kqueue::event_one_shot |
-                darwin::kqueue::event_udata_specific));
+        std::uint64_t process_exec_generation_at_evaluation = 0;
+        std::uint64_t process_exit_generation_at_evaluation = 0;
+        std::uint16_t result_flags = 0;
         std::optional<std::uint32_t> ready_mach_name;
         std::optional<std::uint32_t> terminal_listener_pending;
         const auto descriptor = static_cast<std::uint32_t>(registration->ident);
@@ -1896,13 +1888,13 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             : registration->filter == darwin::kqueue::filter_user
                 ? registration->user_triggered
                 : false;
-        const auto clears_after_delivery =
-            (registration->flags & darwin::kqueue::event_clear) != 0U;
         if (!ready) {
             registration->clear_delivered = false;
             ++registration;
             continue;
         }
+        const auto clears_after_delivery =
+            (registration->flags & darwin::kqueue::event_clear) != 0U;
         if (terminal_listener_pending) {
             available = *terminal_listener_pending;
         } else if (const auto endpoint =
@@ -1966,6 +1958,12 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             ++registration;
             continue;
         }
+        result_flags |= registration->flags &
+            (darwin::kqueue::event_add | darwin::kqueue::event_enable |
+                darwin::kqueue::event_clear |
+                darwin::kqueue::event_dispatch |
+                darwin::kqueue::event_one_shot |
+                darwin::kqueue::event_udata_specific);
         if (clears_after_delivery)
             result_flags |= darwin::kqueue::event_clear;
         const auto event = event_address + written * wire.size();
