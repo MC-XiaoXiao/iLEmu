@@ -319,7 +319,11 @@ void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
     if (!state || *state != XnuThreadState::Waiting)
         return;
 
-    if (!service_bsd_workqueue(nullptr)) {
+    // Readiness observed while a bucket was occupied need not publish a
+    // second generation when its worker blocks. Reconsider those knotes now.
+    const auto kevents_serviced = request_workqueue_kevents(nullptr);
+    const auto workitems_serviced = service_bsd_workqueue(nullptr);
+    if (!kevents_serviced || !workitems_serviced) {
         output_.write(
             "[pthread] workqueue blocked-worker redrive failed pid=" +
             std::to_string(process_.pid) +
