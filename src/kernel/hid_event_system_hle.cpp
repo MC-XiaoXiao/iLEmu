@@ -292,11 +292,16 @@ bool HidEventSystemHle::prepare_pending_event(
         const auto queued =
             HidEventTransaction::enqueue(registry_, observed->observer,
                 std::move(observed->event), state_->user_interface_geometry,
-                state_->darwin_version, digitizer_sender_id, [this, processor] {
+                state_->darwin_version, digitizer_sender_id,
+                [this, process, processor] {
                     delivering_processors_.erase(processor);
                     interactive_processors_.erase(processor);
-                    if (state_)
+                    if (state_) {
                         state_->note_kernel_event_transition();
+                        if (state_->hid_event_queue.has_pending(
+                                process, processor))
+                            state_->note_io_event_transition();
+                    }
                 });
         if (!queued) {
             delivering_processors_.erase(processor);
@@ -333,11 +338,15 @@ bool HidEventSystemHle::prepare_pending_event(
         interactive_processors_.insert(processor);
     const auto queued = HidEventTransaction::enqueue(registry_, *consumer,
         *event, state_->user_interface_geometry, state_->darwin_version,
-        digitizer_sender_id, translation, [this, processor] {
+        digitizer_sender_id, translation, [this, process, processor] {
             delivering_processors_.erase(processor);
             interactive_processors_.erase(processor);
-            if (state_)
+            if (state_) {
                 state_->note_kernel_event_transition();
+                // A report queued during the callback becomes ready now.
+                if (state_->hid_event_queue.has_pending(process, processor))
+                    state_->note_io_event_transition();
+            }
         });
     if (!queued) {
         delivering_processors_.erase(processor);
