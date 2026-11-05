@@ -431,23 +431,23 @@ namespace {
         const auto* texture = state.resources->texture(unit.texture);
         if (texture == nullptr)
             return 0xffffffffU;
-        const std::vector<std::uint32_t>* pixels { };
+        std::span<const std::uint32_t> pixels;
         std::uint32_t image_width { };
         std::uint32_t image_height { };
         if (unit.samples_render_target && render_target_snapshot != nullptr) {
-            pixels = &render_target_snapshot->pixels;
+            pixels = render_target_snapshot->pixels;
             image_width = render_target_snapshot->width;
             image_height = render_target_snapshot->height;
         } else {
             const auto level = texture->levels.find(0);
             if (level == texture->levels.end())
                 return 0xffffffffU;
-            pixels = &level->second.argb;
+            pixels = level->second.pixels();
             image_width = level->second.width;
             image_height = level->second.height;
         }
         if (image_width == 0U || image_height == 0U ||
-            pixels->size() !=
+            pixels.size() !=
                 static_cast<std::size_t>(image_width) * image_height)
             return 0xffffffffU;
         if (!std::isfinite(s) || !std::isfinite(t))
@@ -485,7 +485,7 @@ namespace {
             return static_cast<std::uint32_t>(index);
         };
         const auto texel = [&](std::int32_t x, std::int32_t y) {
-            return (*pixels)[static_cast<std::size_t>(
+            return pixels[static_cast<std::size_t>(
                                  address(y, image_height, sampling.wrap_t)) *
                                  image_width +
                              address(x, image_width, sampling.wrap_s)];

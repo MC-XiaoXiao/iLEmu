@@ -5118,7 +5118,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             // An owned native input has no CPU pixels. An earlier readback
             // may publish the surface cache after that input was prepared;
             // it does not change which image this draw must sample.
-            if (level->second.argb.empty() ||
+            if (level->second.pixels().empty() ||
                 surface.gpu_generation() > surface.cpu_generation())
                 gpu_newer_host_surfaces[index] = level->second.host_surface;
         }
@@ -5316,7 +5316,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                             found->second.width != 0 &&
                             found->second.height != 0 &&
                             (found->second.host_surface != nullptr ||
-                                found->second.argb.size() ==
+                                found->second.pixels().size() ==
                                     static_cast<std::size_t>(
                                         found->second.width) *
                                         found->second.height)) {
@@ -5343,14 +5343,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         continue;
                     }
                 }
-                if (level && level->argb.size() !=
+                if (level && level->pixels().size() !=
                                  static_cast<std::size_t>(width) * height) {
                     last_failure_reason_.store(PerfFallbackReason::TargetBusy,
                         std::memory_order_relaxed);
                     return false;
                 }
                 const auto* pixels =
-                    level ? level->argb.data() : white_pixel.data();
+                    level ? level->pixels().data() : white_pixel.data();
                 auto byte_count = static_cast<VkDeviceSize>(width) *
                                   height * sizeof(std::uint32_t);
                 auto revision = level ? level->revision : 1U;
@@ -5360,7 +5360,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     const auto levels = selected_mips[index]->levels();
                     for (std::size_t mip = 1; mip < levels.size(); ++mip) {
                         byte_count +=
-                            levels[mip]->argb.size() * sizeof(std::uint32_t);
+                            levels[mip]->pixels().size() * sizeof(std::uint32_t);
                         revision = std::max(revision, levels[mip]->revision);
                     }
                 }
@@ -5549,8 +5549,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     auto mip_offset = offset;
                     for (const auto* mip : selected_mips[index]->levels()) {
                         const auto size =
-                            mip->argb.size() * sizeof(std::uint32_t);
-                        upload(commands.staging, mip->argb.data(), size,
+                            mip->pixels().size() * sizeof(std::uint32_t);
+                        upload(commands.staging, mip->pixels().data(), size,
                             mip_offset);
                         mip_offset += size;
                     }

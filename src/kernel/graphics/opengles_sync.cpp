@@ -202,7 +202,7 @@ bool OpenGlesHle::needs_target_allocation(UserlandHleCall& call)
         return false;
     const auto& image = found->second;
     if (image.surface_id || !image.width || !image.height ||
-        image.argb.size() != static_cast<std::uint64_t>(image.width) * image.height)
+        image.pixels().size() != static_cast<std::uint64_t>(image.width) * image.height)
         return false;
     const auto writable = symbol == "_glClear" || symbol == "_glDrawArrays" ||
                           symbol == "_glDrawElements";

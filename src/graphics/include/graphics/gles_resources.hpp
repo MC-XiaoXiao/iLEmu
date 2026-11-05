@@ -16,6 +16,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace ilemu {
@@ -30,10 +31,50 @@ class SurfaceStore;
 class GlesResourceStore {
 public:
     struct TextureLevel {
+        TextureLevel() = default;
+        TextureLevel(std::uint32_t image_width, std::uint32_t image_height,
+            std::uint32_t format, std::vector<std::uint32_t> pixels,
+            std::optional<std::uint32_t> surface, std::uint64_t image_revision,
+            std::shared_ptr<HostSurface> native_surface = { },
+            std::uint64_t generation = 0)
+            : width { image_width }, height { image_height },
+              internal_format { format }, surface_id { surface },
+              revision { image_revision }, host_surface { std::move(native_surface) },
+              host_generation { generation }
+        {
+            set_pixels(std::move(pixels));
+        }
+
+        [[nodiscard]] std::span<const std::uint32_t> pixels() const
+        {
+            return argb_ ? std::span<const std::uint32_t> { *argb_ }
+                         : std::span<const std::uint32_t> { };
+        }
+        void set_pixels(std::vector<std::uint32_t> pixels)
+        {
+            argb_ = pixels.empty() ? nullptr
+                : std::make_shared<std::vector<std::uint32_t>>(std::move(pixels));
+        }
+        void assign_pixels(std::span<const std::uint32_t> pixels)
+        {
+            if (argb_ && argb_.use_count() == 1)
+                argb_->assign(pixels.begin(), pixels.end());
+            else
+                argb_ = std::make_shared<std::vector<std::uint32_t>>(
+                    pixels.begin(), pixels.end());
+        }
+        [[nodiscard]] std::vector<std::uint32_t>& writable_pixels()
+        {
+            if (!argb_)
+                argb_ = std::make_shared<std::vector<std::uint32_t>>();
+            else if (argb_.use_count() != 1)
+                argb_ = std::make_shared<std::vector<std::uint32_t>>(*argb_);
+            return *argb_;
+        }
+
         std::uint32_t width { };
         std::uint32_t height { };
         std::uint32_t internal_format { };
-        std::vector<std::uint32_t> argb;
         std::optional<std::uint32_t> surface_id;
         std::uint64_t revision { };
         std::shared_ptr<HostSurface> host_surface;
@@ -44,6 +85,11 @@ public:
         // A copied/forked texture retains its exact native incarnation until
         // its last logical or pending host user releases it.
         std::shared_ptr<GlesTextureTarget> native_lifetime { };
+
+    private:
+        // Queued draws retain immutable pixels. Only a later guest mutation
+        // separates shared storage; snapshots never copy the image payload.
+        std::shared_ptr<std::vector<std::uint32_t>> argb_;
     };
     struct Texture {
         std::uint32_t name { };

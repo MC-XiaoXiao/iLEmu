@@ -794,7 +794,7 @@ std::size_t GlesResourceStore::texture_snapshot_bytes(
             if (content != TextureSnapshot::NativeImages || !image.host_surface ||
                 image.host_surface->gpu_generation() <=
                     image.host_surface->cpu_generation())
-                add(sizeof(std::uint32_t), image.argb.size());
+                add(sizeof(std::uint32_t), image.pixels().size());
         }
     }
     return bytes;
@@ -818,19 +818,10 @@ GlesResourceStore GlesResourceStore::snapshot_textures(
             if (native && image.host_surface &&
                 image.host_surface->gpu_generation() >
                     image.host_surface->cpu_generation()) {
-                copied.levels.emplace(level, TextureLevel {
-                    .width = image.width,
-                    .height = image.height,
-                    .internal_format = image.internal_format,
-                    .argb = { },
-                    .surface_id = image.surface_id,
-                    .revision = image.revision,
-                    .host_surface = image.host_surface,
-                    .host_generation = image.host_generation,
-                    .render_target_inverted_vertical =
-                        image.render_target_inverted_vertical,
-                    .argb_generation = 0,
-                    .native_lifetime = image.native_lifetime });
+                auto cloned = image;
+                cloned.set_pixels({ });
+                cloned.argb_generation = 0;
+                copied.levels.emplace(level, std::move(cloned));
                 continue;
             }
             auto& cloned = copied.levels.emplace(level, image).first->second;
@@ -945,7 +936,7 @@ std::uint32_t GlesResourceStore::update_texture_2d(AddressSpace& memory,
     for (std::uint32_t row = 0; row < height; ++row) {
         std::copy_n(decoded->begin() + static_cast<std::size_t>(row) * width,
             width,
-            destination->second.argb.begin() +
+            destination->second.writable_pixels().begin() +
                 static_cast<std::size_t>(y + row) * destination->second.width +
                 x);
     }
@@ -1075,7 +1066,7 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
         decoded->host_generation == level->second.host_generation &&
         decoded->render_target_inverted_vertical ==
             level->second.render_target_inverted_vertical &&
-        decoded->argb == level->second.argb) {
+        std::ranges::equal(decoded->pixels(), level->second.pixels())) {
         return gles_abi::no_error;
     }
     decoded->revision = allocate_texture_revision();
@@ -1111,7 +1102,7 @@ std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
     auto level = texture->second.levels.find(level_index);
     if (level == texture->second.levels.end() || level->second.width == 0U ||
         level->second.height == 0U || level->second.surface_id ||
-        level->second.argb.size() !=
+        level->second.pixels().size() !=
             static_cast<std::size_t>(level->second.width) *
                 level->second.height) {
         return nullptr;
@@ -1136,7 +1127,7 @@ std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
             renderer, std::move(lifetime), key);
         if (!native->activate())
             return nullptr;
-        auto surface = renderer->create_surface(key, descriptor, level->second.argb);
+        auto surface = renderer->create_surface(key, descriptor, level->second.pixels());
         if (!surface)
             return nullptr;
         level->second.host_surface = std::move(surface);
@@ -1164,8 +1155,8 @@ bool GlesResourceStore::commit_texture_render_target(std::uint32_t name,
                              level->second.height) {
         return false;
     }
-    level->second.argb.assign(pixels.begin(), pixels.end());
-    level->second.host_surface->replace_cpu(level->second.argb);
+    level->second.assign_pixels(pixels);
+    level->second.host_surface->replace_cpu(level->second.pixels());
     level->second.host_generation =
         level->second.host_surface->cpu_generation();
     level->second.argb_generation = level->second.host_generation;

@@ -574,14 +574,14 @@ namespace {
                     glGenTextures(1, &host.object);
                 glBindTexture(GL_TEXTURE_2D, host.object);
                 for (const auto& [level, image] : texture->levels) {
-                    if (image.argb.size() !=
+                    if (image.pixels().size() !=
                         static_cast<std::size_t>(image.width) * image.height)
                         return false;
                     const auto previous = host.revisions.find(level);
                     if (previous != host.revisions.end() &&
                         previous->second == image.revision)
                         continue;
-                    const auto* pixels = upload_pixels(image.argb,
+                    const auto* pixels = upload_pixels(image.pixels(),
                         texture_rgba_, image.width, image.height, false);
                     glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level),
                         static_cast<GLint>(texture_format_),
@@ -590,7 +590,7 @@ namespace {
                         GL_UNSIGNED_BYTE, pixels);
                     host.revisions[level] = image.revision;
                     host.sizes[level] =
-                        image.argb.size() * sizeof(std::uint32_t);
+                        image.pixels().size() * sizeof(std::uint32_t);
                 }
                 for (const auto parameter :
                     { GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER,

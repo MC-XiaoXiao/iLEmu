@@ -100,7 +100,7 @@ bool OpenGlesHle::prepare_texture_target(
         return false;
     if (image.argb_generation == std::max(image.host_surface->cpu_generation(),
                                      image.host_surface->gpu_generation()) &&
-        image.argb.size() ==
+        image.pixels().size() ==
             static_cast<std::size_t>(image.width) * image.height)
         return false;
     try {
