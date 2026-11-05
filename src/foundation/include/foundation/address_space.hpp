@@ -27,6 +27,7 @@
 #include <tsl/robin_set.h>
 
 #include "foundation/file_page_cache.hpp"
+#include "foundation/file_read_ahead.hpp"
 #include "foundation/guest_memory_gate.hpp"
 #include "foundation/jit_page_table.hpp"
 #include "foundation/memory_permission.hpp"
@@ -544,6 +545,7 @@ private:
         // Retain the original object/cache when VM_PROT_COPY shadows a file.
         bool needs_copy { };
         std::shared_ptr<const FilePageTransform> transform { };
+        FileReadAhead read_ahead { };
     };
     struct TrackedWriteRange {
         std::uint32_t begin { };
