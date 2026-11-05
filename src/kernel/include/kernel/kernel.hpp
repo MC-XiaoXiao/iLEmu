@@ -568,6 +568,11 @@ public:
         std::lock_guard lock { mutex_ };
         return hid_event_system_hle_.interactive_processor(process_.pid);
     }
+    // A queued physical event can precede entry into the native callback.
+    [[nodiscard]] std::optional<std::size_t> pending_input_processor() const
+    {
+        return shared_state_->hid_event_queue.pending_processor(process_.pid);
+    }
     [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
     [[nodiscard]] TimerDeadlineSnapshot timer_deadline_snapshot() const;
     [[nodiscard]] std::optional<std::uint64_t>

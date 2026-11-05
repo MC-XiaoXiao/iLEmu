@@ -3790,6 +3790,21 @@ void EmulatorSession::run()
                 }
             }
         }
+        std::optional<XnuThreadId> queued_input_thread;
+        if (!input_preferred_thread) {
+            for (const auto& runtime : runtimes) {
+                const auto processor = runtime->kernel->pending_input_processor();
+                if (!processor)
+                    continue;
+                const XnuThreadId thread { runtime->kernel->process().pid,
+                    static_cast<std::uint32_t>(*processor) };
+                const auto info = scheduler.info(thread);
+                if (info && info->state == XnuThreadState::Runnable) {
+                    queued_input_thread = thread;
+                    break;
+                }
+            }
+        }
         const auto active_process =
             initial_runtime->kernel->active_client_process_id();
         std::optional<XnuThreadId> frame_dependency_thread;
@@ -3827,6 +3842,7 @@ void EmulatorSession::run()
                 .realtime_inflight_thread = display_inflight_callback_thread,
                 .frame_dependency_thread = frame_dependency_thread,
                 .input_target_thread = input_preferred_thread,
+                .queued_input_thread = queued_input_thread,
                 .input_receiver_process = input_receiver_process,
                 .foreground_transition_process = transition_process,
                 .active_process = active_process,

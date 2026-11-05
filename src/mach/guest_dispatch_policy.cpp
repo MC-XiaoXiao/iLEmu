@@ -153,7 +153,8 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
     };
     const auto realtime = [&](std::optional<XnuThreadId> thread,
                               GuestDispatchReason reason) {
-        if (thread && observation.active_process == thread->process &&
+        if (reason != GuestDispatchReason::QueuedInput && thread &&
+            observation.active_process == thread->process &&
             (!observation.foreground_transition_process ||
                 observation.foreground_transition_process == thread->process)) {
             // Preserve callback locality for the settled foreground owner.
@@ -226,6 +227,15 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
                 GuestDispatchReason::FrameDependency);
     }
     frame_dependency_burst_ = 0U;
+
+    if (observation.queued_input_thread &&
+        runnable(scheduler, *observation.queued_input_thread)) {
+        // Queued input has not entered a native callback yet. Preserve active
+        // input/frame dependencies and bound this receiver with the existing
+        // realtime dependency budget rather than renewing an input burst.
+        return realtime(observation.queued_input_thread,
+            GuestDispatchReason::QueuedInput);
+    }
 
     if (!observation.active_process) {
         if (!realtime_burst_deadline_)

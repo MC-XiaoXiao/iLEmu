@@ -182,6 +182,20 @@ public:
         observer->events.pop_front();
         return delivery;
     }
+    [[nodiscard]] std::optional<std::size_t> pending_processor(
+        std::uint32_t process) const
+    {
+        std::lock_guard lock { mutex_ };
+        if (consumer_ && consumer_->process == process && !events_.empty())
+            return consumer_->processor;
+        const auto observer = std::find_if(observers_.begin(), observers_.end(),
+            [&](const ObserverState& state) {
+                return state.observer.process == process && !state.events.empty();
+            });
+        if (observer == observers_.end())
+            return std::nullopt;
+        return observer->observer.processor;
+    }
     [[nodiscard]] bool has_pending(
         std::uint32_t process, std::size_t processor) const
     {
