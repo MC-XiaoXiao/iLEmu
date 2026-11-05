@@ -1083,6 +1083,14 @@ private:
     [[nodiscard]] WorkqueueKeventQos workqueue_kevent_qos(
         const KeventRegistration& registration,
         MachMessageQos message_qos) const;
+    [[nodiscard]] bool workqueue_kevent_bucket_active(
+        std::uint32_t bucket) const;
+    [[nodiscard]] std::optional<std::uint64_t>
+    workqueue_kevent_deadline() const;
+    [[nodiscard]] bool workqueue_kevent_poll_required(
+        std::span<const KeventRegistration> registrations,
+        bool io_changed) const;
+    void note_workqueue_kevent_transition();
     [[nodiscard]] bool mach_kevent_observation_current(
         const KeventRegistration& registration) const;
     [[nodiscard]] bool kevent_mach_poll_required(std::uint32_t queue_fd,
@@ -1182,7 +1190,11 @@ private:
     void reset_pthread_runtime();
     DarwinPthreadRuntime pthread_runtime_;
     bool workqueue_kevent_queued_ { };
+    // A slot transition can expose knotes without a new source generation.
+    bool workqueue_kevent_redrive_ { };
     std::map<std::uint32_t, std::set<std::uint32_t>> workqueue_kevent_processors_;
+    // Knote changes key the timer view; workqueue slot changes invalidate it.
+    mutable std::optional<TimerDeadlineSnapshot> workqueue_timer_snapshot_;
     std::map<std::uint32_t, std::filesystem::path> file_descriptors_;
     std::map<std::uint32_t, std::shared_ptr<bsd::RegularFileOpenDescription>>
         regular_file_open_descriptions_;

@@ -1709,30 +1709,34 @@ CompatibilityKernel::pending_event_poll_candidates()
     }
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
+    const auto guest_now = shared_state_->clock.now();
+    const auto workqueue_deadline = workqueue_kevent_deadline();
+    const auto workqueue_timer_due =
+        workqueue_deadline && guest_now >= *workqueue_deadline;
     // A Mach message can be enqueued by another task after every workqueue
     // worker has parked. Redrive the process-private kqueue on that transition
     // so EVFILT_MACHPORT can schedule its libpthread event worker.
-    // Empty Mach-only queues can reuse their receive-object observations;
-    // unrelated IPC does not require knote or host socket watch collection.
+    // Each filter retains its own wake source. Unrelated IPC need not rescan
+    // unchanged I/O filters; timers are independently driven by their deadline.
     if (const auto queue = kqueues_.rbegin();
         queue != kqueues_.rend() &&
         queue->first == darwin::kqueue::workqueue_descriptor &&
-        (pending_event_poll_mach_generation_ != mach_generation ||
+        (workqueue_kevent_redrive_ || workqueue_timer_due ||
+            pending_event_poll_mach_generation_ != mach_generation ||
             pending_event_poll_io_generation_ != io_generation)) {
-        const auto unchanged_mach_queue = std::all_of(queue->second.begin(),
-            queue->second.end(), [this](const auto& registration) {
-                return (!registration.enabled &&
-                           !registration.workqueue_servicer) ||
-                       (registration.filter ==
-                               darwin::kqueue::filter_mach_port &&
-                           !registration.deferred_delete &&
-                           mach_kevent_observation_current(registration));
-            });
-        if (!unchanged_mach_queue)
+        const auto io_changed =
+            pending_event_poll_io_generation_ != io_generation;
+
+        if (workqueue_kevent_redrive_ || workqueue_timer_due ||
+            workqueue_kevent_poll_required(queue->second, io_changed)) {
+            // A timer pop activates the knote without unrelated I/O or IPC.
+            // Refresh eligibility as a previously blocked worker may now run.
+            if (workqueue_timer_due)
+                note_workqueue_kevent_transition();
             static_cast<void>(request_workqueue_kevents(nullptr));
+        }
     }
     const auto host_now = std::chrono::steady_clock::now();
-    const auto guest_now = shared_state_->clock.now();
     const auto graphics_generation = gles_completion_generation();
     // Host graphics waits park HLE calls. Unrelated processes keep their own
     // Mach/I/O generations and deadlines instead of walking every waiter.
@@ -3075,6 +3079,7 @@ CompatibilityKernel::timer_deadline_snapshot() const
     std::uint64_t generation = 0;
     for (unsigned attempt = 0; attempt < 2U; ++attempt) {
         deadline = local_timer_deadline_cache_;
+        consider(deadline, workqueue_kevent_deadline());
         consider(deadline, hid_event_system_hle_.next_sample_deadline());
         generation = shared_state_->kernel_event_generation_snapshot();
         if (!shared_timer_deadline_snapshot_ ||

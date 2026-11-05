@@ -2058,7 +2058,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         ++written;
         if (registration->timer) {
             registration->timer->consume(shared_state_->clock.now());
-            note_timer_deadline_transition();
+            if (queue_fd == darwin::kqueue::workqueue_descriptor)
+                note_workqueue_kevent_transition();
+            else
+                note_timer_deadline_transition();
         }
         if (clears_after_delivery) {
             registration->clear_delivered = true;

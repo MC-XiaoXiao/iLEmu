@@ -100,8 +100,85 @@ bool CompatibilityKernel::boost_workqueue_qos(
     return true;
 }
 
+bool CompatibilityKernel::workqueue_kevent_bucket_active(
+    std::uint32_t bucket) const
+{
+    const auto assigned = workqueue_kevent_processors_.find(bucket);
+    if (assigned == workqueue_kevent_processors_.end())
+        return false;
+    if (bucket == darwin::kqueue::event_manager_qos_flag)
+        return true;
+    // A blocked worker releases its concurrency slot until it becomes runnable.
+    return std::ranges::any_of(assigned->second, [&](std::uint32_t processor) {
+        const auto state =
+            thread_scheduling_state_query_
+                ? thread_scheduling_state_query_(process_.pid, processor)
+                : std::optional<XnuThreadState> { };
+        return !state || *state != XnuThreadState::Waiting;
+    });
+}
+
+std::optional<std::uint64_t>
+CompatibilityKernel::workqueue_kevent_deadline() const
+{
+    if (workqueue_timer_snapshot_ &&
+        workqueue_timer_snapshot_->generation == local_io_event_generation_)
+        return workqueue_timer_snapshot_->deadline;
+    std::optional<std::uint64_t> deadline;
+    const auto queue = kqueues_.find(darwin::kqueue::workqueue_descriptor);
+    if (pthread_runtime_.workqueue_open() && !workqueue_kevent_queued_ &&
+        queue != kqueues_.end()) {
+        for (const auto& event : queue->second) {
+            if (!event.enabled || event.deferred_delete || !event.timer ||
+                workqueue_kevent_bucket_active(
+                    workqueue_kevent_qos(event, { }).bucket))
+                continue;
+            const auto next = event.timer->deadline();
+            if (next && (!deadline || *next < *deadline))
+                deadline = next;
+        }
+    }
+    workqueue_timer_snapshot_ =
+        TimerDeadlineSnapshot { local_io_event_generation_, deadline };
+    return deadline;
+}
+
+bool CompatibilityKernel::workqueue_kevent_poll_required(
+    std::span<const KeventRegistration> registrations, bool io_changed) const
+{
+    return !std::all_of(registrations.begin(), registrations.end(),
+        [this, io_changed](const auto& registration) {
+            if (!registration.enabled && !registration.workqueue_servicer)
+                return true;
+            if (registration.deferred_delete)
+                return false;
+            if (registration.filter == darwin::kqueue::filter_mach_port)
+                return mach_kevent_observation_current(registration);
+            if (io_changed)
+                return false;
+            if (registration.filter == darwin::kqueue::filter_read ||
+                registration.filter == darwin::kqueue::filter_write) {
+                const auto fd = static_cast<std::uint32_t>(registration.ident);
+                // Composite descriptors can expose nested Mach/timer
+                // sources; polling devices also advance outside I/O notes.
+                return !kqueues_.contains(fd) &&
+                       !duplicated_descriptors_.contains(fd) &&
+                       !descriptor_requires_host_poll(fd);
+            }
+            return true;
+        });
+}
+
+void CompatibilityKernel::note_workqueue_kevent_transition()
+{
+    workqueue_kevent_redrive_ = true;
+    workqueue_timer_snapshot_.reset();
+    note_timer_deadline_transition();
+}
+
 bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
 {
+    workqueue_kevent_redrive_ = false;
     HostSocketRequests requests;
     std::set<std::uint32_t> visited;
     collect_host_socket_requests(darwin::kqueue::workqueue_descriptor,
@@ -116,15 +193,6 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
     std::set<std::uint32_t> observed_buckets;
     std::map<std::uint32_t, std::optional<std::int32_t>> overrides;
     WorkqueueQosProbe qos_probe;
-    const auto processor_is_active = [&](std::uint32_t processor) {
-        // A worker blocked in a guest kernel wait no longer occupies its
-        // workqueue concurrency slot. Keep delivering ready kevents through
-        // another worker while that handler waits for a synchronous reply.
-        const auto state = thread_scheduling_state_query_
-            ? thread_scheduling_state_query_(process_.pid, processor)
-            : std::optional<XnuThreadState> { };
-        return !state || *state != XnuThreadState::Waiting;
-    };
     for (const auto& registration : registrations) {
         MachMessageQos message_qos;
         bool mach_ready = false;
@@ -154,12 +222,7 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
         const auto bucket = qos.bucket;
         if (!observed_buckets.insert(bucket).second)
             continue;
-        const auto assigned = workqueue_kevent_processors_.find(bucket);
-        const auto manager_bucket =
-            bucket == darwin::kqueue::event_manager_qos_flag;
-        if (assigned != workqueue_kevent_processors_.end() &&
-            (manager_bucket || std::ranges::any_of(assigned->second,
-                                   processor_is_active)))
+        if (workqueue_kevent_bucket_active(bucket))
             continue;
         qos_probe.add_bucket(bucket);
     }
@@ -205,6 +268,7 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
     if (!pthread_runtime_.enqueue_workitem(request))
         return false;
     workqueue_kevent_queued_ = true;
+    note_workqueue_kevent_transition();
     return service_bsd_workqueue(requesting_cpu);
 }
 

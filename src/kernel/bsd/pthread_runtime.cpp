@@ -119,6 +119,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         idle_worker ? std::nullopt : std::optional { active_worker_count });
     if (!next_item)
         return true;
+    note_workqueue_kevent_transition();
     if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
         workqueue_kevent_queued_ = false;
     const auto requeue = [&] {
@@ -273,6 +274,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
 
 void CompatibilityKernel::clear_thread_pthread_state(std::size_t processor)
 {
+    note_workqueue_kevent_transition();
     thread_working_directories_.erase(processor);
     if (const auto queue = kqueues_.find(darwin::kqueue::workqueue_descriptor);
         queue != kqueues_.end()) {
@@ -306,6 +308,7 @@ void CompatibilityKernel::reset_pthread_runtime()
     pthread_runtime_.prepare_exec();
     workqueue_kevent_queued_ = false;
     workqueue_kevent_processors_.clear();
+    note_workqueue_kevent_transition();
 }
 
 void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
@@ -327,6 +330,8 @@ void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
             : std::optional<XnuThreadState> { };
     if (!state || *state != XnuThreadState::Waiting)
         return;
+
+    note_workqueue_kevent_transition();
 
     // Readiness observed while a bucket was occupied need not publish a
     // second generation when its worker blocks. Reconsider those knotes now.
@@ -597,6 +602,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
+        note_workqueue_kevent_transition();
         output_.write("[pthread] workqueue open pid=" +
                       std::to_string(process_.pid) + "\n");
         bsd_success(cpu, 0);
@@ -776,14 +782,17 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                 else
                     ++bucket;
             }
-            if (returned_kevent)
+            if (returned_kevent) {
+                note_workqueue_kevent_transition();
                 static_cast<void>(request_workqueue_kevents(&cpu));
+            }
             // XNU workq_kernreturn resets masks before recycling a worker.
             static_cast<void>(signal_state_.update(processor, 3,
                 DarwinSignalState::workqueue_mask, DarwinSignalState::Scope::Thread));
             const auto next_item =
                 pthread_runtime_.take_workitem(std::nullopt, processor);
             if (next_item) {
+                note_workqueue_kevent_transition();
                 if (!apply_workqueue_qos_policy(processor, *next_item)) {
                     static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
                     bsd_error(cpu, darwin::error::no_such_process);
