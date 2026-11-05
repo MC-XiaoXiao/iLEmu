@@ -109,6 +109,9 @@ private:
     std::uint64_t observed_interaction_generation_ { };
     std::optional<std::uint32_t> input_process_;
     std::optional<std::uint32_t> preferred_process_;
+    // Only a granted role hint advances this cursor; overridden or ordinary
+    // selections retain the next foreground process's opportunity.
+    std::optional<std::uint32_t> last_foreground_preference_;
     std::size_t preferred_process_burst_ { };
     std::size_t input_target_burst_ { };
     std::size_t frame_dependency_burst_ { };

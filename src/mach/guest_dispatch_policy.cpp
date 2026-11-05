@@ -44,6 +44,12 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         result.preferred_thread = host_continuation;
         result.reason = GuestDispatchReason::HostContinuation;
     }
+    const auto finish = [&] {
+        if (result.reason == GuestDispatchReason::ForegroundProcess &&
+            result.preferred_thread)
+            last_foreground_preference_ = result.preferred_thread->process;
+        return result;
+    };
     if (preference_turns_.size() != scheduler.processor_count())
         preference_turns_.resize(scheduler.processor_count());
     const auto info = result.preferred_thread
@@ -54,14 +60,14 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
     const auto ordinary_head = scheduler.peek_next_for_processor(processor);
     if (guest_control || !ordinary_head ||
         result.preferred_thread == ordinary_head)
-        return result;
+        return finish();
 
     auto turn = std::find_if(turns.begin(), turns.end(), [&](const auto& entry) {
         return entry.ordinary_head == *ordinary_head;
     });
     if (turn == turns.end()) {
         if (!result.preferred_thread)
-            return result;
+            return finish();
         // Retain debt across head changes and implementation waits. Drop
         // entries for threads now in a Guest wait or retired.
         std::erase_if(turns, [&](const auto& entry) {
@@ -83,7 +89,7 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
     } else if (result.preferred_thread) {
         ++turn->bypasses;
     }
-    return result;
+    return finish();
 }
 
 void GuestDispatchPolicy::observe_execution(std::size_t /*processor*/,
@@ -341,10 +347,21 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
         }
         input_process_.reset();
     }
-    if (const auto foreground = scheduler.oldest_runnable_thread(
-            observation.foreground_processes)) {
+    // Rotate process opportunities without letting an unserved low-priority
+    // sibling pin the choice. Thread priority within each process stays native.
+    const auto foreground = observation.foreground_processes;
+    const auto previous = last_foreground_preference_
+        ? std::find(foreground.begin(), foreground.end(),
+              *last_foreground_preference_)
+        : foreground.end();
+    const auto start = previous == foreground.end()
+        ? 0U : static_cast<std::size_t>(previous - foreground.begin()) + 1U;
+    for (std::size_t offset = 0; offset < foreground.size(); ++offset) {
+        const auto process = foreground[(start + offset) % foreground.size()];
+        if (!scheduler.highest_priority_runnable_thread(process))
+            continue;
         auto decision = decide_interactive_process(scheduler,
-            foreground->process, GuestDispatchReason::ForegroundProcess);
+            process, GuestDispatchReason::ForegroundProcess);
         decision.explicit_handoff_stale = result.explicit_handoff_stale;
         return decision;
     }
