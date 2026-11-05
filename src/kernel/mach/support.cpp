@@ -1184,6 +1184,8 @@ namespace mach_support {
     void discard_mach_message_rights_locked(
         KernelSharedState& state, const KernelSharedState::MachMessage& message)
     {
+        if (message.importance)
+            message.importance->cancel();
         const auto discard = [&](std::uint32_t object,
                                  xnu::ipc::Right right) {
             switch (right) {

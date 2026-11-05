@@ -37,7 +37,8 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
     const bool temporary_owner =
         (state.darwin_version >= DarwinGeneration::Ios6);
     if (get ? flavor < 1U || flavor > 3U :
-        flavor != 1U && flavor != 3U && !(flavor == 4U && temporary_owner))
+        flavor != 1U && flavor != 3U && !(flavor == 4U && temporary_owner) &&
+        !((flavor == 5U || flavor == 6U) && receiver_flags))
         return { darwin::mach::invalid_argument };
     const auto required = flavor == 1U || flavor == 3U ? 1U : get ? 10U : 0U;
     if (count < required)
@@ -66,7 +67,10 @@ Attributes::Result Attributes::evaluate_locked(KernelSharedState& state,
         if (flavor == 3U)
             return { static_cast<std::uint32_t>(
                 state.mach_port_objects.request_table(entry->object)->grow(value)) };
-        if (flavor == 4U) {
+        if (flavor == 5U || flavor == 6U) {
+            if (!state.mach_port_objects.set_importance_receiver(entry->object))
+                return { darwin::mach::invalid_argument };
+        } else if (flavor == 4U) {
             if (!state.mach_port_objects.set_temporary_owner(entry->object))
                 return { darwin::mach::invalid_argument };
         } else {

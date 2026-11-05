@@ -11,6 +11,8 @@
 #pragma once
 
 #include <mach/mach_port_request_table.hpp>
+#include <mach/task_importance.hpp>
+#include <functional>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -58,6 +60,7 @@ struct PortObject {
     // ipc_port.ip_destination: one edge while the receive right is in a
     // message (including a blocked sender), zero while owned or in limbo.
     PortObjectId transit_destination { };
+    std::shared_ptr<ImportancePort> importance { std::make_shared<ImportancePort>() };
 
     [[nodiscard]] std::uint32_t status_flags() const
     {
@@ -73,14 +76,22 @@ struct PortObject {
 
 class PortObjectTable {
 public:
+    using ImportanceTaskResolver =
+        std::function<std::shared_ptr<TaskImportance>(TaskIdentity)>;
+    void set_importance_task_resolver(ImportanceTaskResolver resolve)
+    {
+        importance_task_ = std::move(resolve);
+    }
     [[nodiscard]] bool create(
         PortObjectId object, TaskIdentity receive_owner = 0)
     {
         if (object == 0 || object == 0xffff'ffffU)
             return false;
-        return objects_
-            .emplace(object, PortObject { receive_owner, receive_owner == 0 })
-            .second;
+        const auto [found, created] = objects_.emplace(
+            object, PortObject { receive_owner, receive_owner == 0 });
+        if (created && receive_owner != 0 && importance_task_)
+            found->second.importance->set_owner(importance_task_(receive_owner));
+        return created;
     }
 
     [[nodiscard]] bool contains(PortObjectId object) const
@@ -110,8 +121,13 @@ public:
             return false;
         found->second.receive_owner = receive_owner;
         found->second.transit_destination = 0;
-        if (receive_owner != 0)
+        if (receive_owner != 0) {
             found->second.temporary_owner = false;
+            found->second.importance->set_owner(importance_task_
+                ? importance_task_(receive_owner) : nullptr);
+        } else {
+            found->second.importance->clear_receiver();
+        }
         return true;
     }
 
@@ -122,6 +138,19 @@ public:
             return false;
         found->second.temporary_owner = true;
         found->second.importance_receiver = true;
+        found->second.importance->set_temporary_owner();
+        return true;
+    }
+
+    [[nodiscard]] bool set_importance_receiver(PortObjectId object)
+    {
+        const auto found = objects_.find(object);
+        if (found == objects_.end() || found->second.kernel_owned)
+            return false;
+        found->second.importance_receiver = true;
+        if (!found->second.temporary_owner && importance_task_)
+            found->second.importance->set_owner(
+                importance_task_(found->second.receive_owner));
         return true;
     }
 
@@ -137,6 +166,7 @@ public:
         port.sequence_number = 0;
         port.guard.reset();
         port.strict_guard = false;
+        port.importance->clear_receiver();
         return true;
     }
 
@@ -161,6 +191,7 @@ public:
             base = found->second.transit_destination;
         }
         source->second.transit_destination = destination;
+        source->second.importance->set_transit(objects_.at(destination).importance);
         return false;
     }
 
@@ -253,13 +284,19 @@ public:
 
     [[nodiscard]] bool erase(PortObjectId object)
     {
-        return objects_.erase(object) != 0;
+        const auto found = objects_.find(object);
+        if (found == objects_.end())
+            return false;
+        found->second.importance->deactivate();
+        objects_.erase(found);
+        return true;
     }
 
     [[nodiscard]] std::size_t size() const { return objects_.size(); }
 
 private:
     std::map<PortObjectId, PortObject> objects_;
+    ImportanceTaskResolver importance_task_;
 };
 
 } // namespace ilemu::xnu::ipc

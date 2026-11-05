@@ -514,6 +514,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
                 KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, 0U, { },
                 { }, DisplayOrientation::Portrait, { }, 0U };
         shared_state_->processes[process_.pid].execution_policy = process_.execution_policy;
+        process_.execution_policy->importance()->set_donor(true);
         shared_state_->processes[process_.pid].memory_status =
             darwin::memorystatus::initial_state(shared_state_->darwin_version);
         shared_state_->processes[process_.pid].syscall_counters =
@@ -930,6 +931,7 @@ bool CompatibilityKernel::owns_display_scanout() const
 
 void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 {
+    process_.execution_policy->importance()->reset_legacy();
     abandon_file_io();
     signal_state_.exec(processor_id);
     signal_sender_ = { };
@@ -3396,8 +3398,12 @@ void CompatibilityKernel::inherit_process_state(
     process_.membership = std::make_shared<ProcessMembership>(*parent.process_.membership);
     process_.execution_policy = std::make_shared<ProcessExecutionPolicy>();
     const auto& inherited_policy = *parent.process_.execution_policy;
+    auto inherited_type = inherited_policy.type();
+    if (inherit_fork_state && inherited_type == DarwinProcessType::AdaptiveDaemon)
+        inherited_type = inherited_policy.importance()->boosted()
+            ? DarwinProcessType::InteractiveDaemon : DarwinProcessType::BackgroundDaemon;
     process_.execution_policy->set_spawn_policy(
-        inherited_policy.type(), inherited_policy.qos_policy().clamp);
+        inherited_type, inherited_policy.qos_policy().clamp);
     process_.parent_pid = parent.process_.pid;
     process_.pid = child_pid;
     process_.exited = false;
@@ -3497,7 +3503,6 @@ void CompatibilityKernel::inherit_process_state(
     child_record.vm_events = task_vm_events_;
     child_record.in_vfork = false;
     child_record.has_executed = false;
-    child_record.importance_donor = false;
     child_record.memory_status =
         darwin::memorystatus::initial_state(shared_state_->darwin_version);
     child_record.exit_status = 0;

@@ -2,9 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Validate process-policy requests and preserve task donation eligibility.
-// Resource enforcement and Mach importance inheritance require their own
-// providers; do not report those operations as applied when none exists.
+// Validate process-policy requests and apply native importance assertions.
+// Resource enforcement remains with the corresponding resource providers.
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-2422.1.72/bsd/kern/process_policy.c
 
 #include "kernel/kernel.hpp"
@@ -66,9 +65,16 @@ bool CompatibilityKernel::dispatch_bsd_process_policy(
                     (action != action_enable || resolved_pid != process_.pid))) {
                 result = darwin::error::invalid_argument;
             } else if (subtype == ios_donate_importance) {
-                record.importance_donor = true;
-            } else if (subtype <= 4U || subtype == ios_hold_importance ||
-                       subtype == ios_drop_importance) {
+                record.execution_policy->importance()->set_donor(true);
+            } else if (subtype == ios_hold_importance || subtype == ios_drop_importance) {
+                auto& importance = *record.execution_policy->importance();
+                if (!importance.accepts())
+                    result = darwin::error::invalid_argument;
+                else
+                    result = (subtype == ios_hold_importance
+                        ? importance.hold_legacy() : importance.drop_legacy())
+                        ? 0U : darwin::mach::failure;
+            } else if (subtype <= 4U) {
                 result = darwin::error::not_supported;
             } else {
                 result = darwin::error::invalid_argument;
@@ -78,10 +84,16 @@ bool CompatibilityKernel::dispatch_bsd_process_policy(
             if (scope != scope_process || resolved_pid != process_.pid) {
                 result = darwin::error::invalid_argument;
             } else if (subtype == boost_donation && action == action_set) {
-                record.importance_donor = true;
+                record.execution_policy->importance()->set_donor(true);
             } else if (subtype == boost_important &&
                        (action == action_hold || action == action_drop)) {
-                result = darwin::error::not_supported;
+                auto& importance = *record.execution_policy->importance();
+                if (!importance.accepts())
+                    result = darwin::error::invalid_argument;
+                else
+                    result = (action == action_hold
+                        ? importance.hold_legacy() : importance.drop_legacy())
+                        ? 0U : darwin::mach::failure;
             } else {
                 result = darwin::error::invalid_argument;
             }

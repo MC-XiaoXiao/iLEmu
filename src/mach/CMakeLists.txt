@@ -11,6 +11,7 @@ add_library(ilemu_mach STATIC
     guest_execution_policy.cpp
     guest_parallelism_policy.cpp
     mach_namespace.cpp
+    task_importance.cpp
     xnu_scheduler.cpp
     xnu_run_queue.cpp)
 add_library(iLEmu::mach ALIAS ilemu_mach)

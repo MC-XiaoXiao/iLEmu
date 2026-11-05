@@ -47,8 +47,10 @@ GuardedPorts::Result GuardedPorts::construct_locked(KernelSharedState& state,
             state.mach_port_objects.set_queue_limit(object, limit));
     if ((flags & temporary_owner) != 0)
         static_cast<void>(state.mach_port_objects.set_temporary_owner(object));
-    // Importance/de-nap receivers use the kernel's existing queued-message
-    // importance accounting; no additional host scheduling is required.
+    constexpr std::uint32_t importance_receiver = 0x08U;
+    constexpr std::uint32_t denap_receiver = 0x40U;
+    if ((flags & (importance_receiver | denap_receiver)) != 0U)
+        static_cast<void>(state.mach_port_objects.set_importance_receiver(object));
     auto result = darwin::mach::success;
     if ((flags & insert_send) != 0)
         result = insert_port_right_locked(state, task, task, *name, *name,

@@ -16,6 +16,21 @@
 
 namespace ilemu {
 
+KernelSharedState::InternedVoucher KernelSharedState::intern_mach_voucher_locked(
+    MachVoucherState voucher)
+{
+    if (voucher.empty())
+        return { };
+    for (const auto& [object, value] : mach_vouchers)
+        if (value == voucher)
+            return { object, false };
+    const auto object = allocate_mach_object();
+    if (!mach_port_objects.create(object))
+        return { };
+    mach_vouchers.emplace(object, std::move(voucher));
+    return { object, true };
+}
+
 CompatibilityKernel::MachVoucherCreation CompatibilityKernel::create_mach_voucher(
     std::uint32_t host_name, std::span<const std::byte> recipes)
 {
@@ -37,7 +52,7 @@ CompatibilityKernel::MachVoucherCreation CompatibilityKernel::create_mach_vouche
             return found == shared_state_->mach_vouchers.end()
                 ? nullptr : &found->second;
         }, shared_state_->mach_vouchers, shared_state_->next_activity_id,
-        process_.pid);
+        process_.pid, process_.execution_policy->importance());
     if (result != darwin::mach::success)
         return { result, 0 };
 
@@ -45,21 +60,9 @@ CompatibilityKernel::MachVoucherCreation CompatibilityKernel::create_mach_vouche
     if (voucher.empty())
         return { darwin::mach::success, 0 };
 
-    std::uint32_t object = 0;
-    for (const auto& [candidate, value] : shared_state_->mach_vouchers) {
-        if (value == voucher) {
-            object = candidate;
-            break;
-        }
-    }
-    const bool created = object == 0;
-    if (created) {
-        object = shared_state_->allocate_mach_object();
-        if (shared_state_->mach_port_objects.create(object))
-            shared_state_->mach_vouchers.emplace(object, std::move(voucher));
-        else
-            object = 0;
-    }
+    const auto interned = shared_state_->intern_mach_voucher_locked(std::move(voucher));
+    const auto object = interned.object;
+    const auto created = interned.created;
     if (!object)
         return { darwin::mach::resource_shortage, 0 };
 

@@ -17,6 +17,7 @@
 #include "network/darwin_route_socket.hpp"
 #include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel.hpp"
+#include "transport/message_importance.hpp"
 #include "kernel/kernel_clock.hpp"
 #include "kernel/kernel_iokit.hpp"
 #include "kernel/kernel_mach_ipc.hpp"
@@ -690,14 +691,17 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             }
         }
     }
+    mach_transport::ReceiveImportance importance { *shared_state_, process_,
+        pending_message, receive.options, received->bytes };
+    if (importance.error() != 0U)
+        return fail_receive(importance.error());
+
     if (pending_message.voucher_object && pending_message.voucher_right) {
         if ((receive.options & darwin::mach_message::option_receive_voucher) != 0U) {
             const auto voucher_name = copyout_received_right(
                 *pending_message.voucher_object, *pending_message.voucher_right);
-            if (!voucher_name) {
-                outcome.status = darwin::mach_message::receive_invalid_data;
-                return outcome;
-            }
+            if (!voucher_name)
+                return fail_receive(darwin::mach_message::receive_invalid_data);
             write_little_word(received->bytes,
                 darwin::mig_wire::header_voucher_offset, *voucher_name);
         }
@@ -976,6 +980,7 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             MemoryPermission::Write) &&
         memory_.copy_in(receive.message_address, received->bytes);
     if (copied) {
+        importance.commit();
         // Publish bootstrap services after successful copyout. In particular,
         // pending input must use the process that now owns the receive right.
         if (delivered_sender_pid == 1U) {

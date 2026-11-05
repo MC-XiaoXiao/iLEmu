@@ -3,6 +3,8 @@
 
 #include "foundation/darwin_version.hpp"
 #include "mach/xnu_qos_policy.hpp"
+#include "mach/task_importance.hpp"
+#include <memory>
 #include <atomic>
 #include <cstdint>
 #include <optional>
@@ -50,10 +52,31 @@ public:
     }
     void set_spawn_policy(DarwinProcessType type, XnuQosTier clamp) noexcept
     {
-        if (type != DarwinProcessType::Unspecified)
+        if (type != DarwinProcessType::Unspecified) {
             type_.store(type, std::memory_order_relaxed);
+            using Traits = xnu::ipc::TaskImportance::Traits;
+            const auto traits = [type] {
+                switch (type) {
+                case DarwinProcessType::App:
+                case DarwinProcessType::TalApp:
+                    return Traits { false, true, false, true };
+                case DarwinProcessType::StandardDaemon:
+                case DarwinProcessType::InteractiveDaemon:
+                    return Traits { true, false, false, false };
+                case DarwinProcessType::AdaptiveDaemon:
+                    return Traits { false, false, true, false };
+                default:
+                    return Traits { };
+                }
+            }();
+            importance_->set_traits(traits, true);
+        }
         if (clamp != XnuQosTier::Unspecified)
             clamp_.store(clamp, std::memory_order_relaxed);
+    }
+    [[nodiscard]] const std::shared_ptr<xnu::ipc::TaskImportance>& importance() const
+    {
+        return importance_;
     }
     [[nodiscard]] DarwinProcessType type() const noexcept
     {
@@ -80,6 +103,8 @@ public:
                 break;
             }
         }
+        result.background = type() == DarwinProcessType::BackgroundDaemon ||
+            (type() == DarwinProcessType::AdaptiveDaemon && !importance_->boosted());
         return result;
     }
     [[nodiscard]] XnuThreadQosPolicy main_thread_qos() const noexcept
@@ -104,6 +129,8 @@ public:
     }
 
 private:
+    std::shared_ptr<xnu::ipc::TaskImportance> importance_ {
+        std::make_shared<xnu::ipc::TaskImportance>() };
     std::atomic<DarwinProcessRole> role_ { DarwinProcessRole::Default };
     std::atomic<DarwinProcessType> type_ { DarwinProcessType::Unspecified };
     std::atomic<XnuQosTier> clamp_ { XnuQosTier::Unspecified };

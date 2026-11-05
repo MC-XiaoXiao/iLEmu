@@ -20,6 +20,23 @@
 
 namespace ilemu {
 
+namespace {
+    std::uint32_t execution_policy_flags(const ProcessExecutionPolicy& policy)
+    {
+        using namespace darwin::proc_info;
+        auto flags = policy.importance()->donating() ? flag_importance_donor : 0U;
+        if (policy.type() == DarwinProcessType::App ||
+            policy.type() == DarwinProcessType::TalApp)
+            flags |= flag_application;
+        if (policy.type() == DarwinProcessType::AdaptiveDaemon) {
+            flags |= flag_adaptive;
+            if (policy.importance()->boosted())
+                flags |= flag_adaptive_important;
+        }
+        return flags;
+    }
+}
+
 bool CompatibilityKernel::dispatch_bsd_process_information(
     Cpu& cpu, std::uint32_t number)
 {
@@ -171,9 +188,7 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
             for (std::size_t index = 0; index < count; ++index)
                 output[16U + index] = static_cast<std::byte>(record.command[index]);
             word(32, (record.exited ? 4U : 0U) |
-                         (record.importance_donor
-                                 ? darwin::proc_info::flag_importance_donor
-                                 : 0U));
+                         execution_policy_flags(*record.execution_policy));
             word(36, record.effective_uid);
             word(40, record.effective_gid);
             word(44, record.uid);
@@ -231,8 +246,7 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
                 integer(identity_offset + 24U, record.parent_incarnation, 8U);
             }
             if (include_bsd) {
-                integer(0, record.importance_donor
-                    ? darwin::proc_info::flag_importance_donor : 0U);
+                integer(0, execution_policy_flags(*record.execution_policy));
                 integer(4, record.signal_stopped ? 4U : 2U);
                 integer(12, static_cast<std::uint32_t>(target_pid));
                 integer(16, record.parent_pid);

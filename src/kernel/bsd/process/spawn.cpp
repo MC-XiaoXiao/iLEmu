@@ -60,11 +60,37 @@ namespace {
         std::uint32_t which { };
     };
 
+    // Copy-in holds survive asynchronous image preparation. Pending image
+    // callbacks are retired outside mach_mutex; their final owner releases the
+    // copied send references even when preparation fails or is canceled.
+    class SpawnWatchports {
+    public:
+        explicit SpawnWatchports(std::shared_ptr<KernelSharedState> state)
+            : state_ { std::move(state) } { }
+        SpawnWatchports(const SpawnWatchports&) = delete;
+        SpawnWatchports& operator=(const SpawnWatchports&) = delete;
+        ~SpawnWatchports()
+        {
+            std::lock_guard lock { state_->mach_mutex };
+            for (const auto object : objects)
+                mach_support::release_kernel_send_right_locked(*state_, object);
+        }
+        void append_locked(std::uint32_t object)
+        {
+            objects.push_back(object);
+            mach_support::retain_kernel_send_right_locked(*state_, object);
+        }
+        std::vector<std::uint32_t> objects;
+    private:
+        std::shared_ptr<KernelSharedState> state_;
+    };
+
     struct PosixSpawnAttributes {
         bool setexec { };
         bool start_suspended { };
         CompatibilityKernel::SpawnAttributes task;
         std::vector<SpawnPortAction> port_actions;
+        std::shared_ptr<SpawnWatchports> watchports;
     };
 
     std::optional<std::vector<std::string>> read_string_vector(
@@ -190,6 +216,50 @@ namespace {
         return result;
     }
 
+    bool capture_importance_watchports(std::shared_ptr<KernelSharedState> state,
+        std::uint32_t caller, PosixSpawnAttributes& attributes)
+    {
+        if (std::none_of(attributes.port_actions.begin(), attributes.port_actions.end(),
+                [](const auto& action) { return action.type == 3U; }))
+            return true;
+        auto held = std::make_shared<SpawnWatchports>(state);
+        bool valid = true;
+        {
+            std::lock_guard lock { state->mach_mutex };
+            for (const auto& action : attributes.port_actions) {
+                if (action.type != 3U || action.port_name == xnu::ipc::null_name ||
+                    action.port_name == xnu::ipc::dead_name)
+                    continue;
+                const auto object = mach_support::resolve_name_with_right(
+                    *state, caller, action.port_name, xnu::ipc::Right::Send);
+                if (!object) {
+                    valid = false;
+                    break;
+                }
+                held->append_locked(*object);
+            }
+        }
+        if (valid)
+            attributes.watchports = std::move(held);
+        return valid;
+    }
+
+    void apply_importance_watchports(KernelSharedState& state,
+        std::uint32_t target, const PosixSpawnAttributes& attributes)
+    {
+        if (!attributes.watchports)
+            return;
+        std::lock_guard lock { state.mach_mutex };
+        const auto& policy = *state.processes.at(target).execution_policy;
+        if (policy.type() != DarwinProcessType::AdaptiveDaemon)
+            return;
+        for (const auto object : attributes.watchports->objects) {
+            const auto port = state.mach_port_objects.lookup(object);
+            if (port)
+                static_cast<void>(port->importance->set_watch_task(policy.importance()));
+        }
+    }
+
     std::uint32_t apply_special_port_actions(KernelSharedState& state,
         ProcessContext& process, const PosixSpawnAttributes& attributes)
     {
@@ -284,6 +354,11 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
         return true;
     }
 
+    if (!capture_importance_watchports(shared_state_, process_.pid, *attributes)) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return true;
+    }
+
     // `--suspended` is an application argument used by first-generation
     // SpringBoard's prewarm protocol, not a kernel spawn attribute. The child
     // must run through dyld and suspend itself in userspace. Only the actual
@@ -306,6 +381,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
                 return;
             }
             apply_spawn_attributes(attributes.task);
+            apply_importance_watchports(*shared_state_, process_.pid, attributes);
             output_.write("[process] spawn-port-actions pid=" +
                 std::to_string(process_.pid) + " count=" +
                 std::to_string(attributes.port_actions.size()) +
@@ -357,6 +433,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
             bsd_error(cpu, 8); // ENOEXEC
             return;
         }
+        apply_importance_watchports(*shared_state_, *child, attributes);
         if (scheduler_preemption_query_ &&
             scheduler_preemption_query_(cpu.processor_id())) {
             // A successful non-suspended spawn leaves a new runnable child visible

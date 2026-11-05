@@ -40,6 +40,8 @@ public:
         std::uint32_t destination, xnu::ipc::Right destination_right)
     {
         using namespace mach_support;
+        if (message.importance)
+            message.importance->cancel();
         const auto bits = read_little_word(bytes, 0);
         write_little_word(bytes, 0,
             (bits & 0xff000000U & ~darwin::mach_message::bits_circular) |

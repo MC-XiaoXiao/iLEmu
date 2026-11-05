@@ -182,6 +182,7 @@ void CompatibilityKernel::notify_orphaned_process_groups(
 void CompatibilityKernel::exit_process(
     std::uint32_t status, std::uint32_t signal)
 {
+    process_.execution_policy->importance()->retire();
     if (process_.exited)
         return;
     opengles_hle_.cancel_pending_work();

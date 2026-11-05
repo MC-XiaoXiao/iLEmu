@@ -557,6 +557,12 @@ struct KernelSharedState {
         , mach_dispatch_table { version, version_name }
         , mig_reference { version_name }
     {
+        mach_port_objects.set_importance_task_resolver([this](std::uint32_t pid) {
+            const auto task = processes.find(pid);
+            return task == processes.end()
+                ? std::shared_ptr<xnu::ipc::TaskImportance> { }
+                : task->second.execution_policy->importance();
+        });
     }
 
     DarwinCoalitionRuntime coalitions;
@@ -702,6 +708,7 @@ struct KernelSharedState {
         std::optional<std::uint32_t> voucher_object;
         std::optional<xnu::ipc::Right> voucher_right;
         MachMessageQos qos;
+        std::shared_ptr<xnu::ipc::ImportanceAssertion> importance;
         // A MOVE_SEND used as the message's remote port has no sender ipc_entry
         // after copyin, but the queued message still keeps the destination port
         // alive until receive/discard. Record that hold explicitly.
@@ -829,7 +836,6 @@ struct KernelSharedState {
         std::uint32_t dirty_tracking_flags { };
         bool dirty_self { };
         bool dirty_shutdown { };
-        bool importance_donor { };
         std::uint32_t dyld_all_image_info_address { };
         std::uint32_t dyld_all_image_info_size { };
         std::uint32_t task_user_stop_count { };
@@ -1828,6 +1834,11 @@ struct KernelSharedState {
     // A registration owns one kernel-held Send to its readonly memory entry.
     std::map<std::uint32_t, TaskTraceMemory> task_trace_memory;
     std::map<std::uint32_t, MachVoucherState> mach_vouchers;
+    struct InternedVoucher {
+        std::uint32_t object { };
+        bool created { };
+    };
+    InternedVoucher intern_mach_voucher_locked(MachVoucherState voucher);
     std::uint64_t next_activity_id { 1 };
     std::uint64_t next_subactivity_id { 1 };
     // BSD fileports are send-only Mach objects whose payload is a transferable

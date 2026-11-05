@@ -14,6 +14,7 @@
 #include "port/context.hpp"
 #include "port/guarded_mig.hpp"
 #include "transport/message_qos.hpp"
+#include "transport/message_importance.hpp"
 #include "../clock/server.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
@@ -1220,6 +1221,8 @@ void CompatibilityKernel::dispatch_mach_message(
                     queued.destination = remote_object;
                     queued.qos = mach_transport::copyin_message_qos(
                         *shared_state_, queued, registers[1], registers[6]);
+                    mach_transport::copyin_message_importance(
+                        *shared_state_, process_, queued, registers[1]);
                     // Simple copyin cannot change the destination under this lock.
                     const auto send_destination = simple_copy_send ? destination_port :
                         shared_state_->mach_port_objects.lookup(remote_object);

@@ -46,7 +46,8 @@ namespace {
 std::uint32_t MachVoucherState::create(std::span<const std::byte> recipes,
     const Resolver& resolve,
     const std::map<std::uint32_t, MachVoucherState>& vouchers,
-    std::uint64_t& next_activity_id, std::uint32_t pid)
+    std::uint64_t& next_activity_id, std::uint32_t pid,
+    std::shared_ptr<xnu::ipc::TaskImportance> task_importance)
 {
     std::vector<std::pair<std::shared_ptr<Activity>, std::uint64_t>> registrations;
     const auto activity_exists = [&](std::uint64_t id) {
@@ -94,7 +95,13 @@ std::uint32_t MachVoucherState::create(std::span<const std::byte> recipes,
             }
             continue;
         }
-        if (key == atm_key) {
+        if (key == 2U && command == 200U) { // IMPORTANCE_SELF
+            if (!content.empty())
+                return darwin::mach::invalid_argument;
+            set_importance(task_importance);
+        } else if (key == 2U && (command != redeem || !content.empty())) {
+            return darwin::mach::invalid_argument;
+        } else if (key == atm_key) {
             if (command == atm_create) {
                 if (!content.empty() && content.size() != 8U)
                     return darwin::mach::invalid_argument;
@@ -142,6 +149,22 @@ std::uint32_t MachVoucherState::create(std::span<const std::byte> recipes,
     return darwin::mach::success;
 }
 
+std::shared_ptr<xnu::ipc::ImportanceElement> MachVoucherState::importance() const
+{
+    const auto found = attributes_.find(2U);
+    return found == attributes_.end() || !found->second.importance
+        ? nullptr : found->second.importance->element();
+}
+
+void MachVoucherState::set_importance(std::shared_ptr<xnu::ipc::ImportanceElement> value)
+{
+    if (!value) {
+        attributes_.erase(2U);
+        return;
+    }
+    attributes_[2U] = Attribute { 200U, { }, { }, xnu::ipc::ImportanceValue::create(std::move(value)) };
+}
+
 std::optional<std::uint32_t> MachVoucherState::pthread_priority() const
 {
     constexpr std::uint32_t pthread_priority_key = 4U;
@@ -177,6 +200,20 @@ std::uint32_t MachVoucherState::command(std::uint32_t key,
     std::uint32_t capacity, std::uint32_t pid,
     std::uint64_t& next_subactivity_id, std::vector<std::byte>& output)
 {
+    if (key == 2U) {
+        if (command != 2U)
+            return darwin::mach::not_supported;
+        if (input.size() != 4U || (capacity != 0U && capacity != 4U))
+            return darwin::mach::invalid_argument;
+        const auto value = std::dynamic_pointer_cast<xnu::ipc::ImportanceAssertion>(importance());
+        if (!value || !value->inheritance())
+            return darwin::mach::invalid_argument;
+        const auto count = static_cast<std::uint32_t>(read_integer(input));
+        const auto result = count ? value->drop_external(count) : 0U;
+        if (result == 0U && capacity != 0U)
+            append_integer(output, value->external_refs(), 4U);
+        return result;
+    }
     if (key != atm_key) return darwin::mach::not_supported;
     if (command == atm_find_min_subaid) {
         // XNU reports the maximum 32-bit sub-ID for each supplied activity.

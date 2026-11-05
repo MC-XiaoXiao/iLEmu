@@ -45,6 +45,7 @@ struct XnuTaskQosPolicy {
     XnuQosTier ceiling { };
     XnuQosTier clamp { };
     bool urgent_ui { };
+    bool background { };
     bool operator==(const XnuTaskQosPolicy&) const = default;
 
     [[nodiscard]] constexpr std::int32_t effective_priority(
@@ -71,6 +72,11 @@ struct XnuTaskQosPolicy {
         if (ceiling != XnuQosTier::Unspecified &&
             tier != XnuQosTier::Unspecified)
             tier = std::min(tier, ceiling);
+        // Native DARWIN_BG applies after task ceilings and also puts legacy
+        // (unspecified-QoS) threads into the background class.
+        if (background &&
+            (tier == XnuQosTier::Unspecified || tier > XnuQosTier::Background))
+            tier = XnuQosTier::Background;
         if (tier == XnuQosTier::Unspecified)
             return legacy;
         const auto relative = tier == requested.tier && !donation
