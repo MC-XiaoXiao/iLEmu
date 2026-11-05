@@ -1653,7 +1653,8 @@ EnqueueResult enqueue_system_button(KernelSharedState& state,
         // A firmware HID consumer can own system controls without publishing
         // the legacy GraphicsServices system-event port. Let that consumer
         // classify the physical key and perform its native wake/idle handling.
-        if (state.hid_event_queue.enqueue({ hid_button(input), state.clock.now() })) {
+        if (state.hid_event_queue.enqueue(
+                { hid_button(input), state.clock.now(), 1U, { }, sequence })) {
             state.note_io_event_transition();
             return EnqueueResult::Queued;
         }

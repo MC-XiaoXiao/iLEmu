@@ -55,6 +55,7 @@ public:
         std::uint64_t timestamp;
         std::uint32_t identity { 1U };
         std::optional<std::array<float, 2>> contact_origin { };
+        std::uint64_t input_sequence { };
     };
     struct ObserverDelivery {
         Observer observer;

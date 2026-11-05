@@ -189,7 +189,8 @@ bool HidEventSystemHle::enqueue_touch(
     if (input_sequence)
         *input_sequence = sequence;
     const auto queued =
-        state_->hid_event_queue.enqueue({ sanitized, state_->clock.now() });
+        state_->hid_event_queue.enqueue(
+            { sanitized, state_->clock.now(), 1U, { }, sequence });
     if (queued)
         state_->note_io_event_transition();
     return queued;

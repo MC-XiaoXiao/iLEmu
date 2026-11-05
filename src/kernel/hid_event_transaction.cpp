@@ -8,6 +8,7 @@
 
 #include "foundation/cpu.hpp"
 #include "foundation/darwin_version.hpp"
+#include "foundation/performance.hpp"
 #include "foundation/userland_hle.hpp"
 
 #include <array>
@@ -165,6 +166,13 @@ namespace {
         }
 
     private:
+        void record_handoff(UserlandHleCall& call) const
+        {
+            performance_counters().record_diagnostic_input_guest(
+                event_.input_sequence, call.process_id(),
+                static_cast<std::uint32_t>(call.cpu().processor_id()));
+        }
+
         enum class Step {
             Accelerometer,
             AccelerationAxis,
@@ -286,6 +294,7 @@ namespace {
                 r[0] = sender_number_;
                 break;
             case Step::DispatchService:
+                record_handoff(call);
                 // Enter the firmware's hardware service callback. It owns
                 // device metadata, service filters and session routing.
                 r[13] -= 16U;
@@ -299,10 +308,12 @@ namespace {
                 r[0] = service_;
                 break;
             case Step::Dispatch:
+                record_handoff(call);
                 r[0] = system_;
                 r[1] = root_event_;
                 break;
             case Step::SessionCallback:
+                record_handoff(call);
                 r[0] = system_;
                 r[1] = 0U;
                 r[2] = 0U;
