@@ -2040,6 +2040,13 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
         return true;
     if (cached->second.io_generation !=
         io_event_generation_snapshot_locked()) {
+        // Ordinary clock waits depend on time, not unrelated device I/O.
+        // Bootstrap retries and deferred aborts also have non-timer wakes.
+        if (const auto timer = pending_timers_.find(processor);
+            timer != pending_timers_.end() && !timer->second.bootstrap_retry &&
+            !pending_thread_aborts_.contains(processor)) {
+            return shared_state_->clock.now() >= timer->second.deadline;
+        }
         return true;
     }
     const auto mach_generation =
