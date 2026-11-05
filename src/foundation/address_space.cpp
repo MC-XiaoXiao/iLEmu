@@ -10,6 +10,7 @@
 #include "foundation/shared_file_writeback.hpp"
 
 #include <algorithm>
+#include <boost/container_hash/hash.hpp>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -26,6 +27,17 @@
 #include "executable_identity_cache.hpp"
 
 namespace ilemu {
+
+std::size_t AddressSpace::PageAddressHash::operator()(
+    std::uint32_t address) const noexcept
+{
+    // Aligned virtual ranges can form long probe chains even with prime
+    // bucket counts. Mix their address bits before indexing the write pages.
+    std::size_t hash = 0;
+    boost::hash_combine(hash, address);
+    return hash;
+}
+
 namespace {
 
     std::atomic<std::uint64_t> write_batch_calls { };
