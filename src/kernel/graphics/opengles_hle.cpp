@@ -224,6 +224,7 @@ OpenGlesHle::~OpenGlesHle() { release_renderer_resources(); }
 
 void OpenGlesHle::reset()
 {
+    pending_frame_draw_.reset();
     sync_lease_.reset();
     release_renderer_resources();
     threads_.clear();
@@ -255,6 +256,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent,
     std::uint32_t parent_pid, std::uint32_t child_pid,
     std::size_t parent_processor)
 {
+    pending_frame_draw_.reset();
     sync_lease_.reset();
     release_renderer_resources();
     // Runtime fork preserves only its calling uthread, rebased to child slot

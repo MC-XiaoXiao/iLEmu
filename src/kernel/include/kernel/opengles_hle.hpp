@@ -338,6 +338,11 @@ private:
         std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
         const GlesRasterState& raster, bool indexed);
     struct FrameDraw;
+    std::shared_ptr<FrameDraw> pending_frame_draw_;
+    void service_frame_draw(bool process_live);
+    void cancel_frame_draw(std::optional<std::size_t> processor);
+    [[nodiscard]] std::shared_ptr<const GlesWorkCompletion>
+    frame_draw_dependency(std::optional<std::size_t> processor = {}) const;
     void await_frame_draw(
         UserlandHleCall& call, std::shared_ptr<FrameDraw> pending);
     [[nodiscard]] bool prepare_program_attributes(UserlandHleCall& call,

@@ -9,7 +9,7 @@ namespace ilemu {
 bool OpenGlesHle::fork_preparation_required() const
 {
     return pending_program_target_.has_value() || program_flush_failed_ ||
-           (sync_lease_ && !sync_lease_->consumed);
+           pending_frame_draw_ || (sync_lease_ && !sync_lease_->consumed);
 }
 
 void OpenGlesHle::prepare_fork(UserlandHleCall& call,
@@ -27,6 +27,12 @@ void OpenGlesHle::prepare_fork(UserlandHleCall& call,
                     prepare_fork(resumed, completion);
                 },
                 lease->result ? lease->result->sequence() : 0);
+            return;
+        } else if (const auto dependency = frame_draw_dependency()) {
+            call.suspend_for_host([dependency] { return dependency->ready(); },
+                [this, completion](UserlandHleCall& resumed) {
+                    prepare_fork(resumed, completion);
+                }, dependency->sequence());
             return;
         } else if (pending_program_target_) {
             await_program_flush(

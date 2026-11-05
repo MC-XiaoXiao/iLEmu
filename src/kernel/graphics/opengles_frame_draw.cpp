@@ -4,6 +4,7 @@
 
 #include "kernel/opengles_hle.hpp"
 
+#include "foundation/cpu.hpp"
 #include "graphics/gles_frame_draw.hpp"
 #include "graphics/surface_store.hpp"
 
@@ -19,8 +20,47 @@ struct OpenGlesHle::FrameDraw {
     std::shared_ptr<GlesFrameDraw> host;
     std::shared_ptr<GlesWorkResult> result;
     std::shared_ptr<SyncLease> lease;
+    std::size_t issuer { };
+    bool cancelled { };
     bool indexed { };
 };
+
+void OpenGlesHle::service_frame_draw(bool process_live)
+{
+    if (!pending_frame_draw_ || !pending_frame_draw_->result->ready())
+        return;
+    const auto pending = std::move(pending_frame_draw_);
+    const auto succeeded = pending->host->complete();
+    if (!process_live || pending->owner != renderer_owner_)
+        return;
+    if (succeeded) {
+        if (binding_live(pending->binding) &&
+            native_target_live(pending->binding) &&
+            pending->binding.framebuffer_texture != 0U)
+            resources_.update_texture_render_target_generation(
+                pending->binding.framebuffer_texture, 0U);
+    } else if (!pending->cancelled) {
+        auto& error = threads_.at(pending->issuer).gl_error;
+        if (error == gles_abi::no_error)
+            error = gles_abi::invalid_operation;
+    }
+}
+
+void OpenGlesHle::cancel_frame_draw(std::optional<std::size_t> processor)
+{
+    if (pending_frame_draw_ &&
+        (!processor || pending_frame_draw_->issuer == *processor))
+        pending_frame_draw_->cancelled = true;
+}
+
+std::shared_ptr<const GlesWorkCompletion> OpenGlesHle::frame_draw_dependency(
+    std::optional<std::size_t> processor) const
+{
+    if (pending_frame_draw_ &&
+        (!processor || pending_frame_draw_->issuer == *processor))
+        return pending_frame_draw_->result->completion();
+    return { };
+}
 
 void OpenGlesHle::draw_frame_async(UserlandHleCall& call,
     const RenderTargetBinding& binding, const DisplayFrame& frame,
@@ -51,23 +91,9 @@ try {
     pending->binding = binding;
     pending->indexed = indexed;
     pending->owner = renderer_owner_;
+    pending->issuer = call.cpu().processor_id();
     pending->host = std::move(host);
-    std::function<void()> complete_native;
-    if (binding.host_surface) {
-        // Allocate the core committer before accepting work or taking its
-        // store gate. It survives a thread exit, and process exit/exec clears
-        // it through the existing lease cancellation path.
-        complete_native = [this, binding, owner = pending->owner,
-                              host = pending->host] {
-            if (host->complete() && owner == renderer_owner_ &&
-                binding_live(binding) && native_target_live(binding) &&
-                binding.framebuffer_texture != 0U)
-                resources_.update_texture_render_target_generation(
-                    binding.framebuffer_texture, 0U);
-        };
-    }
     pending->lease = program_wait(call);
-    pending->lease->complete_core = std::move(complete_native);
     await_frame_draw(call, std::move(pending));
 } catch (const std::bad_alloc&) {
     set_gl_error(call, gles_abi::out_of_memory);
@@ -111,9 +137,17 @@ try {
                 });
             return;
         }
-        pending->lease->result = pending->result;
         performance_counters().record_draw();
     }
+    if (pending->binding.host_surface) {
+        // The worker owns immutable inputs and the exact native target. Let
+        // guest state preparation overlap it; target access and observation
+        // consume this ticket before admitting another draw.
+        pending_frame_draw_ = pending;
+        pending->lease->consume();
+        return;
+    }
+    pending->lease->result = pending->result;
     const auto result = pending->result;
     call.suspend_for_host([result] { return result->ready(); },
         [this, pending](UserlandHleCall& resumed) {
