@@ -84,8 +84,11 @@ bool CompatibilityKernel::apply_workqueue_qos_policy(
         return true;
     const std::array<std::uint32_t, 2> policy {
         static_cast<std::uint32_t>(PthreadPriority::qos_tier_for_class(item.thread_class)), 0U };
-    return thread_policy_handler_ && thread_policy_handler_(
-        process_.pid, processor, darwin::mach::thread_policy::qos_policy, policy);
+    if (!thread_policy_handler_ ||
+        !thread_policy_handler_(process_.pid, processor,
+            darwin::mach::thread_policy::qos_policy, policy))
+        return false;
+    return boost_workqueue_qos(processor, item.kevent_qos_override);
 }
 
 bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
@@ -271,6 +274,12 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
 void CompatibilityKernel::clear_thread_pthread_state(std::size_t processor)
 {
     thread_working_directories_.erase(processor);
+    if (const auto queue = kqueues_.find(darwin::kqueue::workqueue_descriptor);
+        queue != kqueues_.end()) {
+        for (auto& registration : queue->second)
+            if (registration.workqueue_servicer == processor)
+                registration.workqueue_servicer.reset();
+    }
     for (auto bucket = workqueue_kevent_processors_.begin();
         bucket != workqueue_kevent_processors_.end();) {
         bucket->second.erase(static_cast<std::uint32_t>(processor));
@@ -340,12 +349,16 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
     if (!contract.supports_registration_v1() && !supports_thread_identity)
         return false;
 
-    const auto reset_dispatch_override = [&](std::uint32_t processor) {
+    const auto reset_dispatch_override = [&](std::uint32_t processor,
+                                             bool workqueue_return) {
         auto resources = pthread_runtime_.resource_qos_overrides(processor);
-        if (!resources.dispatch_active())
+        if (!resources.dispatch_active() &&
+            (!workqueue_return || !resources.workqueue_active()))
             return true;
         auto anonymous = pthread_runtime_.qos_override(processor);
         resources.reset_dispatch();
+        if (workqueue_return)
+            resources.reset_workqueue();
         if (!contract.resource_qos_overrides)
             anonymous.clear_peak_if_balanced();
         const auto priority = std::max(anonymous.priority(), resources.priority());
@@ -696,9 +709,16 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             }
             // Workqueue return also retires dispatch donations when userspace
             // has not issued a separate reset. Explicit lock donations survive.
-            if (!reset_dispatch_override(processor)) {
+            if (!reset_dispatch_override(processor, true)) {
                 bsd_error(cpu, darwin::error::no_such_process);
                 return true;
+            }
+            if (const auto queue =
+                    kqueues_.find(darwin::kqueue::workqueue_descriptor);
+                queue != kqueues_.end()) {
+                for (auto& registration : queue->second)
+                    if (registration.workqueue_servicer == processor)
+                        registration.workqueue_servicer.reset();
             }
             if (operation == thread_kevent_return && affinity != 0U) {
                 const KeventWireFormat wire {
@@ -870,7 +890,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             return true;
         }
         if (reset) {
-            if (!reset_dispatch_override(processor)) {
+            if (!reset_dispatch_override(processor, false)) {
                 bsd_error(cpu, darwin::error::no_such_process);
                 return true;
             }

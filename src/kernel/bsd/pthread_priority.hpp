@@ -10,6 +10,18 @@
 namespace ilemu {
 class PthreadPriority {
 public:
+    [[nodiscard]] static std::uint32_t qos_bucket(
+        const PthreadContract& contract, XnuQosTier tier) noexcept
+    {
+        if (tier == XnuQosTier::Unspecified)
+            return 0U;
+        const auto index = static_cast<std::uint32_t>(tier);
+        const auto maintenance =
+            contract.priority_encoding ==
+            PthreadPriorityEncoding::FineClassBitsWithMaintenance;
+        return 1U << (index + (maintenance ? 7U : 6U));
+    }
+
     struct DispatchWorkqueuePriority {
         std::uint32_t queue { };
         std::uint32_t thread_class { };

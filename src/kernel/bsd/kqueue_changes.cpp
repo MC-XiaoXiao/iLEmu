@@ -73,8 +73,10 @@ std::uint32_t CompatibilityKernel::apply_kevent_change(
         };
         registration.qos = value.qos;
         registration.extension = value.extension;
-        if (found != queue->second.end())
+        if (found != queue->second.end()) {
             registration.deferred_delete = found->deferred_delete;
+            registration.workqueue_servicer = found->workqueue_servicer;
+        }
         if (signed_filter == darwin::kqueue::filter_timer) {
             registration.timer = KeventTimer::create(data, filter_flags,
                 shared_state_->clock,

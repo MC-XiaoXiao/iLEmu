@@ -60,7 +60,7 @@ void DarwinPthreadResourceQosOverrides::boost_dispatch(
 
 std::optional<std::int32_t> DarwinPthreadResourceQosOverrides::priority() const noexcept
 {
-    auto result = dispatch_priority_;
+    auto result = std::max(dispatch_priority_, workqueue_priority_);
     for (const auto& [resource, donation] : resources_) {
         static_cast<void>(resource);
         result = std::max(result, donation.priority);

@@ -1607,7 +1607,7 @@ bool CompatibilityKernel::kevent_mach_poll_required(std::uint32_t queue_fd,
 }
 
 std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
-    const KeventRegistration& registration) const
+    const KeventRegistration& registration, MachMessageQos* message_qos) const
 {
     using xnu::ipc::Right;
 
@@ -1636,8 +1636,11 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
     };
     const auto queue_has_message = [&](std::uint32_t object) {
         const auto queue = shared_state_->mach_queues.find(object);
-        return queue != shared_state_->mach_queues.end() &&
-               !queue->second.empty();
+        if (queue == shared_state_->mach_queues.end() || queue->second.empty())
+            return false;
+        if (message_qos)
+            *message_qos = queue->second.front().qos;
+        return true;
     };
     if ((entry->type & xnu::ipc::type_mask(Right::PortSet)) != 0U) {
         // XNU ipc_mqueue_set_peek walks preposts, not the full membership.
@@ -1763,15 +1766,31 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     std::uint32_t written = 0;
     for (auto registration = queue->second.begin();
         registration != queue->second.end();) {
-        if (required_qos_bucket &&
-            darwin::kqueue::workqueue_qos_bucket(registration->qos) !=
-                *required_qos_bucket) {
+        MachMessageQos message_qos;
+        std::optional<std::uint32_t> ready_mach_name;
+        const auto qos_readiness =
+            queue_fd == darwin::kqueue::workqueue_descriptor &&
+            (qos_probe || required_qos_bucket) && registration->enabled &&
+            !registration->deferred_delete &&
+            registration->filter == darwin::kqueue::filter_mach_port &&
+            (registration->filter_flags &
+                darwin::mach_message::option_receive) != 0U;
+        if (qos_readiness)
+            ready_mach_name =
+                ready_mach_kevent_name(*registration, &message_qos);
+        const auto bucket =
+            (qos_probe || required_qos_bucket)
+                ? workqueue_kevent_qos(*registration,
+                      ready_mach_name ? message_qos : MachMessageQos { })
+                      .bucket
+                : 0U;
+        if (required_qos_bucket && bucket != *required_qos_bucket) {
             ++registration;
             continue;
         }
         std::optional<std::size_t> qos_rank;
         if (qos_probe) {
-            qos_rank = qos_probe->candidate_rank(registration->qos);
+            qos_rank = qos_probe->candidate_rank(bucket);
             if (!qos_rank) {
                 ++registration;
                 continue;
@@ -1816,7 +1835,6 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         std::uint64_t process_exec_generation_at_evaluation = 0;
         std::uint64_t process_exit_generation_at_evaluation = 0;
         std::uint16_t result_flags = 0;
-        std::optional<std::uint32_t> ready_mach_name;
         std::optional<std::uint32_t> terminal_listener_pending;
         const auto descriptor = static_cast<std::uint32_t>(registration->ident);
         if (registration->filter == darwin::kqueue::filter_read &&
@@ -1869,7 +1887,8 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             }
             available = 0U;
         } else if (registration->filter == darwin::kqueue::filter_mach_port) {
-            ready_mach_name = ready_mach_kevent_name(*registration);
+            if (!qos_readiness)
+                ready_mach_name = ready_mach_kevent_name(*registration);
             if (ready_mach_name)
                 available = *ready_mach_name;
         } else if (registration->filter == darwin::kqueue::filter_user) {
@@ -2026,6 +2045,16 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 registration->filter, result_flags, filter_flags, data,
                 registration->user_data, extension, registration->qos }))
             return std::nullopt;
+        if (queue_fd == darwin::kqueue::workqueue_descriptor &&
+            shared_state_->pthread_contract.priority_encoding !=
+                PthreadPriorityEncoding::QueueIndex &&
+            required_qos_bucket && *required_qos_bucket != 0U &&
+            *required_qos_bucket != darwin::kqueue::event_manager_qos_flag &&
+            registration->filter == darwin::kqueue::filter_mach_port &&
+            (registration->filter_flags &
+                darwin::mach_message::option_receive) != 0U)
+            registration->workqueue_servicer =
+                static_cast<std::uint32_t>(processor);
         ++written;
         if (registration->timer) {
             registration->timer->consume(shared_state_->clock.now());

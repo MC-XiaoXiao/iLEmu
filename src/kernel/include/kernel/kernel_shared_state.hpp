@@ -32,6 +32,7 @@
 #include "kernel/mach_send_wait_queue.hpp"
 #include "kernel/mach_receive_wait_queue.hpp"
 #include "kernel/mach_voucher_state.hpp"
+#include "kernel/mach_message_qos.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/compass_device.hpp"
@@ -207,6 +208,9 @@ struct KeventRegistration {
     std::optional<VnodeWatch> vnode_watch;
     std::array<std::uint64_t, 2> extension { };
     std::optional<KeventTimer> timer;
+    // A disabled dispatch knote remains bound while its worker runs the
+    // handler. New message overrides still apply until that worker returns.
+    std::optional<std::uint32_t> workqueue_servicer;
 };
 
 struct PendingWait {
@@ -697,6 +701,7 @@ struct KernelSharedState {
         std::optional<xnu::ipc::Right> reply_right;
         std::optional<std::uint32_t> voucher_object;
         std::optional<xnu::ipc::Right> voucher_right;
+        MachMessageQos qos;
         // A MOVE_SEND used as the message's remote port has no sender ipc_entry
         // after copyin, but the queued message still keeps the destination port
         // alive until receive/discard. Record that hold explicitly.
@@ -1531,6 +1536,11 @@ struct KernelSharedState {
                 // failed queue allocation cannot leave an unindexed input.
                 mach_graphics_input_queue_candidates.insert(destination);
             }
+            for (auto older = queue.rbegin();
+                older != queue.rend() &&
+                older->qos.override_tier < message.qos.override_tier;
+                ++older)
+                older->qos.override_tier = message.qos.override_tier;
             queue.push_back(std::move(message));
         }
         if (!handed_off && was_empty) {

@@ -142,6 +142,15 @@ std::uint32_t MachVoucherState::create(std::span<const std::byte> recipes,
     return darwin::mach::success;
 }
 
+std::optional<std::uint32_t> MachVoucherState::pthread_priority() const
+{
+    constexpr std::uint32_t pthread_priority_key = 4U;
+    const auto found = attributes_.find(pthread_priority_key);
+    if (found == attributes_.end() || found->second.content.size() != 4U)
+        return std::nullopt;
+    return static_cast<std::uint32_t>(read_integer(found->second.content));
+}
+
 std::vector<std::byte> MachVoucherState::extract(
     std::uint32_t key, bool include_recipe) const
 {

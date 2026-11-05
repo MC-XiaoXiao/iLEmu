@@ -650,6 +650,8 @@ private:
     bool set_bsd_pthread_qos(Cpu& cpu);
     [[nodiscard]] bool apply_workqueue_qos_policy(
         std::uint32_t processor, const DarwinWorkqueueItem& item);
+    [[nodiscard]] bool boost_workqueue_qos(
+        std::uint32_t processor, std::optional<std::int32_t> priority);
     [[nodiscard]] bool service_bsd_workqueue(Cpu* requesting_cpu);
     [[nodiscard]] bool request_workqueue_kevents(Cpu* requesting_cpu);
     [[nodiscard]] bool prepare_workqueue_kevent_upcall(
@@ -1072,7 +1074,15 @@ private:
     // queued message. For a port set this is the ready member, not the set
     // name.
     [[nodiscard]] std::optional<std::uint32_t> ready_mach_kevent_name(
-        const KeventRegistration& registration) const;
+        const KeventRegistration& registration,
+        MachMessageQos* message_qos = nullptr) const;
+    struct WorkqueueKeventQos {
+        std::uint32_t bucket;
+        std::optional<std::int32_t> override_priority;
+    };
+    [[nodiscard]] WorkqueueKeventQos workqueue_kevent_qos(
+        const KeventRegistration& registration,
+        MachMessageQos message_qos) const;
     [[nodiscard]] bool mach_kevent_observation_current(
         const KeventRegistration& registration) const;
     [[nodiscard]] bool kevent_mach_poll_required(std::uint32_t queue_fd,

@@ -6,6 +6,8 @@
 // XNU reference: bsd/kern/kern_event.c and libpthread kern/kern_support.c.
 
 #include "kernel/kernel.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "pthread_priority.hpp"
 #include "../workqueue_qos_probe.hpp"
 #include "kernel/kevent_wire.hpp"
 #include "device_state/pthread_contract.hpp"
@@ -53,6 +55,51 @@ namespace {
     }
 }
 
+CompatibilityKernel::WorkqueueKeventQos
+CompatibilityKernel::workqueue_kevent_qos(
+    const KeventRegistration& registration, MachMessageQos message_qos) const
+{
+    const auto& contract = shared_state_->pthread_contract;
+    auto bucket = darwin::kqueue::workqueue_qos_bucket(registration.qos);
+    if (contract.priority_encoding == PthreadPriorityEncoding::QueueIndex)
+        return { bucket, std::nullopt };
+    // Retain the existing unspecified fallback and explicit manager contract.
+    if (bucket == 0U || bucket == darwin::kqueue::event_manager_qos_flag)
+        return { bucket, std::nullopt };
+    if (registration.filter != darwin::kqueue::filter_mach_port ||
+        (registration.filter_flags & darwin::mach_message::option_receive) ==
+            0U)
+        return { bucket, std::nullopt };
+    bucket = std::max(
+        bucket, PthreadPriority::qos_bucket(contract, message_qos.requested));
+    const auto override_priority =
+        message_qos.override_tier == XnuQosTier::Unspecified
+            ? std::nullopt
+            : std::optional {
+                  XnuThreadQosPolicy { message_qos.override_tier }.priority()
+              };
+    return { bucket, override_priority };
+}
+
+bool CompatibilityKernel::boost_workqueue_qos(
+    std::uint32_t processor, std::optional<std::int32_t> priority)
+{
+    auto resources = pthread_runtime_.resource_qos_overrides(processor);
+    const auto previous = resources.priority();
+    resources.boost_workqueue(priority);
+    if (previous != resources.priority()) {
+        const auto effective =
+            std::max(pthread_runtime_.qos_override(processor).priority(),
+                resources.priority());
+        if (!thread_qos_override_handler_ ||
+            !thread_qos_override_handler_(processor, effective))
+            return false;
+    }
+    pthread_runtime_.set_resource_qos_overrides(
+        processor, std::move(resources));
+    return true;
+}
+
 bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
 {
     HostSocketRequests requests;
@@ -60,13 +107,14 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
     collect_host_socket_requests(darwin::kqueue::workqueue_descriptor,
         SocketReadable, requests, visited);
     update_host_socket_watches(std::numeric_limits<std::size_t>::max(), requests);
-    if (!pthread_runtime_.workqueue_open() || workqueue_kevent_queued_ ||
+    if (!pthread_runtime_.workqueue_open() ||
         !kqueues_.contains(darwin::kqueue::workqueue_descriptor)) {
         return true;
     }
     const auto& registrations =
         kqueues_.at(darwin::kqueue::workqueue_descriptor);
     std::set<std::uint32_t> observed_buckets;
+    std::map<std::uint32_t, std::optional<std::int32_t>> overrides;
     WorkqueueQosProbe qos_probe;
     const auto processor_is_active = [&](std::uint32_t processor) {
         // A worker blocked in a guest kernel wait no longer occupies its
@@ -78,8 +126,32 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
         return !state || *state != XnuThreadState::Waiting;
     };
     for (const auto& registration : registrations) {
-        const auto bucket =
+        MachMessageQos message_qos;
+        bool mach_ready = false;
+        const auto registered_bucket =
             darwin::kqueue::workqueue_qos_bucket(registration.qos);
+        if (shared_state_->pthread_contract.priority_encoding !=
+                PthreadPriorityEncoding::QueueIndex &&
+            registered_bucket != 0U &&
+            registered_bucket != darwin::kqueue::event_manager_qos_flag &&
+            (registration.enabled || registration.workqueue_servicer) &&
+            !registration.deferred_delete &&
+            registration.filter == darwin::kqueue::filter_mach_port &&
+            (registration.filter_flags &
+                darwin::mach_message::option_receive) != 0U) {
+            mach_ready =
+                ready_mach_kevent_name(registration, &message_qos).has_value();
+        }
+        const auto qos = workqueue_kevent_qos(
+            registration, mach_ready ? message_qos : MachMessageQos { });
+        if (registration.workqueue_servicer &&
+            !boost_workqueue_qos(
+                *registration.workqueue_servicer, qos.override_priority))
+            return false;
+        if (registration.enabled && mach_ready)
+            overrides[qos.bucket] =
+                std::max(overrides[qos.bucket], qos.override_priority);
+        const auto bucket = qos.bucket;
         if (!observed_buckets.insert(bucket).second)
             continue;
         const auto assigned = workqueue_kevent_processors_.find(bucket);
@@ -91,6 +163,18 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
             continue;
         qos_probe.add_bucket(bucket);
     }
+    // The bucket's current servicer also protects ready knotes it has not
+    // taken yet. An override need not belong to the knote being processed.
+    for (const auto& [bucket, priority] : overrides) {
+        if (const auto assigned = workqueue_kevent_processors_.find(bucket);
+            assigned != workqueue_kevent_processors_.end()) {
+            for (const auto processor : assigned->second)
+                if (!boost_workqueue_qos(processor, priority))
+                    return false;
+        }
+    }
+    if (workqueue_kevent_queued_)
+        return true;
     if (qos_probe.empty())
         return true;
     const auto ready = collect_ready_kevents(0U,
@@ -116,6 +200,7 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
         .thread_class = workqueue_class.thread_class,
         .event_manager = event_manager,
         .kevent_qos_bucket = qos_bucket,
+        .kevent_qos_override = overrides[qos_bucket],
     };
     if (!pthread_runtime_.enqueue_workitem(request))
         return false;

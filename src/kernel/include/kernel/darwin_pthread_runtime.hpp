@@ -42,6 +42,7 @@ struct DarwinWorkqueueItem {
     std::uint32_t thread_class { };
     bool event_manager { };
     std::uint32_t kevent_qos_bucket { };
+    std::optional<std::int32_t> kevent_qos_override;
 };
 
 struct DarwinWorkqueueWorker {

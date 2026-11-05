@@ -8,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -29,6 +30,7 @@ public:
         std::uint32_t pid, std::uint64_t& next_subactivity_id,
         std::vector<std::byte>& output);
     [[nodiscard]] bool empty() const { return attributes_.empty(); }
+    [[nodiscard]] std::optional<std::uint32_t> pthread_priority() const;
     [[nodiscard]] bool operator==(const MachVoucherState& other) const;
 
 private:

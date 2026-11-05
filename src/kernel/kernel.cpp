@@ -1719,14 +1719,15 @@ CompatibilityKernel::pending_event_poll_candidates()
         queue->first == darwin::kqueue::workqueue_descriptor &&
         (pending_event_poll_mach_generation_ != mach_generation ||
             pending_event_poll_io_generation_ != io_generation)) {
-        const auto unchanged_mach_queue =
-            std::all_of(queue->second.begin(), queue->second.end(),
-                [this](const auto& registration) {
-                    return !registration.enabled ||
-                        (registration.filter == darwin::kqueue::filter_mach_port &&
-                            !registration.deferred_delete &&
-                            mach_kevent_observation_current(registration));
-                });
+        const auto unchanged_mach_queue = std::all_of(queue->second.begin(),
+            queue->second.end(), [this](const auto& registration) {
+                return (!registration.enabled &&
+                           !registration.workqueue_servicer) ||
+                       (registration.filter ==
+                               darwin::kqueue::filter_mach_port &&
+                           !registration.deferred_delete &&
+                           mach_kevent_observation_current(registration));
+            });
         if (!unchanged_mach_queue)
             static_cast<void>(request_workqueue_kevents(nullptr));
     }
