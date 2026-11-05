@@ -125,17 +125,14 @@ namespace mach_support {
         while (candidate &&
                size - 1U <=
                    std::numeric_limits<std::uint32_t>::max() - *candidate) {
-            if (!guest_region_overlaps(memory, *candidate, size))
+            // Like XNU's vm_map_find_space, skip occupied VM entries rather
+            // than querying every page. The existing interval map includes
+            // nonresident and no-access mappings as occupied address space.
+            const auto region = memory.mapping_region_at_or_after(*candidate);
+            if (!region || static_cast<std::uint64_t>(*candidate) + size <=
+                               region->address)
                 return candidate;
-
-            const auto next_page = static_cast<std::uint64_t>(*candidate) +
-                                   AddressSpace::page_size;
-            if (next_page > std::numeric_limits<std::uint32_t>::max())
-                break;
-            const auto next = align_candidate(next_page);
-            if (!next || *next <= *candidate)
-                break;
-            candidate = next;
+            candidate = align_candidate(region->end);
         }
         return std::nullopt;
     }
