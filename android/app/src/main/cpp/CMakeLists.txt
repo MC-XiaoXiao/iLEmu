@@ -12,7 +12,6 @@ set_property(GLOBAL PROPERTY JOB_POOLS "native_compile=${ILEMU_BUILD_JOBS};nativ
 set(CMAKE_JOB_POOL_COMPILE native_compile)
 set(CMAKE_JOB_POOL_LINK native_link)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(ILEMU_ENABLE_IPO OFF CACHE BOOL "" FORCE)
 set(ILEMU_ENABLE_SDL2 ON CACHE BOOL "" FORCE)
 set(ILEMU_ENABLE_VULKAN ON CACHE BOOL "" FORCE)
 get_filename_component(ILEMU_REPOSITORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../.." ABSOLUTE)
@@ -36,3 +35,6 @@ target_compile_options(ilemu PRIVATE -Wall -Wextra -Wpedantic)
 # Core and host implementations share this native module. Bind strong function
 # definitions locally while retaining weak interposition and external exports.
 target_link_options(ilemu PRIVATE "LINKER:-Bsymbolic-non-weak-functions")
+# Bound ThinLTO's internal workers separately from native compilation jobs.
+target_link_options(ilemu PRIVATE "LINKER:--thinlto-jobs=2")
+target_link_options(dynarmic PRIVATE "LINKER:--thinlto-jobs=2")
