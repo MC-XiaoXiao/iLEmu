@@ -1513,7 +1513,7 @@ void EmulatorSession::run()
     std::array<std::atomic<std::uint64_t>, jit_precompile_target_count>
         precompile_blocks_by_target { };
     auto file_mapping_preparer = std::make_shared<HostFileMappingPreparer>();
-    auto file_pager = std::make_shared<HostFilePager>();
+    auto file_pager = std::make_shared<HostFilePager>(host_completion_wake);
     auto process_image_preparer =
         std::make_shared<HostProcessImagePreparer>(rootfs, guest_architecture);
     // A captured deferred SVC has entered the kernel even before its serial

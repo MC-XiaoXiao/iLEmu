@@ -26,6 +26,11 @@ void FilePageRead::commit()
     }
 }
 
+HostFilePager::HostFilePager(std::function<void()> completion_wake)
+    : completion_wake_ { std::move(completion_wake) }
+{
+}
+
 HostFilePager::~HostFilePager() { worker_.wait_idle(); }
 
 std::shared_ptr<FilePageRead> HostFilePager::prepare(
@@ -49,7 +54,13 @@ std::shared_ptr<FilePageRead> HostFilePager::prepare(
     read->shared_ = shared;
     reads_.push_back(read);
     static_cast<void>(worker_.submit(HostWorkKind::Maintenance, std::nullopt,
-        [read] { read->read(); }));
+        [this, read] {
+            read->read();
+            // Publish detached bytes before notifying the serial VM owner.
+            // The pager drains this worker before releasing the callback.
+            if (completion_wake_)
+                completion_wake_();
+        }));
     return read;
 }
 

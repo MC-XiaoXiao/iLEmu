@@ -1756,7 +1756,12 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto sample_deadline = hid_event_system_hle_.next_sample_deadline();
     const auto sample_due = sample_deadline && guest_now >= *sample_deadline;
     const auto host_probe_due = host_now >= pending_event_host_probe_;
-    if (!graphics_changed && !topology_changed && !readiness_changed &&
+    // Page input publishes readiness before waking the host wait. Only its
+    // owning process needs to revisit a cached negative observation.
+    const auto file_page_ready = std::any_of(pending_file_page_faults_.begin(),
+        pending_file_page_faults_.end(),
+        [](const auto& pending) { return pending.second.read->ready(); });
+    if (!file_page_ready && !graphics_changed && !topology_changed && !readiness_changed &&
         !deadline_due && !sample_due && !host_probe_due) {
         // Keep the captured outer generation, not a later producer snapshot.
         // A racing enqueue will still differ on the next scheduler pass.

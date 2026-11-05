@@ -5,6 +5,8 @@
 #include "foundation/host_resource_controller.hpp"
 #include "foundation/file_page_fault.hpp"
 
+#include <functional>
+
 namespace ilemu {
 
 // Owns only retained vnode input and detached host bytes. Guest publication is
@@ -30,6 +32,7 @@ private:
 
 class HostFilePager {
 public:
+    explicit HostFilePager(std::function<void()> completion_wake = {});
     ~HostFilePager();
     [[nodiscard]] std::shared_ptr<FilePageRead> prepare(
         std::shared_ptr<FilePageCache> cache,
@@ -42,6 +45,7 @@ private:
     static constexpr std::size_t maximum_reads = 64;
     std::mutex mutex_;
     std::deque<std::shared_ptr<FilePageRead>> reads_;
+    std::function<void()> completion_wake_;
     HostResourceController worker_;
 };
 
