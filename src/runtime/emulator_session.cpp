@@ -1468,7 +1468,8 @@ void EmulatorSession::run()
         (darwin_version >= DarwinGeneration::Ios4 &&
             darwin_version < DarwinGeneration::Ios7)
             ? 4
-            : xnu::scheduler::minimum_priority };
+            : xnu::scheduler::minimum_priority,
+        SchedulerLoadProfile::for_version(darwin_version) };
     GuestExecutionPolicy guest_execution_policy { std::chrono::nanoseconds {
         static_cast<std::int64_t>(
             iokit_abi::display_vsync::period_absolute_time) } };

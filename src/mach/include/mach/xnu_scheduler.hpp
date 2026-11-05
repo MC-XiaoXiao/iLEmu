@@ -14,6 +14,7 @@
 
 #include "mach/xnu_task_statistics.hpp"
 #include "mach/xnu_qos_policy.hpp"
+#include "mach/xnu_scheduler_load.hpp"
 #include <array>
 #include <chrono>
 #include <compare>
@@ -201,7 +202,8 @@ public:
         std::size_t processor_count = 1,
         std::uint32_t guest_ticks_per_second =
             xnu::scheduler::default_guest_ticks_per_second,
-        std::int32_t minimum_user_priority = xnu::scheduler::minimum_priority);
+        std::int32_t minimum_user_priority = xnu::scheduler::minimum_priority,
+        SchedulerLoadProfile load_profile = { });
 
     // Intrusive queue sentinels and accounting pointers require stable owners.
     XnuScheduler(const XnuScheduler&) = delete;
@@ -380,6 +382,7 @@ private:
         std::int32_t importance { };
         std::int32_t legacy_base_priority { };
         XnuTaskQosPolicy task_qos;
+        XnuSchedulerLoad::Bucket load_bucket { XnuSchedulerLoad::Bucket::Fixed };
         XnuRealtimePolicy realtime_policy;
         bool queued { };
         // A hold can change visible state before the dispatched slice returns.
@@ -451,7 +454,7 @@ private:
     void recompute_priority(XnuThreadId thread, ThreadRecord& record);
     [[nodiscard]] std::uint64_t quantum_for(const ThreadRecord& record) const;
     [[nodiscard]] std::optional<std::uint32_t>
-    processor_set_priority_shift() const;
+    processor_set_priority_shift(const ThreadRecord& record) const;
     void apply_failsafe(XnuThreadId thread, ThreadRecord& record);
     void release_failsafe(XnuThreadId thread, ThreadRecord& record);
     [[nodiscard]] std::uint32_t timeshare_quanta() const;
@@ -484,7 +487,7 @@ private:
     std::size_t runnable_count_ { };
     std::size_t waiting_count_ { };
     std::size_t host_await_count_ { };
-    std::size_t active_timeshare_count_ { };
+    XnuSchedulerLoad scheduler_load_;
     std::uint64_t quantum_ticks_ { };
     std::uint64_t scheduler_tick_ticks_ { };
     std::uint32_t guest_ticks_per_second_ { };
