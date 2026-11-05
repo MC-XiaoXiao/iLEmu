@@ -82,6 +82,7 @@ namespace ilemu {
 
 class MachOImage;
 struct KeventValue;
+class WorkqueueQosProbe;
 
 class CompatibilityKernel {
 public:
@@ -1085,7 +1086,7 @@ private:
         std::uint32_t event_count, darwin::kqueue::WireFormat format =
         darwin::kqueue::WireFormat::Legacy32,
         bool waking_blocked_receiver = false,
-        std::uint32_t* ready_qos = nullptr,
+        WorkqueueQosProbe* qos_probe = nullptr,
         KeventDataBuffer* data_buffer = nullptr,
         std::optional<std::uint32_t> required_qos_bucket = std::nullopt);
     [[nodiscard]] std::uint32_t apply_kevent_change(

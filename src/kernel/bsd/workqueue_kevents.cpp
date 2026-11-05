@@ -6,6 +6,7 @@
 // XNU reference: bsd/kern/kern_event.c and libpthread kern/kern_support.c.
 
 #include "kernel/kernel.hpp"
+#include "../workqueue_qos_probe.hpp"
 #include "kernel/kevent_wire.hpp"
 #include "device_state/pthread_contract.hpp"
 #include <algorithm>
@@ -66,7 +67,7 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
     const auto& registrations =
         kqueues_.at(darwin::kqueue::workqueue_descriptor);
     std::set<std::uint32_t> observed_buckets;
-    std::optional<std::uint32_t> selected_bucket;
+    WorkqueueQosProbe qos_probe;
     const auto processor_is_active = [&](std::uint32_t processor) {
         // A worker blocked in a guest kernel wait no longer occupies its
         // workqueue concurrency slot. Keep delivering ready kevents through
@@ -79,30 +80,28 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
     for (const auto& registration : registrations) {
         const auto bucket =
             darwin::kqueue::workqueue_qos_bucket(registration.qos);
+        if (!observed_buckets.insert(bucket).second)
+            continue;
         const auto assigned = workqueue_kevent_processors_.find(bucket);
         const auto manager_bucket =
             bucket == darwin::kqueue::event_manager_qos_flag;
-        if (!observed_buckets.insert(bucket).second ||
-            (assigned != workqueue_kevent_processors_.end() &&
-                (manager_bucket ||
-                    std::ranges::any_of(assigned->second,
-                        processor_is_active))))
+        if (assigned != workqueue_kevent_processors_.end() &&
+            (manager_bucket || std::ranges::any_of(assigned->second,
+                                   processor_is_active)))
             continue;
-        const auto ready = collect_ready_kevents(0U,
-            darwin::kqueue::workqueue_descriptor, 0U, 0U,
-            darwin::kqueue::WireFormat::QualityOfService, false, nullptr,
-            nullptr, bucket);
-        if (!ready)
-            return false;
-        if (*ready != 0U) {
-            selected_bucket = bucket;
-            break;
-        }
+        qos_probe.add_bucket(bucket);
     }
-    if (!selected_bucket)
+    if (qos_probe.empty())
+        return true;
+    const auto ready = collect_ready_kevents(0U,
+        darwin::kqueue::workqueue_descriptor, 0U, 0U,
+        darwin::kqueue::WireFormat::QualityOfService, false, &qos_probe);
+    if (!ready)
+        return false;
+    if (*ready == 0U)
         return true;
 
-    const auto qos_bucket = *selected_bucket;
+    const auto qos_bucket = *qos_probe.selected_bucket();
     const bool event_manager =
         qos_bucket == darwin::kqueue::event_manager_qos_flag;
     const auto workqueue_class = class_for_kevent_qos(

@@ -6,6 +6,7 @@
 // delivery.
 
 #include "kernel/kernel.hpp"
+#include "workqueue_qos_probe.hpp"
 #include <kernel/guest_socket_receive_target.hpp>
 #include <kernel/socket_rights_control.hpp>
 #include <kernel/local_socket_receive.hpp>
@@ -1751,7 +1752,7 @@ CompatibilityKernel::baseband_open_description(std::uint32_t fd) const
 std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     std::size_t processor, std::uint32_t queue_fd, std::uint32_t event_address,
     std::uint32_t event_count, darwin::kqueue::WireFormat format,
-    bool waking_blocked_receiver, std::uint32_t* ready_qos,
+    bool waking_blocked_receiver, WorkqueueQosProbe* qos_probe,
     KeventDataBuffer* data_buffer,
     std::optional<std::uint32_t> required_qos_bucket)
 {
@@ -1768,11 +1769,20 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             ++registration;
             continue;
         }
+        std::optional<std::size_t> qos_rank;
+        if (qos_probe) {
+            qos_rank = qos_probe->candidate_rank(registration->qos);
+            if (!qos_rank) {
+                ++registration;
+                continue;
+            }
+        }
         if (registration->deferred_delete && registration->enabled) {
             if (event_count == 0U) {
-                if (ready_qos)
-                    *ready_qos = registration->qos;
-                return 1U;
+                if (!qos_probe || qos_probe->record_ready(*qos_rank))
+                    return 1U;
+                ++registration;
+                continue;
             }
             if (written == event_count) {
                 ++registration;
@@ -1946,9 +1956,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         // A zero-capacity query probes workqueue readiness without consuming
         // the knote. The event is copied out when the kernel starts a worker.
         if (event_count == 0U) {
-            if (ready_qos)
-                *ready_qos = registration->qos;
-            return 1U;
+            if (!qos_probe || qos_probe->record_ready(*qos_rank))
+                return 1U;
+            ++registration;
+            continue;
         }
         if (written == event_count) {
             ++registration;
@@ -2061,7 +2072,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             ++registration;
         }
     }
-    return written;
+    return qos_probe && qos_probe->selected_bucket() ? 1U : written;
 }
 
 void CompatibilityKernel::detach_kevents_for_descriptor(std::uint32_t fd)
