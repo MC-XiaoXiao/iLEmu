@@ -25,12 +25,12 @@ namespace {
 
     std::string compact(std::string_view source)
     {
+        static const std::regex comments(R"(/\*[\s\S]*?\*/|//[^\n]*)");
+        static const std::regex declarations(
+            R"(\b(?:(?:lowp|mediump|highp)\s+)?(?:vec[234]|float)\s+)");
         auto text = std::regex_replace(
-            std::string(source), std::regex(R"(/\*[\s\S]*?\*/|//[^\n]*)"), "");
-        text = std::regex_replace(text,
-            std::regex(
-                R"(\b(?:(?:lowp|mediump|highp)\s+)?(?:vec[234]|float)\s+)"),
-            "");
+            std::string(source), comments, "");
+        text = std::regex_replace(text, declarations, "");
         std::erase_if(text, [](unsigned char c) { return std::isspace(c); });
         return text;
     }
@@ -40,9 +40,10 @@ GlesFilterProfile GlesFilterProfile::from_sources(
     std::string_view vertex_source, std::string_view fragment_source)
 {
     GlesFilterProfile result;
-    const auto vertex = compact(vertex_source);
     const auto fragment = compact(fragment_source);
-    const std::regex sample_pattern(R"((\w+)=texture2D\((\w+),(\w+)\);)");
+    // A failed identifier match must advance to the next word, rather than
+    // retrying every suffix of the same identifier.
+    static const std::regex sample_pattern(R"(\b(\w+)=texture2D\((\w+),(\w+)\);)");
     std::map<std::string, std::string> samples;
     for (auto it = std::sregex_iterator(
              fragment.begin(), fragment.end(), sample_pattern);
@@ -70,8 +71,8 @@ GlesFilterProfile GlesFilterProfile::from_sources(
             return result;
         }
         // A squared-luminance alpha channel used by backdrop statistics.
-        const std::regex luminance_pattern(
-            R"((\w+)=dot\((\w+)\.rgb,vec3\(\.2125,\.7154,\.0721\)\);returnvec4\(\2\.rgb,\1\*\1\);)");
+        static const std::regex luminance_pattern(
+            R"(\b(\w+)=dot\((\w+)\.rgb,vec3\(\.2125,\.7154,\.0721\)\);returnvec4\(\2\.rgb,\1\*\1\);)");
         if (std::regex_search(fragment, match, luminance_pattern)) {
             result.operation = Operation::LuminanceAlpha;
             return result;
@@ -97,31 +98,10 @@ GlesFilterProfile GlesFilterProfile::from_sources(
     if (samples.size() > maximum_taps)
         return { };
 
-    // Each varying is the same affine base coordinate plus a uniform offset.
-    const std::regex offset_pattern(
-        R"((\w+)=(\w+)([+-])(\w+)\[([0-9]+)\]\*(\w+)\.xy;)");
-    struct Offset {
-        Tap tap;
-        std::string base;
-        std::string transform;
-        std::string uniform;
-    };
-    std::map<std::string, Offset> offsets;
-    for (auto it =
-             std::sregex_iterator(vertex.begin(), vertex.end(), offset_pattern);
-        it != std::sregex_iterator(); ++it) {
-        const auto& m = *it;
-        const auto index = array_index(m[5].str());
-        if (!index)
-            return { };
-        offsets.emplace(m[1].str(),
-            Offset { { *index, m[3].str() == "-" ? -1.0F : 1.0F, 0U },
-                m[2].str(), m[6].str(), m[4].str() });
-    }
     // Accept a linear accumulation whose final value is the fragment output.
     // Every sampled varying must contribute exactly once.
-    const std::regex sum_pattern(
-        R"((\w+)=\(?(\w+)(?:\+(\w+))?\)?\*(\w+)(?:\[([0-9]+)\])?\.([xyzw])(?:\+(\w+))?;)");
+    static const std::regex sum_pattern(
+        R"(\b(\w+)=\(?(\w+)(?:\+(\w+))?\)?\*(\w+)(?:\[([0-9]+)\])?\.([xyzw])(?:\+(\w+))?;)");
     std::map<std::string, std::size_t> sample_weights;
     std::string accumulator;
     for (auto it = std::sregex_iterator(
@@ -158,6 +138,30 @@ GlesFilterProfile GlesFilterProfile::from_sources(
     if (accumulator.empty() || sample_weights.size() != samples.size() ||
         !std::regex_search(fragment, output_pattern))
         return { };
+
+    // Vertex offsets matter only after the fragment accumulation is known to
+    // be a weighted filter. Ordinary multi-texture shaders need no vertex scan.
+    const auto vertex = compact(vertex_source);
+    static const std::regex offset_pattern(
+        R"(\b(\w+)=(\w+)([+-])(\w+)\[([0-9]+)\]\*(\w+)\.xy;)");
+    struct Offset {
+        Tap tap;
+        std::string base;
+        std::string transform;
+        std::string uniform;
+    };
+    std::map<std::string, Offset> offsets;
+    for (auto it =
+             std::sregex_iterator(vertex.begin(), vertex.end(), offset_pattern);
+        it != std::sregex_iterator(); ++it) {
+        const auto& m = *it;
+        const auto index = array_index(m[5].str());
+        if (!index)
+            return { };
+        offsets.emplace(m[1].str(),
+            Offset { { *index, m[3].str() == "-" ? -1.0F : 1.0F, 0U },
+                m[2].str(), m[6].str(), m[4].str() });
+    }
     for (const auto& [sample, varying] : samples) {
         const auto offset = offsets.find(varying);
         if (offset == offsets.end())

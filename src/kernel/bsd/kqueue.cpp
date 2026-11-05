@@ -99,7 +99,7 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
             return;
         }
         if (registers[2] != 0U)
-            shared_state_->note_io_event_transition();
+            note_local_io_event_transition_locked();
         std::uint32_t receipts_written = 0;
         const auto write_receipt = [&](KeventValue value,
                                        std::uint32_t error) {

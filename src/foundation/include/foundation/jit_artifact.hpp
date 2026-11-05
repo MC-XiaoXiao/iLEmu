@@ -600,7 +600,7 @@ private:
         const JitArtifactLookup& lookup) const noexcept;
     void mark_hotset_dirty_locked() const noexcept;
     [[nodiscard]] std::optional<HotsetSnapshot> hotset_snapshot_locked() const;
-    void promote_retention_locked(
+    [[nodiscard]] ArtifactMap::iterator promote_retention_locked(
         const JitArtifactKey& key, JitArtifactRetention retention) const;
     void promote_resident_retention_locked(
         ArtifactMap::iterator iterator) const;

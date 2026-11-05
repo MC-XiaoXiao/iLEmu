@@ -38,6 +38,7 @@ namespace kernel_iokit::baseband {
         Configure = 0,
         GetTime = 2,
         SetLinkQualityMetric = 5,
+        RestartDormancyCheck = 7,
     };
 
     enum class BasebandSelector : std::uint32_t {

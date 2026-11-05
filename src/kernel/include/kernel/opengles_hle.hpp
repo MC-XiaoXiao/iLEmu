@@ -389,6 +389,10 @@ private:
     void write_read_pixels(UserlandHleCall& call, const DisplayFrame& frame,
         bool inverted, const ReadPixelsOutput& output);
     [[nodiscard]] bool binding_live(const RenderTargetBinding& binding) const;
+    [[nodiscard]] bool native_target_live(
+        const RenderTargetBinding& binding) const;
+    [[nodiscard]] std::shared_ptr<void> retain_native_target(
+        const RenderTargetBinding& binding) const;
     using SyncLease = GraphicsCallLease;
     void delete_names(UserlandHleCall& call);
     void commit_texture_deletion(std::span<const std::uint32_t> names);

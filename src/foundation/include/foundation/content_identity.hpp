@@ -11,11 +11,13 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 
 namespace ilemu {
 
@@ -23,7 +25,15 @@ struct ContentIdentity {
     std::array<std::byte, 32> digest { };
 
     friend constexpr bool operator==(
-        const ContentIdentity&, const ContentIdentity&) = default;
+        const ContentIdentity& left, const ContentIdentity& right) noexcept
+    {
+        // libc++ compares std::byte arrays one byte at a time. Keep constant
+        // evaluation while allowing native digest comparisons to use wide loads.
+        if (std::is_constant_evaluated())
+            return left.digest == right.digest;
+        return std::memcmp(left.digest.data(), right.digest.data(),
+                   left.digest.size()) == 0;
+    }
     friend constexpr auto operator<=>(
         const ContentIdentity&, const ContentIdentity&) = default;
 

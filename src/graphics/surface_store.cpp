@@ -329,15 +329,8 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing)
         backings_.insert_or_assign(backing.id, std::move(backing));
         backing_references_.insert_or_assign(published_id, 1U);
     }
-    if (const auto pixels = read_argb(memory, published_id)) {
-        if (const auto surface = host_surface(published_id))
-            surface->replace_cpu(*pixels);
-        if (const auto published = find(published_id)) {
-            update_guest_snapshot(*published,
-                HostRectangle { 0, 0, published->width, published->height },
-                *pixels);
-        }
-    }
+    // The initial read populates both the host image and guest snapshot.
+    static_cast<void>(read_argb(memory, published_id));
     if (const auto published = find(published_id))
         update_guest_sync_generation(memory, *published);
     return true;
@@ -536,7 +529,10 @@ SurfaceStore::CpuReadResult SurfaceStore::try_read_argb(
             return { CpuReadResult::State::PendingGpu, { }, 0 };
         if (mapping->frame().pixels.size() != pixels->size())
             return { };
-        if (baseline.size() == pixels->size()) {
+        if (!guest_changed) {
+            std::copy(mapping->frame().pixels.begin(),
+                mapping->frame().pixels.end(), pixels->begin());
+        } else if (baseline.size() == pixels->size()) {
             // A different host reader may already have materialized GPU data.
             // Preserve those pixels unless the guest changed them since its
             // last import; the guest baseline records guest bytes, not the

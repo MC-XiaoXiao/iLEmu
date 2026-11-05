@@ -6,6 +6,9 @@
 #include "egl_framebuffer_fetch.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_resources.hpp"
+#if defined(__ANDROID__)
+#include "egl_android_program_target.hpp"
+#endif
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -86,6 +89,9 @@ namespace {
             bool inverted_vertical { };
             bool native_argb_readback { };
             EglFramebufferFetch fetch;
+#if defined(__ANDROID__)
+            std::unique_ptr<EglAndroidProgramTarget> shared_target;
+#endif
         };
         struct Texture {
             GLuint object { };
@@ -158,6 +164,10 @@ namespace {
                 name_ = renderer ? reinterpret_cast<const char*>(renderer)
                                  : "host GLES2";
                 const auto* gl_extensions = glGetString(GL_EXTENSIONS);
+#if defined(__ANDROID__)
+                native_program_target_ =
+                    EglAndroidProgramTarget::supported(display_);
+#endif
                 const auto extension_list = std::string { " " } +
                     (gl_extensions
                         ? reinterpret_cast<const char*>(gl_extensions) : "") +
@@ -405,6 +415,27 @@ namespace {
             const GlesProgramDraw& draw, std::uint32_t mode,
             const GlesRasterState& state) override
         {
+            return draw_impl(frame, key, draw, mode, state, { });
+        }
+        GlesProgramTarget::Api program_target_api() const override
+        {
+            return native_program_target_
+                       ? GlesProgramTarget::Api::AndroidHardwareBuffer
+                       : GlesProgramTarget::Api::None;
+        }
+        bool draw_shared_target(const DisplayFrame& frame,
+            GlesRenderTargetKey key, const GlesProgramDraw& draw,
+            std::uint32_t mode, const GlesRasterState& state,
+            std::shared_ptr<GlesProgramTarget> input) override
+        {
+            return input->api() == program_target_api() &&
+                   draw_impl(frame, key, draw, mode, state, std::move(input));
+        }
+        bool draw_impl(const DisplayFrame& frame, GlesRenderTargetKey key,
+            const GlesProgramDraw& draw, std::uint32_t mode,
+            const GlesRasterState& state,
+            std::shared_ptr<GlesProgramTarget> input)
+        {
             std::lock_guard lock { mutex_ };
             Binding binding { *this };
             if (!binding)
@@ -416,12 +447,15 @@ namespace {
                         static_cast<std::size_t>(frame.width) * frame.height))
                 return false;
             while (glGetError() != GL_NO_ERROR) { }
-            if (frame.pixels.empty() && !targets_.contains(key))
+            if (frame.pixels.empty() && !input && !targets_.contains(key))
                 return false;
             auto& target = targets_[key];
             target.inverted_vertical = state.render_target_inverted_vertical;
             target.last_used = ++use_sequence_;
-            if (target.width != frame.width || target.height != frame.height) {
+            const bool replaced =
+                target.width != frame.width || target.height != frame.height;
+            const bool captured = static_cast<bool>(input);
+            if (replaced) {
                 destroy(target);
                 target = { };
                 target.last_used = use_sequence_;
@@ -436,11 +470,12 @@ namespace {
                     GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 glTexParameteri(
                     GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-                glTexImage2D(GL_TEXTURE_2D, 0,
-                    static_cast<GLint>(texture_format_),
-                    static_cast<GLsizei>(frame.width),
-                    static_cast<GLsizei>(frame.height), 0, texture_format_,
-                    GL_UNSIGNED_BYTE, nullptr);
+                if (!input)
+                    glTexImage2D(GL_TEXTURE_2D, 0,
+                        static_cast<GLint>(texture_format_),
+                        static_cast<GLsizei>(frame.width),
+                        static_cast<GLsizei>(frame.height), 0, texture_format_,
+                        GL_UNSIGNED_BYTE, nullptr);
                 glGenRenderbuffers(1, &target.depth);
                 glBindRenderbuffer(GL_RENDERBUFFER, target.depth);
                 glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16,
@@ -451,6 +486,30 @@ namespace {
                     GL_TEXTURE_2D, target.color, 0);
                 glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                     GL_RENDERBUFFER, target.depth);
+            }
+#if defined(__ANDROID__)
+            if (input) {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, target.color);
+                target.shared_target =
+                    std::make_unique<EglAndroidProgramTarget>(
+                        display_, std::move(input));
+            } else if (!frame.pixels.empty() && target.shared_target) {
+                target.shared_target.reset();
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, target.color);
+                glTexImage2D(GL_TEXTURE_2D, 0,
+                    static_cast<GLint>(texture_format_),
+                    static_cast<GLsizei>(frame.width),
+                    static_cast<GLsizei>(frame.height), 0, texture_format_,
+                    GL_UNSIGNED_BYTE, nullptr);
+            }
+#endif
+            glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+                GL_FRAMEBUFFER_COMPLETE)
+                return false;
+            if (replaced || captured) {
                 GLint read_format { }, read_type { };
                 glGetIntegerv(
                     GL_IMPLEMENTATION_COLOR_READ_FORMAT, &read_format);
@@ -459,10 +518,6 @@ namespace {
                     std::endian::native == std::endian::little &&
                     read_format == GL_BGRA_EXT && read_type == GL_UNSIGNED_BYTE;
             }
-            glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
-            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
-                GL_FRAMEBUFFER_COMPLETE)
-                return false;
             if (!frame.pixels.empty()) {
                 const auto* pixels =
                     upload_pixels(frame.pixels, rgba_, frame.width,
@@ -625,6 +680,10 @@ namespace {
             const auto& target = found->second;
             frame.width = target.width;
             frame.height = target.height;
+#if defined(__ANDROID__)
+            if (target.shared_target)
+                return target.shared_target->publish(frame);
+#endif
             frame.pixels.resize(
                 static_cast<std::size_t>(frame.width) * frame.height);
             glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
@@ -728,6 +787,9 @@ namespace {
                 glDeleteTextures(1, &target.color);
             if (target.depth)
                 glDeleteRenderbuffers(1, &target.depth);
+#if defined(__ANDROID__)
+            target.shared_target.reset();
+#endif
         }
         void erase_bound(std::uint32_t name)
         {
@@ -834,6 +896,7 @@ namespace {
         std::map<std::uint32_t, Program> programs_;
         std::map<std::uint32_t, Texture> textures_;
         std::map<GlesRenderTargetKey, Target> targets_;
+        bool native_program_target_ { };
         std::vector<std::uint8_t> rgba_, texture_rgba_;
         std::vector<std::byte> attributes_;
         std::uint64_t use_sequence_ { };

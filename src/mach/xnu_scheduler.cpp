@@ -278,14 +278,43 @@ std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread_except(
     std::optional<XnuThreadId> oldest;
     std::uint64_t oldest_enqueue_sequence =
         std::numeric_limits<std::uint64_t>::max();
-    for (const auto& [thread, record] : threads_) {
-        if ((excluded && thread == *excluded) || !record.queued)
-            continue;
-        if (!oldest || record.runnable_enqueue_sequence < oldest_enqueue_sequence) {
-            oldest = thread;
-            oldest_enqueue_sequence = record.runnable_enqueue_sequence;
+    // Dense queues are cheaper to scan directly, without visiting buckets.
+    if (runnable_count_ > threads_.size() / 2U) {
+        for (const auto& [thread, record] : threads_) {
+            if ((excluded && thread == *excluded) || !record.queued)
+                continue;
+            if (!oldest || record.runnable_enqueue_sequence < oldest_enqueue_sequence) {
+                oldest = thread;
+                oldest_enqueue_sequence = record.runnable_enqueue_sequence;
+            }
         }
+        return oldest;
     }
+    // Queue membership already excludes sleeping, held and executing threads.
+    // Reuse its populated buckets; runnable age survives priority reordering.
+    const auto consider_queue = [&](const RunQueue& run_queue) {
+        for (std::size_t word_index = 0;
+             word_index < run_queue.bitmap.size(); ++word_index) {
+            auto word = run_queue.bitmap[word_index];
+            while (word != 0U) {
+                const auto priority = word_index * 32U +
+                    static_cast<std::size_t>(std::countr_zero(word));
+                for (const auto& record : run_queue.queues[priority]) {
+                    if (excluded && record.id == *excluded)
+                        continue;
+                    if (!oldest || record.runnable_enqueue_sequence <
+                                       oldest_enqueue_sequence) {
+                        oldest = record.id;
+                        oldest_enqueue_sequence = record.runnable_enqueue_sequence;
+                    }
+                }
+                word &= word - 1U;
+            }
+        }
+    };
+    consider_queue(processor_set_run_queue_);
+    for (const auto& run_queue : processor_run_queues_)
+        consider_queue(run_queue);
     return oldest;
 }
 

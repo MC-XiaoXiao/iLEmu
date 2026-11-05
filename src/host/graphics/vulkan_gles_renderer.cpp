@@ -10,6 +10,10 @@
 #include "vulkan_image_allocation.hpp"
 #include "vulkan_present_timing.hpp"
 #include "vulkan_submission_fence.hpp"
+#if defined(__ANDROID__)
+#include "vulkan_android_program_target.hpp"
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -336,6 +340,20 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             const VulkanPresenterConfiguration* presenter,
             GlesDeviceSelection selection);
         ~VulkanGlesRenderer() override;
+#if defined(__ANDROID__)
+        GlesProgramTarget::Api program_target_api() const override
+        {
+            return native_program_target_
+                       ? GlesProgramTarget::Api::AndroidHardwareBuffer
+                       : GlesProgramTarget::Api::None;
+        }
+        std::shared_ptr<GlesProgramTarget> capture_program_target(
+            std::shared_ptr<HostSurface> surface,
+            bool inverted_vertical) override;
+        bool publish_program_target(HostSurface& surface,
+            std::shared_ptr<VulkanProgramTargetAllocation> allocation,
+            int ready_fd, bool inverted_vertical);
+#endif
 
         VulkanGlesRenderer(const VulkanGlesRenderer&) = delete;
         VulkanGlesRenderer& operator=(const VulkanGlesRenderer&) = delete;
@@ -543,6 +561,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             VkCommandBuffer command { };
             std::shared_ptr<VulkanSubmissionFence> fence;
             VkSemaphore image_available { };
+#if defined(__ANDROID__)
+            VkSemaphore program_target_ready { };
+            VkSemaphore program_target_written { };
+            std::vector<std::shared_ptr<VulkanProgramTargetAllocation>>
+                program_targets;
+#endif
             std::array<VkDescriptorSet, maximum_batch_draws> descriptors { };
             Buffer staging;
             Buffer vertex;
@@ -661,6 +685,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
         VulkanPresentTiming presentation_timing_;
         VkInstance instance_ { };
+        bool native_program_target_ { };
         VulkanPresenterConfiguration presenter_;
         VkSurfaceKHR presentation_surface_ { };
         VkSwapchainKHR presentation_swapchain_ { };
@@ -984,6 +1009,18 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             application.pEngineName = "iLEmu GLES HLE";
             application.engineVersion = VK_MAKE_VERSION(0, 1, 0);
             application.apiVersion = VK_API_VERSION_1_0;
+#if defined(__ANDROID__)
+            const auto enumerate_version =
+                reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+                    vkGetInstanceProcAddr(
+                        nullptr, "vkEnumerateInstanceVersion"));
+            if (enumerate_version) {
+                std::uint32_t version;
+                require_success(
+                    enumerate_version(&version), "vkEnumerateInstanceVersion");
+                application.apiVersion = std::min(version, VK_API_VERSION_1_1);
+            }
+#endif
 
             auto instance_info = make_vulkan_structure<VkInstanceCreateInfo>(
                 VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
@@ -1166,12 +1203,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             device_info.pEnabledFeatures = &enabled_features;
             device_info.queueCreateInfoCount = 1;
             device_info.pQueueCreateInfos = &queue_info;
-            std::vector<const char*> swapchain_extensions {
-                VK_KHR_SWAPCHAIN_EXTENSION_NAME
-            };
+            std::vector<const char*> swapchain_extensions;
+            if (presentation_surface_ != VK_NULL_HANDLE)
+                swapchain_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
             presentation_timing_.configure_device(instance_, physical_device_,
                 presentation_surface_, swapchain_extensions, device_info);
-            if (presentation_surface_ != VK_NULL_HANDLE) {
+#if defined(__ANDROID__)
+            native_program_target_ = configure_android_program_target(
+                physical_device_, application.apiVersion, swapchain_extensions);
+#endif
+            if (!swapchain_extensions.empty()) {
                 device_info.enabledExtensionCount =
                     static_cast<std::uint32_t>(swapchain_extensions.size());
                 device_info.ppEnabledExtensionNames =
@@ -1651,6 +1692,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             }
             for (auto& slot : command_slots_) {
                 slot.staging = { };
+#if defined(__ANDROID__)
+                slot.program_targets.clear();
+#endif
                 slot.vertex = { };
                 slot.uniform = { };
                 slot.in_flight = false;
@@ -1697,6 +1741,14 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 pipeline_cache_ = VK_NULL_HANDLE;
             }
             for (auto& slot : command_slots_) {
+#if defined(__ANDROID__)
+                if (slot.program_target_ready != VK_NULL_HANDLE)
+                    vkDestroySemaphore(
+                        device_, slot.program_target_ready, nullptr);
+                if (slot.program_target_written != VK_NULL_HANDLE)
+                    vkDestroySemaphore(
+                        device_, slot.program_target_written, nullptr);
+#endif
                 if (slot.image_available != VK_NULL_HANDLE) {
                     vkDestroySemaphore(device_, slot.image_available, nullptr);
                     slot.image_available = VK_NULL_HANDLE;
@@ -2266,6 +2318,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         const auto wait_result = slot.fence->wait(fence_timeout_nanoseconds);
         require_success(wait_result, "vkWaitForFences");
         slot.in_flight = false;
+#if defined(__ANDROID__)
+        slot.program_targets.clear();
+#endif
     }
 
     void VulkanGlesRenderer::wait_for_all_slots()
@@ -3510,6 +3565,131 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             preparation.cpu_damage = surface.cpu_damage_rectangles();
         return preparation;
     }
+
+#if defined(__ANDROID__)
+    std::shared_ptr<GlesProgramTarget>
+    VulkanGlesRenderer::capture_program_target(
+        std::shared_ptr<HostSurface> surface, bool inverted_vertical)
+    {
+        const auto descriptor = surface->descriptor();
+        auto allocation = std::make_shared<VulkanProgramTargetAllocation>(
+            physical_device_, device_, descriptor.width, descriptor.height);
+        std::function<bool(int)> publish =
+            [this, surface, allocation, inverted_vertical](int ready_fd) {
+                return publish_program_target(
+                    *surface, allocation, ready_fd, inverted_vertical);
+            };
+        auto preparation = capture_surface_preparation(*surface);
+        std::lock_guard lock { mutex_ };
+        auto& target = prepare_host_surface(*surface, preparation.cpu_frame,
+            preparation.cpu_generation, preparation.gpu_generation,
+            std::move(preparation.cpu_damage));
+        if (!target.valid)
+            throw std::runtime_error {
+                "shader input has no current native image"
+            };
+        begin_commands();
+        auto& slot = command_slot();
+        if (slot.program_target_ready == VK_NULL_HANDLE) {
+            VkExportSemaphoreCreateInfo exported {
+                VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO
+            };
+            exported.handleTypes =
+                VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+            VkSemaphoreCreateInfo semaphore {
+                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+            };
+            semaphore.pNext = &exported;
+            require_success(vkCreateSemaphore(device_, &semaphore, nullptr,
+                                &slot.program_target_ready),
+                "create shader input fence");
+        }
+        slot.program_targets.push_back(allocation);
+        end_render_pass();
+        transition_image(slot.command, target.image.image, target.layout,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        target.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        allocation->encode(
+            slot.command, target.image.image, queue_family_, inverted_vertical);
+        const auto ready = slot.program_target_ready;
+        submit_commands(false, PerfSubmitReason::GlesSync, VK_NULL_HANDLE,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, ready);
+        VkSemaphoreGetFdInfoKHR info {
+            VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR
+        };
+        info.semaphore = ready;
+        info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        int fd { -1 };
+        const auto get_fd = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+            vkGetDeviceProcAddr(device_, "vkGetSemaphoreFdKHR"));
+        require_success(
+            get_fd(device_, &info, &fd), "export shader input fence");
+        return make_android_program_target(shared_from_this(),
+            std::move(surface), std::move(allocation), fd, std::move(publish));
+    }
+
+    bool VulkanGlesRenderer::publish_program_target(HostSurface& surface,
+        std::shared_ptr<VulkanProgramTargetAllocation> allocation, int ready_fd,
+        bool inverted_vertical)
+    {
+        try {
+            std::lock_guard lock { mutex_ };
+            const auto descriptor = surface.descriptor();
+            auto& target = ensure_target(
+                surface.key(), descriptor.width, descriptor.height);
+            begin_commands();
+            auto& slot = command_slot();
+            if (slot.program_target_written == VK_NULL_HANDLE) {
+                VkSemaphoreCreateInfo semaphore {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+                };
+                require_success(vkCreateSemaphore(device_, &semaphore, nullptr,
+                                    &slot.program_target_written),
+                    "create shader output fence");
+            }
+            slot.program_targets.push_back(allocation);
+            VkImportSemaphoreFdInfoKHR imported {
+                VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR
+            };
+            imported.semaphore = slot.program_target_written;
+            imported.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
+            imported.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+            imported.fd = ready_fd;
+            const auto import_fd = reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
+                vkGetDeviceProcAddr(device_, "vkImportSemaphoreFdKHR"));
+            require_success(
+                import_fd(device_, &imported), "import shader output fence");
+            ready_fd = -1;
+            end_render_pass();
+            transition_image(slot.command, target.image.image, target.layout,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT);
+            target.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            allocation->encode_publish(slot.command, target.image.image,
+                queue_family_, inverted_vertical);
+            submit_commands(
+                false, PerfSubmitReason::GlesSync, slot.program_target_written);
+            target.valid = true;
+            // Publication replaces the entire image. A later partial CPU
+            // upload must preserve its GPU pixels outside that new damage.
+            target.cpu_generation = surface.cpu_generation();
+            const HostRectangle damage { 0, 0, descriptor.width,
+                descriptor.height };
+            record_damage(target, damage);
+            static_cast<void>(surface.mark_gpu_write(damage));
+            return true;
+        } catch (...) {
+            if (ready_fd >= 0)
+                close(ready_fd);
+            throw;
+        }
+    }
+#endif
 
     bool VulkanGlesRenderer::encode_fill(HostSurface& destination,
         HostRectangle rectangle, std::uint32_t argb, HostCompositeMode mode,

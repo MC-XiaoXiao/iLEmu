@@ -1661,7 +1661,7 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
             note_timer_deadline_transition();
     } else if (pending_io_poll_required_locked(processor)) {
         const auto io_generation =
-            shared_state_->io_event_generation_snapshot();
+            io_event_generation_snapshot_locked();
         const auto mach_generation =
             shared_state_->mach_queue_generation_snapshot();
         HostSocketEvents::instance().commit();
@@ -1692,7 +1692,7 @@ CompatibilityKernel::pending_event_poll_candidates()
     std::lock_guard lock { mutex_ };
     // Capture before committing notifications. A publication racing the
     // commit must remain newer than any negative wait observation below.
-    const auto io_generation = shared_state_->io_event_generation_snapshot();
+    const auto io_generation = io_event_generation_snapshot_locked();
     HostSocketEvents::instance().commit();
     service_completed_file_renames();
     service_file_io();
@@ -1733,8 +1733,11 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto host_now = std::chrono::steady_clock::now();
     const auto guest_now = shared_state_->clock.now();
     const auto graphics_generation = gles_completion_generation();
+    // Host graphics waits park HLE calls. Unrelated processes keep their own
+    // Mach/I/O generations and deadlines instead of walking every waiter.
     const auto graphics_changed =
-        graphics_generation != pending_graphics_generation_;
+        graphics_generation != pending_graphics_generation_ &&
+        userland_hle_.has_pending_calls();
     pending_graphics_generation_ = graphics_generation;
     const auto topology_changed = !pending_event_poll_observed_ ||
                                   pending_event_poll_topology_generation_ !=
@@ -1789,16 +1792,18 @@ CompatibilityKernel::pending_event_poll_candidates()
         }
         const auto send = pending_mach_sends_.find(processor);
         const auto receive = pending_mach_receives_.find(processor);
-        // HID callbacks enter through a blocked receive independently of its
-        // Mach queue. Keep that consumer eligible even while the queue is empty.
-        const auto hid_receiver =
-            hid_event_system_hle_.is_event_consumer(process_.pid, processor);
+        // HID callbacks enter independently of the Mach queue, but registration
+        // alone does not make a parked receiver ready. Input publication changes
+        // the I/O generation; periodic samples use the deadline above.
+        const auto hid_ready = receive != pending_mach_receives_.end() &&
+            hid_event_system_hle_.pending_event_ready(
+                process_.pid, processor, guest_now);
         const auto exception_waiting = exception_delivery_.waiting(processor);
         if (caught_signal_ready(processor) ||
             (exception_waiting ? exception_delivery_.ready(*shared_state_, processor) :
             send != pending_mach_sends_.end() ? send->second.ticket->ready(guest_now) :
             receive != pending_mach_receives_.end()
-                ? hid_receiver || mach_receive_poll_required_locked(
+                ? hid_ready || mach_receive_poll_required_locked(
                                       receive->second, guest_now)
                 : pending_io_poll_required_locked(processor))) {
             processors.push_back(processor);
@@ -1914,7 +1919,7 @@ CompatibilityKernel::next_host_event_poll_deadline()
         pending_event_poll_topology_generation_ !=
             pending_event_topology_generation_ ||
         pending_event_poll_io_generation_ !=
-            shared_state_->io_event_generation_snapshot() ||
+            io_event_generation_snapshot_locked() ||
         pending_event_poll_mach_generation_ !=
             shared_state_->mach_queue_generation_snapshot()) {
         return std::chrono::steady_clock::now();
@@ -1984,6 +1989,17 @@ void CompatibilityKernel::refresh_pending_event_processor_locked(
     ++pending_event_topology_generation_;
 }
 
+std::uint64_t CompatibilityKernel::io_event_generation_snapshot_locked() const
+{
+    return shared_state_->io_event_generation_snapshot() +
+           local_io_event_generation_;
+}
+
+void CompatibilityKernel::note_local_io_event_transition_locked() noexcept
+{
+    ++local_io_event_generation_;
+}
+
 bool CompatibilityKernel::pending_io_wait_ignores_mach_locked(
     std::size_t processor) const
 {
@@ -1998,7 +2014,7 @@ bool CompatibilityKernel::pending_io_wait_ignores_mach_locked(
 }
 
 bool CompatibilityKernel::pending_io_poll_required_locked(
-    std::size_t processor) const
+    std::size_t processor)
 {
     if (const auto fault = pending_file_page_faults_.find(processor);
         fault != pending_file_page_faults_.end())
@@ -2007,11 +2023,12 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
     if (cached == pending_io_poll_cache_.end())
         return true;
     if (cached->second.io_generation !=
-        shared_state_->io_event_generation_snapshot()) {
+        io_event_generation_snapshot_locked()) {
         return true;
     }
-    if (cached->second.mach_generation !=
-        shared_state_->mach_queue_generation_snapshot()) {
+    const auto mach_generation =
+        shared_state_->mach_queue_generation_snapshot();
+    if (cached->second.mach_generation != mach_generation) {
         if (const auto kevent = pending_kevents_.find(processor);
             kevent != pending_kevents_.end()) {
             if (kevent_mach_poll_required(kevent->second.queue_fd))
@@ -2040,6 +2057,9 @@ bool CompatibilityKernel::pending_io_poll_required_locked(
         } else if (!pending_io_wait_ignores_mach_locked(processor)) {
             return true;
         }
+        // The scoped observations also cover this unrelated IPC generation.
+        // Retain the pre-check snapshot so a racing enqueue stays visible.
+        cached->second.mach_generation = mach_generation;
     }
     if (const auto deadline = pending_io_deadline_locked(processor);
         deadline && shared_state_->clock.now() >= *deadline) {
@@ -2062,7 +2082,7 @@ void CompatibilityKernel::remember_pending_io_not_ready_locked(
         pending_event_mach_snapshot_valid_ = false;
     // A producer may race the readiness walk through another task. Do not
     // publish a negative stamp unless both shared generations stayed stable.
-    if (io_generation != shared_state_->io_event_generation_snapshot() ||
+    if (io_generation != io_event_generation_snapshot_locked() ||
         mach_generation != shared_state_->mach_queue_generation_snapshot()) {
         pending_io_poll_cache_.erase(processor);
         return;

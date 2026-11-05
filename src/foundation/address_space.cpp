@@ -1657,6 +1657,7 @@ void AddressSpace::unmap_file_mappings_locked(
         backing->immutable_file_view = source.immutable_file_view;
         backing->generation_registry = source.generation_registry;
         backing->io_state = source.io_state;
+        backing->object_identity = source.object_identity;
         return backing;
     };
 

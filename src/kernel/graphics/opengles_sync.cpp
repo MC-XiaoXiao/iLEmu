@@ -74,6 +74,41 @@ bool OpenGlesHle::binding_live(const RenderTargetBinding& binding) const
     return true;
 }
 
+bool OpenGlesHle::native_target_live(const RenderTargetBinding& binding) const
+{
+    if (binding.kind == RenderTargetKind::Pixmap)
+        return binding.backing_identifier &&
+               surface_store_->host_surface(*binding.backing_identifier) ==
+                   binding.host_surface;
+    const auto* texture = resources_.texture(binding.framebuffer_texture);
+    if (!texture)
+        return false;
+    const auto level = texture->levels.find(0U);
+    return level != texture->levels.end() &&
+           level->second.host_surface == binding.host_surface &&
+           (binding.backing_identifier
+                   ? level->second.surface_id == binding.backing_identifier
+                   : !level->second.surface_id &&
+                         level->second.native_lifetime);
+}
+
+std::shared_ptr<void> OpenGlesHle::retain_native_target(
+    const RenderTargetBinding& binding) const
+{
+    if (!native_target_live(binding))
+        throw std::runtime_error { "stale native GLES target" };
+    auto lifetime = binding.backing_identifier
+                        ? surface_store_->acquire_transport_lease(
+                              *binding.backing_identifier)
+                        : std::shared_ptr<void> { resources_
+                                  .texture(binding.framebuffer_texture)
+                                  ->levels.at(0U)
+                                  .native_lifetime };
+    if (!lifetime)
+        throw std::runtime_error { "missing GLES target owner" };
+    return lifetime;
+}
+
 void OpenGlesHle::service_graphics_completions(bool process_live)
 {
     // Poll every producer at the serial core boundary, including processes
@@ -253,10 +288,17 @@ void OpenGlesHle::await_program_flush(
     const auto key = pending.binding.key;
     std::size_t bytes;
     std::shared_ptr<GlesWorkResult> result;
+    std::shared_ptr<void> native_lifetime;
     try {
-        bytes = frame_bytes(pending.frame.width, pending.frame.height);
+        const bool shared = program_renderer_ && pending.binding.host_surface &&
+                            program_renderer_->shares_target_with(*renderer_);
+        if (shared)
+            native_lifetime = retain_native_target(pending.binding);
+        bytes =
+            shared ? 0 : frame_bytes(pending.frame.width, pending.frame.height);
         if (program_renderer_)
-            result = program_renderer_->enqueue_readback(key, bytes, renderer_);
+            result = program_renderer_->enqueue_readback(key, bytes, renderer_,
+                pending.binding.host_surface, native_lifetime);
     } catch (...) {
         lease->consume();
         fail_program_flush(call, handler, gles_abi::out_of_memory);
@@ -275,6 +317,18 @@ void OpenGlesHle::await_program_flush(
         return;
     }
     lease->result = result;
+    lease->complete_core = [this, result, native_lifetime,
+                               binding = pending.binding,
+                               owner = renderer_owner_] {
+        static_cast<void>(native_lifetime);
+        if (owner == renderer_owner_ && result->succeeded() &&
+            result->frame.host_surface &&
+            result->frame.host_surface == binding.host_surface &&
+            binding_live(binding) && native_target_live(binding) &&
+            binding.framebuffer_texture)
+            resources_.update_texture_render_target_generation(
+                binding.framebuffer_texture, 0U);
+    };
     call.suspend_for_host([result] { return result->ready(); },
         [this, result, lease, key, handler = std::move(handler)](
             UserlandHleCall& resumed) {
@@ -288,8 +342,13 @@ void OpenGlesHle::await_program_flush(
             }
             bool committed = false;
             try {
-                committed = commit_render_target(resumed,
-                    pending_program_target_->binding, std::move(result->frame));
+                const auto& binding = pending_program_target_->binding;
+                committed =
+                    result->frame.host_surface
+                        ? result->frame.host_surface == binding.host_surface &&
+                              native_target_live(binding)
+                        : commit_render_target(
+                              resumed, binding, std::move(result->frame));
                 collect_program_draw_errors();
             } catch (const std::bad_alloc&) {
                 lease->consume();

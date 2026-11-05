@@ -164,6 +164,17 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         return MethodResult { iokit_abi::success, { } };
     }
 
+    if (selector == static_cast<std::uint32_t>(
+                        SerialMultiplexerSelector::RestartDormancyCheck)) {
+        if (!scalar_input.empty() || !inband_input.empty() ||
+            scalar_output_capacity != 0U || inband_output_capacity != 0U) {
+            return MethodResult { iokit_abi::bad_argument, { } };
+        }
+        // The offline transport has no active modem data link whose dormancy
+        // timer needs restarting. Complete the native advisory operation.
+        return MethodResult { iokit_abi::success, { } };
+    }
+
     if (selector !=
         static_cast<std::uint32_t>(SerialMultiplexerSelector::GetTime))
         return MethodResult { iokit_abi::unsupported, { } };

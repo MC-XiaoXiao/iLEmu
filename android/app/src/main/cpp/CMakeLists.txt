@@ -33,3 +33,6 @@ target_link_libraries(ilemu PRIVATE
     SDL2::SDL2 android log)
 target_link_libraries(ilemu PRIVATE iLEmu::foundation iLEmu::plist)
 target_compile_options(ilemu PRIVATE -Wall -Wextra -Wpedantic)
+# Core and host implementations share this native module. Bind strong function
+# definitions locally while retaining weak interposition and external exports.
+target_link_options(ilemu PRIVATE "LINKER:-Bsymbolic-non-weak-functions")

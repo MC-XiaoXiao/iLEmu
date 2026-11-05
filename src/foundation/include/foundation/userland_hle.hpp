@@ -298,6 +298,7 @@ public:
     [[nodiscard]] bool run_kernel_operation(Cpu& cpu, std::uint32_t process_id,
         std::string_view operation, Handler handler);
     [[nodiscard]] bool pending_call(std::size_t processor) const;
+    [[nodiscard]] bool has_pending_calls() const;
     [[nodiscard]] bool pending_host_continuation(std::size_t processor) const;
     [[nodiscard]] bool pending_call_ready(std::size_t processor) const;
     [[nodiscard]] std::optional<std::uint64_t> pending_call_sequence(

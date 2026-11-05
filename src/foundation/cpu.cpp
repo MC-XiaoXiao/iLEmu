@@ -3446,6 +3446,9 @@ private:
                 reinterpret_cast<DynarmicPageTable*>(read_table);
             config.page_table =
                 reinterpret_cast<DynarmicPageTable*>(write_table);
+            // Binding only publishes non-null replacements, and teardown
+            // deregisters this executor before unlinking either cell.
+            config.page_table_links_are_bound = read_table && write_table;
             config.absolute_offset_page_table =
                 sizeof(std::uintptr_t) >= sizeof(std::uint64_t);
             config.detect_misaligned_access_via_page_table =

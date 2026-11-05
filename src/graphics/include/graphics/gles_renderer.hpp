@@ -18,9 +18,10 @@
 #include <utility>
 #include <vector>
 
+#include "foundation/performance.hpp"
+#include "graphics/gles_program_target.hpp"
 #include "graphics/gles_rasterizer.hpp"
 #include "graphics/host_graphics.hpp"
-#include "foundation/performance.hpp"
 
 namespace ilemu {
 
@@ -42,13 +43,27 @@ using GlesRenderTargetKey = HostSurfaceKey;
 // Host-side renderer boundary for the guest GLES state model. Backends consume
 // already decoded GLES vertices and fixed-function state; they do not depend on
 // EGL, CoreSurface, LayerKit, or any guest process details.
-class GlesRenderer : public HostGraphicsDevice {
+class GlesRenderer : public HostGraphicsDevice,
+                     public std::enable_shared_from_this<GlesRenderer> {
 public:
     struct ReadbackStamp {
         // Zero renderer means no native pixels were materialized.
         std::uint64_t renderer { }, target { }, revision { };
     };
     virtual ~GlesRenderer() = default;
+
+    [[nodiscard]] virtual GlesProgramTarget::Api program_target_api() const
+    {
+        return GlesProgramTarget::Api::None;
+    }
+    // Called on the shared render worker, at the same FIFO boundary as a CPU
+    // readback. The snapshot preserves subsequent writes to the source surface.
+    [[nodiscard]] virtual std::shared_ptr<GlesProgramTarget>
+    capture_program_target(
+        std::shared_ptr<HostSurface>, bool /* inverted_vertical */)
+    {
+        return { };
+    }
 
     [[nodiscard]] std::shared_ptr<HostSurface> create_surface(
         HostSurfaceKey key, HostSurfaceDescriptor descriptor,
