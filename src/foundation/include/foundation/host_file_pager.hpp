@@ -6,6 +6,8 @@
 #include "foundation/file_page_fault.hpp"
 
 #include <functional>
+#include <chrono>
+#include <condition_variable>
 
 namespace ilemu {
 
@@ -15,6 +17,7 @@ class FilePageRead {
 public:
     [[nodiscard]] bool ready() const noexcept
     { return ready_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool wait_until(std::chrono::steady_clock::time_point deadline);
     void commit();
 
 private:
@@ -28,6 +31,8 @@ private:
     bool shared_ { };
     bool consumed_ { };
     std::atomic<bool> ready_ { false };
+    std::mutex ready_mutex_;
+    std::condition_variable ready_changed_;
 };
 
 class HostFilePager {

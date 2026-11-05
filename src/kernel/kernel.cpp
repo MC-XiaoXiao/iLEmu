@@ -2410,17 +2410,9 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         pending != pending_file_page_faults_.end()) {
         if (!pending->second.read->ready())
             return false;
-        pending->second.read->commit();
-        if (pending->second.access == MemoryPermission::Execute) {
-            // A Thumb-32 decode can stop before its trailing halfword and
-            // cache a failed block ending just before the missing page.
-            const auto overlap = std::min(pending->second.address, std::uint32_t { 2 });
-            cpu.invalidate_cache_range(pending->second.address - overlap,
-                pending->second.size + overlap);
-        }
+        cpu.complete_file_page_fault(pending->second);
         pending_file_page_faults_.erase(pending);
         process_.waiting_for_events = false;
-        cpu.clear_halt();
         return true;
     }
     if (pending_file_mappings_.contains(cpu.processor_id()))

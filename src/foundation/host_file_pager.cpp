@@ -11,7 +11,17 @@ void FilePageRead::read()
 {
     prepared_pages_ =
         PreparedFilePages::read(*cache_, file_, offset_, size_, shared_);
-    ready_.store(true, std::memory_order_release);
+    {
+        const std::lock_guard lock { ready_mutex_ };
+        ready_.store(true, std::memory_order_release);
+    }
+    ready_changed_.notify_all();
+}
+
+bool FilePageRead::wait_until(std::chrono::steady_clock::time_point deadline)
+{
+    std::unique_lock lock { ready_mutex_ };
+    return ready_changed_.wait_until(lock, deadline, [this] { return ready(); });
 }
 
 void FilePageRead::commit()

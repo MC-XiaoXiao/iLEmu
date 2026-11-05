@@ -11,6 +11,7 @@
 #include "cpu_independent_executor.hpp"
 #include "foundation/jit_tiered_execution.hpp"
 #include "foundation/guest_execution_coordinator.hpp"
+#include "foundation/host_file_pager.hpp"
 
 #include <algorithm>
 #include <array>
@@ -5897,6 +5898,17 @@ void Cpu::raise_memory_fault(
     // is no Dynarmic callback object available to carry MemoryFault. Preserve
     // the scheduler-visible fatal boundary in that case.
     halt(Dynarmic::HaltReason::UserDefined4);
+}
+void Cpu::complete_file_page_fault(const FilePageFault& fault)
+{
+    fault.read->commit();
+    if (fault.access == MemoryPermission::Execute) {
+        // A Thumb-32 decode can cache a failed block just before the
+        // missing trailing halfword. Retire that prefix before retrying.
+        const auto overlap = std::min(fault.address, std::uint32_t { 2 });
+        invalidate_cache_range(fault.address - overlap, fault.size + overlap);
+    }
+    clear_halt();
 }
 void Cpu::clear_halt()
 {
