@@ -2479,7 +2479,8 @@ bool AddressSpace::is_read_only_executable(
 
 std::optional<ExecutableBackingIdentity>
 AddressSpace::executable_backing_identity(
-    std::uint32_t address, std::size_t size) const
+    std::uint32_t address, std::size_t size,
+    ExecutableBackingResidency residency) const
 {
     if (size == 0 || range_overflows(address, size))
         return std::nullopt;
@@ -2510,6 +2511,8 @@ AddressSpace::executable_backing_identity(
         // the original immutable file cache again.  Shared aliases are likewise
         // mutable even when this particular virtual mapping is currently RX.
         const auto* page = find_page_locked(page_address);
+        if (residency == ExecutableBackingResidency::Resident && !page)
+            return std::nullopt;
         if (page != nullptr &&
             (page->instructions || !page->backing || !page->file_cached ||
                 page->shared_writable ||

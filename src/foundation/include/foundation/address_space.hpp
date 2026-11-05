@@ -53,6 +53,8 @@ struct ExecutableBackingIdentity {
         const ExecutableBackingIdentity&) = default;
 };
 
+enum class ExecutableBackingResidency { Mapped, Resident };
+
 struct AddressSpaceWriteStats {
     std::uint64_t batch_calls { };
     std::uint64_t batch_operations { };
@@ -387,7 +389,8 @@ public:
     // layout-sensitive artifact accidentally. Host path, vnode generation and
     // registry revision are runtime backing state and are intentionally absent.
     [[nodiscard]] std::optional<ExecutableBackingIdentity>
-    executable_backing_identity(std::uint32_t address, std::size_t size) const;
+    executable_backing_identity(std::uint32_t address, std::size_t size,
+        ExecutableBackingResidency residency = ExecutableBackingResidency::Mapped) const;
     // Monotonic, lock-free content/mapping stamp for cheap JIT probe validity.
     // It changes on mapping mutations and writes to executable ranges; it is a
     // validity token only, never an artifact identity or a hash filter.

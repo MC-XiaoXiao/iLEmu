@@ -1328,13 +1328,9 @@ private:
         if (artifact.data.code_dependencies.empty())
             return false;
         for (const auto& dependency : artifact.data.code_dependencies) {
-            if (dependency.size == 0 ||
-                !memory_.is_read_only_executable(
-                    dependency.address, dependency.size)) {
-                return false;
-            }
             const auto current = memory_.executable_backing_identity(
-                dependency.address, dependency.size);
+                dependency.address, dependency.size,
+                ExecutableBackingResidency::Resident);
             if (!current || current->content != dependency.content_identity ||
                 current->layout != dependency.layout_identity) {
                 return false;
