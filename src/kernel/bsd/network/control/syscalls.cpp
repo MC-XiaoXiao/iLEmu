@@ -41,7 +41,7 @@ bool CompatibilityKernel::create_kernel_control_socket(Cpu& cpu)
         *fd, std::string { bsd::kernel_control::descriptor_kind });
     kernel_control_endpoints_[*fd] =
         std::make_shared<bsd::kernel_control::Endpoint>(
-            bsd::kernel_control::Endpoint { registers[1], std::nullopt, 0 });
+            registers[1]);
     file_status_flags_[*fd] = darwin::open_flag::read_write;
     descriptor_flags_[*fd] = 0;
     socket_options_[*fd] = std::make_shared<SocketOptions>();
@@ -110,6 +110,9 @@ bool CompatibilityKernel::connect_kernel_control_socket(Cpu& cpu)
     }
     endpoint->second->peer =
         bsd::kernel_control::Address { *identifier, *unit };
+    if (*identifier == bsd::kernel_control::statistics_identifier)
+        endpoint->second->statistics =
+            std::make_unique<bsd::NetworkStatisticsControl>();
     output_.write(
         "[kernel-control] connect pid=" + std::to_string(process_.pid) +
         " fd=" + std::to_string(registers[0]) + " name=" +
@@ -221,6 +224,16 @@ bool CompatibilityKernel::write_kernel_control_socket(
         return true;
     }
     endpoint->second->transmitted_bytes += bytes.size();
+    if (endpoint->second->statistics) {
+        std::lock_guard lock { endpoint->second->mutex };
+        const auto error = endpoint->second->statistics->send(
+            bytes, process_.effective_uid == 0);
+        if (error) {
+            bsd_error(cpu, error);
+            return true;
+        }
+        shared_state_->note_io_event_transition();
+    }
     if (socket_payload_trace_count_ < 32U) {
         output_.write(
             "[kernel-control] write pid=" + std::to_string(process_.pid) +

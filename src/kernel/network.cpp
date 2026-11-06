@@ -190,6 +190,28 @@ bool CompatibilityKernel::receive_socket_message(
 
     GuestSocketReceiveTarget target {memory_, 0, 0, iovecs};
 
+    if (const auto control = kernel_control_endpoints_.find(fd);
+        control != kernel_control_endpoints_.end()) {
+        std::lock_guard lock { control->second->mutex };
+        if (!control->second->statistics)
+            return false;
+        auto& statistics = *control->second->statistics;
+        const auto packet = statistics.next();
+        if (packet.empty())
+            return false;
+        const auto count = std::min(packet.size(), receive_capacity);
+        if (!target.copy(packet.first(count)) ||
+            !message.copy_name(memory_, {}) ||
+            !message.finish(memory_, 0, count < packet.size() ? 0x10U : 0U)) {
+            bsd_error(cpu, efault);
+        } else {
+            if ((message.flags() & 0x2U) == 0) // MSG_PEEK
+                statistics.consume();
+            bsd_success(cpu, static_cast<std::uint32_t>(count));
+        }
+        return true;
+    }
+
     if (const auto udp = virtual_udp_sockets_.find(fd);
         udp != virtual_udp_sockets_.end()) {
         const auto received = udp->second->receive(receive_capacity, &target);
@@ -502,6 +524,25 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
     }
     if (bpf_descriptors_.contains(fd)) {
         return receive_bpf_bytes(cpu, fd, address, size, vectors);
+    }
+    if (const auto control = kernel_control_endpoints_.find(fd);
+        control != kernel_control_endpoints_.end()) {
+        std::lock_guard lock { control->second->mutex };
+        if (!control->second->statistics)
+            return false;
+        auto& statistics = *control->second->statistics;
+        const auto packet = statistics.next();
+        if (packet.empty())
+            return false;
+        const auto count = std::min<std::size_t>(packet.size(), size);
+        if (!GuestReadBuffer {address, vectors}.copy(memory_, packet.first(count)) ||
+            !source.copy_received(memory_, {})) {
+            bsd_error(cpu, efault);
+        } else {
+            statistics.consume();
+            bsd_success(cpu, static_cast<std::uint32_t>(count));
+        }
+        return true;
     }
     if (const auto event_stream = wifi_driver_event_streams_.find(fd);
         event_stream != wifi_driver_event_streams_.end() &&
@@ -1284,6 +1325,12 @@ void CompatibilityKernel::synchronize_interface_routes(
 
 bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
 {
+    if (const auto control = kernel_control_endpoints_.find(fd);
+        control != kernel_control_endpoints_.end()) {
+        std::lock_guard lock { control->second->mutex };
+        return control->second->statistics &&
+            control->second->statistics->pending_bytes() != 0;
+    }
     if (const auto descriptor = virtual_descriptors_.find(fd);
         descriptor != virtual_descriptors_.end() &&
         descriptor->second == CompassDevice::descriptor_kind) {
@@ -1722,8 +1769,11 @@ std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
             endpoint->second.receive_queue().bytes.size(),
             std::numeric_limits<std::uint32_t>::max()));
     }
-    if (kernel_control_endpoints_.contains(fd)) {
-        return 0;
+    if (const auto control = kernel_control_endpoints_.find(fd);
+        control != kernel_control_endpoints_.end()) {
+        std::lock_guard lock { control->second->mutex };
+        return control->second->statistics ?
+            control->second->statistics->pending_bytes() : 0U;
     }
     if (const auto descriptor = virtual_descriptors_.find(fd);
         descriptor != virtual_descriptors_.end() &&

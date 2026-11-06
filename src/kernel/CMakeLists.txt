@@ -204,6 +204,7 @@ target_link_libraries(ilemu_kernel_bsd_filesystem_timestamps PRIVATE
 
 add_library(ilemu_kernel_bsd_control STATIC
     bsd/network/control/control.cpp
+    bsd/network/control/statistics.cpp
     bsd/network/control/syscalls.cpp)
 add_library(iLEmu::kernel_bsd_control ALIAS
     ilemu_kernel_bsd_control)

@@ -101,6 +101,7 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
     const auto socket = virtual_udp_sockets_.find(fd);
     const auto host = host_sockets_.find(fd);
     if (socket == virtual_udp_sockets_.end() && host == host_sockets_.end() &&
+        !kernel_control_endpoints_.contains(fd) &&
         !socket_defunct(fd))
         return false;
 
@@ -190,6 +191,9 @@ bool CompatibilityKernel::send_socket_message(Cpu& cpu, std::uint32_t fd,
         }
         destination = *address;
     }
+
+    if (write_kernel_control_socket(cpu, fd, payload))
+        return true;
 
     if (host != host_sockets_.end()) {
         const auto nonblocking =

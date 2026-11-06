@@ -9,12 +9,17 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <memory>
+#include <mutex>
+#include "kernel/network_statistics_control.hpp"
 
 namespace ilemu::bsd::kernel_control {
 
 inline constexpr std::string_view descriptor_kind { "system-control-socket" };
 inline constexpr std::string_view ip_interface_name { "com.apple.ipif" };
 inline constexpr std::uint32_t ip_interface_identifier = 1;
+inline constexpr std::string_view statistics_name { "com.apple.network.statistics" };
+inline constexpr std::uint32_t statistics_identifier = 2;
 
 struct Address {
     std::uint32_t identifier { };
@@ -22,9 +27,12 @@ struct Address {
 };
 
 struct Endpoint {
+    explicit Endpoint(std::uint32_t type) : socket_type(type) { }
+    std::mutex mutex;
     std::uint32_t socket_type { };
     std::optional<Address> peer;
     std::uint64_t transmitted_bytes { };
+    std::unique_ptr<NetworkStatisticsControl> statistics;
 };
 
 [[nodiscard]] std::optional<std::uint32_t> identifier_for_name(

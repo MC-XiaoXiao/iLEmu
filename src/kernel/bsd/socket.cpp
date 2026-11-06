@@ -242,6 +242,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         if (!host_sockets_.contains(fd) && !virtual_udp_sockets_.contains(fd) &&
             !socket_pair_endpoints_.contains(fd) &&
+            !kernel_control_endpoints_.contains(fd) &&
             !system_event_next_identifiers_.contains(fd)) {
             bsd_error(cpu, bsd_support::not_connected);
             return;
