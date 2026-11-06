@@ -2926,6 +2926,7 @@ void EmulatorSession::run()
     prepared_slices.reserve(guest_processor_count);
     std::vector<GuestExecutionRequest*> execution_requests;
     execution_requests.reserve(guest_processor_count);
+    std::vector<XnuThreadId> input_receivers;
     // Retain the type-erased callback as well as the batch buffers. Converting
     // its captured references to std::function on every run allocates a new
     // callback object at each CPU channel handoff.
@@ -3776,19 +3777,19 @@ void EmulatorSession::run()
             }
         }
         if (!input_preferred_thread) {
+            input_receivers.clear();
             for (const auto& runtime : runtimes) {
-                const auto processor =
-                    runtime->kernel->interactive_input_processor();
-                if (!processor)
-                    continue;
-                const XnuThreadId thread { runtime->kernel->process().pid,
-                    static_cast<std::uint32_t>(*processor) };
-                const auto info = scheduler.info(thread);
-                if (info && info->state == XnuThreadState::Runnable) {
-                    input_preferred_thread = thread;
-                    break;
-                }
+                runtime->kernel->visit_interactive_input_processors(
+                    [&input_receivers, process = runtime->kernel->process().pid](
+                        std::size_t processor) {
+                        input_receivers.push_back({ process,
+                            static_cast<std::uint32_t>(processor) });
+                    });
             }
+            // A continuously active receiver must not hide later receivers.
+            // Reuse their scheduler FIFO age within the existing input share.
+            input_preferred_thread = scheduler.oldest_runnable_thread(
+                std::span<const XnuThreadId> { input_receivers });
         }
         std::optional<XnuThreadId> queued_input_thread;
         if (!input_preferred_thread) {

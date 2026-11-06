@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -33,8 +34,8 @@ public:
         std::uint32_t process, std::size_t processor) const;
     [[nodiscard]] bool pending_event_ready(std::uint32_t process,
         std::size_t processor, std::uint64_t now) const;
-    [[nodiscard]] std::optional<std::size_t> interactive_processor(
-        std::uint32_t process) const;
+    void visit_interactive_processors(std::uint32_t process,
+        const std::function<void(std::size_t)>& visitor) const;
     [[nodiscard]] std::optional<std::uint64_t> next_sample_deadline() const
     {
         return delivering_processors_.contains(consumer_processor_)

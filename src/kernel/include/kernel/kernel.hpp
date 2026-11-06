@@ -563,10 +563,11 @@ public:
     take_last_delivered_graphics_input(std::size_t processor);
     // Native physical-input callbacks remain interactive through their guest
     // continuations; periodic sensor samples do not carry this preference.
-    [[nodiscard]] std::optional<std::size_t> interactive_input_processor()
+    void visit_interactive_input_processors(
+        const std::function<void(std::size_t)>& visitor)
     {
         std::lock_guard lock { mutex_ };
-        return hid_event_system_hle_.interactive_processor(process_.pid);
+        hid_event_system_hle_.visit_interactive_processors(process_.pid, visitor);
     }
     // A queued physical event can precede entry into the native callback.
     [[nodiscard]] std::optional<std::size_t> pending_input_processor() const

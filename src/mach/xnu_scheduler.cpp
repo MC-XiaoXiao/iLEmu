@@ -272,6 +272,22 @@ std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread(
     return oldest;
 }
 
+std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread(
+    std::span<const XnuThreadId> candidates) const
+{
+    std::optional<XnuThreadId> oldest;
+    std::uint64_t sequence = std::numeric_limits<std::uint64_t>::max();
+    for (const auto thread : candidates) {
+        const auto found = threads_.find(thread);
+        if (found != threads_.end() && found->second.queued &&
+            (!oldest || found->second.runnable_enqueue_sequence < sequence)) {
+            oldest = thread;
+            sequence = found->second.runnable_enqueue_sequence;
+        }
+    }
+    return oldest;
+}
+
 std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread_except(
     std::optional<XnuThreadId> excluded) const
 {
