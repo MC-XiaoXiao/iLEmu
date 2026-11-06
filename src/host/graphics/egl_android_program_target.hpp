@@ -4,6 +4,7 @@
 #pragma once
 
 #include "android_program_target.hpp"
+#include "egl_program_target.hpp"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
@@ -11,15 +12,15 @@ namespace ilemu {
 struct DisplayFrame;
 // Owned by the EGL target. GL owns the texture; this retains its imported
 // storage and the Vulkan device until the target is replaced or retired.
-class EglAndroidProgramTarget final {
+class EglAndroidProgramTarget final : public EglProgramTarget {
 public:
     [[nodiscard]] static bool supported(EGLDisplay display);
     EglAndroidProgramTarget(
         EGLDisplay display, std::shared_ptr<GlesProgramTarget> input);
-    ~EglAndroidProgramTarget();
+    ~EglAndroidProgramTarget() override;
     EglAndroidProgramTarget(const EglAndroidProgramTarget&) = delete;
     EglAndroidProgramTarget& operator=(const EglAndroidProgramTarget&) = delete;
-    [[nodiscard]] bool publish(DisplayFrame& frame);
+    [[nodiscard]] bool publish(DisplayFrame& frame) override;
 
 private:
     EGLDisplay display_;

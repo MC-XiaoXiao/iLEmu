@@ -56,6 +56,11 @@ public:
     {
         return GlesProgramTarget::Api::None;
     }
+    [[nodiscard]] virtual GlesProgramTarget::Identity
+    program_target_identity() const
+    {
+        return { program_target_api(), { } };
+    }
     // Called on the shared render worker, at the same FIFO boundary as a CPU
     // readback. The snapshot preserves subsequent writes to the source surface.
     [[nodiscard]] virtual std::shared_ptr<GlesProgramTarget>

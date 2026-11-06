@@ -663,7 +663,7 @@ struct GlesProgramWorker::State {
     std::shared_ptr<ProgramExecutor> executor { shared_executor() };
     std::shared_ptr<Backend> backend { std::make_shared<Backend>() };
     std::string name;
-    GlesProgramTarget::Api target_api { GlesProgramTarget::Api::None };
+    GlesProgramTarget::Identity target;
     bool published { }, initialized { };
     std::set<std::uint32_t> linked;
     struct Pending {
@@ -709,7 +709,7 @@ std::unique_ptr<GlesProgramWorker> GlesProgramWorker::begin_create(
             backend->renderer = executor->create_program_renderer(&info.error);
             if (backend->renderer) {
                 info.name = std::string { backend->renderer->name() };
-                info.target_api = backend->renderer->program_target_api();
+                info.target = backend->renderer->program_target_identity();
             }
             if (info.name.size() > initialization_bytes - sizeof(info) ||
                 info.error.size() >
@@ -727,7 +727,7 @@ std::unique_ptr<GlesProgramWorker> GlesProgramWorker::begin_create(
 
 void GlesProgramWorker::complete_initialization(Initialization result)
 {
-    state_->target_api = result.target_api;
+    state_->target = result.target;
     state_->name = std::move(result.name) + " [render-worker]";
     state_->initialized = true;
 }
@@ -736,8 +736,8 @@ bool GlesProgramWorker::initialized() const { return state_->initialized; }
 
 bool GlesProgramWorker::shares_target_with(const GlesRenderer& renderer) const
 {
-    return state_->target_api != GlesProgramTarget::Api::None &&
-           state_->target_api == renderer.program_target_api();
+    return state_->target.api != GlesProgramTarget::Api::None &&
+           state_->target == renderer.program_target_identity();
 }
 
 std::shared_ptr<GlesValueResult<std::optional<GlesProgramWorker::Limits>>>
@@ -888,7 +888,8 @@ std::shared_ptr<GlesWorkResult> GlesProgramWorker::enqueue_input_readback(
                 std::vector<std::uint32_t>().swap(packet->frame.pixels);
                 const auto api = renderer->program_target_api();
                 if (api != GlesProgramTarget::Api::None &&
-                    api == backend->renderer->program_target_api()) {
+                    renderer->program_target_identity() ==
+                        backend->renderer->program_target_identity()) {
                     packet->shared_target =
                         renderer->capture_program_target(surface,
                             packet->raster.render_target_inverted_vertical);

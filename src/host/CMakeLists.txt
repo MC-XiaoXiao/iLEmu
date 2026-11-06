@@ -29,6 +29,9 @@ elseif(UNIX AND NOT APPLE AND PkgConfig_FOUND)
     if(TARGET PkgConfig::HOST_GLES)
         target_sources(ilemu_host_graphics PRIVATE
             graphics/egl_program_renderer.cpp graphics/egl_framebuffer_fetch.cpp)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            target_sources(ilemu_host_graphics PRIVATE graphics/egl_fd_program_target.cpp)
+        endif()
         target_link_libraries(ilemu_host_graphics PRIVATE PkgConfig::HOST_GLES)
         target_compile_definitions(ilemu_host_graphics PRIVATE ILEMU_HAS_HOST_GLES=1)
     endif()
@@ -76,6 +79,8 @@ if(ILEMU_ENABLE_VULKAN AND Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
     if(ANDROID)
         target_sources(ilemu_host_graphics PRIVATE
             graphics/vulkan_android_program_target.cpp)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_sources(ilemu_host_graphics PRIVATE graphics/vulkan_fd_program_target.cpp)
     endif()
     add_dependencies(ilemu_host_graphics ilemu_vulkan_shaders)
     target_include_directories(ilemu_host_graphics PRIVATE

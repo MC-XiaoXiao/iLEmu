@@ -71,6 +71,11 @@ public:
     {
         return GlesProgramTarget::Api::None;
     }
+    [[nodiscard]] virtual GlesProgramTarget::Identity
+    program_target_identity() const
+    {
+        return { program_target_api(), { } };
+    }
     [[nodiscard]] virtual bool draw_shared_target(const DisplayFrame&,
         GlesRenderTargetKey, const GlesProgramDraw&, std::uint32_t,
         const GlesRasterState&, std::shared_ptr<GlesProgramTarget>)
@@ -182,7 +187,7 @@ public:
     using LinkResult = GlesProgramRenderer::LinkResult;
     struct Initialization {
         std::string name, error;
-        GlesProgramTarget::Api target_api { GlesProgramTarget::Api::None };
+        GlesProgramTarget::Identity target;
     };
     struct LinkedProgram {
         LinkResult result;

@@ -4,6 +4,10 @@
 
 #include "egl_program_renderer.hpp"
 #include "egl_framebuffer_fetch.hpp"
+#include "egl_program_target.hpp"
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "egl_fd_program_target.hpp"
+#endif
 #include "graphics/display.hpp"
 #include "graphics/gles_resources.hpp"
 #if defined(__ANDROID__)
@@ -89,9 +93,7 @@ namespace {
             bool inverted_vertical { };
             bool native_argb_readback { };
             EglFramebufferFetch fetch;
-#if defined(__ANDROID__)
-            std::unique_ptr<EglAndroidProgramTarget> shared_target;
-#endif
+            std::unique_ptr<EglProgramTarget> shared_target;
         };
         struct Texture {
             GLuint object { };
@@ -166,7 +168,15 @@ namespace {
                 const auto* gl_extensions = glGetString(GL_EXTENSIONS);
 #if defined(__ANDROID__)
                 native_program_target_ =
-                    EglAndroidProgramTarget::supported(display_);
+                    EglAndroidProgramTarget::supported(display_)
+                        ? GlesProgramTarget::Api::AndroidHardwareBuffer
+                        : GlesProgramTarget::Api::None;
+#elif defined(__linux__)
+                if (const auto device = EglFdProgramTarget::supported()) {
+                    native_program_target_ =
+                        GlesProgramTarget::Api::ExternalMemoryFd;
+                    program_device_ = *device;
+                }
 #endif
                 const auto extension_list = std::string { " " } +
                     (gl_extensions
@@ -419,16 +429,18 @@ namespace {
         }
         GlesProgramTarget::Api program_target_api() const override
         {
-            return native_program_target_
-                       ? GlesProgramTarget::Api::AndroidHardwareBuffer
-                       : GlesProgramTarget::Api::None;
+            return native_program_target_;
+        }
+        GlesProgramTarget::Identity program_target_identity() const override
+        {
+            return { native_program_target_, program_device_ };
         }
         bool draw_shared_target(const DisplayFrame& frame,
             GlesRenderTargetKey key, const GlesProgramDraw& draw,
             std::uint32_t mode, const GlesRasterState& state,
             std::shared_ptr<GlesProgramTarget> input) override
         {
-            return input->api() == program_target_api() &&
+            return input->identity() == program_target_identity() &&
                    draw_impl(frame, key, draw, mode, state, std::move(input));
         }
         bool draw_impl(const DisplayFrame& frame, GlesRenderTargetKey key,
@@ -487,24 +499,48 @@ namespace {
                 glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                     GL_RENDERBUFFER, target.depth);
             }
-#if defined(__ANDROID__)
+            const auto replace_color = [&] {
+                glDeleteTextures(1, &target.color);
+                glGenTextures(1, &target.color);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, target.color);
+                glTexParameteri(
+                    GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(
+                    GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                    GL_TEXTURE_2D, target.color, 0);
+            };
             if (input) {
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, target.color);
+#if defined(__ANDROID__)
                 target.shared_target =
                     std::make_unique<EglAndroidProgramTarget>(
                         display_, std::move(input));
+#elif defined(__linux__)
+                // EXT_memory_object textures have immutable storage. A new
+                // owned allocation requires a new texture, even at equal size.
+                target.shared_target.reset();
+                replace_color();
+                target.shared_target = std::make_unique<EglFdProgramTarget>(
+                    target.color, std::move(input));
+#endif
             } else if (!frame.pixels.empty() && target.shared_target) {
+                const bool immutable =
+                    target.shared_target->immutable_storage();
                 target.shared_target.reset();
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, target.color);
+                if (immutable)
+                    replace_color();
                 glTexImage2D(GL_TEXTURE_2D, 0,
                     static_cast<GLint>(texture_format_),
                     static_cast<GLsizei>(frame.width),
                     static_cast<GLsizei>(frame.height), 0, texture_format_,
                     GL_UNSIGNED_BYTE, nullptr);
             }
-#endif
             glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
             if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
                 GL_FRAMEBUFFER_COMPLETE)
@@ -680,10 +716,8 @@ namespace {
             const auto& target = found->second;
             frame.width = target.width;
             frame.height = target.height;
-#if defined(__ANDROID__)
             if (target.shared_target)
                 return target.shared_target->publish(frame);
-#endif
             frame.pixels.resize(
                 static_cast<std::size_t>(frame.width) * frame.height);
             glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
@@ -787,9 +821,7 @@ namespace {
                 glDeleteTextures(1, &target.color);
             if (target.depth)
                 glDeleteRenderbuffers(1, &target.depth);
-#if defined(__ANDROID__)
             target.shared_target.reset();
-#endif
         }
         void erase_bound(std::uint32_t name)
         {
@@ -896,7 +928,10 @@ namespace {
         std::map<std::uint32_t, Program> programs_;
         std::map<std::uint32_t, Texture> textures_;
         std::map<GlesRenderTargetKey, Target> targets_;
-        bool native_program_target_ { };
+        GlesProgramTarget::Api native_program_target_ {
+            GlesProgramTarget::Api::None
+        };
+        GlesProgramTarget::DeviceIdentity program_device_ { };
         std::vector<std::uint8_t> rgba_, texture_rgba_;
         std::vector<std::byte> attributes_;
         std::uint64_t use_sequence_ { };

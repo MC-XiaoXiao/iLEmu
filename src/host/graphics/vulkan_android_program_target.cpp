@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #include "vulkan_android_program_target.hpp"
 #include "graphics/gles_renderer.hpp"
+#include "vulkan_program_transfer.hpp"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -216,40 +217,9 @@ void VulkanProgramTargetAllocation::transfer(VkCommandBuffer command,
     VkImage canonical, std::uint32_t queue_family, bool inverted_vertical,
     bool publishing) const
 {
-    VkImageMemoryBarrier barrier { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    barrier.oldLayout =
-        publishing ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = publishing ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-                                   : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
-    barrier.dstQueueFamilyIndex = queue_family;
-    barrier.dstAccessMask =
-        publishing ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.image = image_;
-    barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    VkImageBlit blit { };
-    blit.srcSubresource =
-        blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    blit.srcOffsets[1] = { static_cast<std::int32_t>(width_),
-        static_cast<std::int32_t>(height_), 1 };
-    blit.dstOffsets[0] = { 0,
-        inverted_vertical ? 0 : static_cast<std::int32_t>(height_), 0 };
-    blit.dstOffsets[1] = { static_cast<std::int32_t>(width_),
-        inverted_vertical ? static_cast<std::int32_t>(height_) : 0, 1 };
-    vkCmdBlitImage(command, publishing ? image_ : canonical,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, publishing ? canonical : image_,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
-    barrier.oldLayout = barrier.newLayout;
-    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.srcQueueFamilyIndex = queue_family;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
-    barrier.srcAccessMask = barrier.dstAccessMask;
-    barrier.dstAccessMask = 0;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
-        &barrier);
+    encode_program_transfer(command, canonical, image_, { width_, height_ },
+        queue_family, VK_QUEUE_FAMILY_FOREIGN_EXT, true, inverted_vertical,
+        publishing);
 }
 
 std::shared_ptr<GlesProgramTarget> make_android_program_target(
