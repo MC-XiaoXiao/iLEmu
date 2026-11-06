@@ -47,8 +47,13 @@ void GuestParallelismPolicy::observe(XnuThreadId thread,
     std::uint64_t host_execution_ns, bool ran_parallel, bool translated_code)
 {
     auto& history = histories_[thread];
-    const auto dense = svc_calls != 0 && ticks_consumed / svc_calls <
-                                             minimum_parallel_ticks_per_svc_;
+    // Serial admission avoids a worker barrier at each cheap syscall. Guest
+    // ticks alone omit demand translation and can label a cold CPU-bound slice
+    // syscall-dense. Require frequent boundaries in host execution time too.
+    const auto dense = svc_calls != 0 &&
+        ticks_consumed / svc_calls < minimum_parallel_ticks_per_svc_ &&
+        host_execution_ns / svc_calls <
+            1'000'000'000U / minimum_parallel_intervals_per_second;
     if (dense) {
         history.syscall_density_score = std::min<std::uint8_t>(
             maximum_score, history.syscall_density_score + 1U);
