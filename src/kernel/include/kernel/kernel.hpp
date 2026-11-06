@@ -11,6 +11,7 @@
 #include "kernel/darwin_file_guard.hpp"
 #include "kernel/darwin_signal_state.hpp"
 #include <boost/container/flat_map.hpp>
+#include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
 #include <array>
 #include <chrono>
@@ -1348,7 +1349,7 @@ private:
     // producers retain their independent cross-process generation.
     std::uint64_t local_io_event_generation_ { };
     std::map<std::size_t, PendingIoPollCache> pending_io_poll_cache_;
-    std::set<std::size_t> pending_event_processors_;
+    boost::container::flat_set<std::size_t> pending_event_processors_;
     std::uint64_t pending_event_topology_generation_ { 1 };
     std::uint64_t pending_event_poll_topology_generation_ { };
     std::uint64_t pending_event_poll_io_generation_ { };
