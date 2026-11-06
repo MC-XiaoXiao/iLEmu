@@ -381,6 +381,12 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         constexpr std::uint32_t guard_size = AddressSpace::page_size;
         constexpr std::uint32_t dynamic_base = 0x1000'0000U;
         constexpr std::uint32_t custom_stack = 0x0100'0000U;
+        constexpr std::uint32_t set_scheduling = 0x0200'0000U;
+        constexpr std::uint32_t qos_class = 0x0800'0000U;
+        constexpr std::uint32_t scheduling_policy_shift = 16U;
+        constexpr std::uint32_t scheduling_policy_mask = 0xffU;
+        constexpr std::uint32_t scheduling_priority_mask = 0xffffU;
+        constexpr std::uint32_t scheduling_other = 1U;
         const auto& registration = pthread_runtime_.registration();
         if (!registration) {
             output_.write("[pthread] create-failed pid=" +
@@ -487,21 +493,48 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             fail_create("thread-state", bsd_support::invalid_argument);
             return true;
         }
-        if (contract.supports_bsdthread_ctl && (flags & 0x0800'0000U) != 0U) {
+        // libpthread kern_support.c: PTHREAD_START_SETSCHED takes precedence
+        // over PTHREAD_START_QOSCLASS. Scheduling attributes are installed
+        // before the new thread starts executing its userspace trampoline.
+        bool scheduling_applied = true;
+        if ((flags & set_scheduling) != 0U) {
+            using namespace darwin::mach::thread_policy;
+            const auto policy = (flags >> scheduling_policy_shift) & scheduling_policy_mask;
+            const auto priority = static_cast<std::int32_t>(flags & scheduling_priority_mask);
+            const std::array<std::uint32_t, 1> extended {
+                policy == scheduling_other ? 1U : 0U };
+            const std::array<std::uint32_t, 1> precedence {
+                static_cast<std::uint32_t>(
+                    priority - xnu::scheduler::default_base_priority) };
+            scheduling_applied = thread_policy_handler_ &&
+                thread_policy_handler_(process_.pid,
+                    static_cast<std::uint32_t>(created->processor),
+                    extended_policy, extended) &&
+                thread_policy_handler_(process_.pid,
+                    static_cast<std::uint32_t>(created->processor),
+                    precedence_policy, precedence);
+            output_.write("[process] pthread-scheduling pid=" +
+                std::to_string(process_.pid) + " cpu=" +
+                std::to_string(created->processor) + " policy=" +
+                std::to_string(policy) + " priority=" +
+                std::to_string(priority) + " applied=" +
+                std::to_string(scheduling_applied) + "\n");
+        } else if (contract.supports_bsdthread_ctl && (flags & qos_class) != 0U) {
             const auto qos = PthreadPriority::decode_requested_qos(contract, flags & 0x00ff'ffffU);
             const std::array<std::uint32_t, 2> policy {
                 static_cast<std::uint32_t>(qos.tier),
                 static_cast<std::uint32_t>(qos.relative_priority) };
-            if (!thread_policy_handler_ || !thread_policy_handler_(process_.pid,
+            scheduling_applied = thread_policy_handler_ && thread_policy_handler_(process_.pid,
                     static_cast<std::uint32_t>(created->processor),
-                    darwin::mach::thread_policy::qos_policy, policy)) {
-                if (thread_terminate_handler_)
-                    static_cast<void>(thread_terminate_handler_(process_.pid, created->processor));
-                if (allocation)
-                    static_cast<void>(memory_.unmap(allocation->first, allocation->second));
-                fail_create("qos", bsd_support::invalid_argument);
-                return true;
-            }
+                    darwin::mach::thread_policy::qos_policy, policy);
+        }
+        if (!scheduling_applied) {
+            if (thread_terminate_handler_)
+                static_cast<void>(thread_terminate_handler_(process_.pid, created->processor));
+            if (allocation)
+                static_cast<void>(memory_.unmap(allocation->first, allocation->second));
+            fail_create("scheduling", bsd_support::invalid_argument);
+            return true;
         }
         output_.write("[pthread] create pid=" + std::to_string(process_.pid) +
                       " slot=" + std::to_string(created->processor) +
