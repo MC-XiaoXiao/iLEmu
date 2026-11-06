@@ -125,14 +125,14 @@ namespace mach_support {
         while (candidate &&
                size - 1U <=
                    std::numeric_limits<std::uint32_t>::max() - *candidate) {
-            if (!guest_region_overlaps(memory, *candidate, size))
+            const auto region = memory.mapping_region_at_or_after(*candidate);
+            if (!region || region->address >=
+                    static_cast<std::uint64_t>(*candidate) + size)
                 return candidate;
 
-            const auto next_page = static_cast<std::uint64_t>(*candidate) +
-                                   AddressSpace::page_size;
-            if (next_page > std::numeric_limits<std::uint32_t>::max())
-                break;
-            const auto next = align_candidate(next_page);
+            // Mapping metadata includes lazy and inaccessible reservations.
+            // Skip the occupied interval instead of testing each of its pages.
+            const auto next = align_candidate(region->end);
             if (!next || *next <= *candidate)
                 break;
             candidate = next;
