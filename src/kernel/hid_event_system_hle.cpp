@@ -6,6 +6,7 @@
 
 #include "kernel/hid_event_system_hle.hpp"
 #include "hid_event_transaction.hpp"
+#include "hid_service_delivery.hpp"
 #include "hid_switch_query.hpp"
 
 #include "foundation/cpu.hpp"
@@ -24,6 +25,7 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
     : registry_ { registry }
 {
     register_hid_switch_queries(registry_);
+    HidServiceDelivery::register_functions(registry_);
     registry_.register_function(
         "/IOKit", "_IOHIDEventSystemOpen", [this](UserlandHleCall& call) {
             HidEventQueue::Consumer consumer { call.process_id(),

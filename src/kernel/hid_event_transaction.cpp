@@ -5,6 +5,7 @@
 // Construct and dispatch firmware-owned HID objects on their consumer thread.
 
 #include "hid_event_transaction.hpp"
+#include "hid_service_delivery.hpp"
 
 #include "foundation/cpu.hpp"
 #include "foundation/darwin_version.hpp"
@@ -203,6 +204,10 @@ namespace {
             CreateSenderNumber,
             CopyService,
             ReleaseSenderNumber,
+            CopyDispatchQueue,
+            CreateDeliveryContext,
+            EnqueueService,
+            ReleaseDispatchQueue,
             DispatchService,
             ReleaseService,
             Dispatch,
@@ -307,6 +312,29 @@ namespace {
                 break;
             case Step::ReleaseSenderNumber:
                 r[0] = sender_number_;
+                break;
+            case Step::CopyDispatchQueue:
+                r[0] = service_;
+                break;
+            case Step::CreateDeliveryContext: {
+                r[13] -= 16U;
+                const std::array values { service_, root_event_ };
+                static_cast<void>(call.memory().copy_in(
+                    r[13], std::as_bytes(std::span { values })));
+                r[0] = 0U;
+                r[1] = r[13];
+                r[2] = values.size();
+                r[3] = *call.symbol_address("_kCFTypeArrayCallBacks");
+                break;
+            }
+            case Step::EnqueueService:
+                record_handoff(call);
+                r[0] = dispatch_queue_;
+                r[1] = delivery_context_;
+                r[2] = *HidServiceDelivery::callback(call);
+                break;
+            case Step::ReleaseDispatchQueue:
+                r[0] = dispatch_queue_;
                 break;
             case Step::DispatchService:
                 record_handoff(call);
@@ -441,10 +469,32 @@ namespace {
                 symbol = "_CFRelease";
                 break;
             case Step::ReleaseSenderNumber:
-                step_ = service_ ? Step::DispatchService : Step::Dispatch;
-                symbol = service_ ? dispatch_service
-                                  : "__IOHIDEventSystemDispatchEvent";
+                if (service_ && HidServiceDelivery::available(call)) {
+                    step_ = Step::CopyDispatchQueue;
+                    symbol = "__IOHIDServiceCopyDispatchQueue";
+                } else {
+                    step_ = service_ ? Step::DispatchService : Step::Dispatch;
+                    symbol = service_ ? dispatch_service
+                                      : "__IOHIDEventSystemDispatchEvent";
+                }
                 break;
+            case Step::CopyDispatchQueue:
+                dispatch_queue_ = call.argument(0);
+                // Run-loop-only services retain their synchronous callback.
+                step_ = dispatch_queue_ ? Step::CreateDeliveryContext
+                                        : Step::DispatchService;
+                symbol = dispatch_queue_ ? "_CFArrayCreate" : dispatch_service;
+                break;
+            case Step::CreateDeliveryContext:
+                delivery_context_ = call.argument(0);
+                step_ = Step::EnqueueService;
+                symbol = "_dispatch_async_f";
+                break;
+            case Step::EnqueueService:
+                step_ = Step::ReleaseDispatchQueue;
+                symbol = "_dispatch_release";
+                break;
+            case Step::ReleaseDispatchQueue:
             case Step::DispatchService:
                 step_ = Step::ReleaseService;
                 symbol = "_CFRelease";
@@ -498,6 +548,8 @@ namespace {
         std::uint32_t child_event_ { };
         std::uint32_t sender_number_ { };
         std::uint32_t service_ { };
+        std::uint32_t dispatch_queue_ { };
+        std::uint32_t delivery_context_ { };
     };
 
 } // namespace
