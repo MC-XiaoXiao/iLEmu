@@ -182,16 +182,18 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
         return true;
     }
 
-    output_.write("[vm] region caller=" + std::to_string(process_.pid) +
-                  " target=" + std::to_string(*target_pid) + " interface=" +
-                  (is_mach_vm        ? std::string { "mach_vm" }
-                      : is_vm_region ? std::string { "vm_region" }
-                                     : std::string { "vm_map" }) +
-                  " requested=" + std::to_string(*address) +
-                  " address=" + std::to_string(region->address) +
-                  " size=" + std::to_string(region->end - region->address) +
-                  " protection=" + std::to_string(protection) +
-                  " flavor=" + std::to_string(*flavor) + " result=0\n");
+    if (output_.enabled("[vm]")) {
+        output_.write("[vm] region caller=" + std::to_string(process_.pid) +
+                      " target=" + std::to_string(*target_pid) + " interface=" +
+                      (is_mach_vm        ? std::string { "mach_vm" }
+                          : is_vm_region ? std::string { "vm_region" }
+                                         : std::string { "vm_map" }) +
+                      " requested=" + std::to_string(*address) +
+                      " address=" + std::to_string(region->address) +
+                      " size=" + std::to_string(region->end - region->address) +
+                      " protection=" + std::to_string(protection) +
+                      " flavor=" + std::to_string(*flavor) + " result=0\n");
+    }
     registers[0] = kern_success;
     return true;
 }
