@@ -11,6 +11,7 @@
 #pragma once
 
 #include "foundation/shared_memory_identity.hpp"
+#include "mach/xnu_qos_policy.hpp"
 
 #include <compare>
 #include <cstdint>
@@ -59,20 +60,37 @@ public:
         std::uint32_t unlock_generation { };
     };
 
+    struct MutexWaitContext {
+        std::uint64_t thread_id { };
+        std::uint64_t owner_hint { };
+        std::optional<DarwinPsynchThread> owner;
+        XnuQosTier requested_qos { };
+    };
+
+    struct MutexQosUpdate {
+        DarwinPsynchThread thread;
+        std::uint32_t address { };
+        std::optional<std::int32_t> priority;
+    };
+    using MutexQosUpdates = std::vector<MutexQosUpdate>;
+
     struct WaitOutcome {
         bool blocked { };
         std::uint32_t result { };
         std::vector<DarwinPsynchThread> woken_threads;
+        MutexQosUpdates mutex_qos_updates;
     };
 
     struct WakeOutcome {
         std::uint32_t result { };
         std::vector<DarwinPsynchThread> woken_threads;
+        MutexQosUpdates mutex_qos_updates;
     };
 
     [[nodiscard]] WaitOutcome wait_mutex(DarwinPsynchThread thread,
         DarwinPsynchObject object, std::uint32_t lock_generation,
-        std::uint32_t unlock_generation, std::uint32_t flags);
+        std::uint32_t unlock_generation, std::uint32_t flags,
+        MutexWaitContext context);
     [[nodiscard]] WakeOutcome drop_mutex(std::uint32_t process_id,
         DarwinPsynchObject object, std::uint32_t lock_generation,
         std::uint32_t unlock_generation, std::uint32_t flags);
@@ -102,8 +120,9 @@ public:
 
     [[nodiscard]] std::optional<std::uint32_t> take_result(
         DarwinPsynchThread thread);
-    void cancel_wait(DarwinPsynchThread thread);
-    void clear_process(std::uint32_t process_id);
+    [[nodiscard]] MutexQosUpdates cancel_wait(
+        DarwinPsynchThread thread, bool retiring = false);
+    [[nodiscard]] MutexQosUpdates clear_process(std::uint32_t process_id);
 
 private:
     enum class QueueFamily : std::uint8_t { Mutex, Condition, RwLock };
@@ -123,6 +142,7 @@ private:
         DarwinPsynchThread thread;
         std::uint32_t sequence { };
         DarwinPsynchWaitKind kind { DarwinPsynchWaitKind::Mutex };
+        std::uint64_t thread_id { };
     };
 
     struct Prepost {
@@ -148,6 +168,20 @@ private:
         std::optional<RwState> rw;
     };
 
+    // A woken waiter retains its queue reference until its syscall returns.
+    // This keeps SWITCHING owner hints resolvable during the handoff.
+    struct MutexOwner {
+        std::uint64_t thread_id { };
+        std::optional<DarwinPsynchThread> thread;
+        XnuQosTier peak_qos { };
+        bool boosted { };
+        std::uint32_t pending_grants { };
+        std::optional<std::uint32_t> last_unlock_sequence;
+    };
+    void update_mutex_owner(const QueueKey& key, MutexOwner& state,
+        std::optional<DarwinPsynchThread> owner, std::uint64_t thread_id,
+        bool contended, MutexQosUpdates& updates);
+
     [[nodiscard]] QueueKey queue_key(std::uint32_t process_id,
         DarwinPsynchObject object, std::uint32_t flags, QueueFamily family);
     [[nodiscard]] static bool sequence_not_after(
@@ -161,12 +195,15 @@ private:
     void complete_wait_locked(const Waiter& waiter, std::uint32_t result,
         std::vector<DarwinPsynchThread>& woken_threads);
     void prune_queue_locked(const QueueKey& key);
+    void release_mutex_grant_locked(DarwinPsynchThread thread);
 
     void prune_expired_shared_queues_locked();
     std::uint32_t shared_operations_ { };
 
     std::mutex mutex_;
     std::map<QueueKey, QueueState> queues_;
+    std::map<QueueKey, MutexOwner> mutex_owners_;
+    std::map<DarwinPsynchThread, QueueKey> completed_mutex_grants_;
     std::map<DarwinPsynchThread, std::uint32_t> completed_results_;
 };
 

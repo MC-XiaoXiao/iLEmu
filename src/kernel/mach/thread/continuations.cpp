@@ -16,8 +16,8 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     // The caller owns kernel dispatch serialization. Retire shared wait
     // registrations before dropping the continuation that owns their state.
     const auto slot = static_cast<std::uint32_t>(processor);
-    shared_state_->psynch_runtime->cancel_wait(
-        DarwinPsynchThread { process_.pid, slot });
+    apply_psynch_mutex_qos(shared_state_->psynch_runtime->cancel_wait(
+        DarwinPsynchThread { process_.pid, slot }, true));
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         shared_state_->cancel_mach_sends_locked(process_.pid, slot);

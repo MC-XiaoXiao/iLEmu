@@ -86,8 +86,8 @@ bool CompatibilityKernel::interrupt_thread_wait(Cpu& cpu, bool restart)
             pending_semaphore_waits_.erase(pending);
             completed = true;
         } else if (pending_psynch_waits_.erase(processor)) {
-            shared_state_->psynch_runtime->cancel_wait(
-                { process_.pid, static_cast<std::uint32_t>(processor) });
+            apply_psynch_mutex_qos(shared_state_->psynch_runtime->cancel_wait(
+                { process_.pid, static_cast<std::uint32_t>(processor) }));
             bsd_error(cpu, darwin::error::interrupted);
             completed = true;
         } else if (const auto pending = pending_ulock_waits_.find(processor);

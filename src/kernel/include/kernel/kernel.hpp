@@ -651,6 +651,7 @@ private:
     void dispatch_bsd_process_sockets(Cpu& cpu);
     [[nodiscard]] bool dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number);
+    void apply_psynch_mutex_qos(DarwinPsynchRuntime::MutexQosUpdates updates);
     void dispatch_bsd_ulock(Cpu& cpu, std::uint32_t number);
     bool register_bsd_pthread(Cpu& cpu);
     bool set_bsd_pthread_qos(Cpu& cpu);

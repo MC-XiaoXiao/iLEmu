@@ -4,6 +4,8 @@
 //
 // Maintain pthread synchronization queues and sequence-number
 // ordering.
+// Private mutex QoS ownership follows libpthread-218.1.3/kern/kern_synch.c:
+// https://github.com/apple-oss-distributions/libpthread/blob/libpthread-218.1.3/kern/kern_synch.c
 //
 // Apple public ABI/behavior references (guest profiles may differ):
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/bsd/kern/pthread_support.c
@@ -87,20 +89,39 @@ void DarwinPsynchRuntime::prune_queue_locked(const QueueKey& key)
         found->second.preposts.empty() && !found->second.rw) {
         queues_.erase(found);
     }
+    if (key.family == QueueFamily::Mutex && !key.process_shared && !queues_.contains(key)) {
+        const auto owner = mutex_owners_.find(key);
+        if (owner != mutex_owners_.end() && owner->second.pending_grants == 0U)
+            mutex_owners_.erase(owner);
+    }
+}
+
+void DarwinPsynchRuntime::release_mutex_grant_locked(DarwinPsynchThread thread)
+{
+    const auto grant = completed_mutex_grants_.find(thread);
+    if (grant == completed_mutex_grants_.end())
+        return;
+    const auto key = grant->second;
+    --mutex_owners_.at(key).pending_grants;
+    completed_mutex_grants_.erase(grant);
+    prune_queue_locked(key);
 }
 
 DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_mutex(
     DarwinPsynchThread thread, DarwinPsynchObject object,
     std::uint32_t lock_generation, std::uint32_t unlock_generation,
-    std::uint32_t flags)
+    std::uint32_t flags, MutexWaitContext context)
 {
-    static_cast<void>(unlock_generation);
     std::lock_guard lock { mutex_ };
     const auto key = queue_key(
         thread.process_id, object, flags, QueueFamily::Mutex);
     auto& queue = queues_[key];
     const auto sequence = lock_generation & generation_mask;
     const auto first_fit = (flags & first_fit_policy) != 0U;
+    MutexQosUpdates updates;
+    auto* owner = key.process_shared ? nullptr : &mutex_owners_[key];
+    if (owner)
+        owner->peak_qos = std::max(owner->peak_qos, context.requested_qos);
     const auto prepost = std::find_if(queue.preposts.begin(),
         queue.preposts.end(), [&](const auto& candidate) {
             return candidate.kind == DarwinPsynchWaitKind::Mutex &&
@@ -110,13 +131,47 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_mutex(
         if (--prepost->count == 0U)
             queue.preposts.erase(prepost);
         const auto result = sequence | kernel_bit | exclusive_bit;
+        if (owner)
+            update_mutex_owner(key, *owner, thread, context.thread_id,
+                !queue.waiters.empty(), updates);
         prune_queue_locked(key);
-        return { false, result, { } };
+        return { false, result, { }, std::move(updates) };
+    }
+
+    if (owner) {
+        const auto ugen = unlock_generation & generation_mask;
+        const auto stale = owner->last_unlock_sequence &&
+            ugen != *owner->last_unlock_sequence &&
+            sequence_not_after(ugen, *owner->last_unlock_sequence);
+        if (context.owner_hint != 0U &&
+            (context.owner_hint == std::numeric_limits<std::uint64_t>::max() || stale)) {
+            context.owner = owner->thread;
+            context.owner_hint = owner->thread_id;
+        }
+        update_mutex_owner(key, *owner, context.owner,
+            context.owner_hint, true, updates);
     }
 
     queue.waiters.push_back(
-        Waiter { thread, sequence, DarwinPsynchWaitKind::Mutex });
-    return { true, 0, { } };
+        Waiter { thread, sequence, DarwinPsynchWaitKind::Mutex, context.thread_id });
+    return { true, 0, { }, std::move(updates) };
+}
+
+void DarwinPsynchRuntime::update_mutex_owner(const QueueKey& key,
+    MutexOwner& state, std::optional<DarwinPsynchThread> owner,
+    std::uint64_t thread_id, bool contended, MutexQosUpdates& updates)
+{
+    const auto boost = contended && owner && state.peak_qos != XnuQosTier::Unspecified;
+    if (state.boosted && (!boost || state.thread != owner))
+        updates.push_back({ *state.thread, key.address, std::nullopt });
+    if (boost)
+        updates.push_back({ *owner, key.address,
+            XnuThreadQosPolicy { state.peak_qos }.priority() });
+    else
+        state.peak_qos = XnuQosTier::Unspecified;
+    state.thread = owner;
+    state.thread_id = thread_id;
+    state.boosted = boost;
 }
 
 DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex_locked(
@@ -128,6 +183,9 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex_locked(
         queue_key(process_id, object, flags, QueueFamily::Mutex);
     auto& queue = queues_[key];
     WakeOutcome outcome;
+    auto* owner = key.process_shared ? nullptr : &mutex_owners_[key];
+    if (owner)
+        owner->last_unlock_sequence = unlock_generation & generation_mask;
     const auto next_sequence =
         (unlock_generation + generation_increment) & generation_mask;
     const auto first_fit = (flags & first_fit_policy) != 0U;
@@ -146,6 +204,12 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex_locked(
         waiter = queue.waiters.begin();
     }
     if (waiter != queue.waiters.end()) {
+        if (owner) {
+            update_mutex_owner(key, *owner, waiter->thread, waiter->thread_id,
+                queue.waiters.size() > 1U, outcome.mutex_qos_updates);
+            ++owner->pending_grants;
+            completed_mutex_grants_.insert_or_assign(waiter->thread, key);
+        }
         const auto highest_sequence = std::max_element(queue.waiters.begin(),
             queue.waiters.end(), [](const auto& left, const auto& right) {
                 return left.sequence < right.sequence;
@@ -155,6 +219,9 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex_locked(
             outcome.woken_threads);
         queue.waiters.erase(waiter);
     } else {
+        if (owner)
+            update_mutex_owner(key, *owner, std::nullopt, 0U, false,
+                outcome.mutex_qos_updates);
         queue.preposts.push_back(Prepost { next_sequence, 1,
             DarwinPsynchWaitKind::Mutex });
         if (first_fit) {
@@ -190,6 +257,7 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_condition(
             mutex_drop->unlock_generation, flags);
         append_wakeups(outcome.woken_threads,
             std::move(dropped.woken_threads));
+        outcome.mutex_qos_updates = std::move(dropped.mutex_qos_updates);
     }
 
     const auto key = queue_key(
@@ -362,7 +430,7 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_rwlock(
             const auto result = generation_increment |
                                 (rw.next_sequence_word & ~generation_mask) |
                                 overlap_bit;
-            return { false, result, { } };
+            return { false, result, { }, { } };
         }
     }
 
@@ -370,12 +438,12 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_rwlock(
         queue, Waiter { thread, lock_sequence, kind });
     if (rw.prepost_count == 0U ||
         !sequence_not_after(lock_sequence, rw.prepost_lock_sequence)) {
-        return { true, 0, { } };
+        return { true, 0, { }, { } };
     }
 
     --rw.prepost_count;
     if (rw.prepost_count != 0U)
-        return { true, 0, { } };
+        return { true, 0, { }, { } };
 
     const auto prepost_sequence_word = rw.prepost_sequence_word;
     rw.prepost_lock_sequence = 0U;
@@ -386,9 +454,9 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_rwlock(
         const auto value = result->second;
         completed_results_.erase(result);
         std::erase(granted.woken_threads, thread);
-        return { false, value, std::move(granted.woken_threads) };
+        return { false, value, std::move(granted.woken_threads), { } };
     }
-    return { true, 0, std::move(granted.woken_threads) };
+    return { true, 0, std::move(granted.woken_threads), { } };
 }
 
 DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::unlock_rwlock(
@@ -425,7 +493,7 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::unlock_rwlock(
         rw.prepost_count = expected_waiters - queued_waiters;
         rw.prepost_lock_sequence = lock_sequence;
         rw.prepost_sequence_word = sequence_word;
-        return { lock_generation, { } };
+        return { lock_generation, { }, { } };
     }
 
     rw.prepost_count = 0U;
@@ -504,19 +572,28 @@ std::optional<std::uint32_t> DarwinPsynchRuntime::take_result(
         return std::nullopt;
     const auto result = found->second;
     completed_results_.erase(found);
+    release_mutex_grant_locked(thread);
     return result;
 }
 
-void DarwinPsynchRuntime::cancel_wait(DarwinPsynchThread thread)
+DarwinPsynchRuntime::MutexQosUpdates DarwinPsynchRuntime::cancel_wait(
+    DarwinPsynchThread thread, bool retiring)
 {
     std::lock_guard lock { mutex_ };
+    MutexQosUpdates updates;
     completed_results_.erase(thread);
+    release_mutex_grant_locked(thread);
     // An empty RW wait list can still carry an unlock prepost or an overlap
     // grant for a thread that has not entered the kernel yet. Cancellation
     // must preserve that state even for private locks in other processes.
     for (auto queue = queues_.begin(); queue != queues_.end();) {
         std::erase_if(queue->second.waiters,
             [&](const auto& waiter) { return waiter.thread == thread; });
+        if (queue->second.waiters.empty()) {
+            if (auto owner = mutex_owners_.find(queue->first); owner != mutex_owners_.end())
+                update_mutex_owner(owner->first, owner->second,
+                    owner->second.thread, owner->second.thread_id, false, updates);
+        }
         if (queue->second.waiters.empty() &&
             ((queue->second.preposts.empty() &&
                  !queue->second.rw) ||
@@ -526,12 +603,41 @@ void DarwinPsynchRuntime::cancel_wait(DarwinPsynchThread thread)
         else
             ++queue;
     }
+    if (retiring) {
+        for (auto owner = mutex_owners_.begin(); owner != mutex_owners_.end();) {
+            if (owner->second.thread == thread) {
+                update_mutex_owner(owner->first, owner->second,
+                    std::nullopt, 0U, false, updates);
+                ++owner;
+            } else {
+                ++owner;
+            }
+        }
+    }
+    std::erase_if(mutex_owners_, [&](const auto& owner) {
+        return owner.second.pending_grants == 0U && !queues_.contains(owner.first);
+    });
+    return updates;
 }
 
-void DarwinPsynchRuntime::clear_process(std::uint32_t process_id)
+DarwinPsynchRuntime::MutexQosUpdates DarwinPsynchRuntime::clear_process(
+    std::uint32_t process_id)
 {
     std::lock_guard lock { mutex_ };
+    MutexQosUpdates updates;
+    for (auto owner = mutex_owners_.begin(); owner != mutex_owners_.end();) {
+        if (owner->first.process_id == process_id) {
+            update_mutex_owner(owner->first, owner->second,
+                std::nullopt, 0U, false, updates);
+            owner = mutex_owners_.erase(owner);
+        } else {
+            ++owner;
+        }
+    }
     std::erase_if(completed_results_, [&](const auto& entry) {
+        return entry.first.process_id == process_id;
+    });
+    std::erase_if(completed_mutex_grants_, [&](const auto& entry) {
         return entry.first.process_id == process_id;
     });
     for (auto queue = queues_.begin(); queue != queues_.end();) {
@@ -553,6 +659,7 @@ void DarwinPsynchRuntime::clear_process(std::uint32_t process_id)
             ++queue;
         }
     }
+    return updates;
 }
 
 } // namespace ilemu

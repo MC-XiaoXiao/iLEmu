@@ -961,7 +961,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     // The process-private workqueue kqueue belongs to the old pthread
     // runtime and its knote udata points into the replaced address space.
     kqueues_.erase(darwin::kqueue::workqueue_descriptor);
-    shared_state_->psynch_runtime->clear_process(process_.pid);
+    apply_psynch_mutex_qos(shared_state_->psynch_runtime->clear_process(process_.pid));
     process_.waiting_for_events = false;
     const auto current_thread_port =
         thread_ports_.find(processor_id) != thread_ports_.end()
@@ -2561,7 +2561,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         if (!result && !timed_out)
             return false;
         if (timed_out) {
-            shared_state_->psynch_runtime->cancel_wait(thread);
+            apply_psynch_mutex_qos(shared_state_->psynch_runtime->cancel_wait(thread));
             bsd_error(cpu, 60U); // ETIMEDOUT
         } else {
             bsd_success(cpu, *result);

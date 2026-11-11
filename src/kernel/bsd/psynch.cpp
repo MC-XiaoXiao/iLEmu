@@ -73,6 +73,20 @@ namespace {
 
 } // namespace
 
+void CompatibilityKernel::apply_psynch_mutex_qos(
+    DarwinPsynchRuntime::MutexQosUpdates updates)
+{
+    for (const auto& update : updates) {
+        const auto processor = update.thread.processor;
+        auto resources = pthread_runtime_.resource_qos_overrides(processor);
+        resources.set_mutex(update.address, update.priority);
+        pthread_runtime_.set_resource_qos_overrides(processor, std::move(resources));
+        if (thread_qos_override_handler_)
+            static_cast<void>(thread_qos_override_handler_(processor,
+                pthread_runtime_.effective_qos_override_priority(processor)));
+    }
+}
+
 void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
@@ -99,6 +113,7 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
                                 DarwinPsynchWaitKind kind,
                                 std::optional<std::uint64_t> deadline =
                                     std::nullopt) {
+        apply_psynch_mutex_qos(std::move(outcome.mutex_qos_updates));
         wake_threads(outcome.woken_threads);
         if (!outcome.blocked) {
             bsd_success(cpu, outcome.result);
@@ -198,9 +213,23 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
         const auto object = resolve_object(registers[0], registers[5]);
         if (!object)
             return;
-        const auto outcome = shared_state_->psynch_runtime->wait_mutex(
+        DarwinPsynchRuntime::MutexWaitContext context;
+        context.thread_id = thread_object_for_processor(cpu.processor_id()).value_or(0U);
+        context.owner_hint = joined_words(registers[3], registers[4]);
+        if (registers[4] == 0U) {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto owner = mach_support::find_thread_owner(*shared_state_, registers[3]);
+            if (owner && owner->first == process_.pid)
+                context.owner = DarwinPsynchThread { owner->first, owner->second };
+        }
+        const auto statistics = thread_statistics_query_
+            ? thread_statistics_query_(process_.pid,
+                static_cast<std::uint32_t>(cpu.processor_id())) : std::nullopt;
+        context.requested_qos = statistics ? statistics->scheduling.requested_qos.tier
+                                           : XnuQosTier::Unspecified;
+        auto outcome = shared_state_->psynch_runtime->wait_mutex(
             current_thread, *object, registers[1], registers[2],
-            registers[5]);
+            registers[5], context);
         begin_wait(std::move(outcome),
             registers[0], DarwinPsynchWaitKind::Mutex);
         return;
@@ -211,6 +240,7 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
             return;
         auto outcome = shared_state_->psynch_runtime->drop_mutex(process_.pid,
             *object, registers[1], registers[2], registers[5]);
+        apply_psynch_mutex_qos(std::move(outcome.mutex_qos_updates));
         wake_threads(outcome.woken_threads);
         bsd_success(cpu, outcome.result);
         return;

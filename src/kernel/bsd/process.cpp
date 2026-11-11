@@ -66,7 +66,7 @@ void CompatibilityKernel::release_process_mach_rights()
     pending_psynch_waits_.clear();
     clear_ulock_waits();
     pending_signal_suspends_.clear();
-    shared_state_->psynch_runtime->clear_process(process_.pid);
+    apply_psynch_mutex_qos(shared_state_->psynch_runtime->clear_process(process_.pid));
     process_.waiting_for_events = false;
     std::lock_guard mach_lock { shared_state_->mach_mutex };
     for (const auto& [processor, pending] : pending_semaphore_waits_) {

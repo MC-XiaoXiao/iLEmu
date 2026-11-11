@@ -116,8 +116,8 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
             !thread_terminate_handler_ ||
             thread_terminate_handler_(target->first, target->second);
         if (accepted) {
-            shared_state_->psynch_runtime->cancel_wait(
-                DarwinPsynchThread { target->first, target->second });
+            apply_psynch_mutex_qos(shared_state_->psynch_runtime->cancel_wait(
+                DarwinPsynchThread { target->first, target->second }));
             if (target->first == process_.pid) {
                 retire_thread_continuations(target->second);
                 process_.thread_disk_io_policies.erase(*target_object);

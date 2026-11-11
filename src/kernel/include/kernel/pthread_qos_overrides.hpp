@@ -34,6 +34,7 @@ class DarwinPthreadResourceQosOverrides {
 public:
     void start(std::uint32_t resource, std::optional<std::int32_t> priority);
     void end(std::uint32_t resource);
+    void set_mutex(std::uint32_t resource, std::optional<std::int32_t> priority);
     void boost_dispatch(std::optional<std::int32_t> priority) noexcept;
     void boost_workqueue(std::optional<std::int32_t> priority) noexcept
     {
@@ -52,7 +53,7 @@ public:
     [[nodiscard]] bool dispatch_active() const noexcept { return dispatch_count_ != 0U; }
     [[nodiscard]] bool empty() const noexcept
     {
-        return resources_.empty() && !dispatch_active() && !workqueue_active();
+        return resources_.empty() && mutexes_.empty() && !dispatch_active() && !workqueue_active();
     }
     [[nodiscard]] std::optional<std::int32_t> priority() const noexcept;
 
@@ -62,6 +63,7 @@ private:
         std::optional<std::int32_t> priority;
     };
     std::map<std::uint32_t, Donation> resources_;
+    std::map<std::uint32_t, std::int32_t> mutexes_;
     std::optional<std::int32_t> dispatch_priority_;
     std::uint64_t dispatch_count_ { };
     std::optional<std::int32_t> workqueue_priority_;

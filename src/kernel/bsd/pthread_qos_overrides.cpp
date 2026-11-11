@@ -58,12 +58,25 @@ void DarwinPthreadResourceQosOverrides::boost_dispatch(
     dispatch_priority_ = std::max(dispatch_priority_, priority);
 }
 
+void DarwinPthreadResourceQosOverrides::set_mutex(
+    std::uint32_t resource, std::optional<std::int32_t> priority)
+{
+    if (priority)
+        mutexes_.insert_or_assign(resource, *priority);
+    else
+        mutexes_.erase(resource);
+}
+
 std::optional<std::int32_t> DarwinPthreadResourceQosOverrides::priority() const noexcept
 {
     auto result = std::max(dispatch_priority_, workqueue_priority_);
     for (const auto& [resource, donation] : resources_) {
         static_cast<void>(resource);
         result = std::max(result, donation.priority);
+    }
+    for (const auto& [resource, priority] : mutexes_) {
+        static_cast<void>(resource);
+        result = std::max(result, std::optional { priority });
     }
     return result;
 }
