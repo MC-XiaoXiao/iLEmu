@@ -715,7 +715,12 @@ private:
     // CoreSurface/Mach shared-memory publication.
     // Reservations revoke and restore these entries frequently. Reuse flat
     // buckets instead of allocating a node on every restored write pointer.
-    tsl::robin_pg_set<std::uint32_t> direct_jit_write_pages_;
+    struct PageAddressHash {
+        std::size_t operator()(std::uint32_t address) const noexcept;
+    };
+    // Mix aligned addresses so regularly spaced mappings do not form long
+    // probe clusters when reservations repeatedly revoke and restore entries.
+    tsl::robin_pg_set<std::uint32_t, PageAddressHash> direct_jit_write_pages_;
     // Reservation aliases can only be shared-writable direct entries.
     tsl::robin_pg_set<std::uint32_t> direct_shared_jit_write_pages_;
     bool jit_page_table_enabled_ { };

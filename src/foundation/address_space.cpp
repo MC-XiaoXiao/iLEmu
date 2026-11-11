@@ -19,6 +19,8 @@
 #include <type_traits>
 #include <utility>
 
+#include <mcl/hash/xmrx.hpp>
+
 #include <sys/mman.h>
 
 #include "foundation/performance.hpp"
@@ -125,6 +127,12 @@ namespace {
     }
 
 } // namespace
+
+std::size_t AddressSpace::PageAddressHash::operator()(
+    std::uint32_t address) const noexcept
+{
+    return mcl::hash::xmrx(address);
+}
 
 AddressSpace::AddressSpace()
     : observed_shared_write_tracking_epoch_ {
