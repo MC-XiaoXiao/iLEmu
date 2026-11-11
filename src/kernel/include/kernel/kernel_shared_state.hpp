@@ -1745,6 +1745,10 @@ struct KernelSharedState {
     float springboard_unlock_touch_end_x { };
     float springboard_unlock_touch_end_y { };
     std::uint64_t next_application_launch_token { 1 };
+    // A physical touch can start a launchd-mediated App before its event port
+    // exists. Spawn consumes this candidate; Home cancels it, while Lock keeps
+    // an in-flight selection available for the existing held-launch path.
+    bool pending_application_launch_touch { };
     std::uint64_t next_process_incarnation { 1 };
     std::uint32_t next_audit_identity_version { 1 };
     std::uint64_t next_foreground_transition_generation { 1 };

@@ -204,6 +204,12 @@ bool HidEventSystemHle::enqueue_touch(
     const auto queued =
         state_->hid_event_queue.enqueue(
             { sanitized, state_->clock.now(), 1U, { }, sequence });
+    if (queued) {
+        if (input.phase == TouchPhase::Down)
+            state_->pending_application_launch_touch = true;
+        else if (input.phase == TouchPhase::Cancel)
+            state_->pending_application_launch_touch = false;
+    }
     if (queued)
         state_->note_io_event_transition();
     return queued;

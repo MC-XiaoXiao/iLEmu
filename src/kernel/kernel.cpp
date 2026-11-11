@@ -681,6 +681,8 @@ void CompatibilityKernel::enqueue_system_button_impl(
         (input.button == SystemButton::Home ||
             input.button == SystemButton::Lock)) {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
+        if (input.button == SystemButton::Home)
+            shared_state_->pending_application_launch_touch = false;
         const auto display_asleep =
             shared_state_->requested_display_power_state.value_or(1U) == 0U;
         if (display_asleep && !force_home_transition) {

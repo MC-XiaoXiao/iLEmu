@@ -914,6 +914,8 @@ namespace {
         std::uint64_t input_sequence,
         std::optional<std::uint32_t> sampleable_home_exit_process_id)
     {
+        if (reason == KernelSharedState::ApplicationSuspensionReason::Home)
+            state.pending_application_launch_touch = false;
         const auto prior_held_application_launch =
             state.held_application_launch;
         state.application_launch_barrier =
@@ -1882,14 +1884,15 @@ void record_application_spawn(KernelSharedState& state,
     // Older SpringBoard launches fork through launchd and then SETEXEC in the
     // child, so that successful child has parent PID 1 rather than the
     // SpringBoard PID. Keep this exception causal: a SETEXEC application is
-    // foreground-observable only while a recent host input or exact handoff is
-    // still pending. Ordinary/background launches retain the sender guard.
+    // foreground-observable only while a physical touch or exact handoff is
+    // still pending. Diagnostic input completion is not foreground intent.
+    // Ordinary/background launches retain the sender guard.
     const auto exact_foreground_handoff =
         state.foreground_application_attempt_process_id == process_id ||
         state.pending_application_handoff_process_id == process_id;
     const auto causal_setexec_foreground =
         force_foreground &&
-        (state.pending_foreground_transition_input_completion ||
+        (state.pending_application_launch_touch ||
             exact_foreground_handoff);
     if ((!process_is_springboard_locked(state, sender_process_id) &&
             !causal_setexec_foreground) ||
@@ -1898,6 +1901,7 @@ void record_application_spawn(KernelSharedState& state,
             arguments.end()) {
         return;
     }
+    state.pending_application_launch_touch = false;
     const auto held_origin =
         pending_held_application_origin_locked(state, process_id);
     const auto origin_touch_sequence = held_origin.value_or(
