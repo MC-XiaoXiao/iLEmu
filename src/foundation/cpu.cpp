@@ -3923,18 +3923,9 @@ public:
             tiered_executors_.push_back(std::move(interpreter));
             tiered_run_mutexes_.push_back(std::make_unique<std::mutex>());
         }
-        if constexpr (JitBackendCapabilities::native_code_versions)
-            return;
-        // Build the compiler lane's private dispatch state while the process
-        // is being prepared, before its first cold execution request.
-        tiered_task_ = tiered_service_->submit([this](const HostWorkToken& token) {
-            if (!token.cancelled())
-                precompile_executors_.front()->prepare();
-            const auto result = precompile_pending(16, 2'000'000,
-                JitPrecompileTarget::NativeCode, [&token] { return token.cancelled(); },
-                JitPrecompileSource::ExecutionDemand);
-            tiered_service_->compiled(result.native_compiled + result.artifact_imported);
-        });
+        // Compiler lanes initialize on their first admitted block. A fresh
+        // spawn can still change its cache reservation after image loading;
+        // preparing a lane here would materialize that cache too early.
     }
 
     void set_executor_factory(execution::ExecutorFactory factory)
