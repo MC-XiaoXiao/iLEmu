@@ -38,8 +38,10 @@ public:
         }
         std::copy(source.digest.begin(), source.digest.end(),
             layout.begin() + 3U * sizeof(std::uint64_t));
-        const ExecutableBackingIdentity identity {
-            sha256(source.digest), sha256(layout) };
+        // A different layout of the same source retains its content digest.
+        const auto content = entry && entry->key.source == source
+            ? entry->identity.content : sha256(source.digest);
+        const ExecutableBackingIdentity identity { content, sha256(layout) };
         entry = Entry { key, identity };
         return identity;
     }
