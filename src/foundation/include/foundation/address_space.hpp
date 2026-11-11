@@ -738,7 +738,11 @@ private:
     // Conservative membership: stale entries are harmless, but every backing
     // of a guarded page must be present. Shared pixel stores can then reject
     // unrelated reservations without scanning all virtual page markers.
-    tsl::robin_pg_set<const GuestPageBacking*> exclusive_write_backings_;
+    struct BackingPointerHash {
+        std::size_t operator()(const GuestPageBacking* backing) const noexcept;
+    };
+    tsl::robin_pg_set<const GuestPageBacking*, BackingPointerHash>
+        exclusive_write_backings_;
     // Dense occupied-key list makes reset independent of retained bucket count.
     std::vector<const GuestPageBacking*> exclusive_write_backing_keys_;
     std::atomic<bool> exclusive_write_tracking_active_ { };

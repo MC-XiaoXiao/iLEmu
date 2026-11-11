@@ -134,6 +134,12 @@ std::size_t AddressSpace::PageAddressHash::operator()(
     return mcl::hash::xmrx(address);
 }
 
+std::size_t AddressSpace::BackingPointerHash::operator()(
+    const GuestPageBacking* backing) const noexcept
+{
+    return mcl::hash::xmrx(reinterpret_cast<std::uintptr_t>(backing));
+}
+
 AddressSpace::AddressSpace()
     : observed_shared_write_tracking_epoch_ {
         GuestPageBacking::shared_write_tracking_epoch()
