@@ -50,6 +50,8 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
                 // digitizer objects through the firmware's event system.
                 consumer.digitizer_events =
                     completed.symbol_address("_IOHIDEventCreateDigitizerEvent") &&
+                    completed.symbol_address(
+                        "_IOHIDEventCreateDigitizerFingerEvent") &&
                     completed.symbol_address("_IOHIDEventAppendEvent") &&
                     (dispatch || completed.symbol_address(
                         "_IOHIDEventCreateTranslationEvent"));
@@ -156,7 +158,8 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
     registry_.register_function(
         "/IOKit", "_IOHIDEventSystemClientSetMatchingMultiple", set_matching);
     for (const auto symbol :
-        { "_IOHIDEventCreateDigitizerEvent", "_IOHIDEventCreateKeyboardEvent",
+        { "_IOHIDEventCreateDigitizerEvent", "_IOHIDEventCreateDigitizerFingerEvent",
+            "_IOHIDEventCreateKeyboardEvent",
             "_IOHIDEventAppendEvent", "__IOHIDEventSystemDispatchEvent",
             "___IOHIDEventSystemEventCallback",
             "_IOHIDEventCreateAccelerometerEvent", "_IOHIDEventCreate",

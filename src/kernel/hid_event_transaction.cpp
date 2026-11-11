@@ -23,7 +23,6 @@ namespace {
     // passes CGFloat coordinates as float words on the stack. The firmware
     // owns the event layout, collection metadata and reference counting.
     struct Arm32DigitizerEventProfile {
-        static constexpr std::uint32_t finger = 2U;
         static constexpr std::uint32_t hand = 3U;
         static constexpr std::uint32_t range_changed = 1U;
         static constexpr std::uint32_t touch_changed = 2U;
@@ -36,10 +35,14 @@ namespace {
         static constexpr float edge_extent = 10.0F;
         // Contacts originate on the built-in display, not an indirect pad.
         static constexpr std::uint32_t display_integrated = 0x80000U;
+        // IOHIDEventService marks the parent explicitly. The userland
+        // IOHIDEventAppendEvent API does not set its Collection option.
+        static constexpr std::uint32_t collection_option = 1U << 1U;
         static constexpr std::uint32_t stack_scratch_bytes = 64U;
     };
 
     constexpr auto create_digitizer = "_IOHIDEventCreateDigitizerEvent";
+    constexpr auto create_finger = "_IOHIDEventCreateDigitizerFingerEvent";
     constexpr auto create_keyboard = "_IOHIDEventCreateKeyboardEvent";
     constexpr auto create_translation = "_IOHIDEventCreateTranslationEvent";
     // Native dispatch consumes normalized contacts. The session callback
@@ -100,17 +103,29 @@ namespace {
         r[0] = 0U;
         r[1] = static_cast<std::uint32_t>(event.timestamp);
         r[2] = static_cast<std::uint32_t>(event.timestamp >> 32U);
-        r[3] = collection ? Profile::hand : Profile::finger;
+        r[3] = collection ? Profile::hand : 1U;
         const auto display_coordinates =
             report == DigitizerReport::DisplayWithTranslation;
-        const std::array<std::uint32_t, 12> arguments { 1U,
-            collection ? 1U : event.identity, mask, 0U,
-            std::bit_cast<std::uint32_t>(
-                display_coordinates ? touch.x : touch.x / width),
-            std::bit_cast<std::uint32_t>(
-                display_coordinates ? touch.y : touch.y / height), 0U,
-            std::bit_cast<std::uint32_t>(active ? 1.0F : 0.0F), 0U,
-            active ? 1U : 0U, active ? 1U : 0U, Profile::display_integrated };
+        const auto x = std::bit_cast<std::uint32_t>(
+            display_coordinates ? touch.x : touch.x / width);
+        const auto y = std::bit_cast<std::uint32_t>(
+            display_coordinates ? touch.y : touch.y / height);
+        const auto pressure =
+            std::bit_cast<std::uint32_t>(active ? 1.0F : 0.0F);
+        if (!collection) {
+            // The native finger factory supplies the same quality orientation
+            // and contact radius defaults as IOHIDFamily's finger reports.
+            const std::array<std::uint32_t, 10> arguments { event.identity,
+                mask, x, y, 0U, pressure, 0U, active ? 1U : 0U,
+                active ? 1U : 0U, Profile::display_integrated };
+            static_cast<void>(call.memory().copy_in(
+                r[13], std::as_bytes(std::span { arguments })));
+            return;
+        }
+        const std::array<std::uint32_t, 12> arguments { 1U, 1U, mask, 0U, x, y,
+            0U, pressure, 0U, active ? 1U : 0U, active ? 1U : 0U,
+            Profile::display_integrated |
+                (collection ? Profile::collection_option : 0U) };
         static_cast<void>(call.memory().copy_in(
             r[13], std::as_bytes(std::span { arguments })));
     }
@@ -367,7 +382,7 @@ namespace {
                     return;
                 }
                 step_ = Step::Finger;
-                symbol = create_digitizer;
+                symbol = create_finger;
                 break;
             case Step::Finger:
                 child_event_ = call.argument(0);
