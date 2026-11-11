@@ -3076,19 +3076,17 @@ void EmulatorSession::run()
                     break;
                 case LiveControlCommandKind::UnlockHome: {
                     note_interactive_host_activity();
-                    const bool needs_wake = !initial_runtime->kernel->display_powered_on();
-                    if (needs_wake) {
-                        initial_runtime->kernel->enqueue_system_button(
-                            { SystemButton::Home, SystemButtonPhase::Down });
-                        initial_runtime->kernel->enqueue_system_button(
-                            { SystemButton::Home, SystemButtonPhase::Up });
-                    }
+                    // The panel can still be powered during the lock
+                    // transition. Complete the physical wake and delayed
+                    // unlock sequence independently of that display state.
+                    initial_runtime->kernel->enqueue_system_button(
+                        { SystemButton::Home, SystemButtonPhase::Down });
+                    initial_runtime->kernel->enqueue_system_button(
+                        { SystemButton::Home, SystemButtonPhase::Up });
                     live_button_scheduler.schedule_press(SystemButton::Home,
-                        needs_wake ? command.button_delay : std::chrono::milliseconds::zero(),
-                        command.button_hold);
+                        command.button_delay, command.button_hold);
                     pending_button_input_completion = "unlock";
-                    output.marker("[control] unlock=press-home wake=" +
-                        std::to_string(needs_wake));
+                    output.marker("[control] unlock=press-home wake=1");
                     break;
                 }
                 case LiveControlCommandKind::Home:
