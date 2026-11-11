@@ -24,12 +24,14 @@ namespace ilemu {
 
 class HidEventQueue {
 public:
+    enum class ClientDelivery { Callback, NativeQueues };
     struct Consumer {
         std::uint32_t process;
         std::size_t processor;
         std::uint32_t system;
         bool keyboard_events { };
         bool digitizer_events { true };
+        ClientDelivery client_delivery { ClientDelivery::Callback };
     };
     struct Observer {
         std::uint32_t process;
@@ -66,6 +68,8 @@ public:
     {
         std::lock_guard lock { mutex_ };
         consumer_ = consumer;
+        if (consumer.client_delivery == ClientDelivery::NativeQueues)
+            observers_.clear();
         events_.clear();
         contact_origin_.reset();
         receiver_generation_.fetch_add(1, std::memory_order_release);
@@ -89,6 +93,11 @@ public:
     void observe(Observer observer)
     {
         std::lock_guard lock { mutex_ };
+        // Native dispatch owns matching, connection state and delivery to
+        // client queues. A direct callback would bypass that contract.
+        if (consumer_ &&
+            consumer_->client_delivery == ClientDelivery::NativeQueues)
+            return;
         const auto existing = std::find_if(observers_.begin(), observers_.end(),
             [&](const ObserverState& state) {
                 return state.observer.process == observer.process &&

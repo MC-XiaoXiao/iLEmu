@@ -58,6 +58,10 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
                     (dispatch || completed.symbol_address(
                         "_IOHIDEventCreateTranslationEvent"));
                 consumer.keyboard_events = consumer.keyboard_events && dispatch;
+                consumer.client_delivery = dispatch && completed.symbol_address(
+                    "_IOHIDEventSystemConnectionDispatchEvent")
+                    ? HidEventQueue::ClientDelivery::NativeQueues
+                    : HidEventQueue::ClientDelivery::Callback;
                 consumer_process_ = consumer.process;
                 consumer_processor_ = consumer.processor;
                 state_->hid_event_queue.open(consumer);
@@ -66,6 +70,9 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
                     completed.output().line(std::string {
                         "[loader] HID digitizer transport=" } +
                         (dispatch ? "native-dispatch" : "session-callback") +
+                        " clients=" +
+                        (consumer.client_delivery == HidEventQueue::ClientDelivery::NativeQueues
+                                ? "native-queues" : "callback") +
                         " pid=" + std::to_string(consumer.process));
                 accelerometer_.stop();
                 if (completed.symbol_address("_IOHIDEventCreateAccelerometerEvent") &&
@@ -168,7 +175,8 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
             "_IOHIDEventSetFloatValue",
             "_IOHIDEventSetSenderID",
             "_IOHIDEventCreateTranslationEvent",
-            "_IOHIDEventSystemCopyService", "___IOHIDServiceEventCallback" }) {
+            "_IOHIDEventSystemCopyService", "___IOHIDServiceEventCallback",
+            "_IOHIDEventSystemConnectionDispatchEvent" }) {
         registry_.register_guest_function("/IOKit", symbol);
     }
     registry_.register_guest_function("/CoreFoundation", "_CFRelease");
