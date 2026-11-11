@@ -482,9 +482,9 @@ void AddressSpace::track_exclusive_access(
     for (std::uint64_t base = first; base < end; base += page_size) {
         const auto page_address = static_cast<std::uint32_t>(base);
         const auto mask = reservation_granule_mask(address, size, page_address);
-        const auto inserted =
-            exclusive_write_tracked_pages_.try_emplace(page_address, 0U).second;
-        exclusive_write_tracked_pages_.at(page_address) |= mask;
+        const auto [marker, inserted] =
+            exclusive_write_tracked_pages_.try_emplace(page_address, 0U);
+        marker.value() |= mask;
         const auto* page = find_page_locked(page_address);
         if (page != nullptr && page->backing)
             track_exclusive_backing_locked(page->backing.get());
