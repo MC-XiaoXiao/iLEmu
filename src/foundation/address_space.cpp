@@ -528,7 +528,7 @@ void AddressSpace::clear_exclusive_access_tracking()
         page != exclusive_write_tracked_pages_.end();) {
         const auto address = page->first;
         page = exclusive_write_tracked_pages_.erase(page);
-        refresh_jit_page_locked(address);
+        refresh_jit_page_locked(address, JitPageRefresh::Write);
     }
     clear_exclusive_write_backings_locked();
     exclusive_guard_stamps_.clear();
@@ -563,7 +563,7 @@ void AddressSpace::release_exclusive_write_tracking_locked(
                 // This branch needs no successor iterator: finding it would
                 // walk unused buckets in a sparse table after the last marker.
                 exclusive_write_tracked_pages_.erase(first);
-                refresh_jit_page_locked(first);
+                refresh_jit_page_locked(first, JitPageRefresh::Write);
                 if (exclusive_write_tracked_pages_.empty()) {
                     clear_exclusive_write_backings_locked();
                     exclusive_write_tracking_active_.store(
@@ -594,7 +594,7 @@ void AddressSpace::release_exclusive_write_tracking_locked(
             continue;
         }
         marker = exclusive_write_tracked_pages_.erase(marker);
-        refresh_jit_page_locked(page_address);
+        refresh_jit_page_locked(page_address, JitPageRefresh::Write);
     }
     if (exclusive_write_tracked_pages_.empty()) {
         clear_exclusive_write_backings_locked();
@@ -1749,18 +1749,20 @@ void AddressSpace::ensure_jit_page_tables_locked()
     }
 }
 
-void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
+void AddressSpace::refresh_jit_page_locked(std::uint32_t address,
+    JitPageRefresh refresh)
 {
     invalidate_parallel_page_locked(address);
     // Mapping publication and COW may replace the backing of a guarded page.
     // Record the new identity before exposing any updated JIT pointers.
-    if (exclusive_write_tracked_pages_.contains(page_base(address))) {
+    if (refresh == JitPageRefresh::All &&
+        exclusive_write_tracked_pages_.contains(page_base(address))) {
         const auto* page = find_page_locked(address);
         if (page != nullptr && page->backing)
             track_exclusive_backing_locked(page->backing.get());
     }
     const auto base = page_base(address);
-    if (jit_instruction_page_table_) {
+    if (refresh == JitPageRefresh::All && jit_instruction_page_table_) {
         static std::uint8_t present;
         const auto rights = page_permission_locked(base / page_size) &
             vm_translation_locked(base / page_size);
@@ -1769,7 +1771,9 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
     }
     if (!jit_read_page_table_ && !jit_write_page_table_)
         return;
-    auto* read_entry = jit_read_page_table_
+    // Exclusive guards revoke only writes. Restoring one must still apply
+    // every write restriction, while preserving read/execute translations.
+    auto* read_entry = refresh == JitPageRefresh::All && jit_read_page_table_
                            ? &jit_read_page_table_->entries()[base / page_size]
                            : nullptr;
     auto* write_entry =

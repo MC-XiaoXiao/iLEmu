@@ -620,7 +620,9 @@ private:
     void ensure_unique_page_map_locked();
     void rebuild_page_lookup_locked();
     void ensure_jit_page_tables_locked();
-    void refresh_jit_page_locked(std::uint32_t address);
+    enum class JitPageRefresh { All, Write };
+    void refresh_jit_page_locked(std::uint32_t address,
+        JitPageRefresh refresh = JitPageRefresh::All);
     void refresh_jit_page_range_locked(
         std::uint32_t address, std::uint64_t end);
     void finish_shared_write_tracking_locked(std::uint64_t initial_epoch,
