@@ -93,7 +93,7 @@ bool CompatibilityKernel::interrupt_thread_wait(Cpu& cpu, bool restart)
         } else if (const auto pending = pending_ulock_waits_.find(processor);
                    pending != pending_ulock_waits_.end()) {
             const auto no_errno = (pending->second.flags & 0x01000000U) != 0U;
-            pending_ulock_waits_.erase(pending);
+            finish_ulock_wait(processor);
             if (no_errno)
                 bsd_success(cpu, 0U - darwin::error::interrupted);
             else

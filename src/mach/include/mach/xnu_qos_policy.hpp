@@ -41,6 +41,14 @@ struct XnuThreadQosPolicy {
     }
 };
 
+// XNU promote_token: a lock retains both peaks until it becomes unowned.
+struct XnuUserPromotionToken {
+    std::int32_t base_priority { };
+    XnuQosTier qos { };
+};
+
+enum class XnuUserPromotionAction { Add, Update, Drop };
+
 struct XnuTaskQosPolicy {
     XnuQosTier ceiling { };
     XnuQosTier clamp { };
@@ -48,11 +56,14 @@ struct XnuTaskQosPolicy {
     bool background { };
     bool operator==(const XnuTaskQosPolicy&) const = default;
 
-    [[nodiscard]] constexpr std::int32_t effective_priority(
-        XnuThreadQosPolicy requested, std::int32_t legacy,
-        const std::int32_t* donation) const noexcept
+    [[nodiscard]] constexpr XnuQosTier promotion_qos(
+        XnuThreadQosPolicy requested,
+        const std::int32_t* donation,
+        XnuQosTier user_promotion = XnuQosTier::Unspecified) const noexcept
     {
         auto tier = requested.tier;
+        if (tier != XnuQosTier::Unspecified)
+            tier = std::max(tier, user_promotion);
         if (tier != XnuQosTier::Unspecified && donation) {
             // Donation callbacks carry the class base, without relative
             // priority.
@@ -69,6 +80,15 @@ struct XnuTaskQosPolicy {
         if (clamp != XnuQosTier::Unspecified)
             tier =
                 tier == XnuQosTier::Unspecified ? clamp : std::min(tier, clamp);
+        return tier;
+    }
+
+    [[nodiscard]] constexpr std::int32_t effective_priority(
+        XnuThreadQosPolicy requested, std::int32_t legacy,
+        const std::int32_t* donation,
+        XnuQosTier user_promotion = XnuQosTier::Unspecified) const noexcept
+    {
+        auto tier = promotion_qos(requested, donation, user_promotion);
         if (ceiling != XnuQosTier::Unspecified &&
             tier != XnuQosTier::Unspecified)
             tier = std::min(tier, ceiling);

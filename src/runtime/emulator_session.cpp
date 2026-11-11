@@ -2125,6 +2125,17 @@ void EmulatorSession::run()
                     XnuThreadId { runtime_ptr->kernel->process().pid,
                         static_cast<std::uint32_t>(processor) }, priority);
             });
+        runtime.kernel->set_thread_user_promotion_handler(
+            [runtime_ptr, &scheduler](std::size_t owner, std::size_t donor,
+                XnuUserPromotionToken& token, XnuUserPromotionAction action) {
+                const auto pid = runtime_ptr->kernel->process().pid;
+                const XnuThreadId target { pid, static_cast<std::uint32_t>(owner) };
+                return action == XnuUserPromotionAction::Drop
+                    ? scheduler.drop_user_thread_promotion(target)
+                    : scheduler.promote_user_thread(target,
+                        { pid, static_cast<std::uint32_t>(donor) }, token,
+                        action == XnuUserPromotionAction::Add);
+            });
         runtime.kernel->set_thread_policy_handler(
             [runtime_ptr, &runtime_index, &scheduler, guest_ticks_per_second,
                 timeshare_version = darwin_version](std::uint32_t pid,

@@ -157,6 +157,8 @@ public:
         std::uint32_t, std::uint32_t, std::span<const std::uint32_t>)>;
     using ThreadQosOverrideHandler =
         std::function<bool(std::size_t, std::optional<std::int32_t>)>;
+    using ThreadUserPromotionHandler = std::function<bool(std::size_t,
+        std::size_t, XnuUserPromotionToken&, XnuUserPromotionAction)>;
     using TaskPriorityHandler = std::function<void(std::int32_t)>;
     using SchedulerPreemptionQuery = std::function<bool(std::size_t)>;
     using SignalDeliveryHandler =
@@ -325,6 +327,10 @@ public:
         thread_qos_override_handler_ = std::move(handler);
     }
     void clear_thread_pthread_state(std::size_t processor);
+    void set_thread_user_promotion_handler(ThreadUserPromotionHandler handler)
+    {
+        thread_user_promotion_handler_ = std::move(handler);
+    }
     // Called by serialized kernel/runtime lifecycle paths before slot reuse.
     void retire_thread_continuations(std::size_t processor);
     // Caller owns serial kernel dispatch, as for thread retirement.
@@ -1313,6 +1319,7 @@ private:
     LegacyThreadPolicyHandler legacy_thread_policy_handler_;
     ThreadPolicyHandler thread_policy_handler_;
     ThreadQosOverrideHandler thread_qos_override_handler_;
+    ThreadUserPromotionHandler thread_user_promotion_handler_;
     TaskPriorityHandler task_priority_handler_;
     SchedulerPreemptionQuery scheduler_preemption_query_;
     SignalDeliveryHandler signal_delivery_handler_;
@@ -1363,6 +1370,18 @@ private:
     std::map<std::size_t, PendingSemaphoreWait> pending_semaphore_waits_;
     std::map<std::size_t, PendingPsynchWait> pending_psynch_waits_;
     std::map<std::size_t, PendingUlockWait> pending_ulock_waits_;
+    struct UlockState {
+        std::uint32_t opcode;
+        std::size_t waiters { };
+        std::optional<std::size_t> owner;
+        XnuUserPromotionToken promotion;
+    };
+    std::map<std::uint32_t, UlockState> ulocks_;
+    void promote_ulock_owner(UlockState& lock,
+        std::optional<std::size_t> owner, std::size_t donor);
+    std::size_t finish_ulock_wait(std::size_t processor);
+    void retire_ulock_thread(std::size_t processor);
+    void clear_ulock_waits();
     std::uint64_t next_ulock_wait_sequence_ { 1 };
     std::map<std::size_t, PendingSignalSuspend> pending_signal_suspends_;
     std::map<std::size_t, PendingSignalWait> pending_signal_waits_;

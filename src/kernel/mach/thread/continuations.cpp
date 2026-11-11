@@ -96,7 +96,7 @@ void CompatibilityKernel::retire_thread_continuations(std::size_t processor)
     pending_timers_.erase(processor);
     pending_semaphore_waits_.erase(processor);
     pending_psynch_waits_.erase(processor);
-    pending_ulock_waits_.erase(processor);
+    retire_ulock_thread(processor);
     pending_signal_suspends_.erase(processor);
     pending_signal_waits_.erase(processor);
     pending_io_poll_cache_.erase(processor);

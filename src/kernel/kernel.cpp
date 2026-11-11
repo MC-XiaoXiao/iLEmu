@@ -1047,7 +1047,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_selects_.clear();
     pending_timers_.clear();
     pending_psynch_waits_.clear();
-    pending_ulock_waits_.clear();
+    clear_ulock_waits();
     pending_signal_suspends_.clear();
     pending_signal_waits_.clear();
     scheduler_yields_.clear();
@@ -2579,18 +2579,13 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         if (!pending->second.awakened && !timed_out)
             return false;
         const auto flags = pending->second.flags;
-        const auto address = pending->second.address;
-        pending_ulock_waits_.erase(pending);
+        const auto remaining = finish_ulock_wait(cpu.processor_id());
         if (timed_out) {
             if ((flags & 0x01000000U) != 0U)
                 bsd_success(cpu, 0U - 60U); // ETIMEDOUT, ULF_NO_ERRNO.
             else
                 bsd_error(cpu, 60U);
         } else {
-            const auto remaining = std::count_if(pending_ulock_waits_.begin(),
-                pending_ulock_waits_.end(), [&](const auto& entry) {
-                    return entry.second.address == address;
-                });
             bsd_success(cpu, static_cast<std::uint32_t>(remaining));
         }
         process_.waiting_for_events = false;

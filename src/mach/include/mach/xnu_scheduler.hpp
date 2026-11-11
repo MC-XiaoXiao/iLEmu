@@ -128,6 +128,9 @@ struct XnuScheduledSlice {
 };
 
 struct XnuThreadSchedulingInfo {
+    std::int32_t effective_base_priority { };
+    std::uint32_t user_promotions { };
+    XnuUserPromotionToken user_promotion;
     XnuThreadState state { XnuThreadState::Waiting };
     std::int32_t base_priority { xnu::scheduler::default_base_priority };
     std::int32_t scheduled_priority {
@@ -247,6 +250,9 @@ public:
     void set_task_qos_policy(std::uint32_t process, XnuTaskQosPolicy policy);
     bool set_qos_override_priority(
         XnuThreadId thread, std::optional<std::int32_t> priority);
+    bool promote_user_thread(XnuThreadId owner, XnuThreadId donor,
+        XnuUserPromotionToken& token, bool new_promotion);
+    bool drop_user_thread_promotion(XnuThreadId owner);
     bool depress(XnuThreadId thread, std::uint64_t duration_ticks = 0);
     bool bind_thread(XnuThreadId thread, std::optional<std::size_t> processor);
     bool set_timeshare(XnuThreadId thread, bool timeshare);

@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <limits>
 #include <stdexcept>
 
@@ -666,6 +667,48 @@ bool XnuScheduler::set_qos_override_priority(
         return true;
     record.info.qos_override_priority = priority;
     recompute_priority(thread, record);
+    return true;
+}
+
+bool XnuScheduler::promote_user_thread(XnuThreadId owner, XnuThreadId donor,
+    XnuUserPromotionToken& token, bool new_promotion)
+{
+    const auto target = threads_.find(owner);
+    const auto source = threads_.find(donor);
+    if (target == threads_.end() || source == threads_.end())
+        return false;
+    const auto& promoter = source->second;
+    token.base_priority = std::max(token.base_priority,
+        std::min(promoter.info.effective_base_priority,
+            xnu::scheduler::maximum_user_priority));
+    token.qos = std::max(token.qos, promoter.task_qos.promotion_qos(
+        promoter.info.requested_qos, promoter.info.qos_override_priority
+            ? &*promoter.info.qos_override_priority : nullptr,
+        promoter.info.user_promotion.qos));
+    auto& record = target->second;
+    if (new_promotion)
+        ++record.info.user_promotions;
+    else
+        assert(record.info.user_promotions != 0);
+    record.info.user_promotion.base_priority = std::max(
+        record.info.user_promotion.base_priority, token.base_priority);
+    record.info.user_promotion.qos = std::max(
+        record.info.user_promotion.qos, token.qos);
+    recompute_priority(owner, record);
+    return true;
+}
+
+bool XnuScheduler::drop_user_thread_promotion(XnuThreadId owner)
+{
+    const auto target = threads_.find(owner);
+    if (target == threads_.end())
+        return false;
+    auto& record = target->second;
+    assert(record.info.user_promotions != 0);
+    if (--record.info.user_promotions == 0) {
+        record.info.user_promotion = {};
+        recompute_priority(owner, record);
+    }
     return true;
 }
 
@@ -1411,11 +1454,23 @@ void XnuScheduler::recompute_priority(XnuThreadId thread, ThreadRecord& record)
 {
     // Keep depression, realtime and failsafe policy authoritative. Normal
     // timeshare accounting applies to the effective base, including donations.
-    const auto effective_base = record.info.failsafe
+    auto effective_base = record.info.failsafe
         ? record.info.base_priority
         : record.task_qos.effective_priority(record.info.requested_qos,
               record.info.base_priority, record.info.qos_override_priority
-                  ? &*record.info.qos_override_priority : nullptr);
+                  ? &*record.info.qos_override_priority : nullptr,
+              record.info.user_promotion.qos);
+    if (!record.info.failsafe && record.info.user_promotions != 0) {
+        effective_base = std::max(effective_base,
+            record.info.user_promotion.base_priority);
+        const auto maximum = record.task_qos.background ? 4
+            : record.task_qos.clamp != XnuQosTier::Unspecified
+                ? XnuThreadQosPolicy { record.task_qos.clamp }.priority()
+                : xnu::scheduler::maximum_user_priority;
+        effective_base = std::min(effective_base, maximum);
+    }
+    record.info.effective_base_priority = record.info.realtime
+        ? xnu::scheduler::realtime_queue_priority : effective_base;
     const auto bucket = XnuSchedulerLoad::bucket(
         record.info.timeshare && !record.info.realtime, effective_base);
     if (record.load_bucket != bucket) {
