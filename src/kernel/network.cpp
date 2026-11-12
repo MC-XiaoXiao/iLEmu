@@ -46,6 +46,19 @@ namespace {
     constexpr std::uint32_t einval = 22;
     constexpr std::uint32_t enotconn = 57;
 
+    template <typename Predicate>
+    bool any_descriptor_knote(const std::vector<KeventRegistration>& registrations,
+        Predicate&& predicate)
+    {
+        return std::any_of(registrations.begin(), registrations.end(),
+            [&](const auto& registration) {
+                return registration.enabled &&
+                    (registration.filter == darwin::kqueue::filter_read ||
+                        registration.filter == darwin::kqueue::filter_write) &&
+                    predicate(static_cast<std::uint32_t>(registration.ident));
+            });
+    }
+
     void post_kernel_event(KernelSharedState& state, std::uint32_t event_class,
         std::uint32_t event_subclass, std::uint32_t event_code,
         std::span<const std::byte> event_data)
@@ -1417,14 +1430,18 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd) const
         const auto queue = kqueues_.find(fd);
         if (queue == kqueues_.end())
             return false;
-        const auto active = std::any_of(queue->second.begin(), queue->second.end(),
-            [](const auto& registration) {
-                return registration.enabled &&
-                    (registration.filter == darwin::kqueue::filter_read ||
-                        registration.filter == darwin::kqueue::filter_write);
-            });
+        const auto active = any_descriptor_knote(queue->second,
+            [](std::uint32_t) { return true; });
         if (!active)
             return false;
+        // The root is already classified. Retain its cycle marker without
+        // repeating the descriptor lookups in the recursive leaf probe.
+        DescriptorPollVisited visited;
+        visited.try_emplace(fd, true);
+        return any_descriptor_knote(queue->second,
+            [&](std::uint32_t descriptor) {
+                return descriptor_requires_host_poll(descriptor, visited);
+            });
     }
     DescriptorPollVisited visited;
     return descriptor_requires_host_poll(fd, visited);
@@ -1461,16 +1478,11 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd,
         visited.find(fd)->second = requires_poll;
         return requires_poll;
     }
-    for (const auto& registration : queue->second) {
-        if (!registration.enabled ||
-            (registration.filter != darwin::kqueue::filter_read &&
-                registration.filter != darwin::kqueue::filter_write)) {
-            continue;
-        }
-        if (descriptor_requires_host_poll(
-                static_cast<std::uint32_t>(registration.ident), visited))
-            return true;
-    }
+    if (any_descriptor_knote(queue->second,
+            [&](std::uint32_t descriptor) {
+                return descriptor_requires_host_poll(descriptor, visited);
+            }))
+        return true;
     visited.find(fd)->second = false;
     return false;
 }
