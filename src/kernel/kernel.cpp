@@ -1878,9 +1878,14 @@ bool CompatibilityKernel::pending_mach_poll_snapshot_current_locked(
                 return pending_mach_receives_.contains(processor) &&
                     !userland_hle_.pending_call(processor) &&
                     !exception_delivery_.waiting(processor) &&
-                    !caught_signal_ready(processor) &&
-                    !hid_event_system_hle_.is_event_consumer(process_.pid, processor);
+                    !caught_signal_ready(processor);
             }))
+        return false;
+    // Receiver registration is stable for the snapshot; inspect all waiting
+    // processors under one HID queue lock instead of one lock per thread.
+    if (pending_event_poll_io_generation_ != io_generation &&
+        shared_state_->hid_event_queue.has_receiver(process_.pid,
+            pending_event_processors_.begin(), pending_event_processors_.end()))
         return false;
     return std::all_of(pending_event_mach_dependencies_.begin(),
         pending_event_mach_dependencies_.end(), [this](const auto& dependency) {
