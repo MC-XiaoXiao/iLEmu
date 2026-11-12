@@ -1296,8 +1296,8 @@ void CompatibilityKernel::synchronize_interface_routes(
 
 bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
 {
-    if (const auto descriptor = virtual_descriptors_.find(fd);
-        descriptor != virtual_descriptors_.end() &&
+    const auto descriptor = virtual_descriptors_.find(fd);
+    if (descriptor != virtual_descriptors_.end() &&
         descriptor->second == CompassDevice::descriptor_kind) {
         return shared_state_->sensors && shared_state_->compass.pending_bytes(
             *shared_state_->sensors, shared_state_->clock.now()) != 0;
@@ -1306,8 +1306,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         return true;
     if (bpf_descriptor_readable(fd))
         return true;
-    if (const auto descriptor = virtual_descriptors_.find(fd);
-        descriptor != virtual_descriptors_.end() &&
+    if (descriptor != virtual_descriptors_.end() &&
         descriptor->second == "random") {
         // Entropy character devices always have bytes available. OpenSSL's
         // RAND_poll probes them with select(2) before issuing read(2).
@@ -1318,8 +1317,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         event_stream->second && event_stream->second->readable()) {
         return true;
     }
-    if (const auto descriptor = virtual_descriptors_.find(fd);
-        descriptor != virtual_descriptors_.end() &&
+    if (descriptor != virtual_descriptors_.end() &&
         descriptor->second == bsd::baseband_device::descriptor_kind) {
         if (const auto endpoint = baseband_open_description(fd);
             endpoint && (endpoint->pending_receive_bytes() != 0 ||
@@ -1327,8 +1325,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
             return true;
         }
     }
-    if (const auto descriptor = virtual_descriptors_.find(fd);
-        descriptor != virtual_descriptors_.end() &&
+    if (descriptor != virtual_descriptors_.end() &&
         descriptor->second == bsd::offline_serial_device::descriptor_kind &&
         offline_serial_state_.pending_bytes() != 0) {
         return true;
