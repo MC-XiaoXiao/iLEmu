@@ -72,6 +72,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         case 42: // pipe
         case darwin::syscall::duplicate_to:
         case darwin::syscall::get_descriptor_table_size:
+        case darwin::syscall::memory_advise:
             break;
         default:
             static_cast<void>(defer_filesystem_dispatch(cpu, number));
