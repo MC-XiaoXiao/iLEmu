@@ -44,6 +44,8 @@ struct GuestExecutionRequest {
     GuestExecutionContinuation* continuation { };
     std::chrono::steady_clock::time_point host_deadline {
         std::chrono::steady_clock::time_point::max() };
+    // CPU time on the execution owner; host waits and descheduling are excluded.
+    std::uint64_t cpu_time_ns { };
 };
 
 // Owns host execution lanes for a batch selected by the Guest scheduler. The
@@ -51,7 +53,9 @@ struct GuestExecutionRequest {
 // completion semantics; this class only executes independent CPU requests.
 class GuestExecutionCoordinator {
 public:
-    explicit GuestExecutionCoordinator(std::size_t worker_count);
+    using CpuTimeSource = std::function<std::uint64_t()>;
+    explicit GuestExecutionCoordinator(std::size_t worker_count,
+        CpuTimeSource cpu_time_source = {});
     ~GuestExecutionCoordinator();
 
     GuestExecutionCoordinator(const GuestExecutionCoordinator&) = delete;

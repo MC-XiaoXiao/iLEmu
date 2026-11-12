@@ -977,6 +977,14 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
     std::uint64_t consumed_ticks, XnuSliceCompletion completion,
     XnuTimeAccounting time_accounting)
 {
+    return complete_slice(thread, XnuSliceCharge { consumed_ticks, consumed_ticks },
+        completion, time_accounting);
+}
+
+bool XnuScheduler::complete_slice(XnuThreadId thread,
+    XnuSliceCharge charge, XnuSliceCompletion completion,
+    XnuTimeAccounting time_accounting)
+{
     PerformanceLatencyScope latency { PerfLatencyKind::SchedulerSliceCompletion,
         performance_counters().cpu_source_diagnostics_enabled() };
     const auto iterator = threads_.find(thread);
@@ -985,6 +993,7 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
     }
 
     auto& record = iterator->second;
+    const auto consumed_ticks = charge.usage_ticks;
     record.execution_pending = false;
     if (record.priority_usage_shift && record.info.timeshare) {
         record.info.scheduling_usage =
@@ -994,7 +1003,7 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
         saturating_add(record.info.cpu_usage, consumed_ticks);
     record.user_ticks = saturating_add(record.user_ticks, consumed_ticks);
     record.info.remaining_quantum -=
-        std::min(record.info.remaining_quantum, consumed_ticks);
+        std::min(record.info.remaining_quantum, charge.quantum_ticks);
     if (!record.info.timeshare) {
         record.info.computation_metered =
             saturating_add(record.info.computation_metered, consumed_ticks);

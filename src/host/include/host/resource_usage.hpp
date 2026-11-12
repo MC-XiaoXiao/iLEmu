@@ -12,5 +12,6 @@ namespace ilemu {
 
 [[nodiscard]] HostMemorySnapshot host_memory_snapshot();
 [[nodiscard]] HostMemoryBudgetSnapshot host_memory_budget_snapshot();
+[[nodiscard]] std::uint64_t host_thread_cpu_time_nanoseconds();
 
 } // namespace ilemu

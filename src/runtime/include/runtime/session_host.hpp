@@ -44,6 +44,7 @@ public:
     [[nodiscard]] virtual HostMemorySnapshot memory_snapshot() const = 0;
     [[nodiscard]] virtual HostMemoryBudgetSnapshot
     memory_budget_snapshot() const = 0;
+    [[nodiscard]] virtual std::uint64_t thread_cpu_time_nanoseconds() const = 0;
 };
 
 } // namespace ilemu

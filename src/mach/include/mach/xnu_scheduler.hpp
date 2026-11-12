@@ -112,6 +112,11 @@ enum class XnuTimeAccounting : std::uint8_t {
     Deferred,
 };
 
+struct XnuSliceCharge {
+    std::uint64_t usage_ticks;
+    std::uint64_t quantum_ticks;
+};
+
 enum class XnuPreemption : std::uint8_t {
     None,
     Preempt,
@@ -283,6 +288,11 @@ public:
     // emulator's per-process CPU-context slot.
     [[nodiscard]] bool should_yield(XnuThreadId running_thread) const;
     bool complete_slice(XnuThreadId thread, std::uint64_t consumed_ticks,
+        XnuSliceCompletion completion,
+        XnuTimeAccounting time_accounting = XnuTimeAccounting::Advance);
+    // Translation and host syscall work can consume the execution quantum
+    // without inflating architectural Guest CPU usage and priority decay.
+    bool complete_slice(XnuThreadId thread, XnuSliceCharge charge,
         XnuSliceCompletion completion,
         XnuTimeAccounting time_accounting = XnuTimeAccounting::Advance);
     void advance_time(std::uint64_t elapsed_ticks);

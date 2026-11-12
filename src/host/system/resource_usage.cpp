@@ -12,8 +12,17 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <time.h>
 
 namespace ilemu {
+std::uint64_t host_thread_cpu_time_nanoseconds()
+{
+    timespec time;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time);
+    return static_cast<std::uint64_t>(time.tv_sec) * 1'000'000'000U +
+           static_cast<std::uint64_t>(time.tv_nsec);
+}
+
 namespace {
 
     [[nodiscard]] std::optional<std::uint64_t> read_decimal_file(

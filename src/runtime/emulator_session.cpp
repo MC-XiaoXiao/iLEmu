@@ -350,8 +350,20 @@ void EmulatorSession::run()
         std::string { host_memory_pressure_name(jit_cache_budget.memory) } +
         " total-budget-mib=" +
         std::to_string(jit_cache_budget.total_bytes / bytes_per_mebibyte));
+    GuestExecutionCoordinator::CpuTimeSource thread_cpu_time;
+    if (device_time_policy == DeviceTimePolicy::HostMappedInteractive)
+        thread_cpu_time = [&host] { return host.thread_cpu_time_nanoseconds(); };
     auto guest_execution_coordinator =
-        std::make_unique<GuestExecutionCoordinator>(guest_processor_count);
+        std::make_unique<GuestExecutionCoordinator>(guest_processor_count,
+            thread_cpu_time);
+    const auto cpu_time_ticks = [&](std::uint64_t nanoseconds) {
+        return duration_to_guest_ticks(nanoseconds / options.time_dilation,
+            1'000'000'000U, guest_ticks_per_second);
+    };
+    const auto quantum_elapsed_ticks = [&](const GuestExecutionRequest& request) {
+        return thread_cpu_time ? cpu_time_ticks(request.cpu_time_ns)
+                               : request.result.ticks_consumed;
+    };
     const auto network_policy = options.network;
     const auto airport_configuration = NetworkPreferencesAirport {
         .interface_name = "en0",
@@ -4231,6 +4243,7 @@ void EmulatorSession::run()
             auto& runtime = *prepared.runtime;
             const auto index = prepared.thread_index;
             auto& cpu = *prepared.execution.cpu;
+            auto quantum_ticks = quantum_elapsed_ticks(prepared.execution);
             auto result = std::move(prepared.execution.result);
             guest_dispatch_policy.observe_execution(scheduled->processor,
                 scheduled->thread, result.ticks_consumed);
@@ -4274,9 +4287,12 @@ void EmulatorSession::run()
                 runtime.kernel->wait_for_file_page(cpu, *result.file_page_fault);
             if (prepared.deferred_svc && result.svc) {
                 const auto dispatch_started = std::chrono::steady_clock::now();
+                const auto cpu_started = thread_cpu_time ? thread_cpu_time() : 0U;
                 active_thread_accounting = std::pair {
                     scheduled->thread, result.ticks_consumed };
                 runtime.kernel->dispatch(cpu, *result.svc);
+                if (thread_cpu_time)
+                    quantum_ticks += cpu_time_ticks(thread_cpu_time() - cpu_started);
                 host_execution_ns += static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - dispatch_started).count());
@@ -4399,7 +4415,8 @@ void EmulatorSession::run()
                     observe_runtime_jit_memory_counted(runtime);
                     runtime.activate_image_epoch(image_epoch);
                     static_cast<void>(scheduler.complete_slice(
-                        scheduled->thread, result.ticks_consumed,
+                        scheduled->thread,
+                        XnuSliceCharge { result.ticks_consumed, quantum_ticks },
                         XnuSliceCompletion::Block,
                         XnuTimeAccounting::Deferred));
                     static_cast<void>(scheduler.replace_process_threads(
@@ -4536,7 +4553,8 @@ void EmulatorSession::run()
                     completion, result.translated_code, host_execution_ns,
                     prepared.execution.host_slice_budget);
                 const auto slice_completed = scheduler.complete_slice(
-                    scheduled->thread, result.ticks_consumed, completion,
+                    scheduled->thread,
+                    XnuSliceCharge { result.ticks_consumed, quantum_ticks }, completion,
                     XnuTimeAccounting::Deferred);
                 if (slice_completed && completion == XnuSliceCompletion::Block)
                     runtime.kernel->notify_thread_blocked(index);

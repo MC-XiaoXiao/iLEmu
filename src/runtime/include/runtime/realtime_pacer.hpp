@@ -14,8 +14,8 @@
 namespace ilemu {
 
 // Mach absolute time is the guest DeviceMonotonicTime domain. Interactive
-// execution maps it to host steady time; instruction ticks remain a separate
-// CPU/scheduler accounting domain and must not advance this clock.
+// execution maps it to host steady time. Instruction budgets and CPU charges
+// are separate domains and must not advance this clock.
 using DeviceMonotonicTime = std::uint64_t;
 
 enum class DeviceTimePolicy : std::uint8_t {

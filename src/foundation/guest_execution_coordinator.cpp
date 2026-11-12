@@ -41,11 +41,14 @@ struct GuestExecutionCoordinator::Impl {
     std::vector<std::unique_ptr<Channel>> channels;
     std::size_t outstanding { };
     bool stopping { };
+    CpuTimeSource cpu_time_source;
 };
 
-GuestExecutionCoordinator::GuestExecutionCoordinator(std::size_t worker_count)
+GuestExecutionCoordinator::GuestExecutionCoordinator(std::size_t worker_count,
+    CpuTimeSource cpu_time_source)
     : impl_ { std::make_unique<Impl>() }
 {
+    impl_->cpu_time_source = std::move(cpu_time_source);
     if (worker_count == 0U)
         throw std::invalid_argument { "guest execution requires a channel" };
     impl_->channels.reserve(worker_count);
@@ -198,6 +201,7 @@ void GuestExecutionCoordinator::execute(GuestExecutionRequest& request) noexcept
 {
     request.result = { };
     request.error = nullptr;
+    request.cpu_time_ns = 0;
     try {
         const execution::GuestCooperationScope cooperation {
             request.cooperation_signal, request.completion_generation };
@@ -257,7 +261,11 @@ void GuestExecutionCoordinator::worker_loop(std::size_t index)
         auto* request = channel.request;
         lock.unlock();
         execution_channel_active = true;
+        const auto cpu_started =
+            impl_->cpu_time_source ? impl_->cpu_time_source() : 0U;
         execute(*request);
+        if (impl_->cpu_time_source)
+            request->cpu_time_ns = impl_->cpu_time_source() - cpu_started;
         execution_channel_active = false;
         lock.lock();
         channel.state = Impl::State::Completed;

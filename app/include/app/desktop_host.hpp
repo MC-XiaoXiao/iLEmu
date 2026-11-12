@@ -23,6 +23,7 @@ public:
     [[nodiscard]] HostMemorySnapshot memory_snapshot() const override;
     [[nodiscard]] HostMemoryBudgetSnapshot
     memory_budget_snapshot() const override;
+    [[nodiscard]] std::uint64_t thread_cpu_time_nanoseconds() const override;
 };
 
 } // namespace ilemu

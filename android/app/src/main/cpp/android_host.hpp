@@ -26,6 +26,7 @@ public:
     std::shared_ptr<SensorInput> sensors() override;
     HostMemorySnapshot memory_snapshot() const override;
     HostMemoryBudgetSnapshot memory_budget_snapshot() const override;
+    std::uint64_t thread_cpu_time_nanoseconds() const override;
 
 private:
     std::filesystem::path control_path_;

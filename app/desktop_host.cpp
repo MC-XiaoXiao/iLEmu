@@ -64,4 +64,9 @@ HostMemoryBudgetSnapshot DesktopHost::memory_budget_snapshot() const
     return host_memory_budget_snapshot();
 }
 
+std::uint64_t DesktopHost::thread_cpu_time_nanoseconds() const
+{
+    return host_thread_cpu_time_nanoseconds();
+}
+
 } // namespace ilemu
