@@ -1359,28 +1359,10 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
     const auto queue = kqueues_.find(fd);
     if (queue == kqueues_.end())
         return false;
-    return std::any_of(
-        queue->second.begin(), queue->second.end(), [&](const auto& event) {
-            // Disabled knotes cannot make a kqueue readable to select/poll or
-            // to another kqueue watching this descriptor.
-            if (!event.enabled)
-                return false;
-            return (event.ident != fd &&
-                       event.filter == darwin::kqueue::filter_read &&
-                       descriptor_readable(static_cast<std::uint32_t>(event.ident))) ||
-                   (event.filter == darwin::kqueue::filter_write &&
-                       descriptor_writable(static_cast<std::uint32_t>(event.ident))) ||
-                   (event.filter == darwin::kqueue::filter_mach_port &&
-                       ready_mach_kevent_name(event).has_value()) ||
-                   (event.enabled && event.timer &&
-                       event.timer->expirations(shared_state_->clock.now()) != 0) ||
-                   (event.enabled &&
-                       event.filter == darwin::kqueue::filter_vnode &&
-                       event.vnode_watch &&
-                       (event.vnode_watch->pending(
-                            *shared_state_->guest_file_generation_registry) &
-                           event.filter_flags) != 0U);
-        });
+    // The zero-capacity probe shares kevent's filter and EV_CLEAR rules. It
+    // updates readiness observations without copying out or consuming events.
+    return const_cast<CompatibilityKernel*>(this)->collect_ready_kevents(
+               0, fd, 0, 0) == 1U;
 }
 
 bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const
@@ -1872,8 +1854,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         }
         const auto ready =
             registration->filter == darwin::kqueue::filter_read
-                ? (terminal_listener_pending ? *terminal_listener_pending != 0
-                    : descriptor_readable(descriptor))
+                ? descriptor != queue_fd &&
+                    (terminal_listener_pending ? *terminal_listener_pending != 0
+                        : descriptor_readable(descriptor))
             : registration->filter == darwin::kqueue::filter_write
                 ? descriptor_writable(static_cast<std::uint32_t>(registration->ident))
             : registration->filter == darwin::kqueue::filter_process
