@@ -3013,6 +3013,13 @@ void CompatibilityKernel::note_timer_deadline_transition() noexcept
 CompatibilityKernel::TimerDeadlineSnapshot
 CompatibilityKernel::timer_deadline_snapshot() const
 {
+    return timer_deadline_snapshot(shared_timer_deadline_snapshot());
+}
+
+CompatibilityKernel::TimerDeadlineSnapshot
+CompatibilityKernel::timer_deadline_snapshot(
+    const TimerDeadlineSnapshot& shared) const
+{
     const auto consider = [](std::optional<std::uint64_t>& deadline,
                               std::optional<std::uint64_t> candidate) {
         if (candidate && (!deadline || *candidate < *deadline))
@@ -3076,11 +3083,22 @@ CompatibilityKernel::timer_deadline_snapshot() const
     }
 
     auto deadline = local_timer_deadline_cache_;
+    consider(deadline, workqueue_kevent_deadline());
+    consider(deadline, hid_event_system_hle_.next_sample_deadline());
+    consider(deadline, shared.deadline);
+    return TimerDeadlineSnapshot { shared.generation, deadline };
+}
+
+CompatibilityKernel::TimerDeadlineSnapshot
+CompatibilityKernel::shared_timer_deadline_snapshot() const
+{
+    const auto consider = [](std::optional<std::uint64_t>& deadline,
+                              std::optional<std::uint64_t> candidate) {
+        if (candidate && (!deadline || *candidate < *deadline))
+            deadline = candidate;
+    };
     std::uint64_t generation = 0;
     for (unsigned attempt = 0; attempt < 2U; ++attempt) {
-        deadline = local_timer_deadline_cache_;
-        consider(deadline, workqueue_kevent_deadline());
-        consider(deadline, hid_event_system_hle_.next_sample_deadline());
         generation = shared_state_->kernel_event_generation_snapshot();
         if (!shared_timer_deadline_snapshot_ ||
             shared_timer_deadline_snapshot_->generation != generation) {
@@ -3109,14 +3127,12 @@ CompatibilityKernel::timer_deadline_snapshot() const
             shared_timer_deadline_snapshot_ = TimerDeadlineSnapshot {
                 generation, shared_state_->shared_timer_deadline_cache };
         }
-        consider(deadline, shared_timer_deadline_snapshot_->deadline);
         const auto after =
             shared_state_->kernel_event_generation_snapshot();
         if (after == generation)
-            return TimerDeadlineSnapshot { generation, deadline };
-        generation = after;
+            return *shared_timer_deadline_snapshot_;
     }
-    return TimerDeadlineSnapshot { generation, deadline };
+    return *shared_timer_deadline_snapshot_;
 }
 
 std::optional<std::uint64_t>

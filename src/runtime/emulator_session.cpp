@@ -4868,6 +4868,8 @@ void EmulatorSession::run()
             // a queue probe.
             observe_runtime_jit_memory_if_due();
             std::optional<std::uint64_t> next_deadline;
+            const auto shared_timer_deadline =
+                initial_runtime->kernel->shared_timer_deadline_snapshot();
             for (const auto& runtime : runtimes) {
                 const auto process_id = runtime->kernel->process().pid;
                 // An exited Runtime may remain here while asynchronous image
@@ -4879,7 +4881,8 @@ void EmulatorSession::run()
                     continue;
                 }
                 const auto deadline =
-                    runtime->kernel->timer_deadline_snapshot();
+                    runtime->kernel->timer_deadline_snapshot(
+                        shared_timer_deadline);
                 if (!runtime->timer_deadline_observed ||
                     runtime->timer_deadline_generation != deadline.generation) {
                     if (deadline.deadline) {
@@ -4891,6 +4894,10 @@ void EmulatorSession::run()
                     runtime->timer_deadline_observed = true;
                 }
             }
+            // Device publications invalidate the whole batch before sleeping.
+            if (initial_runtime->kernel->shared_timer_deadline_snapshot()
+                    .generation != shared_timer_deadline.generation)
+                continue;
             next_deadline = guest_deadlines.next_deadline();
             const auto next_host_deadline = next_host_control_deadline();
             std::optional<HostResourceController::Clock::time_point>

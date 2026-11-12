@@ -592,6 +592,11 @@ public:
     }
     [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
     [[nodiscard]] TimerDeadlineSnapshot timer_deadline_snapshot() const;
+    // Capture shared device/IPC timers once for a scheduler batch; each task
+    // still contributes its own wait and workqueue deadlines.
+    [[nodiscard]] TimerDeadlineSnapshot shared_timer_deadline_snapshot() const;
+    [[nodiscard]] TimerDeadlineSnapshot timer_deadline_snapshot(
+        const TimerDeadlineSnapshot& shared) const;
     [[nodiscard]] std::optional<std::uint64_t>
     next_display_vsync_deadline() const;
     // Owner of the earliest registered pulse, independent of this kernel task.
