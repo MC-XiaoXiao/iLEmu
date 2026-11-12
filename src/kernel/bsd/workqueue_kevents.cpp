@@ -144,10 +144,11 @@ CompatibilityKernel::workqueue_kevent_deadline() const
 }
 
 bool CompatibilityKernel::workqueue_kevent_poll_required(
-    std::span<const KeventRegistration> registrations, bool io_changed) const
+    std::span<const KeventRegistration> registrations,
+    std::uint64_t io_generation, bool io_changed) const
 {
     return !std::all_of(registrations.begin(), registrations.end(),
-        [this, io_changed](const auto& registration) {
+        [this, io_generation, io_changed](const auto& registration) {
             if (!registration.enabled && !registration.workqueue_servicer)
                 return true;
             if (registration.deferred_delete)
@@ -156,10 +157,16 @@ bool CompatibilityKernel::workqueue_kevent_poll_required(
                 return mach_kevent_observation_current(registration);
             // Match delivery's readiness and bucket eligibility before
             // asking the workqueue to rescan unrelated I/O.
-            if (const auto source = kevent_source_state(registration))
+            if (registration.inactive_source_io_generation == io_generation)
+                return true;
+            if (const auto source = kevent_source_state(registration)) {
+                if (!source->ready &&
+                    registration.filter != darwin::kqueue::filter_timer)
+                    registration.inactive_source_io_generation = io_generation;
                 return !source->ready ||
                     workqueue_kevent_bucket_active(
                         workqueue_kevent_qos(registration, { }).bucket);
+            }
             if (io_changed)
                 return false;
             if (registration.filter == darwin::kqueue::filter_read ||

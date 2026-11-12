@@ -205,6 +205,9 @@ struct KeventRegistration {
     mutable std::uint64_t empty_mach_queue_generation { };
     mutable std::uint32_t empty_mach_queue_object { };
     mutable std::uint32_t empty_mach_queue_pid { };
+    // Non-timer source readiness changes with the retained I/O generation.
+    // Positive observations still need the worker's current bucket eligibility.
+    mutable std::optional<std::uint64_t> inactive_source_io_generation;
     std::optional<VnodeWatch> vnode_watch;
     std::array<std::uint64_t, 2> extension { };
     std::optional<KeventTimer> timer;

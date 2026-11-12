@@ -1127,7 +1127,7 @@ private:
     workqueue_kevent_deadline() const;
     [[nodiscard]] bool workqueue_kevent_poll_required(
         std::span<const KeventRegistration> registrations,
-        bool io_changed) const;
+        std::uint64_t io_generation, bool io_changed) const;
     void note_workqueue_kevent_transition();
     [[nodiscard]] bool mach_kevent_observation_current(
         const KeventRegistration& registration) const;

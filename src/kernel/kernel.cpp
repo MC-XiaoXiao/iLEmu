@@ -1733,7 +1733,8 @@ CompatibilityKernel::pending_event_poll_candidates()
             pending_event_poll_io_generation_ != io_generation;
 
         if (workqueue_kevent_redrive_ || workqueue_timer_due ||
-            workqueue_kevent_poll_required(queue->second, io_changed)) {
+            workqueue_kevent_poll_required(
+                queue->second, io_generation, io_changed)) {
             // A timer pop activates the knote without unrelated I/O or IPC.
             // Refresh eligibility as a previously blocked worker may now run.
             if (workqueue_timer_due)
