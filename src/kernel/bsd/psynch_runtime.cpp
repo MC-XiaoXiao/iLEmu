@@ -130,7 +130,14 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_mutex(
     if (prepost != queue.preposts.end()) {
         if (--prepost->count == 0U)
             queue.preposts.erase(prepost);
-        const auto result = sequence | kernel_bit | exclusive_bit;
+        const auto newest = std::max_element(queue.waiters.begin(),
+            queue.waiters.end(), [](const auto& left, const auto& right) {
+                return left.sequence != right.sequence &&
+                    sequence_not_after(left.sequence, right.sequence);
+            });
+        const auto result =
+            (newest == queue.waiters.end() ? sequence : newest->sequence) |
+            kernel_bit | exclusive_bit;
         if (owner)
             update_mutex_owner(key, *owner, thread, context.thread_id,
                 !queue.waiters.empty(), updates);
@@ -197,12 +204,6 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex_locked(
                                            DarwinPsynchWaitKind::Mutex &&
                                        candidate.sequence == next_sequence;
                             });
-    if (waiter == queue.waiters.end() && !queue.waiters.empty()) {
-        // The guest sequence can advance past an interrupted waiter. XNU
-        // redrives that case by sequence; selecting the oldest remaining
-        // waiter preserves progress without granting more than one mutex.
-        waiter = queue.waiters.begin();
-    }
     if (waiter != queue.waiters.end()) {
         if (owner) {
             update_mutex_owner(key, *owner, waiter->thread, waiter->thread_id,
@@ -212,7 +213,8 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex_locked(
         }
         const auto highest_sequence = std::max_element(queue.waiters.begin(),
             queue.waiters.end(), [](const auto& left, const auto& right) {
-                return left.sequence < right.sequence;
+                return left.sequence != right.sequence &&
+                    sequence_not_after(left.sequence, right.sequence);
             })->sequence;
         complete_wait_locked(*waiter,
             highest_sequence | kernel_bit | exclusive_bit,
