@@ -2028,10 +2028,14 @@ void CompatibilityKernel::note_local_io_event_transition_locked() noexcept
 bool CompatibilityKernel::pending_io_wait_ignores_mach_locked(
     std::size_t processor) const
 {
-    // Pthread/user-lock wakes publish I/O readiness before scheduler callbacks.
+    // Descriptor receives use I/O generations, host probes and deadlines,
+    // independently of Mach queues. Pthread/user-lock wakes publish I/O
+    // readiness before scheduler callbacks.
     // Ordinary clock waits depend only on their retained deadline. Bootstrap
     // retries also observe service registration and must keep their Mach probe.
-    if (pending_psynch_waits_.contains(processor) ||
+    if (pending_socket_reads_.contains(processor) ||
+        pending_recvmsgs_.contains(processor) ||
+        pending_psynch_waits_.contains(processor) ||
         pending_ulock_waits_.contains(processor))
         return true;
     const auto timer = pending_timers_.find(processor);
