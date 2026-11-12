@@ -387,13 +387,6 @@ namespace {
                 step_ = Step::AccelerationAxis;
                 symbol = set_float;
                 break;
-            case Step::Keyboard:
-                root_event_ = call.argument(0);
-                if (!root_event_) {
-                    completion_();
-                    return;
-                }
-                [[fallthrough]];
             case Step::AccelerationAxis:
                 if (step_ == Step::AccelerationAxis &&
                     ++acceleration_axis_ < Arm32AccelerationEventAbi::axis_count) {
@@ -421,6 +414,14 @@ namespace {
                 step_ = Step::ReleaseFinger;
                 symbol = "_CFRelease";
                 break;
+            case Step::Keyboard:
+                root_event_ = call.argument(0);
+                if (!root_event_) {
+                    completion_();
+                    return;
+                }
+                // Hardware keys use the registered service's native filters.
+                [[fallthrough]];
             case Step::ReleaseFinger:
                 if (report_ == DigitizerReport::DisplayWithTranslation) {
                     step_ = Step::Translation;
