@@ -275,7 +275,8 @@ private:
     void multiply_current_matrix(UserlandHleCall& call, GlesMatrix matrix);
     [[nodiscard]] bool read_array(UserlandHleCall& call,
         const ContextState::ArrayPointer& array, std::uint32_t index,
-        std::span<float> destination, bool normalized) const;
+        std::span<float> destination, bool normalized,
+        std::span<std::byte, 4 * sizeof(std::uint32_t)> client_bytes) const;
     [[nodiscard]] std::optional<GlesRasterVertex> read_vertex(
         UserlandHleCall& call, const ContextState& context, std::uint32_t index,
         const ProgrammableDrawState* programmable = nullptr) const;
