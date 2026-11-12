@@ -2963,6 +2963,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     result->shared_file_writer_ = shared_file_writer_;
     result->exclusive_write_tracked_pages_ = exclusive_write_tracked_pages_;
     result->exclusive_write_backings_ = exclusive_write_backings_;
+    result->exclusive_write_backing_keys_ = exclusive_write_backing_keys_;
     result->exclusive_write_tracking_active_.store(
         !result->exclusive_write_tracked_pages_.empty(),
         std::memory_order_release);
