@@ -1748,7 +1748,7 @@ struct KernelSharedState {
     // A physical touch can start a launchd-mediated App before its event port
     // exists. Spawn consumes this candidate; Home cancels it, while Lock keeps
     // an in-flight selection available for the existing held-launch path.
-    bool pending_application_launch_touch { };
+    std::optional<std::uint64_t> pending_application_launch_touch_sequence;
     std::uint64_t next_process_incarnation { 1 };
     std::uint32_t next_audit_identity_version { 1 };
     std::uint64_t next_foreground_transition_generation { 1 };
@@ -2126,6 +2126,18 @@ struct KernelSharedState {
             return std::nullopt;
         return ForegroundTransitionProcess { process_id,
             process->second.incarnation };
+    }
+
+    [[nodiscard]] bool foreground_application_owns_home_locked() const
+    {
+        const auto process_id = foreground_application_attempt_process_id;
+        if (!process_id)
+            return false;
+        const auto role = processes.at(*process_id).execution_policy->role();
+        return role == DarwinProcessRole::FocalUi ||
+            (role == DarwinProcessRole::Default &&
+                application_launch_attempts.at(*process_id).phase ==
+                    ApplicationLaunchPhase::Launching);
     }
 
     void begin_foreground_transition_locked(std::uint64_t launch_token,

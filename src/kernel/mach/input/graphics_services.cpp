@@ -915,7 +915,7 @@ namespace {
         std::optional<std::uint32_t> sampleable_home_exit_process_id)
     {
         if (reason == KernelSharedState::ApplicationSuspensionReason::Home)
-            state.pending_application_launch_touch = false;
+            state.pending_application_launch_touch_sequence.reset();
         const auto prior_held_application_launch =
             state.held_application_launch;
         state.application_launch_barrier =
@@ -1842,8 +1842,9 @@ void record_system_event_delivery_locked(KernelSharedState& state,
     if ((!home && !lock) ||
         state.requested_display_power_state.value_or(1U) == 0U)
         return;
-    if (home && (state.springboard_unlock_touch_pending ||
-                    state.springboard_unlock_touch_active))
+    if (home && !state.foreground_application_owns_home_locked() &&
+        (state.springboard_unlock_touch_pending ||
+            state.springboard_unlock_touch_active))
         return;
     // Firmware event producers (accessibility and other system services) own
     // the wire event. Apply the same scene barrier as physical input without
@@ -1895,7 +1896,7 @@ void record_application_spawn(KernelSharedState& state,
         state.pending_application_handoff_process_id == process_id;
     const auto causal_setexec_foreground =
         force_foreground &&
-        (state.pending_application_launch_touch ||
+        (state.pending_application_launch_touch_sequence ||
             exact_foreground_handoff);
     if ((!process_is_springboard_locked(state, sender_process_id) &&
             !causal_setexec_foreground) ||
@@ -1904,11 +1905,14 @@ void record_application_spawn(KernelSharedState& state,
             arguments.end()) {
         return;
     }
-    state.pending_application_launch_touch = false;
+    const auto physical_touch_sequence =
+        state.pending_application_launch_touch_sequence;
+    state.pending_application_launch_touch_sequence.reset();
     const auto held_origin =
         pending_held_application_origin_locked(state, process_id);
     const auto origin_touch_sequence = held_origin.value_or(
-        springboard_launch_origin_touch_sequence_locked(state));
+        physical_touch_sequence.value_or(
+            springboard_launch_origin_touch_sequence_locked(state)));
     auto* attempt = launch_attempt_locked(state, process_id);
     if (!attempt || attempt->origin_touch_sequence != origin_touch_sequence) {
         attempt = &begin_launch_attempt_locked(state, process_id,

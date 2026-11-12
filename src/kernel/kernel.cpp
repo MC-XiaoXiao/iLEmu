@@ -682,7 +682,7 @@ void CompatibilityKernel::enqueue_system_button_impl(
             input.button == SystemButton::Lock)) {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         if (input.button == SystemButton::Home)
-            shared_state_->pending_application_launch_touch = false;
+            shared_state_->pending_application_launch_touch_sequence.reset();
         const auto display_asleep =
             shared_state_->requested_display_power_state.value_or(1U) == 0U;
         if (display_asleep && !force_home_transition) {
@@ -690,6 +690,7 @@ void CompatibilityKernel::enqueue_system_button_impl(
             wake_only_system_button = true;
         } else if (!force_home_transition &&
                    input.button == SystemButton::Home &&
+                   !shared_state_->foreground_application_owns_home_locked() &&
                    (shared_state_->springboard_unlock_touch_pending ||
                        shared_state_->springboard_unlock_touch_active)) {
             // The LCD can already be on while SpringBoard still owns the lock
