@@ -1651,15 +1651,18 @@ EnqueueResult enqueue_system_button(KernelSharedState& state,
     const auto& profile = GraphicsServicesInputAbi::for_abi(
         system_graphics_input_abi_locked(state, destination));
     const auto event_type = profile.system_button_type(input);
+    const auto consumer = state.hid_event_queue.consumer();
+    const auto native_controls = consumer && consumer->client_delivery ==
+        HidEventQueue::ClientDelivery::NativeQueues;
+    // Native event-system clients own hardware controls even when firmware
+    // also publishes the legacy GraphicsServices port.
+    if ((native_controls || service == state.bootstrap_service_objects.end()) &&
+        state.hid_event_queue.enqueue(
+            { hid_button(input), state.clock.now(), 1U, { }, sequence })) {
+        state.note_io_event_transition();
+        return EnqueueResult::Queued;
+    }
     if (service == state.bootstrap_service_objects.end()) {
-        // A firmware HID consumer can own system controls without publishing
-        // the legacy GraphicsServices system-event port. Let that consumer
-        // classify the physical key and perform its native wake/idle handling.
-        if (state.hid_event_queue.enqueue(
-                { hid_button(input), state.clock.now(), 1U, { }, sequence })) {
-            state.note_io_event_transition();
-            return EnqueueResult::Queued;
-        }
         state.pending_graphics_system_events.push_back(
             KernelSharedState::PendingGraphicsSystemEvent {
                 event_type, sequence, input_kind });
