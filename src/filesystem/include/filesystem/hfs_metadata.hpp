@@ -193,6 +193,8 @@ struct VolumeMetadata {
     std::string mounted_device { "/dev/disk0s1" };
     std::uint32_t filesystem_type { 17 };
     std::uint32_t signature { 0x4858 }; // kHFSXSigWord, "HX"
+    std::uint32_t version { 5 };
+    std::uint32_t last_mounted_version { 0x4846532bU }; // kHFSPlusMountVersion
     std::uint32_t block_size { 4096 };
     std::uint32_t total_blocks { 47'269 };
     std::uint32_t free_blocks { 5'832 };
@@ -201,6 +203,8 @@ struct VolumeMetadata {
     std::uint32_t file_count { 2'557 };
     std::uint32_t directory_count { 352 };
     std::uint32_t next_catalog_id { 2'929 };
+    std::uint32_t attributes { 1U << 8U }; // clean, directory-backed volume
+    std::array<std::byte, 8> finder_identifier { };
     std::uint32_t mount_flags { 0x00005001U }; // RDONLY|LOCAL|ROOTFS
     std::uint64_t encodings_used { 1 };
     std::array<std::byte, 16> uuid { };

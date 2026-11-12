@@ -235,6 +235,7 @@ void bind_bsd_entries(Table& table, DarwinVersion version)
     add(154, "pwrite", Handler::BsdFilesystem);
     add(157, "statfs", Handler::BsdFilesystem);
     add(159, "unmount", Handler::BsdFilesystem);
+    add(165, "quotactl", Handler::BsdFilesystem);
     add(167, "mount", Handler::BsdFilesystem);
     add(158, "fstatfs", Handler::BsdFilesystem);
     add(200, "truncate", Handler::BsdFilesystem);

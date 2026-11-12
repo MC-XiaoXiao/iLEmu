@@ -103,6 +103,26 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
                 return false;
             }
         }
+        const auto owner = requested_owner == unchanged_identity ? metadata.owner : requested_owner;
+        const auto group = requested_group == unchanged_identity ? metadata.group : requested_group;
+        const auto& mount = hfs_volumes_.for_host_path(metadata.host_path).mount_point;
+        if (hfs_volumes_.quotas.active(mount) &&
+            (owner != metadata.owner || group != metadata.group)) {
+            const auto bytes = static_cast<std::int64_t>(
+                hfs::quota_allocation(metadata.data_length) + metadata.resource_allocation_size);
+            const auto now = static_cast<std::uint32_t>(shared_state_->clock.now() / 1'000'000'000U);
+            const auto error = hfs_volumes_.quotas.change(mount,
+                owner != metadata.owner ? owner : 0,
+                group != metadata.group ? group : 0, bytes, 1,
+                process_.effective_uid == 0, now);
+            if (error) {
+                bsd_error(cpu, error);
+                return false;
+            }
+            static_cast<void>(hfs_volumes_.quotas.change(mount,
+                owner != metadata.owner ? metadata.owner : 0,
+                group != metadata.group ? metadata.group : 0, -bytes, -1, true, now));
+        }
         const std::lock_guard filesystem_lock {
             shared_state_->filesystem_mutex
         };

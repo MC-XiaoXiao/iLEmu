@@ -158,6 +158,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         return;
     }
     auto& registers = cpu.registers();
+    const auto charge_quota = [&](const std::filesystem::path& host,
+                                  std::uint32_t owner, std::uint32_t group,
+                                  std::int64_t bytes, std::int64_t inodes,
+                                  bool release = false) {
+        return hfs_volumes_.quotas.change(hfs_volumes_.for_host_path(host).mount_point,
+            owner, group, bytes, inodes, release || process_.effective_uid == 0,
+            static_cast<std::uint32_t>(shared_state_->clock.now() / 1'000'000'000U));
+    };
     const auto volume_for_descriptor_path =
         [&](const auto& host_path) -> const hfs::VolumeMetadata& {
         const auto relative = host_path.lexically_normal().lexically_relative(
@@ -336,6 +344,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                     metadata->host_identity);
             }
         }
+        if (metadata && metadata->link_count <= 1U)
+            static_cast<void>(charge_quota(host, metadata->owner, metadata->group,
+                -static_cast<std::int64_t>(hfs::quota_allocation(metadata->data_length) +
+                    metadata->resource_allocation_size), -1, true));
         static_cast<void>(
             shared_state_->guest_file_generation_registry->publish(
                 host, GuestFileMutationKind::Unlink));
@@ -514,11 +526,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         if (*path == "/dev/disk0s1" || *path == "/dev/disk0s2" ||
             *path == "/dev/rdisk0s1" || *path == "/dev/rdisk0s2") {
-            const auto system_partition = path->ends_with("s1");
-            const auto backing =
-                hfs::VolumeLayout::backing_image(rootfs_, system_partition);
+            const auto device = std::string { "/dev/disk0s" } + path->back();
+            const auto& volume = hfs_volumes_.for_mounted_device(device);
+            const auto backing = rootfs_ /
+                std::filesystem::path { volume.mount_point }.relative_path();
             std::error_code backing_error;
-            if (!std::filesystem::is_regular_file(backing, backing_error)) {
+            if (!std::filesystem::is_directory(backing, backing_error)) {
                 bsd_error(cpu, 2);
                 return;
             }
@@ -531,7 +544,6 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             file_offsets_.emplace(*fd, 0);
             file_status_flags_[*fd] = file_flags.status(flags, true);
             descriptor_flags_[*fd] = file_flags.descriptor(flags);
-            static_cast<void>(ensure_regular_file_open_description(*fd));
             const auto minor = path->ends_with("s1") ? 1U : 2U;
             virtual_block_descriptors_.emplace(
                 *fd, std::pair { minor, path->starts_with("/dev/rdisk") });
@@ -541,6 +553,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         std::error_code error;
         bool exists = false;
         bool created = false;
+        const auto previous_metadata = hfs_volumes_.quotas.active(
+            hfs_volumes_.for_host_path(host).mount_point)
+            ? query_hfs_metadata(host, true, false) : std::nullopt;
         {
             std::lock_guard filesystem_lock { shared_state_->filesystem_mutex };
             exists = std::filesystem::exists(host, error);
@@ -567,9 +582,16 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                     bsd_error(cpu, darwin::error::no_entry);
                     return;
                 }
+                if (const auto quota_error = charge_quota(host,
+                        process_.effective_uid, process_.effective_gid, 0, 1)) {
+                    bsd_error(cpu, quota_error);
+                    return;
+                }
                 std::ofstream create { host,
                     std::ios::binary | std::ios::trunc };
                 if (!create) {
+                    static_cast<void>(charge_quota(host, process_.effective_uid,
+                        process_.effective_gid, 0, -1, true));
                     bsd_error(cpu, darwin::error::io);
                     return;
                 }
@@ -603,6 +625,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                     bsd_error(cpu, darwin::error::io);
                     return;
                 }
+                if (previous_metadata)
+                    static_cast<void>(charge_quota(host, previous_metadata->owner, previous_metadata->group,
+                        -static_cast<std::int64_t>(hfs::quota_allocation(previous_metadata->data_length)), 0, true));
                 static_cast<void>(
                     shared_state_->guest_file_generation_registry->publish(
                         host, GuestFileMutationKind::Truncate));
@@ -777,6 +802,11 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         const auto host = resolve_guest_path(cpu, *link_path, false);
         std::error_code error;
+        if (const auto quota_error = charge_quota(host, process_.effective_uid,
+                process_.effective_gid, 0, 1)) {
+            bsd_error(cpu, quota_error);
+            return;
+        }
         {
             const std::lock_guard filesystem_lock {
                 shared_state_->filesystem_mutex
@@ -784,6 +814,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             std::filesystem::create_symlink(*target, host, error);
         }
         if (error) {
+            static_cast<void>(charge_quota(host, process_.effective_uid,
+                process_.effective_gid, 0, -1, true));
             bsd_error(cpu, bsd_support::darwin_filesystem_error(error));
             return;
         }
@@ -876,7 +908,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 return;
             }
             error.clear();
+            if (const auto quota_error = charge_quota(host, process_.effective_uid,
+                    process_.effective_gid, 0, 1)) {
+                bsd_error(cpu, quota_error);
+                return;
+            }
             if (!std::filesystem::create_directory(host, error)) {
+                static_cast<void>(charge_quota(host, process_.effective_uid,
+                    process_.effective_gid, 0, -1, true));
                 bsd_error(
                     cpu, error == std::errc::permission_denied ? 13U : 5U);
                 return;
@@ -946,6 +985,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                         metadata->host_identity);
                 }
             }
+            if (metadata)
+                static_cast<void>(charge_quota(host, metadata->owner, metadata->group,
+                    0, -1, true));
             shared_state_->guest_file_generation_registry
                 ->publish_subtree_remove(host);
             directory_entries_cache_.clear();
@@ -1048,6 +1090,71 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         bsd_success(cpu, 0);
         return;
     }
+    case 165: { // quotactl
+        // XNU vfs_syscalls.c and hfs_vfsops.c: QCMD packs the command
+        // above the low-byte user/group selector. Quota records and limits
+        // belong to the guest mount, independently of host quota policy.
+        const auto path = memory_.read_c_string(registers[0]);
+        if (!path) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        const auto metadata = query_hfs_metadata(
+            resolve_guest_path(cpu, *path), true, false);
+        if (!metadata) {
+            bsd_error(cpu, darwin::error::no_entry);
+            return;
+        }
+        const auto command = registers[1] >> 8U;
+        const auto type = registers[1] & 0xffU;
+        const auto uid = registers[2] == 0xffffffffU
+                             ? process_.effective_uid : registers[2];
+        if (command != 0x600U && command != 0x700U &&
+            !(command == 0x300U && uid == process_.effective_uid) &&
+            process_.effective_uid != 0U) {
+            bsd_error(cpu, darwin::error::operation_not_permitted);
+            return;
+        }
+        if (type >= 2U) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        hfs::QuotaRecord record {};
+        std::filesystem::path quota_file;
+        if (command == 0x100U) {
+            const auto filename = memory_.read_c_string(registers[3]);
+            if (!filename) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            quota_file = resolve_guest_path(cpu, *filename);
+        } else if (command == 0x400U || command == 0x500U) {
+            const auto input = memory_.read_bytes(registers[3], record.size());
+            if (!input) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            std::copy(input->begin(), input->end(), record.begin());
+        }
+        const auto& volume = hfs_volumes_.for_guest_path(
+            metadata->host_path.lexically_relative(rootfs_).generic_string());
+        const auto error = hfs_volumes_.quotas.control(volume.mount_point,
+            command, type, uid, record, quota_file,
+            static_cast<std::uint32_t>(shared_state_->clock.now() / 1'000'000'000U));
+        if (error) {
+            bsd_error(cpu, error);
+            return;
+        }
+        if ((command == 0x300U || command == 0x700U) &&
+            !memory_.copy_to_user(registers[3], std::span {record}.first(
+                command == 0x700U ? 4U : record.size()))) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        bsd_success(cpu, 0U);
+        return;
+    }
+
     case 159: { // unmount
         const auto path = memory_.read_c_string(registers[0]);
         if (!path) {
@@ -1176,6 +1283,18 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         const auto host = resolve_guest_path(cpu, *path);
+        const auto metadata = hfs_volumes_.quotas.active(
+            hfs_volumes_.for_host_path(host).mount_point)
+            ? query_hfs_metadata(host, true, false) : std::nullopt;
+        const auto delta = metadata
+            ? static_cast<std::int64_t>(hfs::quota_allocation(length)) -
+              static_cast<std::int64_t>(hfs::quota_allocation(metadata->data_length)) : 0;
+        if (metadata) {
+            if (const auto e = charge_quota(host, metadata->owner, metadata->group, delta, 0)) {
+                bsd_error(cpu, e);
+                return;
+            }
+        }
         std::error_code error;
         {
             const std::lock_guard filesystem_lock {
@@ -1185,6 +1304,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 host, static_cast<std::uintmax_t>(length), error);
         }
         if (error) {
+            if (metadata)
+                static_cast<void>(charge_quota(host, metadata->owner, metadata->group, -delta, 0, true));
             bsd_error(cpu, bsd_support::darwin_filesystem_error(error));
             return;
         }
@@ -1216,8 +1337,23 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, bsd_support::bad_file_descriptor);
             return;
         }
+        const auto metadata = hfs_volumes_.quotas.active(
+            hfs_volumes_.for_host_path(file->second).mount_point)
+            ? query_hfs_metadata(file->second, true, false, description->host_descriptor())
+            : std::nullopt;
+        const auto delta = metadata
+            ? static_cast<std::int64_t>(hfs::quota_allocation(length)) -
+              static_cast<std::int64_t>(hfs::quota_allocation(metadata->data_length)) : 0;
+        if (metadata) {
+            if (const auto e = charge_quota(file->second, metadata->owner, metadata->group, delta, 0)) {
+                bsd_error(cpu, e);
+                return;
+            }
+        }
         if (::ftruncate(description->host_descriptor(),
                 static_cast<off_t>(length)) != 0) {
+            if (metadata)
+                static_cast<void>(charge_quota(file->second, metadata->owner, metadata->group, -delta, 0, true));
             bsd_error(
                 cpu, bsd_support::darwin_filesystem_error(
                          std::error_code { errno, std::generic_category() }));
@@ -1356,6 +1492,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             base = static_cast<std::int64_t>(file_offsets_[fd]);
             break; // SEEK_CUR
         case 2: { // SEEK_END
+            if (virtual_block_descriptors_.contains(fd)) {
+                base = static_cast<std::int64_t>(hfs::VolumeLayout::device_size(
+                    hfs_volumes_.for_guest_path(
+                        file->second.lexically_relative(rootfs_).generic_string())));
+                break;
+            }
             const auto description = ensure_regular_file_open_description(fd);
             struct stat status { };
             if (!description ||
@@ -1833,6 +1975,16 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 std::copy(incoming->begin(), incoming->end(),
                     replacement.begin() + position);
             }
+            const auto quota_delta = *name == resource_fork_name
+                ? static_cast<std::int64_t>(hfs::quota_allocation(replacement.size())) -
+                    static_cast<std::int64_t>(metadata->resource_allocation_size) : 0;
+            if (quota_delta != 0) {
+                if (const auto error = charge_quota(host, metadata->owner,
+                        metadata->group, quota_delta, 0)) {
+                    bsd_error(cpu, error);
+                    return;
+                }
+            }
             {
                 const std::lock_guard filesystem_lock {
                     shared_state_->filesystem_mutex
@@ -1846,6 +1998,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                         reinterpret_cast<const char*>(replacement.data()),
                         static_cast<std::streamsize>(replacement.size()));
                     if (!stream) {
+                        static_cast<void>(charge_quota(host, metadata->owner,
+                            metadata->group, -quota_delta, 0, true));
                         bsd_error(cpu, darwin::error::io);
                         return;
                     }
@@ -1899,6 +2053,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 return;
             }
         }
+        if (*name == resource_fork_name)
+            static_cast<void>(charge_quota(host, metadata->owner, metadata->group,
+                -static_cast<std::int64_t>(metadata->resource_allocation_size), 0, true));
         {
             const std::lock_guard filesystem_lock {
                 shared_state_->filesystem_mutex

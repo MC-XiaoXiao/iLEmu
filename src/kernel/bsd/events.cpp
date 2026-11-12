@@ -164,36 +164,40 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 }
                 return;
             case 0x40086419U: { // DKIOCGETBLOCKCOUNT
-                std::error_code size_error;
-                const auto size = std::filesystem::file_size(
-                    file_descriptors_.at(fd), size_error);
-                if (size_error || !memory_.write64(registers[2], size / 512U)) {
-                    bsd_error(cpu, size_error ? 5U : bsd_support::bad_address);
+                const auto& volume = hfs_volumes_.for_guest_path(
+                    file_descriptors_.at(fd).lexically_relative(rootfs_).generic_string());
+                const auto size = hfs::VolumeLayout::device_size(volume);
+                if (!memory_.write64(registers[2], size / 512U)) {
+                    bsd_error(cpu, bsd_support::bad_address);
                 } else {
                     bsd_success(cpu, 0);
                 }
                 return;
             }
             case 0x40046419U: { // DKIOCGETBLOCKCOUNT32
-                std::error_code size_error;
-                const auto size = std::filesystem::file_size(
-                    file_descriptors_.at(fd), size_error);
-                if (size_error ||
-                    !memory_.write32(registers[2],
+                const auto& volume = hfs_volumes_.for_guest_path(
+                    file_descriptors_.at(fd).lexically_relative(rootfs_).generic_string());
+                const auto size = hfs::VolumeLayout::device_size(volume);
+                if (!memory_.write32(registers[2],
                         static_cast<std::uint32_t>(size / 512U))) {
-                    bsd_error(cpu, size_error ? 5U : bsd_support::bad_address);
+                    bsd_error(cpu, bsd_support::bad_address);
                 } else {
                     bsd_success(cpu, 0);
                 }
                 return;
             }
             case 0x40046417U: // DKIOCISFORMATTED
-            case 0x4004641dU: // DKIOCISWRITABLE
                 if (!memory_.write32(registers[2], 1)) {
                     bsd_error(cpu, bsd_support::bad_address);
                 } else {
                     bsd_success(cpu, 0);
                 }
+                return;
+            case 0x4004641dU: // DKIOCISWRITABLE: raw metadata view is read-only
+                if (!memory_.write32(registers[2], 0))
+                    bsd_error(cpu, bsd_support::bad_address);
+                else
+                    bsd_success(cpu, 0);
                 return;
             case 0x20006416U: // DKIOCSYNCHRONIZECACHE
                 bsd_success(cpu, 0);

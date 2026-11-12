@@ -58,6 +58,11 @@ void FileIoQueue::start()
         if (!io_)
             io_ = std::make_unique<HostFileIo>();
         const auto position = operation.position.value_or(operation.cursor);
+        if (operation.admit_write) {
+            operation.error = operation.admit_write(position, operation.input.size());
+            if (operation.error)
+                return;
+        }
         operation.request = io_->submit(
             operation.description->host_descriptor(), position,
             std::move(operation.input),

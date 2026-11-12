@@ -10,6 +10,7 @@
 #include "kernel/open_file_offset.hpp"
 #include <deque>
 #include <filesystem>
+#include <functional>
 
 namespace ilemu {
 struct FileIoOperation {
@@ -39,6 +40,8 @@ struct FileIoOperation {
     bool abandoned { false };
     bool cancelled { false };
     bool committed { false };
+    std::function<std::uint32_t(std::uint64_t, std::size_t)> admit_write;
+    std::function<void()> finish_write;
     [[nodiscard]] bool ready() const;
 };
 

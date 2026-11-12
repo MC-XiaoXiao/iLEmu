@@ -4,6 +4,7 @@
 #include "../support.hpp"
 #include "kernel/kernel.hpp"
 #include <system_error>
+#include <sys/stat.h>
 
 namespace ilemu {
 std::shared_ptr<FileIoOperation> CompatibilityKernel::prepare_file_io(Cpu& cpu,
@@ -33,6 +34,34 @@ std::shared_ptr<FileIoOperation> CompatibilityKernel::prepare_file_io(Cpu& cpu,
              (asynchronous && kind == FileIoOperation::Kind::Synchronize)) &&
             access == darwin::open_flag::read_only)) {
         bsd_error(cpu, darwin::error::bad_file_descriptor);
+        return { };
+    }
+    if (virtual_block_descriptors_.contains(fd)) {
+        if (kind == FileIoOperation::Kind::Synchronize) {
+            bsd_success(cpu, 0);
+            return { };
+        }
+        if (kind != FileIoOperation::Kind::Read || asynchronous) {
+            bsd_error(cpu, darwin::error::not_supported);
+            return { };
+        }
+        const auto cursor_lock = file_offsets_[fd].lock();
+        const auto offset = position.value_or(file_offsets_[fd]);
+        const auto& volume = hfs_volumes_.for_guest_path(
+            file->second.lexically_relative(rootfs_).generic_string());
+        const auto bytes = hfs::VolumeLayout::read_device(volume, offset, size);
+        if (!bytes) {
+            bsd_error(cpu, darwin::error::not_supported);
+            return { };
+        }
+        std::size_t copied = 0;
+        const auto ok = GuestReadBuffer { address, vectors }.copy(memory_, *bytes, &copied);
+        if (!position)
+            file_offsets_[fd] = offset + (vectors.empty() ? bytes->size() : copied);
+        if (!ok)
+            bsd_error(cpu, darwin::error::bad_address);
+        else
+            bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
         return { };
     }
     if (asynchronous && !shared_state_->file_io.can_submit(size)) {
@@ -68,6 +97,46 @@ std::shared_ptr<FileIoOperation> CompatibilityKernel::prepare_file_io(Cpu& cpu,
     operation->address = address;
     operation->vectors = std::move(vectors);
     operation->size = size;
+    const auto& mount = hfs_volumes_.for_host_path(file->second).mount_point;
+    if (kind == FileIoOperation::Kind::Write && hfs_volumes_.quotas.active(mount)) {
+        const auto metadata = query_hfs_metadata(file->second, true, false,
+            description->host_descriptor());
+        if (!metadata) {
+            bsd_error(cpu, darwin::error::io);
+            return {};
+        }
+        struct Charge { std::uint64_t before {}; std::int64_t reserved {}; };
+        const auto charge = std::make_shared<Charge>();
+        auto quota = hfs_volumes_.quotas;
+        const auto descriptor = description->host_descriptor();
+        const auto owner = metadata->owner, group = metadata->group;
+        const auto state = shared_state_;
+        const auto privileged = process_.effective_uid == 0;
+        const auto append = operation->append;
+        operation->admit_write = [=](std::uint64_t offset, std::size_t count) mutable {
+            struct stat status {};
+            if (::fstat(descriptor, &status) != 0)
+                return darwin::error::io;
+            const auto length = static_cast<std::uint64_t>(status.st_size);
+            charge->before = (length + 4095U) / 4096U * 4096U;
+            if (append) offset = length;
+            const auto after = (std::max(length, offset + count) + 4095U) / 4096U * 4096U;
+            const auto delta = static_cast<std::int64_t>(after - charge->before);
+            const auto error = quota.change(mount, owner, group, delta, 0,
+                privileged, static_cast<std::uint32_t>(state->clock.now() / 1'000'000'000U));
+            if (!error) charge->reserved = delta;
+            return error;
+        };
+        operation->finish_write = [=]() mutable {
+            struct stat status {};
+            if (::fstat(descriptor, &status) == 0) {
+                const auto after = (std::uint64_t(status.st_size) + 4095U) / 4096U * 4096U;
+                const auto actual = static_cast<std::int64_t>(after) - static_cast<std::int64_t>(charge->before);
+                static_cast<void>(quota.change(mount, owner, group,
+                    actual - charge->reserved, 0, true, static_cast<std::uint32_t>(state->clock.now() / 1'000'000'000U)));
+            }
+        };
+    }
     if (shared_state_->file_io.can_submit(size)) {
         if (!copy_file_io_input(*operation) && !asynchronous) {
             bsd_error(cpu, operation->error);
@@ -205,6 +274,10 @@ void CompatibilityKernel::service_file_io()
             if (!operation->error)
                 operation->result = static_cast<std::int32_t>(bytes.size());
         }
+        if (operation->finish_write && operation->request)
+            operation->finish_write();
+        operation->finish_write = {};
+        operation->admit_write = {};
         operation->request.reset();
         operation->sync_request.reset();
         operation->description.reset();

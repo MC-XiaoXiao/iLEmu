@@ -9,11 +9,13 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
 
 #include "filesystem/hfs_metadata.hpp"
+#include "filesystem/hfs_quota.hpp"
 
 namespace ilemu::hfs {
 
@@ -24,20 +26,31 @@ class VolumeLayout {
 public:
     VolumeLayout(std::filesystem::path rootfs, std::uint64_t storage_bytes);
 
-    [[nodiscard]] static std::filesystem::path backing_image(
-        const std::filesystem::path& rootfs, bool system_partition);
+    // The directory backend has no HFS allocation/catalog blocks. Expose its
+    // volume header for native filesystem identification and quick checks;
+    // requests for on-disk file records remain unsupported.
+    [[nodiscard]] static std::optional<std::vector<std::byte>> read_device(
+        const VolumeMetadata& volume, std::uint64_t offset, std::size_t size);
+    [[nodiscard]] static std::uint64_t device_size(const VolumeMetadata& volume);
     [[nodiscard]] const VolumeMetadata& for_guest_path(
         std::string_view path) const;
+    [[nodiscard]] const VolumeMetadata& for_host_path(
+        const std::filesystem::path& path) const;
     [[nodiscard]] const VolumeMetadata& for_mounted_device(
         std::string_view device) const;
     [[nodiscard]] bool is_mount_root(std::string_view path) const;
     [[nodiscard]] std::span<const VolumeMetadata> volumes() const
     {
-        return volumes_;
+        for (auto& volume : *volumes_)
+            static_cast<void>(for_guest_path(volume.mount_point));
+        return *volumes_;
     }
+    Quotas quotas;
 
 private:
-    std::vector<VolumeMetadata> volumes_;
+    std::filesystem::path rootfs_;
+    std::shared_ptr<std::vector<VolumeMetadata>> volumes_ {
+        std::make_shared<std::vector<VolumeMetadata>>() };
 };
 
 } // namespace ilemu::hfs

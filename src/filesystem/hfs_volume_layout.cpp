@@ -25,22 +25,17 @@ namespace {
     constexpr std::uint32_t mount_local = 0x00001000U;
     constexpr std::uint32_t mount_rootfs = 0x00004000U;
 
-    std::array<std::byte, 16> volume_uuid(const std::filesystem::path& image)
+    std::array<std::byte, 16> volume_uuid(std::span<const std::byte> identifier)
     {
         std::array<std::byte, 16> result { };
-        std::array<unsigned char, 112> header { };
-        std::ifstream input { image, std::ios::binary };
-        input.seekg(1024);
-        if (!input.read(reinterpret_cast<char*>(header.data()), header.size()) ||
-            header[0] != 'H' || (header[1] != 'X' && header[1] != '+'))
-            return result;
         // XNU hfs_getvoluuid: UUIDv3 in the HFS namespace, using the eight
-        // on-disk FinderInfo identifier bytes (not endian-swapped integers).
-        std::array<unsigned char, 24> name {
+        // FinderInfo identifier bytes without endian-swapping them.
+        std::vector<unsigned char> name {
             0xb3, 0xe2, 0x0f, 0x39, 0xf2, 0x92, 0x11, 0xd6,
             0x97, 0xa4, 0x00, 0x30, 0x65, 0x43, 0xec, 0xac
         };
-        std::copy_n(header.begin() + 104, 8, name.begin() + 16);
+        for (const auto byte : identifier)
+            name.push_back(std::to_integer<unsigned char>(byte));
         unsigned int size = 0;
         if (EVP_Digest(name.data(), name.size(),
                 reinterpret_cast<unsigned char*>(result.data()), &size,
@@ -164,8 +159,38 @@ namespace {
 
 VolumeLayout::VolumeLayout(
     std::filesystem::path rootfs, std::uint64_t storage_bytes)
+    : rootfs_(rootfs)
 {
-    volumes_.push_back(VolumeMetadata { });
+    volumes_->push_back(VolumeMetadata { });
+    // Retain just the extracted volume header, never the disk image, when
+    // original firmware geometry is available.
+    std::array<std::byte, 512> header { };
+    std::ifstream metadata { rootfs.parent_path() / "firmware/system.hfsx.header",
+        std::ios::binary };
+    const auto has_header = static_cast<bool>(metadata.read(
+        reinterpret_cast<char*>(header.data()), header.size()));
+    if (has_header) {
+        const auto word = [&](std::size_t at, unsigned size = 4U) {
+            std::uint32_t value = 0;
+            for (unsigned i = 0; i < size; ++i)
+                value = (value << 8U) | std::to_integer<unsigned>(header[at + i]);
+            return value;
+        };
+        auto& system = volumes_->front();
+        system.signature = word(0, 2);
+        system.version = word(2, 2);
+        system.attributes = word(4);
+        system.last_mounted_version = word(8);
+        system.file_count = word(32);
+        system.directory_count = word(36);
+        system.block_size = word(40);
+        system.total_blocks = word(44);
+        system.free_blocks = word(48);
+        system.allocation_clump = word(60);
+        system.next_catalog_id = word(64);
+        system.encodings_used = (static_cast<std::uint64_t>(word(72)) << 32U) | word(76);
+        std::copy_n(header.begin() + 104, 8, system.finder_identifier.begin());
+    }
     const auto fstab = rootfs / "private/etc/fstab";
     std::ifstream input { fstab };
     if (!input)
@@ -185,57 +210,116 @@ VolumeLayout::VolumeLayout(
             type != "hfs")
             continue;
         if (mount_point == "/") {
-            auto& system = volumes_.front();
+            auto& system = volumes_->front();
             system.mount_point = mount_point;
             system.mounted_device = source;
             system.mount_flags = mount_flags(mount_point, options);
             continue;
         }
-        if (std::ranges::any_of(volumes_, [&](const auto& volume) {
+        if (std::ranges::any_of(*volumes_, [&](const auto& volume) {
                 return volume.mount_point == mount_point;
             })) {
             continue;
         }
-        volumes_.push_back(
+        volumes_->push_back(
             data_volume(std::move(source), std::move(mount_point), options,
-                rootfs, storage_bytes, volumes_.front().total_blocks));
+                rootfs, storage_bytes, volumes_->front().total_blocks));
     }
-    for (auto& volume : volumes_)
-        volume.uuid = volume_uuid(backing_image(rootfs, volume.mount_point == "/"));
+    for (auto& volume : *volumes_) {
+        if (volume.mount_point != "/" || !has_header) {
+            const auto identity = rootfs.generic_string() + volume.mount_point;
+            const auto hash = volume_uuid(std::as_bytes(std::span { identity }));
+            std::copy_n(hash.begin(), 8, volume.finder_identifier.begin());
+        }
+        volume.uuid = volume_uuid(volume.finder_identifier);
+    }
 }
 
-std::filesystem::path VolumeLayout::backing_image(
-    const std::filesystem::path& rootfs, bool system_partition)
+std::uint64_t VolumeLayout::device_size(const VolumeMetadata& volume)
 {
-    const auto directory = rootfs.parent_path() / "firmware";
-    auto path = directory / (system_partition ? "system.hfsx.img" : "data.hfsx.img");
-    std::error_code error;
-    if (std::filesystem::is_regular_file(path, error))
-        return path;
-    // Preserve the original single-image extraction layout.
-    return directory / "iphoneos-1.0-hfsx.img";
+    return static_cast<std::uint64_t>(volume.total_blocks) * volume.block_size;
+}
+
+std::optional<std::vector<std::byte>> VolumeLayout::read_device(
+    const VolumeMetadata& volume, std::uint64_t offset, std::size_t size)
+{
+    const auto length = device_size(volume);
+    if (size == 0 || offset >= length)
+        return std::vector<std::byte> { };
+    size = static_cast<std::size_t>(std::min<std::uint64_t>(size, length - offset));
+    // HFS reserves the first two and last sectors. Primary/alternate headers
+    // occupy the third and penultimate sectors respectively (TN1150).
+    // Native readers fetch headers through aligned read-ahead buffers. Their
+    // envelope is zero-padded; a request wholly in the catalog/data area is
+    // unsupported, rather than pretending the host tree is an HFS B-tree.
+    if (offset >= 1536U && offset + size <= length - 1024U)
+        return std::nullopt;
+    std::array<std::byte, 512> header { };
+    const auto word = [&](std::size_t at, std::uint32_t value, unsigned bytes = 4U) {
+        for (unsigned i = 0; i < bytes; ++i)
+            header[at + i] = static_cast<std::byte>(value >> ((bytes - i - 1U) * 8U));
+    };
+    word(0, volume.signature, 2);
+    word(2, volume.version, 2);
+    // File data and metadata are committed through the host filesystem, not
+    // an HFS journal. There is no unreplayed HFS transaction in this backend.
+    // Preserve the source's inconsistent/unclean state. A dirty extraction
+    // cannot be declared clean by discarding its unavailable HFS journal.
+    word(4, volume.attributes & ~(1U << 13U)); // no HFS journal in this backend
+    word(8, volume.last_mounted_version);
+    word(32, volume.file_count);
+    word(36, volume.directory_count);
+    word(40, volume.block_size);
+    word(44, volume.total_blocks);
+    word(48, volume.free_blocks);
+    word(56, volume.allocation_clump);
+    word(60, volume.allocation_clump);
+    word(64, volume.next_catalog_id);
+    word(72, static_cast<std::uint32_t>(volume.encodings_used >> 32U));
+    word(76, static_cast<std::uint32_t>(volume.encodings_used));
+    std::copy(volume.finder_identifier.begin(), volume.finder_identifier.end(),
+        header.begin() + 104);
+    std::vector<std::byte> result(size);
+    for (const auto header_offset : { std::uint64_t { 1024 }, length - 1024U }) {
+        const auto begin = std::max<std::uint64_t>(offset, header_offset);
+        const auto end = std::min<std::uint64_t>(offset + size, header_offset + header.size());
+        if (begin < end)
+            std::copy_n(header.begin() + static_cast<std::ptrdiff_t>(begin - header_offset),
+                end - begin, result.begin() + static_cast<std::ptrdiff_t>(begin - offset));
+    }
+    return result;
+}
+
+const VolumeMetadata& VolumeLayout::for_host_path(
+    const std::filesystem::path& path) const
+{
+    return for_guest_path(path.lexically_relative(rootfs_).generic_string());
 }
 
 const VolumeMetadata& VolumeLayout::for_guest_path(std::string_view path) const
 {
     const auto normalized = normalize_guest_path(path);
-    const VolumeMetadata* result = nullptr;
-    for (const auto& volume : volumes_) {
+    VolumeMetadata* result = nullptr;
+    for (auto& volume : *volumes_) {
         if (contains_path(volume.mount_point, normalized) &&
             (!result ||
                 volume.mount_point.size() > result->mount_point.size())) {
             result = &volume;
         }
     }
-    return result ? *result : volumes_.front();
+    auto& volume = result ? *result : volumes_->front();
+    constexpr std::uint32_t mount_quota = 0x00002000U;
+    volume.mount_flags = (volume.mount_flags & ~mount_quota) |
+        (quotas.active(volume.mount_point) ? mount_quota : 0U);
+    return volume;
 }
 
 const VolumeMetadata& VolumeLayout::for_mounted_device(
     std::string_view device) const
 {
-    const auto found = std::ranges::find_if(volumes_,
+    const auto found = std::ranges::find_if(*volumes_,
         [&](const auto& volume) { return volume.mounted_device == device; });
-    return found == volumes_.end() ? for_guest_path("/") : *found;
+    return for_guest_path(found == volumes_->end() ? "/" : found->mount_point);
 }
 
 bool VolumeLayout::is_mount_root(std::string_view path) const
