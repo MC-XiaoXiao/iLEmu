@@ -1899,14 +1899,9 @@ void EmulatorSession::run()
             if (child_runtime == nullptr)
                 return false;
 
-            const auto transition =
-                initial_runtime->kernel->foreground_transition_snapshot();
-            using TransitionTerminal =
-                KernelSharedState::ForegroundTransitionTerminalState;
-            const auto transition_destination =
-                transition && transition->destination &&
-                transition->destination->process_id == child_pid &&
-                transition->terminal_state == TransitionTerminal::Pending;
+            const auto foreground_process =
+                initial_runtime->kernel->foreground_application_process_id();
+            const auto transition_destination = foreground_process == child_pid;
             const auto interactive_activation =
                 transition_destination || start_suspended;
 
@@ -2463,15 +2458,10 @@ void EmulatorSession::run()
     const auto refresh_jit_runtime_classes = [&]() {
         const auto active_process =
             initial_runtime->kernel->active_client_process_id();
-        const auto transition =
-            initial_runtime->kernel->foreground_transition_snapshot();
-        using TransitionTerminal =
-            KernelSharedState::ForegroundTransitionTerminalState;
-        std::optional<std::uint32_t> transition_destination;
-        if (transition && transition->destination &&
-            transition->terminal_state == TransitionTerminal::Pending) {
-            transition_destination = transition->destination->process_id;
-        }
+        // Display stability is observational; live launch ownership controls
+        // retention until native role/visibility policy takes over.
+        const auto transition_destination =
+            initial_runtime->kernel->foreground_application_process_id();
         foreground_processes.clear();
         for (auto& runtime : runtimes) {
             if (runtime->kernel->process().exited)
@@ -2749,15 +2739,8 @@ void EmulatorSession::run()
                 std::chrono::steady_clock::now(), guest_quiet)) {
             return;
         }
-        const auto transition =
-            initial_runtime->kernel->foreground_transition_snapshot();
-        using TransitionTerminal =
-            KernelSharedState::ForegroundTransitionTerminalState;
-        std::optional<std::uint32_t> transition_destination;
-        if (transition && transition->destination &&
-            transition->terminal_state == TransitionTerminal::Pending) {
-            transition_destination = transition->destination->process_id;
-        }
+        const auto transition_destination =
+            initial_runtime->kernel->foreground_application_process_id();
         const auto active_process =
             initial_runtime->kernel->active_client_process_id();
         const auto scanout_process =
@@ -3558,10 +3541,8 @@ void EmulatorSession::run()
         const auto activation_prepare_lead =
             JitWorkScheduler::activation_preparation_window(translation_lanes);
         const auto reclaim_now = std::chrono::steady_clock::now();
-        const auto foreground_transition =
-            initial_runtime->kernel->foreground_transition_snapshot();
-        using ForegroundTransitionTerminal =
-            KernelSharedState::ForegroundTransitionTerminalState;
+        const auto foreground_launch =
+            initial_runtime->kernel->launching_application_process_id();
         for (auto& runtime : runtimes) {
             std::erase_if(runtime->precompile_tasks,
                 [](const auto& task) { return task.finished(); });
@@ -3574,12 +3555,7 @@ void EmulatorSession::run()
                 !runtime->kernel->process().exited) {
                 if (runtime->image_activation_pending) {
                     const auto foreground_destination =
-                        foreground_transition &&
-                        foreground_transition->destination &&
-                        foreground_transition->terminal_state ==
-                            ForegroundTransitionTerminal::Pending &&
-                        foreground_transition->destination->process_id ==
-                            runtime->kernel->process().pid;
+                        foreground_launch == runtime->kernel->process().pid;
                     if (!runtime->activation_release_deadline) {
                         runtime->activation_release_deadline =
                             reclaim_now + activation_prepare_lead;
@@ -3767,21 +3743,12 @@ void EmulatorSession::run()
                       debug_request->thread->thread - 1U } }
                 : std::nullopt;
         const auto dispatch_now = std::chrono::steady_clock::now();
-        const auto transition =
-            initial_runtime->kernel->foreground_transition_snapshot();
-        using TransitionTerminal =
-            KernelSharedState::ForegroundTransitionTerminalState;
         auto transition_process =
-            transition && transition->destination &&
-                    transition->terminal_state == TransitionTerminal::Pending &&
-                    !transition->destination_first_frame
-                ? std::optional<std::uint32_t> { transition->destination
-                          ->process_id }
-                : std::nullopt;
+            initial_runtime->kernel->launching_application_process_id();
         if (transition_process) {
             if (const auto* runtime = runtime_index.find(*transition_process)) {
                 const auto role = runtime->kernel->process().execution_policy->role();
-                if (role != DarwinProcessRole::Default && role != DarwinProcessRole::FocalUi)
+                if (role != DarwinProcessRole::Default)
                     transition_process.reset();
             }
         }
@@ -4408,16 +4375,9 @@ void EmulatorSession::run()
                     exec_cpu.registers()[15] = loaded.entry_point;
                     exec_cpu.set_cpsr(0x10);
                     const auto process_id = runtime.kernel->process().pid;
-                    const auto transition =
-                        initial_runtime->kernel
-                            ->foreground_transition_snapshot();
-                    using TransitionTerminal =
-                        KernelSharedState::ForegroundTransitionTerminalState;
-                    const auto transition_destination =
-                        transition && transition->destination &&
-                        transition->destination->process_id == process_id &&
-                        transition->terminal_state ==
-                            TransitionTerminal::Pending;
+                    const auto foreground_process =
+                        initial_runtime->kernel->foreground_application_process_id();
+                    const auto transition_destination = foreground_process == process_id;
                     const auto active_process =
                         initial_runtime->kernel->active_client_process_id();
                     const auto interactive_activation =

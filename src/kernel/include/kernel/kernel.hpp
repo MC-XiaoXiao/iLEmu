@@ -458,6 +458,21 @@ public:
                                   ->client_process_id }
                             : std::nullopt;
     }
+    [[nodiscard]] std::optional<std::uint32_t> foreground_application_process_id() const
+    {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        return shared_state_->foreground_application_attempt_process_id;
+    }
+    [[nodiscard]] std::optional<std::uint32_t> launching_application_process_id() const
+    {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto process = shared_state_->foreground_application_attempt_process_id;
+        if (!process)
+            return std::nullopt;
+        const auto& attempt = shared_state_->application_launch_attempts.at(*process);
+        return attempt.phase == KernelSharedState::ApplicationLaunchPhase::Launching
+            ? process : std::nullopt;
+    }
     void set_absolute_time_source(VirtualClock::CounterSource source)
     {
         shared_state_->clock.set_counter_source(std::move(source));
