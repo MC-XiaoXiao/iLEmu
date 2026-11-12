@@ -2486,11 +2486,12 @@ void PerformanceCounters::record_hle(
     if (graphics_kind != PerfDiagnosticGraphicsHleKind::Count)
         record_diagnostic_graphics_hle(graphics_kind, nanoseconds);
     std::lock_guard lock { hle_mutex_ };
-    auto [found, inserted] =
-        hle_subsystems_.try_emplace(std::string { subsystem });
+    auto found = hle_subsystems_.lower_bound(subsystem);
+    if (found == hle_subsystems_.end() || found->first != subsystem) {
+        found = hle_subsystems_.try_emplace(found, std::string { subsystem });
+        found->second.subsystem = subsystem;
+    }
     auto& stats = found->second;
-    if (inserted)
-        stats.subsystem = subsystem;
     ++stats.calls;
     stats.nanoseconds += nanoseconds;
 }
