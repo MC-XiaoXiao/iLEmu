@@ -154,6 +154,49 @@ void DisplayState::replace_surface(std::shared_ptr<HostSurface> surface,
         ++content_revision_;
 }
 
+void apply_display_backlight(
+    std::span<std::uint32_t> pixels, std::uint8_t level)
+{
+    if (level == 255U)
+        return;
+    for (auto& pixel : pixels) {
+        const auto red = ((pixel >> 16U) & 255U) * level;
+        const auto green = ((pixel >> 8U) & 255U) * level;
+        const auto blue = (pixel & 255U) * level;
+        pixel = (pixel & 0xff000000U) |
+                (((red + 127U) / 255U) << 16U) |
+                (((green + 127U) / 255U) << 8U) |
+                ((blue + 127U) / 255U);
+    }
+}
+
+void DisplayState::set_backlight_level(std::uint8_t level)
+{
+    Presenter presenter;
+    {
+        std::lock_guard lock { mutex_ };
+        if (backlight_level_ == level)
+            return;
+        backlight_level_ = level;
+        if (!powered_on_)
+            return;
+        presenter = presenter_;
+    }
+    // A panel update redraws retained content, without retiring a Guest frame
+    // or changing its content revision and submission statistics.
+    if (presenter) {
+        auto frame = capture_frame();
+        frame.panel_refresh = true;
+        presenter(std::move(frame));
+    }
+}
+
+std::uint8_t DisplayState::backlight_level() const
+{
+    std::lock_guard lock { mutex_ };
+    return backlight_level_;
+}
+
 void DisplayState::set_powered_on(bool powered_on)
 {
     Presenter presenter;
@@ -178,6 +221,7 @@ void DisplayState::set_powered_on(bool powered_on)
                 content_owner_process_id_ };
         }
         frame.orientation = content_orientation_;
+        frame.backlight_level = backlight_level_;
         if (frame.host_surface)
             frame.presentation_lease = surface_presentation_lease_;
     }
@@ -238,6 +282,7 @@ void DisplayState::present(std::uint32_t owner_process_id)
                 content_owner_process_id_ };
         }
         frame.orientation = content_orientation_;
+        frame.backlight_level = backlight_level_;
         if (frame.host_surface)
             frame.presentation_lease = surface_presentation_lease_;
         if (powered_on_)
@@ -283,6 +328,7 @@ bool DisplayState::clear_if_owner(std::uint32_t owner_process_id)
         frame = DisplayFrame { geometry_.width, geometry_.height, sequence_,
             pixels_ };
         frame.orientation = DisplayOrientation::Portrait;
+        frame.backlight_level = backlight_level_;
     }
     attach_presentation_leases(frame);
     const PerformanceLatencyScope latency { PerfLatencyKind::DisplayPresent };
@@ -307,6 +353,7 @@ DisplayFrame DisplayState::capture_frame() const
             powered_on_ ? host_surface_ : nullptr, { },
             content_owner_process_id_ };
         frame.orientation = content_orientation_;
+        frame.backlight_level = backlight_level_;
         if (frame.host_surface)
             frame.presentation_lease = surface_presentation_lease_;
     }

@@ -167,6 +167,8 @@ void SessionSnapshots::poll()
                 frame.sequence = request->source.sequence;
                 frame.orientation = request->source.orientation;
                 frame.owner_process_id = request->source.owner_process_id;
+                frame.backlight_level = request->source.backlight_level;
+                frame.panel_refresh = request->source.panel_refresh;
             } else {
                 frame = std::move(request->source);
             }

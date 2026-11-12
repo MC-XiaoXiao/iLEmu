@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -21,6 +22,10 @@ namespace ilemu {
 
 class HostSurface;
 class HostSurfacePresentationLease;
+
+// CPU panel sinks use the same attenuation as the native black overlay pass.
+void apply_display_backlight(
+    std::span<std::uint32_t> pixels, std::uint8_t level);
 
 struct DisplayFrame {
     DisplayFrame() = default;
@@ -75,6 +80,10 @@ struct DisplayFrame {
     // dimensions remain the device panel dimensions; frontends apply the
     // orientation at the scanout boundary.
     DisplayOrientation orientation { DisplayOrientation::Portrait };
+    // Physical backlight attenuation; the Guest scanout pixels stay unchanged.
+    std::uint8_t backlight_level { 255 };
+    // A hardware panel update reuses content, rather than submitting an App frame.
+    bool panel_refresh { };
 };
 
 class DisplayState {
@@ -103,6 +112,7 @@ public:
     // The framebuffer keeps its last scanout contents while the LCD is off.
     // Presenters and snapshots expose a black panel until power is restored.
     void set_powered_on(bool powered_on);
+    void set_backlight_level(std::uint8_t level);
     void present(std::uint32_t owner_process_id = 0);
     // Detach content produced by an exited process and submit a safe black
     // boundary. Returns false when a newer process already owns the scanout.
@@ -116,6 +126,7 @@ public:
     [[nodiscard]] std::uint64_t content_revision() const;
     [[nodiscard]] std::uint32_t content_owner_process_id() const;
     [[nodiscard]] bool powered_on() const;
+    [[nodiscard]] std::uint8_t backlight_level() const;
     [[nodiscard]] DisplayGeometry geometry() const { return geometry_; }
     [[nodiscard]] std::uint32_t width() const { return geometry_.width; }
     [[nodiscard]] std::uint32_t height() const { return geometry_.height; }
@@ -138,6 +149,7 @@ private:
     std::uint64_t sequence_ { };
     std::uint64_t content_revision_ { };
     bool powered_on_ { true };
+    std::uint8_t backlight_level_ { 255 };
     DisplayOrientation content_orientation_ { DisplayOrientation::Portrait };
 };
 

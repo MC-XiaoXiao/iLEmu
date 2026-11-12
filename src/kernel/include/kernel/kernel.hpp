@@ -535,6 +535,7 @@ public:
     void set_ringer_switch_active(bool active);
     void toggle_ringer_switch();
     [[nodiscard]] bool display_powered_on() const;
+    [[nodiscard]] std::uint8_t display_backlight_level() const;
     [[nodiscard]] std::vector<std::byte> take_baseband_output();
     void inherit_process_state(const CompatibilityKernel& parent,
         std::uint32_t child_pid,

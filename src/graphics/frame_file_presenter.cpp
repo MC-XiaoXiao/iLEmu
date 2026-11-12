@@ -160,6 +160,7 @@ void FrameFilePresenter::present(const DisplayFrame& frame)
         materialized.pixels.size() != expected) {
         return;
     }
+    apply_display_backlight(materialized.pixels, materialized.backlight_level);
     if (materialized.orientation != DisplayOrientation::Portrait) {
         const auto oriented =
             orient_display_pixels({ materialized.width, materialized.height },

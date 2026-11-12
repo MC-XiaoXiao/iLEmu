@@ -84,7 +84,9 @@ void SessionDiagnostics::status() const
         " runnable=" + std::to_string(scheduler_.runnable_count()) +
         " active-process=" +
         (active_process ? std::to_string(*active_process) : "none") +
-        " display-power=" + (initial_.kernel->display_powered_on() ? "on" : "off"));
+        " display-power=" + (initial_.kernel->display_powered_on() ? "on" : "off") +
+        " backlight=" + std::to_string(initial_.kernel->display_backlight_level()) +
+        "/255");
 }
 
 void SessionDiagnostics::processes(std::string_view filter) const

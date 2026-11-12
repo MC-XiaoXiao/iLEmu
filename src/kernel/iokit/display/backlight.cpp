@@ -86,7 +86,8 @@ void BacklightControl::publish(KernelSharedState::IOKitService& service)
 }
 
 std::uint32_t BacklightControl::set_properties(
-    KernelSharedState::IOKitService& service, std::span<const std::byte> data)
+    KernelSharedState& state, KernelSharedState::IOKitService& service,
+    std::span<const std::byte> data)
 {
 #ifdef ILEMU_HAS_LIBPLIST
     const auto root = parse(data);
@@ -116,6 +117,13 @@ std::uint32_t BacklightControl::set_properties(
         } else {
             service.properties[key] = number(value);
         }
+    }
+    if (const auto brightness = updates.find("brightness");
+        brightness != updates.end()) {
+        state.panel_backlight.set(static_cast<std::uint8_t>(brightness->second),
+            updates.contains("FadePeriod") ? updates.at("FadePeriod") : 0U,
+            state.clock.now());
+        state.note_kernel_event_transition();
     }
     return iokit_abi::success;
 #else

@@ -15,6 +15,7 @@ public:
     [[nodiscard]] static bool matches(std::span<const std::byte> matching);
     static void publish(KernelSharedState::IOKitService& service);
     [[nodiscard]] static std::uint32_t set_properties(
+        KernelSharedState& state,
         KernelSharedState::IOKitService& service,
         std::span<const std::byte> data);
 };

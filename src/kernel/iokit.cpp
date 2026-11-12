@@ -2103,7 +2103,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             if (service != shared_state.iokit_services.end() &&
                 service->second.properties.contains("backlight-control")) {
                 result = kernel_iokit::BacklightControl::set_properties(
-                    service->second, *data);
+                    shared_state, service->second, *data);
             } else {
                 shared_state.nvram_serialized = *data;
             }

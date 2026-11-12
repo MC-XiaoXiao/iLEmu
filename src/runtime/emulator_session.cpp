@@ -1381,9 +1381,11 @@ void EmulatorSession::run()
         initial->kernel->set_display_presenter(
             [backend = display_presenter.get(), kernel = initial->kernel.get(),
                 &record_first_transition_submission](DisplayFrame frame) {
-                kernel->record_foreground_transition_display_submission(
-                    frame.owner_process_id, frame.sequence);
-                record_first_transition_submission(frame);
+                if (!frame.panel_refresh) {
+                    kernel->record_foreground_transition_display_submission(
+                        frame.owner_process_id, frame.sequence);
+                    record_first_transition_submission(frame);
+                }
                 backend->present(std::move(frame));
             });
     } else if (frame_file_presenter) {
@@ -1391,9 +1393,11 @@ void EmulatorSession::run()
             [backend = frame_file_presenter.get(),
                 kernel = initial->kernel.get(), &output,
                 &record_first_transition_submission](DisplayFrame frame) {
-                kernel->record_foreground_transition_display_submission(
-                    frame.owner_process_id, frame.sequence);
-                record_first_transition_submission(frame);
+                if (!frame.panel_refresh) {
+                    kernel->record_foreground_transition_display_submission(
+                        frame.owner_process_id, frame.sequence);
+                    record_first_transition_submission(frame);
+                }
                 // Animation diagnostics must not turn the measured window into
                 // a PNG-writing benchmark. The presenter callback is still the
                 // actual CPU-present boundary for the headless sink; retain
@@ -1407,11 +1411,11 @@ void EmulatorSession::run()
                 if (!diagnostic_window && file_output_enabled)
                     backend->present(frame);
                 performance_counters().record_cpu_present_fallback(
-                    frame.sequence, frame.submitted_at);
+                    (frame.panel_refresh ? 0U : frame.sequence), frame.submitted_at);
                 if (diagnostic_window) {
                     const auto pixels = frame.pixels;
                     performance_counters().record_diagnostic_frame_content(
-                        frame.sequence, frame.owner_process_id,
+                        (frame.panel_refresh ? 0U : frame.sequence), frame.owner_process_id,
                         frame.submitted_at, frame.width, frame.height, pixels);
                     return;
                 }

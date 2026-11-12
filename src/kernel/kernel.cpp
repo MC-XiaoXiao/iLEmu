@@ -844,6 +844,11 @@ bool CompatibilityKernel::display_powered_on() const
     return shared_state_->requested_display_power_state.value_or(1U) != 0;
 }
 
+std::uint8_t CompatibilityKernel::display_backlight_level() const
+{
+    return display_state_->backlight_level();
+}
+
 void CompatibilityKernel::set_baseband_capture_enabled(bool enabled)
 {
     shared_state_->baseband_device_state.set_transmit_capture_enabled(enabled);
@@ -3115,6 +3120,8 @@ CompatibilityKernel::shared_timer_deadline_snapshot() const
                 consider(shared_deadline,
                     shared_state_->display_console.next_deadline());
                 consider(shared_deadline,
+                    shared_state_->panel_backlight.next_deadline());
+                consider(shared_deadline,
                     kernel_iokit::display::next_vsync_deadline_locked(
                         *shared_state_));
                 consider(shared_deadline,
@@ -3191,8 +3198,16 @@ void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
     if (!next_service_deadline || *next_service_deadline > deadline)
         return;
     std::optional<std::vector<std::uint32_t>> console_pixels;
+    std::optional<std::uint8_t> backlight_level;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
+        const auto backlight_deadline =
+            shared_state_->panel_backlight.next_deadline();
+        if (backlight_deadline && *backlight_deadline <= deadline) {
+            backlight_level = shared_state_->panel_backlight.advance(deadline,
+                iokit_abi::display_vsync::period_absolute_time);
+            shared_state_->note_kernel_event_transition();
+        }
         console_pixels = shared_state_->display_console.take_frame(deadline,
             shared_state_->display_geometry,
             shared_state_->user_interface_geometry,
@@ -3200,6 +3215,8 @@ void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
         if (shared_state_->display_console.next_deadline())
             shared_state_->note_kernel_event_transition();
     }
+    if (backlight_level)
+        display_state_->set_backlight_level(*backlight_level);
     if (console_pixels) {
         // Console pixels have kernel ownership. Retire an exited client's
         // scanout identity before presenting through the usual host boundary.

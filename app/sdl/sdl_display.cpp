@@ -593,12 +593,13 @@ struct SdlDisplay::Impl {
         return frame.host_surface != nullptr;
     }
 
-    bool stage_oriented_frame_for_native_present(
+    bool stage_panel_frame_for_native_present(
         DisplayFrame& frame, DisplayOrientation requested_orientation)
     {
         if (!frame.host_surface || !host_graphics || !orientation_encoder ||
             !host_graphics->native_presentation_available() ||
-            requested_orientation == DisplayOrientation::Portrait) {
+            (requested_orientation == DisplayOrientation::Portrait &&
+                frame.backlight_level == 255U)) {
             return false;
         }
         const auto source = frame.host_surface;
@@ -681,7 +682,10 @@ struct SdlDisplay::Impl {
         std::array<HostPoint, 4> texture_coordinates { };
         switch (requested_orientation) {
         case DisplayOrientation::Portrait:
-            return false;
+            texture_coordinates = { { { 0.0F, 0.0F },
+                { source_width, 0.0F }, { source_width, source_height },
+                { 0.0F, source_height } } };
+            break;
         case DisplayOrientation::PortraitUpsideDown:
             texture_coordinates = { { { source_width, source_height },
                 { 0.0F, source_height }, { 0.0F, 0.0F },
@@ -714,6 +718,11 @@ struct SdlDisplay::Impl {
         if (!orientation_encoder->copy_quad(source, oriented_surface, quad,
                 source_rectangle, destination_rectangle,
                 HostCompositeMode::Copy, 0xffU, HostFilter::Nearest) ||
+            (frame.backlight_level != 255U &&
+                !orientation_encoder->fill(oriented_surface,
+                    destination_rectangle, 0xff000000U,
+                    HostCompositeMode::SourceOver,
+                    static_cast<std::uint8_t>(255U - frame.backlight_level))) ||
             !orientation_encoder->submit(PerfSubmitReason::Presentation)) {
             std::lock_guard lock { frame_mutex };
             set_surface_in_use_locked(
@@ -742,6 +751,7 @@ struct SdlDisplay::Impl {
             return mapping.frame().pixels;
         };
         frame.orientation = DisplayOrientation::Portrait;
+        frame.backlight_level = 255U;
         return true;
     }
 
@@ -752,29 +762,31 @@ struct SdlDisplay::Impl {
     bool prepare_native_frame(DisplayFrame& frame)
     {
         const auto requested_orientation = frame.orientation;
-        if (requested_orientation != DisplayOrientation::Portrait) {
-            if (frame.host_surface) {
-                if (!stage_oriented_frame_for_native_present(
-                        frame, requested_orientation)) {
-                    return false;
-                }
-            } else {
-                const auto raw_geometry =
-                    DisplayGeometry { frame.width, frame.height };
-                const auto expected = raw_geometry.pixel_count();
-                if (frame.pixels.size() != expected && frame.read_pixels)
-                    frame.pixels = frame.read_pixels();
-                const auto oriented = orient_display_pixels(
-                    raw_geometry, frame.pixels, requested_orientation);
-                if (oriented.empty())
-                    return false;
-                frame.pixels = oriented;
-                if (is_landscape(requested_orientation))
-                    std::swap(frame.width, frame.height);
-                frame.orientation = DisplayOrientation::Portrait;
-            }
+        if (frame.host_surface &&
+            (requested_orientation != DisplayOrientation::Portrait ||
+                frame.backlight_level != 255U)) {
+            if (!stage_panel_frame_for_native_present(frame, requested_orientation))
+                return false;
+        } else if (requested_orientation != DisplayOrientation::Portrait) {
+            const auto raw_geometry = DisplayGeometry { frame.width, frame.height };
+            const auto expected = raw_geometry.pixel_count();
+            if (frame.pixels.size() != expected && frame.read_pixels)
+                frame.pixels = frame.read_pixels();
+            const auto oriented = orient_display_pixels(
+                raw_geometry, frame.pixels, requested_orientation);
+            if (oriented.empty())
+                return false;
+            frame.pixels = oriented;
+            if (is_landscape(requested_orientation))
+                std::swap(frame.width, frame.height);
+            frame.orientation = DisplayOrientation::Portrait;
         }
-        return stage_cpu_frame_for_native_present(frame);
+        if (!stage_cpu_frame_for_native_present(frame))
+            return false;
+        if (frame.backlight_level != 255U)
+            return stage_panel_frame_for_native_present(
+                frame, DisplayOrientation::Portrait);
+        return true;
     }
 
 #if defined(ILEMU_HAS_SDL2)
@@ -798,7 +810,7 @@ struct SdlDisplay::Impl {
         std::lock_guard lock { sdl_mutex };
         ensure_cpu_presenter();
         if (telemetry_enabled)
-            performance.record_diagnostic_frame_content(frame.sequence,
+            performance.record_diagnostic_frame_content((frame.panel_refresh ? 0U : frame.sequence),
                 frame.owner_process_id, frame.submitted_at, frame.width,
                 frame.height, frame.pixels);
         if (SDL_UpdateTexture(texture, nullptr, frame.pixels.data(),
@@ -814,6 +826,8 @@ struct SdlDisplay::Impl {
             static_cast<int>(viewport.height) };
         SDL_SetRenderDrawColor(renderer, 0U, 0U, 0U, 255U);
         SDL_RenderClear(renderer);
+        SDL_SetTextureColorMod(texture, frame.backlight_level,
+            frame.backlight_level, frame.backlight_level);
         SDL_RenderCopy(renderer, texture, nullptr, &destination);
         SDL_RenderPresent(renderer);
         return true;
@@ -1013,7 +1027,7 @@ struct SdlDisplay::Impl {
                         : std::chrono::steady_clock::time_point { };
                 if (telemetry_enabled) {
                     performance.record_diagnostic_native_dequeue(
-                        frame.sequence, native_dequeued_at);
+                        (frame.panel_refresh ? 0U : frame.sequence), native_dequeued_at);
                 }
                 if (telemetry_enabled &&
                     frame.native_queued_at !=
@@ -1052,7 +1066,7 @@ struct SdlDisplay::Impl {
                 if (result == HostGraphicsDevice::PresentResult::Queued) {
                     presented_frames.fetch_add(1, std::memory_order_release);
                     performance.record_native_present(
-                        frame.sequence, frame.submitted_at);
+                        (frame.panel_refresh ? 0U : frame.sequence), frame.submitted_at);
                 } else {
                     performance.record_native_present_failure();
                 }
@@ -1524,7 +1538,7 @@ bool SdlDisplay::poll_events()
                               : std::chrono::steady_clock::time_point { };
         if (telemetry_enabled) {
             performance.record_diagnostic_display_dequeue(
-                frame->sequence, display_dequeued_at);
+                (frame->panel_refresh ? 0U : frame->sequence), display_dequeued_at);
         }
         if (telemetry_enabled &&
             frame->submitted_at != std::chrono::steady_clock::time_point { }) {
@@ -1536,7 +1550,8 @@ bool SdlDisplay::poll_events()
                         .count()));
         }
         if (native_presentation) {
-            const auto native_sequence = frame->sequence;
+            const auto native_sequence =
+                frame->panel_refresh ? 0U : frame->sequence;
             std::chrono::steady_clock::time_point native_queued_at;
             bool queued_native { };
             bool native_coalesced { };

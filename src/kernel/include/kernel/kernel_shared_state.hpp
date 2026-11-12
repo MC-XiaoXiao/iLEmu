@@ -38,6 +38,7 @@
 #include "kernel/compass_device.hpp"
 #include "kernel/kevent_timer.hpp"
 #include "kernel/display_console.hpp"
+#include "kernel/panel_backlight.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "kernel/bsd_dispatch_table.hpp"
 #include "kernel/mach_dispatch_table.hpp"
@@ -1912,6 +1913,7 @@ struct KernelSharedState {
     DisplayGeometry display_geometry { default_display_geometry };
     DisplayGeometry user_interface_geometry { default_display_geometry };
     std::optional<std::uint32_t> requested_display_power_state;
+    PanelBacklight panel_backlight;
     std::uint32_t baseband_service { };
     std::uint32_t serial_multiplexer_service { };
     std::uint32_t camera_sensor_service { };
