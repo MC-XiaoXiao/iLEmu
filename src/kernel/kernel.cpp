@@ -1780,7 +1780,11 @@ CompatibilityKernel::pending_event_poll_candidates()
     pending_event_poll_mach_generation_ = mach_generation;
 
     std::vector<std::size_t> processors;
-    processors.reserve(pending_event_processors_.size());
+    const auto append_processor = [&](std::size_t processor) {
+        if (processors.empty())
+            processors.reserve(pending_event_processors_.size());
+        processors.push_back(processor);
+    };
     std::optional<std::uint64_t> next_deadline;
     bool requires_host_probe = false;
     bool mach_snapshot_valid = pending_thread_aborts_.empty();
@@ -1790,7 +1794,7 @@ CompatibilityKernel::pending_event_poll_candidates()
     for (const auto processor : pending_event_processors_) {
         if (userland_hle_.pending_call(processor)) {
             if (userland_hle_.pending_call_ready(processor))
-                processors.push_back(processor);
+                append_processor(processor);
             else
                 mach_snapshot_valid = false;
             continue;
@@ -1811,7 +1815,7 @@ CompatibilityKernel::pending_event_poll_candidates()
                 ? hid_ready || mach_receive_poll_required_locked(
                                       receive->second, guest_now)
                 : pending_io_poll_required_locked(processor))) {
-            processors.push_back(processor);
+            append_processor(processor);
         } else if (mach_snapshot_valid) {
             if (exception_waiting || send != pending_mach_sends_.end()) {
                 mach_snapshot_valid = false;
