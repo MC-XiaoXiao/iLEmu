@@ -2125,7 +2125,8 @@ private:
             memory_fault(address, sizeof(T), MemoryPermission::Read);
             return 0;
         }
-        record_constant_dependency(address, sizeof(T), *value);
+        if (!executing)
+            record_constant_dependency(address, sizeof(T), *value);
         return *value;
     }
 
