@@ -3568,12 +3568,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         SurfacePreparation preparation;
         preparation.cpu_generation = surface.cpu_generation();
         preparation.gpu_generation = surface.gpu_generation();
+        const auto descriptor = surface.descriptor();
 
         bool needs_cpu_frame = true;
         {
             std::lock_guard lock { mutex_ };
             const auto target = targets_.find(surface.key());
             if (target != targets_.end() && target->second.valid &&
+                target->second.image.width == descriptor.width &&
+                target->second.image.height == descriptor.height &&
                 (preparation.cpu_generation <= target->second.cpu_generation ||
                     (preparation.gpu_generation != 0 &&
                         preparation.cpu_generation ==
