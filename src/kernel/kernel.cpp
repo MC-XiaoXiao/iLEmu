@@ -3000,7 +3000,26 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
     }
     if (const auto pending = pending_record_locks_.find(processor);
         pending != pending_record_locks_.end()) {
-        return "fcntl-lock(fd=" + std::to_string(pending->second.fd) + ")";
+        const auto& wait = pending->second;
+        const auto file = file_descriptors_.find(wait.fd);
+        const auto conflict = shared_state_->advisory_file_locks->record_conflict(
+            wait.permanent_file_id, wait.owner, wait.range);
+        const auto end = [](const auto& range) {
+            return range.end ? std::to_string(*range.end) : std::string { "eof" };
+        };
+        return "fcntl-lock(fd=" + std::to_string(wait.fd) +
+               ",file-id=" + std::to_string(wait.permanent_file_id) +
+               ",path=" + (file != file_descriptors_.end()
+                               ? file->second.string() : std::string { "closed" }) +
+               ",owner=" +
+               (wait.owner.kind == bsd::RecordLockOwner::Kind::Process
+                       ? "process:" : "description:") +
+               std::to_string(wait.owner.identifier) +
+               ",range=" + std::to_string(wait.range.start) + ".." + end(wait.range) +
+               ",blocker=" + (conflict
+                   ? std::to_string(conflict->owner_pid) + ":" +
+                         std::to_string(conflict->start) + ".." + end(*conflict)
+                   : std::string { "none" }) + ")";
     }
     if (const auto pending = pending_host_connects_.find(processor);
         pending != pending_host_connects_.end()) {
