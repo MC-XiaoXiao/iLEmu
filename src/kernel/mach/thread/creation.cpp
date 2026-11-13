@@ -48,11 +48,10 @@ CompatibilityKernel::create_guest_thread(
                     task->second.find(static_cast<std::uint32_t>(*processor));
                 old_thread != task->second.end()) {
                 process_.thread_disk_io_policies.erase(old_thread->second);
-                task->second.erase(old_thread);
             }
-            if (task->second.empty())
-                shared_state_->task_thread_port_objects.erase(task);
         }
+        shared_state_->task_thread_port_objects.erase_slot(
+            process_.pid, static_cast<std::uint32_t>(*processor));
     }
 
     if (start_suspended && thread_runnable_handler_ &&
@@ -78,9 +77,8 @@ CompatibilityKernel::create_guest_thread(
                         xnu::ipc::type_mask(xnu::ipc::Right::Send))
                     .value_or(0);
             if (port_name != 0) {
-                shared_state_->task_thread_port_objects[process_
-                        .pid][static_cast<std::uint32_t>(*processor)] =
-                    port_object;
+                shared_state_->task_thread_port_objects.set(process_.pid,
+                    static_cast<std::uint32_t>(*processor), port_object);
             }
         }
     }

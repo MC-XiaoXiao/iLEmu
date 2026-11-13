@@ -348,13 +348,7 @@ namespace mach_support {
     std::optional<std::pair<std::uint32_t, std::uint32_t>> find_thread_owner(
         const KernelSharedState& state, std::uint32_t object)
     {
-        for (const auto& [pid, threads] : state.task_thread_port_objects) {
-            for (const auto& [slot, thread_object] : threads) {
-                if (thread_object == object)
-                    return std::pair { pid, slot };
-            }
-        }
-        return std::nullopt;
+        return state.task_thread_port_objects.owner(object);
     }
 
     std::optional<std::uint32_t> resolve_name_with_right(
@@ -638,16 +632,7 @@ namespace mach_support {
         }
         state.task_port_pids.erase(object);
         state.task_name_port_pids.erase(object);
-        for (auto task = state.task_thread_port_objects.begin();
-            task != state.task_thread_port_objects.end();) {
-            std::erase_if(task->second,
-                [object](const auto& entry) { return entry.second == object; });
-            if (task->second.empty()) {
-                task = state.task_thread_port_objects.erase(task);
-            } else {
-                ++task;
-            }
-        }
+        state.task_thread_port_objects.erase_object(object);
         // Surviving slots retain dead ipc_port identities. copy_send returns
         // DEAD while write-once slots still reject replacing that pointer.
         // Destroying the owning task releases every kernel-held send.
@@ -901,7 +886,7 @@ namespace mach_support {
         }
         for (const auto object : released_kernel_ports)
             release_kernel_send_right_locked(state, object);
-        state.task_thread_port_objects.erase(pid);
+        state.task_thread_port_objects.erase_task(pid);
         std::erase_if(state.task_port_pids,
             [pid](const auto& entry) { return entry.second == pid; });
         std::erase_if(state.task_name_port_pids,

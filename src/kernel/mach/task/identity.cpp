@@ -112,7 +112,7 @@ bool initialize_root(KernelSharedState& state, ProcessContext& process)
     }
 
     state.task_port_pids.emplace(task_object, process.pid);
-    state.task_thread_port_objects[process.pid][0] = thread_object;
+    state.task_thread_port_objects.set(process.pid, 0, thread_object);
     state.task_special_ports[task_object][1] = task_object;
     state.task_special_ports[task_object][2] = initial_host_self_name;
     ++state.mach_kernel_send_rights[task_object];
@@ -155,7 +155,7 @@ bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
         return false;
     }
     state.task_port_pids[child_task_object] = child.pid;
-    state.task_thread_port_objects[child.pid][0] = child_thread_object;
+    state.task_thread_port_objects.set(child.pid, 0, child_thread_object);
 
     if (inherit_registered_ports) {
         const auto registered = state.mach_registered_ports.find(parent.pid);

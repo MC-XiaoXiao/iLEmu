@@ -1080,13 +1080,14 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         mach_support::reset_task_trace_memory_locked(*shared_state_, process_.pid);
-        auto& thread_objects =
-            shared_state_->task_thread_port_objects[process_.pid];
-        if (const auto current =
-                thread_objects.find(static_cast<std::uint32_t>(processor_id));
-            current != thread_objects.end()) {
-            surviving_thread_object = current->second;
-        } else {
+        if (const auto task = shared_state_->task_thread_port_objects.find(process_.pid);
+            task != shared_state_->task_thread_port_objects.end()) {
+            if (const auto current =
+                    task->second.find(static_cast<std::uint32_t>(processor_id));
+                current != task->second.end())
+                surviving_thread_object = current->second;
+        }
+        if (!surviving_thread_object) {
             surviving_thread_object = shared_state_->mach_namespaces.resolve(
                 process_.pid, current_thread_port);
         }
@@ -1097,10 +1098,10 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
                 surviving_thread_policy = policy->second;
             }
         }
-        thread_objects.clear();
+        shared_state_->task_thread_port_objects.erase_task(process_.pid);
         if (surviving_thread_object) {
-            thread_objects[static_cast<std::uint32_t>(processor_id)] =
-                *surviving_thread_object;
+            shared_state_->task_thread_port_objects.set(process_.pid,
+                static_cast<std::uint32_t>(processor_id), *surviving_thread_object);
         }
     }
     process_.thread_disk_io_policies.clear();

@@ -34,6 +34,7 @@
 #include "kernel/mach_receive_wait_queue.hpp"
 #include "kernel/mach_voucher_state.hpp"
 #include "kernel/mach_message_qos.hpp"
+#include "kernel/mach_thread_objects.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/compass_device.hpp"
@@ -1505,8 +1506,7 @@ struct KernelSharedState {
     // Global thread-port objects indexed by task PID and that task's logical
     // thread slot. Task-local names are produced only when a caller receives
     // task_threads(), preserving ipc_space separation.
-    std::map<std::uint32_t, std::map<std::uint32_t, std::uint32_t>>
-        task_thread_port_objects;
+    MachThreadObjectRegistry task_thread_port_objects;
     std::map<std::uint32_t, std::map<std::uint32_t, std::uint32_t>>
         task_special_ports;
     std::map<std::uint32_t, std::uint32_t> host_special_ports;

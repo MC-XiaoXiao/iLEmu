@@ -590,13 +590,8 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             shared_state_->cancel_mach_sends_locked(process_.pid, processor);
             if (thread_object) {
                 process_.thread_disk_io_policies.erase(*thread_object);
-                if (auto task = shared_state_->task_thread_port_objects.find(
-                        process_.pid);
-                    task != shared_state_->task_thread_port_objects.end()) {
-                    task->second.erase(processor);
-                    if (task->second.empty())
-                        shared_state_->task_thread_port_objects.erase(task);
-                }
+                shared_state_->task_thread_port_objects.erase_slot(
+                    process_.pid, processor);
                 mach_support::terminate_receive_object_locked(
                     *shared_state_, *thread_object);
             }

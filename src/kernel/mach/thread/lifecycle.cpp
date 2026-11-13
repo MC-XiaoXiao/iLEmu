@@ -125,13 +125,8 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
             }
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             shared_state_->cancel_mach_sends_locked(target->first, target->second);
-            auto task =
-                shared_state_->task_thread_port_objects.find(target->first);
-            if (task != shared_state_->task_thread_port_objects.end()) {
-                task->second.erase(target->second);
-                if (task->second.empty())
-                    shared_state_->task_thread_port_objects.erase(task);
-            }
+            shared_state_->task_thread_port_objects.erase_slot(
+                target->first, target->second);
             terminate_receive_object_locked(*shared_state_, *target_object);
             kernel_result = darwin::mach::success;
         }
