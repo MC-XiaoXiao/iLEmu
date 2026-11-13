@@ -11,12 +11,83 @@
 #include "../workqueue_qos_probe.hpp"
 #include "kernel/kevent_wire.hpp"
 #include "device_state/pthread_contract.hpp"
+#include "foundation/performance.hpp"
+#include <chrono>
+#include <sstream>
 #include <algorithm>
 #include <set>
 #include <limits>
 
 namespace ilemu {
 namespace {
+    class KeventProbeDiagnostics {
+    public:
+        explicit KeventProbeDiagnostics(Output& output) : output_ { output }
+        {
+            if (!performance_counters().cpu_source_diagnostics_enabled())
+                return;
+            batch_.random = batch_.random * 6364136223846793005ULL +
+                            1442695040888963407ULL;
+            sampled_ = (batch_.random >> 58U) == 0U;
+        }
+        template <typename Evaluate>
+        bool check(const KeventRegistration& registration, Evaluate evaluate)
+        {
+            if (!sampled_)
+                return evaluate();
+            const auto index = kind(registration);
+            const auto started = std::chrono::steady_clock::now();
+            const auto current = evaluate();
+            const auto elapsed = std::chrono::duration_cast<
+                std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count();
+            ++batch_.calls[index];
+            batch_.misses[index] += !current;
+            batch_.nanoseconds[index] += static_cast<std::uint64_t>(elapsed);
+            return current;
+        }
+        ~KeventProbeDiagnostics()
+        {
+            if (!sampled_ || ++batch_.samples < 8192U)
+                return;
+            std::ostringstream report;
+            report << "[perf] kevent-probe-sample count=" << batch_.samples;
+            constexpr std::array names { "disabled", "mach", "process", "vnode", "timer", "user", "read", "write", "other" };
+            for (std::size_t i = 0; i < names.size(); ++i)
+                report << ' ' << names[i] << '=' << batch_.calls[i] << '/'
+                       << batch_.misses[i] << '/' << batch_.nanoseconds[i];
+            output_.line(report.str());
+            batch_.samples = 0;
+            batch_.calls.fill(0);
+            batch_.misses.fill(0);
+            batch_.nanoseconds.fill(0);
+        }
+    private:
+        static std::size_t kind(const KeventRegistration& registration)
+        {
+            using namespace darwin::kqueue;
+            if (!registration.enabled && !registration.workqueue_servicer)
+                return 0;
+            switch (registration.filter) {
+            case filter_mach_port: return 1;
+            case filter_process: return 2;
+            case filter_vnode: return 3;
+            case filter_timer: return 4;
+            case filter_user: return 5;
+            case filter_read: return 6;
+            case filter_write: return 7;
+            default: return 8;
+            }
+        }
+        struct Batch {
+            std::uint64_t random { 1 }, samples { };
+            std::array<std::uint64_t, 9> calls { }, misses { }, nanoseconds { };
+        };
+        static thread_local Batch batch_;
+        Output& output_;
+        bool sampled_ { };
+    };
+    thread_local KeventProbeDiagnostics::Batch KeventProbeDiagnostics::batch_;
+
     constexpr std::uint32_t upcall_event_capacity = 16U;
     constexpr std::uint32_t upcall_data_capacity = 32U * 1024U;
     constexpr std::uint32_t upcall_stack_gap = 16U;
@@ -147,8 +218,10 @@ bool CompatibilityKernel::workqueue_kevent_poll_required(
     std::span<const KeventRegistration> registrations,
     std::uint64_t io_generation, bool io_changed) const
 {
+    KeventProbeDiagnostics diagnostics { output_ };
     return !std::all_of(registrations.begin(), registrations.end(),
-        [this, io_generation, io_changed](const auto& registration) {
+        [this, io_generation, io_changed, &diagnostics](const auto& registration) {
+            return diagnostics.check(registration, [&] {
             if (!registration.enabled && !registration.workqueue_servicer)
                 return true;
             if (registration.deferred_delete)
@@ -179,6 +252,7 @@ bool CompatibilityKernel::workqueue_kevent_poll_required(
                        !descriptor_requires_host_poll(fd);
             }
             return true;
+            });
         });
 }
 

@@ -131,6 +131,72 @@ namespace {
         return { PerfDiagnosticSourceKind::SvcBsd, number };
     }
 
+    // Sample the readiness poll's regions instead of adding several histogram
+    // updates to every process on every scheduler turn. A rotating PRNG avoids
+    // aliasing a fixed sampling period with the number of live processes.
+    class EventPollDiagnostics {
+    public:
+        enum class Phase : std::size_t { Services, Deadline, Probe, Redrive, Cache, Scan, Count };
+        explicit EventPollDiagnostics(Output& output)
+            : output_ { output }
+        {
+            if (!performance_counters().cpu_source_diagnostics_enabled())
+                return;
+            batch_.random = batch_.random * 6364136223846793005ULL +
+                            1442695040888963407ULL;
+            sampled_ = (batch_.random >> 58U) == 0U;
+            if (sampled_)
+                started_ = std::chrono::steady_clock::now();
+        }
+        ~EventPollDiagnostics()
+        {
+            if (!sampled_)
+                return;
+            checkpoint(Phase::Count);
+            ++batch_.samples;
+            batch_.scans += scanned_;
+            batch_.redrives += redriven_;
+            if (batch_.samples < 16384U)
+                return;
+            std::ostringstream report;
+            report << "[perf] event-poll-sample count=" << batch_.samples
+                   << " scans=" << batch_.scans
+                   << " redrives=" << batch_.redrives
+                   << " through-ns=" << std::chrono::duration_cast<
+                          std::chrono::nanoseconds>(started_.time_since_epoch()).count();
+            constexpr std::array names { "services", "deadline", "probe", "redrive", "cache", "scan" };
+            for (std::size_t i = 0; i < names.size(); ++i)
+                report << ' ' << names[i] << "-ns=" << batch_.nanoseconds[i];
+            output_.line(report.str());
+            batch_.samples = batch_.scans = batch_.redrives = 0;
+            batch_.nanoseconds.fill(0);
+        }
+        void checkpoint(Phase next)
+        {
+            if (!sampled_)
+                return;
+            const auto now = std::chrono::steady_clock::now();
+            batch_.nanoseconds[static_cast<std::size_t>(phase_)] +=
+                static_cast<std::uint64_t>(std::chrono::duration_cast<
+                    std::chrono::nanoseconds>(now - started_).count());
+            phase_ = next;
+            started_ = now;
+        }
+        void scanned() { scanned_ = true; }
+        void redriven() { redriven_ = true; }
+    private:
+        struct Batch {
+            std::uint64_t random { 1 }, samples { }, scans { }, redrives { };
+            std::array<std::uint64_t, 6> nanoseconds { };
+        };
+        static thread_local Batch batch_;
+        Output& output_;
+        bool sampled_ { }, scanned_ { }, redriven_ { };
+        Phase phase_ { Phase::Services };
+        std::chrono::steady_clock::time_point started_;
+    };
+    thread_local EventPollDiagnostics::Batch EventPollDiagnostics::batch_;
+
     class SvcDispatchDiagnostics {
     public:
         SvcDispatchDiagnostics(
@@ -1736,6 +1802,7 @@ CompatibilityKernel::pending_event_poll_candidates()
 {
     const PerformanceLatencyScope latency { PerfLatencyKind::KernelEventPoll,
         performance_counters().cpu_source_diagnostics_enabled() };
+    EventPollDiagnostics poll_diagnostics { output_ };
     std::lock_guard lock { mutex_ };
     // Capture before committing notifications. A publication racing the
     // commit must remain newer than any negative wait observation below.
@@ -1757,6 +1824,7 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
     const auto guest_now = shared_state_->clock.now();
+    poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Deadline);
     const auto workqueue_deadline = workqueue_kevent_deadline();
     const auto workqueue_timer_due =
         workqueue_deadline && guest_now >= *workqueue_deadline;
@@ -1765,6 +1833,7 @@ CompatibilityKernel::pending_event_poll_candidates()
     // so EVFILT_MACHPORT can schedule its libpthread event worker.
     // Each filter retains its own wake source. Unrelated IPC need not rescan
     // unchanged I/O filters; timers are independently driven by their deadline.
+    poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Probe);
     if (const auto queue = kqueues_.rbegin();
         queue != kqueues_.rend() &&
         queue->first == darwin::kqueue::workqueue_descriptor &&
@@ -1777,6 +1846,8 @@ CompatibilityKernel::pending_event_poll_candidates()
         if (workqueue_kevent_redrive_ || workqueue_timer_due ||
             workqueue_kevent_poll_required(
                 queue->second, io_generation, io_changed)) {
+            poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Redrive);
+            poll_diagnostics.redriven();
             // A timer pop activates the knote without unrelated I/O or IPC.
             // Refresh eligibility as a previously blocked worker may now run.
             if (workqueue_timer_due)
@@ -1784,6 +1855,7 @@ CompatibilityKernel::pending_event_poll_candidates()
             static_cast<void>(request_workqueue_kevents(nullptr));
         }
     }
+    poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Cache);
     const auto host_now = std::chrono::steady_clock::now();
     const auto graphics_generation = gles_completion_generation();
     // Host graphics waits park HLE calls. Unrelated processes keep their own
@@ -1820,6 +1892,8 @@ CompatibilityKernel::pending_event_poll_candidates()
         return { };
     }
 
+    poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Scan);
+    poll_diagnostics.scanned();
     pending_event_poll_observed_ = true;
     pending_event_poll_topology_generation_ =
         pending_event_topology_generation_;

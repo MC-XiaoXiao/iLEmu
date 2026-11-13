@@ -116,10 +116,26 @@ namespace {
             , enabled_ { performance_counters().cpu_source_diagnostics_enabled() }
         {
             if (enabled_)
-                started_ = std::chrono::steady_clock::now();
+                detail_started_ = started_ = std::chrono::steady_clock::now();
         }
 
         ~SerialPhaseDiagnostics() { checkpoint(PerfLatencyKind::Count); }
+
+        void detail(std::string_view step)
+        {
+            if (!enabled_)
+                return;
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed = std::chrono::duration_cast<
+                std::chrono::nanoseconds>(now - detail_started_).count();
+            if (elapsed >= 50'000'000) {
+                output_.line("[perf] host-event-stall step=" + std::string { step } +
+                    " started-ns=" + std::to_string(std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(detail_started_.time_since_epoch()).count()) +
+                    " elapsed-ns=" + std::to_string(elapsed));
+            }
+            detail_started_ = now;
+        }
 
         void checkpoint(PerfLatencyKind phase)
         {
@@ -144,7 +160,7 @@ namespace {
         Output& output_;
         bool enabled_;
         PerfLatencyKind phase_ { PerfLatencyKind::RuntimeHostEvents };
-        std::chrono::steady_clock::time_point started_;
+        std::chrono::steady_clock::time_point started_, detail_started_;
     };
 
     // Mixed host-control and debugger sessions use a bounded poll fallback.
@@ -3001,6 +3017,7 @@ void EmulatorSession::run()
         execution_requests.clear();
         prepared_slices.clear();
         scheduled_batch.clear();
+        serial_phase.detail("release-execution");
         {
             const PerformanceLatencyScope latency { PerfLatencyKind::RuntimeHostCompletions,
                 performance_counters().cpu_source_diagnostics_enabled() };
@@ -3008,10 +3025,13 @@ void EmulatorSession::run()
         }
         synchronize_device_time_to_host();
         synchronize_scheduler_time();
+        serial_phase.detail("host-completions-and-clock");
         observe_transition_stability();
+        serial_phase.detail("transition");
         std::optional<XnuThreadId> input_preferred_thread;
         catalog_maintenance.poll(
             *initial_runtime->kernel, scheduler.runnable_count() == 0);
+        serial_phase.detail("catalog");
         if (display_presenter && !display_presenter->poll_events()) {
             hard_stop = true;
             break;
@@ -3055,6 +3075,7 @@ void EmulatorSession::run()
             mark_transition_input_complete(*pending_button_input_completion);
             pending_button_input_completion.reset();
         }
+        serial_phase.detail("frontend");
         if (live_control && !quit_after_snapshots) {
             auto commands = std::move(pending_control_commands);
             pending_control_commands.clear();
@@ -3387,6 +3408,7 @@ void EmulatorSession::run()
             if (hard_stop)
                 break;
         }
+        serial_phase.detail("control");
         while (!scheduled_snapshots.empty() &&
                std::chrono::steady_clock::now() >=
                    scheduled_snapshots.front().first) {
@@ -3394,6 +3416,7 @@ void EmulatorSession::run()
                 initial_runtime->kernel->capture_display_frame(), true);
             scheduled_snapshots.erase(scheduled_snapshots.begin());
         }
+        serial_phase.detail("snapshot-submit");
         bool display_receive_pending = false;
         const auto resolve_display_urgent_threads = [&]() {
             display_receive_pending = false;
@@ -3468,6 +3491,7 @@ void EmulatorSession::run()
             polled_host_activity_generation = host_activity_generation;
         }
         snapshots.poll();
+        serial_phase.detail("display-resolution-and-snapshot-poll");
         if (quit_after_snapshots && snapshots.empty()) {
             hard_stop = true;
             break;
@@ -3554,6 +3578,7 @@ void EmulatorSession::run()
                 }
             }
         }
+        serial_phase.detail("event-poll-and-delivery");
         serial_phase.checkpoint(PerfLatencyKind::RuntimePacing);
         // Completing a blocked send can make receivers ready after their
         // candidate lists were sampled. Revisit that generation before
