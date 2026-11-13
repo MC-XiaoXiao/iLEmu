@@ -20,6 +20,10 @@ namespace ilemu {
 
 bool CompatibilityKernel::dispatch_bsd_security(Cpu& cpu, std::uint32_t number)
 {
+    if (number == 483U) {
+        dispatch_bsd_csr(cpu);
+        return true;
+    }
     if (number != darwin::syscall::mac_syscall)
         return false;
 
