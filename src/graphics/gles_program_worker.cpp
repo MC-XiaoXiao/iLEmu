@@ -10,6 +10,7 @@
 #include <array>
 #include <condition_variable>
 #include <deque>
+#include <iterator>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -65,11 +66,18 @@ namespace {
         std::unique_ptr<GlesProgramRenderer> renderer;
     };
 
-    // One host-wide FIFO also orders different processes' EGL contexts. The
-    // worker never acquires kernel, guest memory or SurfaceStore locks. Host
-    // backend locks are taken only after releasing the command queue lock.
+    struct CommandScheduling {
+        std::shared_ptr<const void> domain;
+        std::uint32_t priority { 1U };
+    };
+
+    // Shared surface operations are ordering barriers. Independent compiler
+    // jobs can use GPU priority between barriers while each backend retains
+    // submission order. No kernel, guest memory or SurfaceStore lock crosses
+    // into the worker.
     class ProgramExecutor {
     public:
+        using Scheduling = CommandScheduling;
         ProgramExecutor()
             : thread_ { [this] { run(); } }
         {
@@ -136,7 +144,8 @@ namespace {
         std::shared_ptr<GlesWorkResult> submit_host(std::size_t bytes,
             std::function<bool(DisplayFrame&)> execute,
             std::size_t command_bytes = 0,
-            std::shared_ptr<HostSurface> write_target = { })
+            std::shared_ptr<HostSurface> write_target = { },
+            Scheduling scheduling = { })
         {
             if (bytes > payload_limit || command_bytes > payload_limit)
                 throw std::length_error { "GLES result exceeds 64 MiB" };
@@ -166,7 +175,7 @@ namespace {
                         success = false;
                     }
                     result->publish(success);
-                } };
+                }, std::move(scheduling) };
             std::unique_lock lock { credits_->mutex };
             if (stopping_ || credits_->count >= command_limit ||
                 credits_->results >= command_limit ||
@@ -226,7 +235,7 @@ namespace {
         {
             {
                 std::lock_guard lock { credits_->mutex };
-                // The single FIFO's completed_sequence_ is a continuous host
+                // completed_sequence_ is a continuous host
                 // execution prefix. Native release separately waits its actual
                 // GPU submission fence; host execution is not GPU completion.
                 owner->through = next_sequence_ - 1U;
@@ -264,6 +273,7 @@ namespace {
             std::uint64_t sequence;
             std::size_t bytes;
             std::function<void()> execute;
+            Scheduling scheduling;
         };
         void run()
         {
@@ -288,8 +298,24 @@ namespace {
                             break;
                         continue;
                     }
-                    command = std::move(commands_.front());
-                    commands_.pop_front();
+                    auto selected = commands_.begin();
+                    if (selected->scheduling.domain) {
+                        for (auto candidate = std::next(selected);
+                             candidate != commands_.end() && candidate->scheduling.domain;
+                             ++candidate) {
+                            if (candidate->scheduling.priority >= selected->scheduling.priority)
+                                continue;
+                            // A later job cannot pass its own backend's
+                            // earlier command, even after a priority change.
+                            if (std::none_of(commands_.begin(), candidate,
+                                    [&](const auto& earlier) {
+                                        return earlier.scheduling.domain == candidate->scheduling.domain;
+                                    }))
+                                selected = candidate;
+                        }
+                    }
+                    command = std::move(*selected);
+                    commands_.erase(selected);
                 }
                 // Each accepted command publishes its terminal result.
                 // No queue lock spans driver/GPU execution.
@@ -297,9 +323,14 @@ namespace {
                 command.execute();
                 executing_work_sequence = 0;
                 command.execute = { };
+                command.scheduling.domain.reset();
                 {
                     std::lock_guard lock { credits_->mutex };
-                    completed_sequence_ = command.sequence;
+                    completed_sequence_ = commands_.empty() ? next_sequence_ - 1U
+                        : std::min_element(commands_.begin(), commands_.end(),
+                              [](const auto& left, const auto& right) {
+                                  return left.sequence < right.sequence;
+                              })->sequence - 1U;
                     --credits_->count;
                     credits_->bytes -= command.bytes;
                 }
@@ -389,12 +420,13 @@ namespace {
     template <typename Value, typename Execute>
     std::shared_ptr<GlesValueResult<Value>> submit_value(
         const std::shared_ptr<ProgramExecutor>& executor, std::size_t bytes,
-        Execute execute)
+        Execute execute, ProgramExecutor::Scheduling scheduling = { })
     {
         auto result = std::make_shared<GlesValueResult<Value>>();
         result->completion = executor->submit_host(
             bytes, [result, execute = std::move(execute)](
-                       DisplayFrame&) { return execute(result->value); });
+                       DisplayFrame&) { return execute(result->value); },
+            0U, { }, std::move(scheduling));
         return result->completion ? result : nullptr;
     }
 
@@ -741,20 +773,21 @@ bool GlesProgramWorker::shares_target_with(const GlesRenderer& renderer) const
 }
 
 std::shared_ptr<GlesValueResult<std::optional<GlesProgramWorker::Limits>>>
-GlesProgramWorker::enqueue_limits()
+GlesProgramWorker::enqueue_limits(std::uint32_t priority)
 {
     return submit_value<std::optional<Limits>>(state_->executor,
         sizeof(std::optional<Limits>),
         [backend = state_->backend](std::optional<Limits>& result) {
             result = backend->renderer->limits();
             return result.has_value();
-        });
+        }, { state_->backend, priority });
 }
 
 std::shared_ptr<GlesValueResult<GlesProgramWorker::LinkedProgram>>
 GlesProgramWorker::enqueue_link(std::uint32_t program, std::string_view vertex,
     std::string_view fragment,
-    const std::map<std::string, std::uint32_t, std::less<>>& bindings)
+    const std::map<std::string, std::uint32_t, std::less<>>& bindings,
+    std::uint32_t priority)
 {
     if (vertex.size() > payload_limit ||
         fragment.size() > payload_limit - vertex.size())
@@ -785,30 +818,30 @@ GlesProgramWorker::enqueue_link(std::uint32_t program, std::string_view vertex,
             }
             // A failed guest link is a completed operation with its real log.
             return true;
-        });
+        }, { state_->backend, priority });
 }
 
 std::shared_ptr<GlesValueResult<GlesProgramWorker::ErasedProgram>>
-GlesProgramWorker::enqueue_erase(std::uint32_t program)
+GlesProgramWorker::enqueue_erase(std::uint32_t program, std::uint32_t priority)
 {
     return submit_value<ErasedProgram>(state_->executor, sizeof(ErasedProgram),
         [backend = state_->backend, program](ErasedProgram& value) {
             value.erased = backend->renderer->erase(program);
             value.present = backend->renderer->contains(program);
             return true;
-        });
+        }, { state_->backend, priority });
 }
 
 std::shared_ptr<GlesValueResult<std::optional<std::array<std::int32_t, 3>>>>
 GlesProgramWorker::enqueue_precision(
-    std::uint32_t shader, std::uint32_t precision)
+    std::uint32_t shader, std::uint32_t precision, std::uint32_t priority)
 {
     using Value = std::optional<std::array<std::int32_t, 3>>;
     return submit_value<Value>(state_->executor, sizeof(Value),
         [backend = state_->backend, shader, precision](Value& value) {
             value = backend->renderer->precision(shader, precision);
             return value.has_value();
-        });
+        }, { state_->backend, priority });
 }
 
 void GlesProgramWorker::record_program(std::uint32_t program, bool present)

@@ -8,11 +8,13 @@
 
 #include "foundation/address_space.hpp"
 #include "foundation/cpu.hpp"
+#include "foundation/code_signature.hpp"
 #include "foundation/output.hpp"
 #include "foundation/userland_hle.hpp"
 #include "graphics/eagl_dispatch_profile.hpp"
 #include "graphics/surface_store.hpp"
 #include "kernel/opengles_hle.hpp"
+#include "kernel/kernel_shared_state.hpp"
 
 #include <algorithm>
 #include <array>
@@ -95,6 +97,43 @@ OpenGlesDispatchHle::OpenGlesDispatchHle(
             // Driver scheduling/storage hints selected by native EAGL. Host
             // command submission and surface ownership implement these roles.
             switch (parameter) {
+            case 321U:
+                // IOAccelContextSetBackgroundRendering: clearing the flag
+                // restores the entitlement's permission, as the user client
+                // does. Presentation ownership remains with the compositor.
+                owner_.contexts_.at(found->second.host_context).background_rendering =
+                    *value != 0U || has_priority_entitlement(call);
+                call.set_return(0U);
+                return;
+            case 608U: {
+                // GLI accepts 0/1/2/4; the accelerator's explicit priority
+                // contract supports high/default/low (0/1/2). Other driver
+                // policies retain their unsupported attribute result.
+                if (*value > 4U || *value == 3U) {
+                    call.set_return(bad_value);
+                    return;
+                }
+                if (*value == 4U) {
+                    call.set_return(bad_attribute);
+                    return;
+                }
+                const auto host_context = found->second.host_context;
+                const auto identity = owner_.contexts_.at(host_context).identity;
+                owner_.await_graphics_call(call,
+                    [this, host_context, identity, priority = *value](UserlandHleCall& ready) {
+                        const auto current = owner_.contexts_.find(host_context);
+                        if (current == owner_.contexts_.end() || current->second.identity != identity) {
+                            ready.set_return(bad_context);
+                            return;
+                        }
+                        // Native priority zero without this entitlement leaves
+                        // the current priority unchanged and succeeds.
+                        if (priority != 0U || has_priority_entitlement(ready))
+                            current->second.gpu_priority = priority;
+                        ready.set_return(0U);
+                    });
+                return;
+            }
             case 0x38eU:
             case 0x399U:
                 call.set_return(set_surface_parameter(call,
@@ -468,6 +507,16 @@ void OpenGlesDispatchHle::create_context(
         "[gles] GLI context created handle=" + std::to_string(handle) +
         " api=" + std::to_string(*api) + "\n");
     call.set_return(call.memory().write32(output, handle) ? 0U : bad_address);
+}
+
+bool OpenGlesDispatchHle::has_priority_entitlement(UserlandHleCall& call) const
+{
+    if (!owner_.shared_state_)
+        return false;
+    const std::lock_guard lock { owner_.shared_state_->mach_mutex };
+    return CodeSignature::has_boolean_entitlement(
+        owner_.shared_state_->processes.at(call.process_id()).code_signature_entitlements,
+        "com.apple.private.allow-explicit-graphics-priority");
 }
 
 std::uint32_t OpenGlesDispatchHle::set_surface_parameter(UserlandHleCall& call,

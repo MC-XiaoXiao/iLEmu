@@ -99,6 +99,8 @@ private:
     struct ContextState {
         ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
         std::uint32_t client_api { 1U };
+        std::uint32_t gpu_priority { 1U };
+        bool background_rendering { };
         struct FramebufferState {
             std::uint32_t color_texture_target { };
             std::uint32_t color_texture { };

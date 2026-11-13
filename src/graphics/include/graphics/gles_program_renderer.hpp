@@ -204,16 +204,18 @@ public:
     [[nodiscard]] bool initialized() const;
     [[nodiscard]] bool shares_target_with(const GlesRenderer& renderer) const;
     [[nodiscard]] std::shared_ptr<GlesValueResult<std::optional<Limits>>>
-    enqueue_limits();
+    enqueue_limits(std::uint32_t priority = 1U);
     [[nodiscard]] std::shared_ptr<GlesValueResult<LinkedProgram>> enqueue_link(
         std::uint32_t program, std::string_view vertex,
         std::string_view fragment,
-        const std::map<std::string, std::uint32_t, std::less<>>& bindings);
+        const std::map<std::string, std::uint32_t, std::less<>>& bindings,
+        std::uint32_t priority = 1U);
     [[nodiscard]] std::shared_ptr<GlesValueResult<ErasedProgram>> enqueue_erase(
-        std::uint32_t program);
+        std::uint32_t program, std::uint32_t priority = 1U);
     [[nodiscard]] std::shared_ptr<
         GlesValueResult<std::optional<std::array<std::int32_t, 3>>>>
-    enqueue_precision(std::uint32_t shader_type, std::uint32_t precision_type);
+    enqueue_precision(std::uint32_t shader_type, std::uint32_t precision_type,
+        std::uint32_t priority = 1U);
     void record_program(std::uint32_t program, bool present);
     ~GlesProgramWorker();
     [[nodiscard]] bool contains(std::uint32_t program) const;

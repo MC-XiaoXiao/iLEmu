@@ -45,6 +45,7 @@ private:
     void choose_pixel_format(UserlandHleCall& call);
     void create_context(UserlandHleCall& call, bool shared_is_context);
     void release_shared(std::uint32_t handle);
+    [[nodiscard]] bool has_priority_entitlement(UserlandHleCall& call) const;
     [[nodiscard]] bool prepare_dispatch(UserlandHleCall& call);
     [[nodiscard]] std::uint32_t set_surface_parameter(UserlandHleCall& call,
         std::uint32_t host_context, std::uint32_t parameter,

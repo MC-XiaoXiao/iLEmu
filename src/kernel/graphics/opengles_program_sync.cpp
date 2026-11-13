@@ -124,7 +124,8 @@ void OpenGlesHle::with_program_limits(
             GlesValueResult<std::optional<GlesProgramWorker::Limits>>>
             result;
         try {
-            result = program_renderer_->enqueue_limits();
+            const auto* context = current_context(ready);
+            result = program_renderer_->enqueue_limits(context ? context->gpu_priority : 1U);
         } catch (...) {
             lease->consume();
             completion(ready, false);
@@ -167,10 +168,11 @@ void OpenGlesHle::enqueue_program_link(UserlandHleCall& call,
     }
     std::shared_ptr<GlesValueResult<GlesProgramWorker::LinkedProgram>> result;
     try {
+        const auto* context = current_context(call);
         result = program_renderer_->enqueue_link(name,
             programs_.shader_source(name, gles_abi::vertex_shader),
             programs_.shader_source(name, gles_abi::fragment_shader),
-            declaration->attributes);
+            declaration->attributes, context ? context->gpu_priority : 1U);
     } catch (const std::exception& failure) {
         program_renderer_error_ = failure.what();
         if (!restore) {
@@ -321,7 +323,8 @@ void OpenGlesHle::delete_program(UserlandHleCall& call, bool prepared)
     const auto lease = program_wait(call);
     std::shared_ptr<GlesValueResult<GlesProgramWorker::ErasedProgram>> result;
     try {
-        result = program_renderer_->enqueue_erase(name);
+        const auto* context = current_context(call);
+        result = program_renderer_->enqueue_erase(name, context ? context->gpu_priority : 1U);
     } catch (...) {
         lease->consume();
         set_gl_error(call, gles_abi::invalid_operation);
@@ -368,7 +371,9 @@ void OpenGlesHle::shader_precision(UserlandHleCall& call)
         const auto lease = program_wait(ready);
         std::shared_ptr<GlesValueResult<Value>> result;
         try {
-            result = program_renderer_->enqueue_precision(shader, type);
+            const auto* context = current_context(ready);
+            result = program_renderer_->enqueue_precision(shader, type,
+                context ? context->gpu_priority : 1U);
         } catch (...) {
             lease->consume();
             set_gl_error(ready, gles_abi::invalid_operation);

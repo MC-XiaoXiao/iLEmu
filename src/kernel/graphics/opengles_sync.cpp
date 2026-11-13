@@ -29,7 +29,8 @@ namespace {
     // MakeCurrent park at their validated preparation boundaries instead.
     bool flush_boundary(std::string_view symbol)
     {
-        return symbol == "_glFinish" || symbol == "_glFlush" ||
+        return symbol == "_gliSetInteger" ||
+               symbol == "_glFinish" || symbol == "_glFlush" ||
                symbol == "_glReadPixels" || symbol == "_glClear" ||
                symbol == "_glRenderbufferStorage" ||
                symbol == "_glRenderbufferStorageOES" ||
