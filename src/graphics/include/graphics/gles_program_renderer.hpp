@@ -99,6 +99,9 @@ public:
     [[nodiscard]] virtual bool readback(
         DisplayFrame& frame, GlesRenderTargetKey target) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
+    // The render FIFO owns all subsequent calls and destruction on this
+    // thread. Backends may retain thread-bound state between those calls.
+    virtual void use_dedicated_thread() { }
 };
 
 // A retained host-owned result is also a queue credit: completed readbacks

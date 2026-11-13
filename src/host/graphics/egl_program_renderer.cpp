@@ -27,6 +27,7 @@
 
 namespace ilemu {
 namespace {
+    constexpr std::uint32_t maximum_draws_per_submission = 16;
 
     struct EglDisplayOwner {
         EGLDisplay display { EGL_NO_DISPLAY };
@@ -107,12 +108,13 @@ namespace {
                 : renderer_ { renderer }
             {
                 valid_ =
+                    eglGetCurrentContext() == renderer_.context_ ||
                     eglMakeCurrent(renderer_.display_, renderer_.surface_,
                         renderer_.surface_, renderer_.context_) == EGL_TRUE;
             }
             ~Binding()
             {
-                if (valid_)
+                if (valid_ && !renderer_.dedicated_thread_)
                     eglMakeCurrent(renderer_.display_, EGL_NO_SURFACE,
                         EGL_NO_SURFACE, EGL_NO_CONTEXT);
             }
@@ -139,12 +141,13 @@ namespace {
                     (std::string { " " } + extensions + " ")
                             .find(" EGL_KHR_context_flush_control ") !=
                         std::string::npos) {
-                    // Binding scopes protect each host call. Guest flush,
-                    // readback and presentation already synchronize the stream;
-                    // releasing it after every draw need not submit GPU work.
+                    // Direct callers can migrate contexts between threads.
+                    // Their binding scopes need not submit GPU work when
+                    // explicit boundaries already synchronize the stream.
                     context_attributes.insert(context_attributes.end(),
                         { EGL_CONTEXT_RELEASE_BEHAVIOR_KHR,
                             EGL_CONTEXT_RELEASE_BEHAVIOR_NONE_KHR });
+                    flush_on_release_ = false;
                 }
                 context_attributes.push_back(EGL_NONE);
                 const EGLint surface_attributes[] { EGL_WIDTH, 1, EGL_HEIGHT, 1,
@@ -518,7 +521,7 @@ namespace {
 #if defined(__ANDROID__)
                 target.shared_target =
                     std::make_unique<EglAndroidProgramTarget>(
-                        display_, std::move(input));
+                        display_, display_owner_, std::move(input));
 #elif defined(__linux__)
                 // EXT_memory_object textures have immutable storage. A new
                 // owned allocation requires a new texture, even at equal size.
@@ -610,14 +613,14 @@ namespace {
                     glGenTextures(1, &host.object);
                 glBindTexture(GL_TEXTURE_2D, host.object);
                 for (const auto& [level, image] : texture->levels) {
-                    if (image.argb.size() !=
+                    if (image.pixels().size() !=
                         static_cast<std::size_t>(image.width) * image.height)
                         return false;
                     const auto previous = host.revisions.find(level);
                     if (previous != host.revisions.end() &&
                         previous->second == image.revision)
                         continue;
-                    const auto* pixels = upload_pixels(image.argb,
+                    const auto* pixels = upload_pixels(image.pixels(),
                         texture_rgba_, image.width, image.height, false);
                     glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level),
                         static_cast<GLint>(texture_format_),
@@ -626,7 +629,7 @@ namespace {
                         GL_UNSIGNED_BYTE, pixels);
                     host.revisions[level] = image.revision;
                     host.sizes[level] =
-                        image.argb.size() * sizeof(std::uint32_t);
+                        image.pixels().size() * sizeof(std::uint32_t);
                 }
                 for (const auto parameter :
                     { GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER,
@@ -701,6 +704,13 @@ namespace {
             }
             if (glGetError() != GL_NO_ERROR)
                 return false;
+            // Drivers without release control previously submitted every
+            // call. Keep their GPU fed without detaching the worker context.
+            if (dedicated_thread_ && flush_on_release_ &&
+                ++draws_since_flush_ == maximum_draws_per_submission) {
+                glFlush();
+                draws_since_flush_ = 0;
+            }
             trim_caches();
             return true;
         }
@@ -713,6 +723,7 @@ namespace {
             const auto found = targets_.find(key);
             if (found == targets_.end())
                 return false;
+            draws_since_flush_ = 0;
             const auto& target = found->second;
             frame.width = target.width;
             frame.height = target.height;
@@ -770,6 +781,7 @@ namespace {
             return true;
         }
         std::string_view name() const override { return name_; }
+        void use_dedicated_thread() override { dedicated_thread_ = true; }
 
     private:
         void trim_caches()
@@ -932,6 +944,9 @@ namespace {
             GlesProgramTarget::Api::None
         };
         GlesProgramTarget::DeviceIdentity program_device_ { };
+        bool dedicated_thread_ { };
+        bool flush_on_release_ { true };
+        std::uint32_t draws_since_flush_ { };
         std::vector<std::uint8_t> rgba_, texture_rgba_;
         std::vector<std::byte> attributes_;
         std::uint64_t use_sequence_ { };

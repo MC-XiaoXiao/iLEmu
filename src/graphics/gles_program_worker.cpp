@@ -334,9 +334,11 @@ namespace {
                     --credits_->count;
                     credits_->bytes -= command.bytes;
                 }
+                notify_completion();
+                // Wake completed command observers before native retirement
+                // can wait for unrelated GPU submissions.
                 retire_ready_backends();
                 retire_ready_owners();
-                notify_completion();
             }
             backends_.clear();
             owners_.fill(nullptr);
@@ -740,6 +742,7 @@ std::unique_ptr<GlesProgramWorker> GlesProgramWorker::begin_create(
             executor->retain(backend);
             backend->renderer = executor->create_program_renderer(&info.error);
             if (backend->renderer) {
+                backend->renderer->use_dedicated_thread();
                 info.name = std::string { backend->renderer->name() };
                 info.target = backend->renderer->program_target_identity();
             }

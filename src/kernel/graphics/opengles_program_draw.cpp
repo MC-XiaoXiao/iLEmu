@@ -101,6 +101,7 @@ bool OpenGlesHle::prepare_program_attributes(UserlandHleCall& call,
 
 void OpenGlesHle::retire_thread(std::size_t processor)
 {
+    cancel_frame_draw(processor);
     // Cancel only the observer. Accepted host work retains its snapshots and
     // host resource references through execution; late results have no copyout.
     if (sync_lease_ && sync_lease_->owner == processor)

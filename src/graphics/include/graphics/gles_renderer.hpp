@@ -121,9 +121,9 @@ public:
         std::optional<HostRectangle>* readback_damage);
     // Marks a CPU-side clear or another writer as authoritative for the target.
     virtual void invalidate(GlesRenderTargetKey target) = 0;
-    // Releases a lifecycle batch behind one backend synchronization boundary.
-    // Guest-facing stores already know the complete retiring set; preserving
-    // that batch prevents a host fence wait per individual surface.
+    // Detaches a lifecycle batch behind one backend submission boundary.
+    // Native backends retain its storage until that submission completes.
+    // Guest-facing stores already know the complete retiring set.
     virtual bool release(std::span<const GlesRenderTargetKey> targets) = 0;
     // Drops every process-local target and sampled texture associated with an
     // OpenGLES resource owner. The renderer is shared across guest processes,

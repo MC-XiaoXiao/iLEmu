@@ -224,6 +224,7 @@ OpenGlesHle::~OpenGlesHle() { release_renderer_resources(); }
 
 void OpenGlesHle::reset()
 {
+    pending_frame_draw_.reset();
     sync_lease_.reset();
     release_renderer_resources();
     threads_.clear();
@@ -255,6 +256,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent,
     std::uint32_t parent_pid, std::uint32_t child_pid,
     std::size_t parent_processor)
 {
+    pending_frame_draw_.reset();
     sync_lease_.reset();
     release_renderer_resources();
     // Runtime fork preserves only its calling uthread, rebased to child slot
@@ -485,7 +487,8 @@ void OpenGlesHle::set_array_pointer(
 
 bool OpenGlesHle::read_array(UserlandHleCall& call,
     const ContextState::ArrayPointer& array, std::uint32_t index,
-    std::span<float> destination, bool normalized) const
+    std::span<float> destination, bool normalized,
+    std::span<std::byte, 4 * sizeof(std::uint32_t)> client_bytes) const
 {
     std::uint32_t component_size { };
     if (array.type == gles_abi::float_type || array.type == gles_abi::fixed) {
@@ -509,6 +512,14 @@ bool OpenGlesHle::read_array(UserlandHleCall& call,
         array.buffer == 0 ? nullptr : resources_.buffer(array.buffer);
     if (array.buffer != 0 && buffer == nullptr)
         return false;
+    if (buffer == nullptr && array.size != 0U) {
+        if (base_offset > std::numeric_limits<std::uint32_t>::max())
+            return false;
+        if (!call.memory().copy_out(static_cast<std::uint32_t>(base_offset),
+                client_bytes.first(array.size * component_size))) {
+            return false;
+        }
+    }
     for (std::uint32_t component = 0; component < array.size; ++component) {
         const auto offset =
             base_offset +
@@ -519,6 +530,7 @@ bool OpenGlesHle::read_array(UserlandHleCall& call,
                 component_size > buffer->bytes.size() - offset) {
                 return false;
             }
+#pragma GCC unroll 4
             for (std::uint32_t byte_index = 0; byte_index < component_size;
                 ++byte_index) {
                 raw |= std::to_integer<std::uint32_t>(
@@ -527,24 +539,12 @@ bool OpenGlesHle::read_array(UserlandHleCall& call,
                        << (byte_index * 8U);
             }
         } else {
-            if (offset > std::numeric_limits<std::uint32_t>::max())
-                return false;
-            const auto address = static_cast<std::uint32_t>(offset);
-            if (component_size == 4) {
-                const auto value = call.memory().read32(address);
-                if (!value)
-                    return false;
-                raw = *value;
-            } else if (component_size == 2) {
-                const auto value = call.memory().read16(address);
-                if (!value)
-                    return false;
-                raw = *value;
-            } else {
-                const auto value = call.memory().read8(address);
-                if (!value)
-                    return false;
-                raw = *value;
+#pragma GCC unroll 4
+            for (std::uint32_t byte_index = 0; byte_index < component_size;
+                ++byte_index) {
+                raw |= std::to_integer<std::uint32_t>(
+                           client_bytes[component * component_size + byte_index])
+                       << (byte_index * 8U);
             }
         }
         float value { };
@@ -586,15 +586,17 @@ std::optional<GlesRasterVertex> OpenGlesHle::read_vertex(UserlandHleCall& call,
         programmable ? programmable->color_array : context.color_array;
     if (!position_array.enabled)
         return std::nullopt;
+    std::array<std::byte, 4 * sizeof(std::uint32_t)> client_bytes;
     GlesRasterVertex vertex;
     vertex.color =
         programmable ? programmable->current_color : context.current_color;
     if (!read_array(call, position_array, index, vertex.position,
-            position_array.normalized)) {
+            position_array.normalized, client_bytes)) {
         return std::nullopt;
     }
     if (color_array.enabled && !read_array(call, color_array, index,
-                                   vertex.color, color_array.normalized)) {
+                                   vertex.color, color_array.normalized,
+                                   client_bytes)) {
         return std::nullopt;
     }
     vertex.position =
@@ -625,7 +627,7 @@ std::optional<GlesRasterVertex> OpenGlesHle::read_vertex(UserlandHleCall& call,
         if (texture_array.enabled) {
             std::array<float, 4> texture { };
             if (!read_array(call, texture_array, index, texture,
-                    texture_array.normalized)) {
+                    texture_array.normalized, client_bytes)) {
                 return std::nullopt;
             }
             vertex.texture[unit_index] = { texture[0], texture[1] };

@@ -35,7 +35,7 @@ public:
             if (found == texture.levels.end() || found->second.width != width ||
                 found->second.height != height || found->second.host_surface ||
                 found->second.internal_format != base->second.internal_format ||
-                found->second.argb.size() !=
+                found->second.pixels().size() !=
                     static_cast<std::size_t>(width) * height) {
                 count_ = 1;
                 return;

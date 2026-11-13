@@ -75,7 +75,7 @@ GlesPreparedTextures::GlesPreparedTextures(const GlesResourceStore& source,
                     image.host_surface->gpu_generation());
             const auto writer = image.host_surface->writer();
             if ((!writer || writer->succeeded()) &&
-                image.argb.size() ==
+                image.pixels().size() ==
                     static_cast<std::size_t>(image.width) * image.height &&
                 image.argb_generation == generation)
                 continue;
@@ -140,14 +140,14 @@ void GlesPreparedTextures::complete(GlesResourceStore& revisions)
                 if (level != live->levels.end() &&
                     level->second.revision == input.revision &&
                     level->second.host_surface == captured.surface) {
-                    level->second.argb = captured.snapshot.frame.pixels;
+                    level->second.set_pixels(captured.snapshot.frame.pixels);
                     level->second.host_generation = generation;
                     level->second.argb_generation = generation;
                     level->second.revision = revision;
                 }
             }
         }
-        image.argb = std::move(captured.snapshot.frame.pixels);
+        image.set_pixels(std::move(captured.snapshot.frame.pixels));
         image.host_generation = generation;
         image.argb_generation = image.host_generation;
         image.revision = revision;

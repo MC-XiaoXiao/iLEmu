@@ -112,6 +112,7 @@ std::shared_ptr<void> OpenGlesHle::retain_native_target(
 
 void OpenGlesHle::service_graphics_completions(bool process_live)
 {
+    service_frame_draw(process_live);
     // Poll every producer at the serial core boundary, including processes
     // with no ready guest observer. Ready draws must not pin the global result
     // budget merely because their producer has stopped making GL calls.
@@ -136,6 +137,7 @@ void OpenGlesHle::service_graphics_completions(bool process_live)
 
 void OpenGlesHle::cancel_pending_work(std::optional<std::size_t> processor)
 {
+    cancel_frame_draw(processor);
     if (sync_lease_ && (!processor || sync_lease_->owner == *processor)) {
         sync_lease_->cancelled = true;
         sync_lease_->complete_core = { };
@@ -203,7 +205,7 @@ bool OpenGlesHle::needs_target_allocation(UserlandHleCall& call)
         return false;
     const auto& image = found->second;
     if (image.surface_id || !image.width || !image.height ||
-        image.argb.size() != static_cast<std::uint64_t>(image.width) * image.height)
+        image.pixels().size() != static_cast<std::uint64_t>(image.width) * image.height)
         return false;
     const auto writable = symbol == "_glClear" || symbol == "_glDrawArrays" ||
                           symbol == "_glDrawElements";
@@ -238,6 +240,32 @@ void OpenGlesHle::await_graphics_call(
         return;
     }
     sync_lease_.reset();
+    // Native draws own their inputs, so CPU state commands may continue.
+    // Consume their core metadata before a target access, image mutation,
+    // lifecycle boundary, or the issuing thread's error observation. In
+    // particular this releases our temporary owner before COW allocation.
+    const auto symbol = call.symbol();
+    const auto target_access = flush_boundary(symbol) ||
+                               symbol == "_glDrawArrays" ||
+                               symbol == "_glDrawElements" ||
+                               symbol == "_glTexImage2D" ||
+                               symbol == "_glCompressedTexImage2D" ||
+                               symbol == "_glTexSubImage2D" ||
+                               symbol == "_glTexImageCoreSurfaceAPPLE" ||
+                               !symbol.starts_with("_gl");
+    const auto dependency = target_access
+                                ? frame_draw_dependency()
+                                : symbol == "_glGetError"
+                                      ? frame_draw_dependency(
+                                            call.cpu().processor_id())
+                                      : nullptr;
+    if (dependency) {
+        call.suspend_for_host([dependency] { return dependency->ready(); },
+            [this, handler = std::move(handler)](UserlandHleCall& resumed) {
+                await_graphics_call(resumed, handler);
+            }, dependency->sequence());
+        return;
+    }
     if (!GlesRendererOwner::capacity() && GlesRendererOwner::retirement_pending() &&
         needs_target_allocation(call)) {
         // No native target or handler effect has been accepted. Hold the
