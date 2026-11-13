@@ -11,11 +11,11 @@
 #include "kernel/kernel_iokit_hid.hpp"
 
 #include "foundation/address_space.hpp"
-#include "mach/device_mig_ids.hpp"
+#include "foundation/output.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
+#include "mach/device_mig_ids.hpp"
 #include "mach/mig_wire_abi.hpp"
-#include "foundation/output.hpp"
 
 #include "../../mach/support.hpp"
 
@@ -208,8 +208,10 @@ namespace {
         const auto service =
             state.iokit_services.find(connection->second.service_port);
         return service != state.iokit_services.end() &&
+               (service->second.user_client_kind ==
+                       KernelSharedState::IOKitUserClientKind::MultitouchHid ||
                service->second.user_client_kind ==
-                   KernelSharedState::IOKitUserClientKind::MultitouchHid;
+                       KernelSharedState::IOKitUserClientKind::AmbientLightHid);
     }
 
     bool request_targets_current_task_locked(const KernelSharedState& state,
@@ -294,25 +296,23 @@ namespace {
             return write_simple_reply(memory, message_address, local_port,
                 message_id, iokit_abi::bad_argument);
         }
-        auto& connection = state.iokit_multitouch_hid_connections[
-            connection_object];
+        auto& connection = state.iokit_hid_connections[connection_object];
         connection.notification_port = notification_object;
         connection.notification_type = notification_type;
         connection.registration_reference = reference;
-        output.write("[iokit-hid] notification-port pid=" +
-                     std::to_string(process.pid) + " connection-object=" +
-                     std::to_string(connection_object) + " port-object=" +
-                     std::to_string(notification_object) + "\n");
+        output.write(
+            "[iokit-hid] notification-port pid=" + std::to_string(process.pid) +
+            " connection-object=" + std::to_string(connection_object) +
+            " port-object=" + std::to_string(notification_object) + "\n");
         return write_simple_reply(memory, message_address, local_port,
             message_id, iokit_abi::success);
     }
 
     std::optional<std::uint32_t> handle_map_memory_request(AddressSpace& memory,
-        Output& output, KernelSharedState& state,
-        const ProcessContext& process, std::uint32_t message_id,
-        std::uint32_t message_address, std::uint32_t send_size,
-        std::uint32_t receive_size, std::uint32_t connection_object,
-        std::uint32_t local_port)
+        Output& output, KernelSharedState& state, const ProcessContext& process,
+        std::uint32_t message_id, std::uint32_t message_address,
+        std::uint32_t send_size, std::uint32_t receive_size,
+        std::uint32_t connection_object, std::uint32_t local_port)
     {
         if (message_id !=
             device_mig::id(device_mig::Routine::io_connect_map_memory)) {
@@ -349,34 +349,39 @@ namespace {
         {
             std::lock_guard lock { state.mach_mutex };
             if (!is_hid_connection_locked(state, process, connection_object) ||
-                !request_targets_current_task_locked(state, process,
-                    task_name)) {
+                !request_targets_current_task_locked(
+                    state, process, task_name)) {
                 return write_map_reply(memory, message_address, local_port,
                     message_id, iokit_abi::bad_argument, 0U, 0U);
             }
-            auto& connection =
-                state.iokit_multitouch_hid_connections[connection_object];
+            auto& connection = state.iokit_hid_connections[connection_object];
             const auto existing = connection.memory_mappings.find(memory_type);
             if (existing != connection.memory_mappings.end() &&
                 existing->second.address != 0U &&
-                memory.mapped(existing->second.address,
-                    existing->second.mapped_size)) {
+                memory.mapped(
+                    existing->second.address, existing->second.mapped_size)) {
                 mapped_address = existing->second.address;
             } else {
                 if (existing != connection.memory_mappings.end())
                     connection.memory_mappings.erase(existing);
                 const auto region = mach_support::find_free_guest_region(
                     memory, hid_mapping_search_base, *mapped_size);
-                if (!region || !memory.map(*region, *mapped_size,
+                if (!region ||
+                    !memory.map(*region, *mapped_size,
                         MemoryPermission::Read | MemoryPermission::Write)) {
                     return write_map_reply(memory, message_address, local_port,
                         message_id, iokit_abi::no_memory, 0U, 0U);
                 }
                 mapped_address = *region;
+                const auto service =
+                    state.iokit_connections.at(connection_object).service_port;
+                if (state.iokit_services.at(service).user_client_kind ==
+                    KernelSharedState::IOKitUserClientKind::AmbientLightHid)
+                    static_cast<void>(memory.write32(mapped_address,
+                        *mapped_size - 3U * sizeof(std::uint32_t)));
                 connection.memory_mappings.emplace(memory_type,
-                    KernelSharedState::IOKitMultitouchHidConnectionState::
-                        MemoryMapping { mapped_address, *mapped_size,
-                            *mapped_size });
+                    KernelSharedState::IOKitHidConnectionState::MemoryMapping {
+                        mapped_address, *mapped_size, *mapped_size });
             }
         }
         output.write("[iokit-hid] map pid=" + std::to_string(process.pid) +
@@ -401,36 +406,46 @@ namespace {
         if (send_size < 56U || receive_size < simple_reply_size)
             return mach_receive_invalid_data;
         const auto descriptor_count =
-            memory.read32(message_address +
+            memory
+                .read32(message_address +
                           darwin::mig_wire::complex_descriptor_count_offset)
                 .value_or(0U);
-        const auto memory_type = memory.read32(message_address +
-            device_mig::io_connect_unmap_memory_arguments[1].request_offset)
+        const auto memory_type =
+            memory
+                .read32(message_address +
+                        device_mig::io_connect_unmap_memory_arguments[1]
+                            .request_offset)
             .value_or(~0U);
-        const auto task_name = memory.read32(message_address +
-            device_mig::io_connect_unmap_memory_arguments[2].request_offset)
+        const auto task_name =
+            memory
+                .read32(message_address +
+                        device_mig::io_connect_unmap_memory_arguments[2]
+                            .request_offset)
             .value_or(0U);
-        const auto requested_address = memory.read32(message_address +
-            device_mig::io_connect_unmap_memory_arguments[3].request_offset)
+        const auto requested_address =
+            memory
+                .read32(message_address +
+                        device_mig::io_connect_unmap_memory_arguments[3]
+                            .request_offset)
             .value_or(0U);
-        KernelSharedState::IOKitMultitouchHidConnectionState::MemoryMapping
-            mapping;
+        KernelSharedState::IOKitHidConnectionState::MemoryMapping mapping;
         {
             std::lock_guard lock { state.mach_mutex };
             if (!is_hid_connection_locked(state, process, connection_object) ||
-                !request_targets_current_task_locked(state, process, task_name) ||
+                !request_targets_current_task_locked(
+                    state, process, task_name) ||
                 descriptor_count != 1U || memory_type != hid_memory_type ||
                 task_name == 0U || requested_address == 0U) {
                 return write_simple_reply(memory, message_address, local_port,
                     message_id, iokit_abi::bad_argument);
             }
             auto connection =
-                state.iokit_multitouch_hid_connections.find(connection_object);
-            if (connection == state.iokit_multitouch_hid_connections.end())
+                state.iokit_hid_connections.find(connection_object);
+            if (connection == state.iokit_hid_connections.end())
                 return write_simple_reply(memory, message_address, local_port,
                     message_id, iokit_abi::bad_argument);
-            const auto found = connection->second.memory_mappings.find(
-                memory_type);
+            const auto found =
+                connection->second.memory_mappings.find(memory_type);
             if (found == connection->second.memory_mappings.end() ||
                 found->second.address != requested_address) {
                 return write_simple_reply(memory, message_address, local_port,
@@ -500,12 +515,23 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const ProcessContext& process, std::uint32_t connection_object,
     std::uint32_t selector, std::span<const std::uint64_t> scalar_input,
     std::span<const std::byte> inband_input,
-    std::uint32_t scalar_output_capacity,
-    std::uint32_t inband_output_capacity)
+    std::uint32_t scalar_output_capacity, std::uint32_t inband_output_capacity)
 {
     std::lock_guard lock { state.mach_mutex };
     if (!is_hid_connection_locked(state, process, connection_object))
         return std::nullopt;
+
+    const auto& service = state.iokit_services.at(
+        state.iokit_connections.at(connection_object).service_port);
+    if (service.user_client_kind ==
+        KernelSharedState::IOKitUserClientKind::AmbientLightHid) {
+        if (selector == 0U || selector == 1U) {
+            state.iokit_hid_connections[connection_object].started =
+                selector == 0U;
+            return MethodResult { iokit_abi::success, { }, { } };
+        }
+        return MethodResult { iokit_abi::unsupported, { }, { } };
+    }
 
     // MultitouchSupport uses the two driver-control selectors below for the
     // stock SPI endpoint: selector 0 on the direct path and selector 0x15
@@ -517,8 +543,7 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             scalar_output_capacity > 16U) {
             return MethodResult { iokit_abi::bad_argument, { }, { } };
         }
-        state.iokit_multitouch_hid_connections[connection_object].started =
-            true;
+        state.iokit_hid_connections[connection_object].started = true;
         return MethodResult { iokit_abi::success, { }, { } };
     }
     return MethodResult { iokit_abi::unsupported, { }, { } };
@@ -546,32 +571,33 @@ std::optional<std::uint32_t> handle_mach_request(AddressSpace& memory,
         return result;
     }
     return handle_unmap_memory_request(memory, output, state, process,
-        message_id, message_address, send_size, receive_size,
-        connection_object, local_port);
+        message_id, message_address, send_size, receive_size, connection_object,
+        local_port);
 }
 
 void close_connection(AddressSpace& memory, KernelSharedState& state,
     std::uint32_t connection_object)
 {
-    std::vector<KernelSharedState::IOKitMultitouchHidConnectionState::
-        MemoryMapping> mappings;
+    std::vector<KernelSharedState::IOKitHidConnectionState::MemoryMapping>
+        mappings;
     {
         std::lock_guard lock { state.mach_mutex };
         const auto connection =
-            state.iokit_multitouch_hid_connections.find(connection_object);
-        if (connection == state.iokit_multitouch_hid_connections.end())
+            state.iokit_hid_connections.find(connection_object);
+        if (connection == state.iokit_hid_connections.end())
             return;
         for (const auto& [memory_type, mapping] :
             connection->second.memory_mappings) {
             static_cast<void>(memory_type);
             mappings.push_back(mapping);
         }
-        state.iokit_multitouch_hid_connections.erase(connection);
+        state.iokit_hid_connections.erase(connection);
     }
     for (const auto& mapping : mappings) {
         if (mapping.address != 0U && mapping.mapped_size != 0U &&
             memory.mapped(mapping.address, mapping.mapped_size)) {
-            static_cast<void>(memory.unmap(mapping.address, mapping.mapped_size));
+            static_cast<void>(
+                memory.unmap(mapping.address, mapping.mapped_size));
         }
     }
 }

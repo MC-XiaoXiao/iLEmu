@@ -40,6 +40,7 @@
 #include "kernel/kevent_timer.hpp"
 #include "kernel/display_console.hpp"
 #include "kernel/panel_backlight.hpp"
+#include "kernel/hid_ambient_light_sensor.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "kernel/bsd_dispatch_table.hpp"
 #include "kernel/mach_dispatch_table.hpp"
@@ -611,6 +612,8 @@ struct KernelSharedState {
     std::string framebuffer_service_class;
     ExternalFramebufferProfile external_framebuffer;
     AmbientLightSensorProfile ambient_light_sensor;
+    std::uint32_t ambient_light_hid_service { };
+    HidAmbientLightSensor ambient_light_input;
     bool apple_key_store_available { };
     bool effaceable_storage_available { true };
     bool virtual_effaceable_storage_available { };
@@ -915,6 +918,7 @@ struct KernelSharedState {
         AppleKeyStore,
         AppleEffaceableStorage,
         MultitouchHid,
+        AmbientLightHid,
     };
     struct IOKitService {
         std::string class_name;
@@ -988,7 +992,7 @@ struct KernelSharedState {
         // host pointer and is never dereferenced by the emulator.
         std::uint32_t shared_resource_token { };
     };
-    struct IOKitMultitouchHidConnectionState {
+    struct IOKitHidConnectionState {
         struct MemoryMapping {
             std::uint32_t address { };
             std::uint32_t mapped_size { };
@@ -1923,8 +1927,8 @@ struct KernelSharedState {
     std::map<std::uint32_t, IOKitMbxConnectionState> iokit_mbx_connections;
     std::map<std::uint32_t, IOKitGraphicsConnectionState>
         iokit_graphics_connections;
-    std::map<std::uint32_t, IOKitMultitouchHidConnectionState>
-        iokit_multitouch_hid_connections;
+    std::map<std::uint32_t, IOKitHidConnectionState>
+        iokit_hid_connections;
     // The physical panel has one power state even though GraphicsServices and
     // LayerKit can open separate IOMobileFramebuffer user clients.
     DisplayGeometry display_geometry { default_display_geometry };

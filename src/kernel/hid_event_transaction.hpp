@@ -10,19 +10,23 @@
 #include "kernel/hid_event_queue.hpp"
 
 #include <functional>
+#include <span>
 
 namespace ilemu {
 
 class UserlandHleRegistry;
+class UserlandHleCall;
 class DarwinVersion;
 
 class HidEventTransaction {
 public:
+    using ReportDelivery =
+        std::function<void(UserlandHleCall&, std::span<const std::byte>)>;
     [[nodiscard]] static bool enqueue(UserlandHleRegistry& registry,
         const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
         DisplayGeometry geometry, DarwinVersion version,
         std::uint64_t sender_id, std::array<float, 2> translation,
-        std::function<void()> completion);
+        std::function<void()> completion, ReportDelivery report_delivery);
     [[nodiscard]] static bool enqueue(UserlandHleRegistry& registry,
         const HidEventQueue::Observer& observer, HidEventQueue::Event event,
         DisplayGeometry geometry, DarwinVersion version,

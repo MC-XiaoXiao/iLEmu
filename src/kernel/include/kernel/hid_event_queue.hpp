@@ -52,8 +52,12 @@ public:
         float y;
         float z;
     };
+    struct AmbientLight {
+        std::uint32_t lux;
+    };
     struct Event {
-        std::variant<TouchInput, KeyboardInput, Acceleration> input;
+        std::variant<TouchInput, KeyboardInput, Acceleration, AmbientLight>
+            input;
         std::uint64_t timestamp;
         std::uint32_t identity { 1U };
         std::optional<std::array<float, 2>> contact_origin { };

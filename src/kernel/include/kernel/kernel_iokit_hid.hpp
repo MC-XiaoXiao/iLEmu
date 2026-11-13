@@ -52,6 +52,10 @@ namespace kernel_iokit::hid {
         std::uint32_t receive_size, std::uint32_t connection_object,
         std::uint32_t local_port);
 
+    void enqueue_event_report(AddressSpace& memory, KernelSharedState& state,
+        std::uint32_t process, std::uint32_t service,
+        std::span<const std::byte> data);
+
     void close_connection(AddressSpace& memory, KernelSharedState& state,
         std::uint32_t connection_object);
 

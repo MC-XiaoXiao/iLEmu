@@ -28,20 +28,15 @@ public:
     explicit HidEventSystemHle(UserlandHleRegistry& registry);
     void set_shared_state(std::shared_ptr<KernelSharedState> state);
     void reset(std::uint32_t process);
-    [[nodiscard]] bool enqueue_touch(const TouchInput& input,
-        std::uint64_t* input_sequence = nullptr);
+    [[nodiscard]] bool enqueue_touch(
+        const TouchInput& input, std::uint64_t* input_sequence = nullptr);
     [[nodiscard]] bool is_event_consumer(
         std::uint32_t process, std::size_t processor) const;
-    [[nodiscard]] bool pending_event_ready(std::uint32_t process,
-        std::size_t processor, std::uint64_t now) const;
+    [[nodiscard]] bool pending_event_ready(
+        std::uint32_t process, std::size_t processor, std::uint64_t now) const;
     void visit_interactive_processors(std::uint32_t process,
         const std::function<void(std::size_t)>& visitor) const;
-    [[nodiscard]] std::optional<std::uint64_t> next_sample_deadline() const
-    {
-        return delivering_processors_.contains(consumer_processor_)
-                   ? std::nullopt
-                   : accelerometer_.next_deadline();
-    }
+    [[nodiscard]] std::optional<std::uint64_t> next_sample_deadline() const;
     [[nodiscard]] bool prepare_pending_event(
         Cpu& cpu, std::uint32_t process, std::uint32_t svc_immediate);
 

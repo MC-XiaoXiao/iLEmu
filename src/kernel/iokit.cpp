@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "foundation/address_space.hpp"
-#include "mach/device_mig_ids.hpp"
+#include "foundation/output.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_iokit_audio.hpp"
 #include "kernel/kernel_iokit_audio_abi.hpp"
@@ -40,8 +40,8 @@
 #include "kernel/kernel_iokit_mbx.hpp"
 #include "kernel/kernel_iokit_mobile_file_integrity.hpp"
 #include "kernel/kernel_shared_state.hpp"
+#include "mach/device_mig_ids.hpp"
 #include "mach/mig_wire_abi.hpp"
-#include "foundation/output.hpp"
 #include "network/wifi_state.hpp"
 
 #include "iokit/battery.hpp"
@@ -479,6 +479,8 @@ namespace {
             return "apple-effaceable-storage";
         case KernelSharedState::IOKitUserClientKind::MultitouchHid:
             return "multitouch-hid";
+        case KernelSharedState::IOKitUserClientKind::AmbientLightHid:
+            return "ambient-light-hid";
         case KernelSharedState::IOKitUserClientKind::None:
             break;
         }
@@ -914,6 +916,13 @@ namespace {
                 ensure_platform_expert_service_locked(shared_state);
             services.push_back(kernel_iokit::hid::ensure_service_locked(
                 shared_state, platform_expert));
+            services.push_back(
+                kernel_iokit::environment::ensure_hid_service_locked(
+                    shared_state));
+        } else if (kernel_iokit::environment::matches_hid_service(matching)) {
+            services.push_back(
+                kernel_iokit::environment::ensure_hid_service_locked(
+                    shared_state));
         }
         if (kernel_iokit::mbx::matches_service(matching) &&
             shared_state.graphics_accelerator ==
@@ -2099,10 +2108,17 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             message_id == static_cast<std::uint32_t>(
                               iokit_abi::Message::RegistryEntrySetProperties)) {
             std::lock_guard mach_lock { shared_state.mach_mutex };
-            const auto service = shared_state.iokit_services.find(remote_object);
+            const auto service =
+                shared_state.iokit_services.find(remote_object);
             if (service != shared_state.iokit_services.end() &&
                 service->second.properties.contains("backlight-control")) {
                 result = kernel_iokit::BacklightControl::set_properties(
+                    shared_state, service->second, *data);
+            } else if (service != shared_state.iokit_services.end() &&
+                       service->second.user_client_kind ==
+                           KernelSharedState::IOKitUserClientKind::
+                               AmbientLightHid) {
+                result = kernel_iokit::environment::set_hid_properties_locked(
                     shared_state, service->second, *data);
             } else {
                 shared_state.nvram_serialized = *data;

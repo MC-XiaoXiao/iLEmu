@@ -388,7 +388,8 @@ target_link_libraries(ilemu_kernel_iokit_graphics PRIVATE
     iLEmu::foundation)
 
 add_library(ilemu_kernel_iokit_hid STATIC
-    iokit/hid/service.cpp)
+    iokit/hid/service.cpp
+    iokit/hid/event_queue.cpp)
 add_library(iLEmu::kernel_iokit_hid ALIAS
     ilemu_kernel_iokit_hid)
 ilemu_configure_module(ilemu_kernel_iokit_hid)
@@ -438,6 +439,10 @@ add_library(iLEmu::kernel_iokit_power ALIAS
 ilemu_configure_module(ilemu_kernel_iokit_power)
 target_link_libraries(ilemu_kernel_iokit_power PRIVATE
     iLEmu::foundation)
+if(TARGET iLEmu::plist)
+    target_link_libraries(ilemu_kernel_iokit_power PRIVATE iLEmu::plist)
+    target_compile_definitions(ilemu_kernel_iokit_power PRIVATE ILEMU_HAS_LIBPLIST=1)
+endif()
 
 add_library(ilemu_kernel_mach_transport STATIC
     mach/transport/descriptor.cpp

@@ -8,6 +8,7 @@
 #include "hid_event_transaction.hpp"
 #include "hid_service_delivery.hpp"
 #include "hid_switch_query.hpp"
+#include "kernel/kernel_iokit_hid.hpp"
 
 #include "foundation/cpu.hpp"
 #include "foundation/output.hpp"
@@ -67,18 +68,24 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
                 state_->hid_event_queue.open(consumer);
                 previous_contact_.reset();
                 if (consumer.digitizer_events)
-                    completed.output().line(std::string {
-                        "[loader] HID digitizer transport=" } +
+                    completed.output().line(
+                        std::string { "[loader] HID digitizer transport=" } +
                         (dispatch ? "native-dispatch" : "session-callback") +
                         " clients=" +
-                        (consumer.client_delivery == HidEventQueue::ClientDelivery::NativeQueues
-                                ? "native-queues" : "callback") +
+                        (consumer.client_delivery ==
+                                    HidEventQueue::ClientDelivery::NativeQueues
+                                ? "native-queues"
+                                : "callback") +
                         " pid=" + std::to_string(consumer.process));
                 accelerometer_.stop();
-                if (completed.symbol_address("_IOHIDEventCreateAccelerometerEvent") &&
+                if (completed.symbol_address(
+                        "_IOHIDEventCreateAccelerometerEvent") &&
                     completed.symbol_address("_IOHIDEventCreate") &&
                     completed.symbol_address("_IOHIDEventSetFloatValue"))
                     accelerometer_.start(state_->clock.now());
+                if (completed.symbol_address("_IOHIDEventCreate")) {
+                    state_->ambient_light_input.open(state_->clock.now());
+                }
                 state_->note_kernel_event_transition();
             });
         });
@@ -166,21 +173,22 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
         "/IOKit", "_IOHIDEventSystemClientSetMatching", set_matching);
     registry_.register_function(
         "/IOKit", "_IOHIDEventSystemClientSetMatchingMultiple", set_matching);
-    for (const auto symbol :
-        { "_IOHIDEventCreateDigitizerEvent", "_IOHIDEventCreateDigitizerFingerEvent",
-            "_IOHIDEventCreateKeyboardEvent",
-            "_IOHIDEventAppendEvent", "__IOHIDEventSystemDispatchEvent",
+    for (const auto symbol : { "_IOHIDEventCreateDigitizerEvent",
+             "_IOHIDEventCreateDigitizerFingerEvent",
+             "_IOHIDEventCreateKeyboardEvent", "_IOHIDEventAppendEvent",
+             "__IOHIDEventSystemDispatchEvent",
             "___IOHIDEventSystemEventCallback",
             "_IOHIDEventCreateAccelerometerEvent", "_IOHIDEventCreate",
-            "_IOHIDEventSetFloatValue",
-            "_IOHIDEventSetSenderID",
-            "_IOHIDEventCreateTranslationEvent",
+             "_IOHIDEventSetFloatValue", "_IOHIDEventCreateData",
+             "_IOHIDEventSetSenderID", "_IOHIDEventCreateTranslationEvent",
             "_IOHIDEventSystemCopyService", "___IOHIDServiceEventCallback",
             "_IOHIDEventSystemConnectionDispatchEvent" }) {
         registry_.register_guest_function("/IOKit", symbol);
     }
     registry_.register_guest_function("/CoreFoundation", "_CFRelease");
     registry_.register_guest_function("/CoreFoundation", "_CFNumberCreate");
+    registry_.register_guest_function("/CoreFoundation", "_CFDataGetLength");
+    registry_.register_guest_function("/CoreFoundation", "_CFDataGetBytePtr");
 }
 
 void HidEventSystemHle::set_shared_state(
@@ -219,6 +227,8 @@ bool HidEventSystemHle::enqueue_touch(
 
 void HidEventSystemHle::reset(std::uint32_t process)
 {
+    if (state_ && consumer_process_ == process)
+        state_->ambient_light_input.close();
     if (state_)
         state_->hid_event_queue.close(process);
     std::erase_if(event_clients_, [process](const auto& entry) {
@@ -259,14 +269,27 @@ bool HidEventSystemHle::is_event_consumer(
     return state_ && state_->hid_event_queue.is_receiver(process, processor);
 }
 
-bool HidEventSystemHle::pending_event_ready(std::uint32_t process,
-    std::size_t processor, std::uint64_t now) const
+std::optional<std::uint64_t> HidEventSystemHle::next_sample_deadline() const
+{
+    if (delivering_processors_.contains(consumer_processor_))
+        return std::nullopt;
+    auto deadline = accelerometer_.next_deadline();
+    if (state_ && consumer_process_ != 0U) {
+        const auto ambient = state_->ambient_light_input.next_deadline();
+        if (ambient && (!deadline || *ambient < *deadline))
+            deadline = ambient;
+    }
+    return deadline;
+}
+
+bool HidEventSystemHle::pending_event_ready(
+    std::uint32_t process, std::size_t processor, std::uint64_t now) const
 {
     if (!state_ || delivering_processors_.contains(processor))
         return false;
     if (state_->hid_event_queue.has_pending(process, processor))
         return true;
-    const auto deadline = accelerometer_.next_deadline();
+    const auto deadline = next_sample_deadline();
     if (consumer_process_ != process || consumer_processor_ != processor ||
         !deadline || now < *deadline)
         return false;
@@ -335,7 +358,14 @@ bool HidEventSystemHle::prepare_pending_event(
     const auto consumer = state_->hid_event_queue.consumer();
     auto event = state_->hid_event_queue.take(process, cpu.processor_id());
     if (consumer && !event) {
-        event = accelerometer_.sample(state_->clock.now(), state_->sensors.get());
+        event = state_->ambient_light_input.sample(
+            state_->clock.now(), state_->sensors->ambient_light());
+        if (event)
+            state_->note_kernel_event_transition();
+    }
+    if (consumer && !event) {
+        event =
+            accelerometer_.sample(state_->clock.now(), state_->sensors.get());
         if (event)
             state_->note_kernel_event_transition();
     }
@@ -355,11 +385,17 @@ bool HidEventSystemHle::prepare_pending_event(
             previous_contact_ = *contact;
     }
     delivering_processors_.insert(processor);
-    if (!std::holds_alternative<HidEventQueue::Acceleration>(event->input))
+    const bool ambient =
+        std::holds_alternative<HidEventQueue::AmbientLight>(event->input);
+    if (!std::holds_alternative<HidEventQueue::Acceleration>(event->input) &&
+        !ambient)
         interactive_processors_.insert(processor);
-    const auto queued = HidEventTransaction::enqueue(registry_, *consumer,
-        *event, state_->user_interface_geometry, state_->darwin_version,
-        digitizer_sender_id, translation, [this, process, processor] {
+    const auto queued = HidEventTransaction::enqueue(
+        registry_, *consumer, *event, state_->user_interface_geometry,
+        state_->darwin_version,
+        ambient ? state_->ambient_light_hid_service : digitizer_sender_id,
+        translation,
+        [this, process, processor] {
             delivering_processors_.erase(processor);
             interactive_processors_.erase(processor);
             if (state_) {
@@ -368,6 +404,11 @@ bool HidEventSystemHle::prepare_pending_event(
                 if (state_->hid_event_queue.has_pending(process, processor))
                     state_->note_io_event_transition();
             }
+        },
+        [this, process](
+            UserlandHleCall& call, std::span<const std::byte> data) {
+            kernel_iokit::hid::enqueue_event_report(call.memory(), *state_,
+                process, state_->ambient_light_hid_service, data);
         });
     if (!queued) {
         delivering_processors_.erase(processor);

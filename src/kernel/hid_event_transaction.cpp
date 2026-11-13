@@ -30,7 +30,8 @@ namespace {
         static constexpr std::uint32_t position_changed = 4U;
         static constexpr std::uint32_t identity_changed = 0x20U;
         static constexpr std::uint32_t cancelled = 0x80U;
-        // Grape digitizer origin qualifiers consumed by native edge recognizers.
+        // Grape digitizer origin qualifiers consumed by native edge
+        // recognizers.
         static constexpr std::uint32_t edge_tip = 0x800U;
         static constexpr std::uint32_t corner = 0x1000U;
         static constexpr float edge_extent = 10.0F;
@@ -54,6 +55,11 @@ namespace {
         static constexpr std::uint32_t type = 13U;
         static constexpr std::uint32_t first_axis = type << 16U;
         static constexpr std::size_t axis_count = 3U;
+    };
+
+    struct Arm32AmbientLightEventAbi {
+        static constexpr std::uint32_t type = 12U;
+        static constexpr std::uint32_t illuminance = type << 16U;
     };
 
     constexpr auto create_event = "_IOHIDEventCreate";
@@ -138,7 +144,8 @@ namespace {
         NativeEventTransaction(HidEventQueue::Event event, std::uint32_t system,
             DisplayGeometry geometry, DarwinVersion digitizer_abi,
             std::uint64_t sender_id, std::array<float, 2> translation,
-            Completion completion)
+            Completion completion,
+            HidEventTransaction::ReportDelivery report_delivery)
             : event_ { event }
             , system_ { system }
             , geometry_ { geometry }
@@ -146,11 +153,15 @@ namespace {
             , sender_id_ { sender_id }
             , translation_ { translation }
             , completion_ { std::move(completion) }
+            , report_delivery_ { std::move(report_delivery) }
             , step_ { std::holds_alternative<TouchInput>(event.input)
                           ? Step::Hand
                       : std::holds_alternative<HidEventQueue::KeyboardInput>(
                             event.input)
                           ? Step::Keyboard
+                      : std::holds_alternative<HidEventQueue::AmbientLight>(
+                            event.input)
+                          ? Step::AmbientLight
                           : Step::Accelerometer }
         {
         }
@@ -190,6 +201,11 @@ namespace {
         }
 
         enum class Step {
+            AmbientLight,
+            SerializeReport,
+            ReportLength,
+            ReportBytes,
+            ReleaseReport,
             Accelerometer,
             AccelerationAxis,
             Keyboard,
@@ -219,26 +235,48 @@ namespace {
         {
             auto& r = call.cpu().registers();
             switch (step_) {
+            case Step::AmbientLight:
             case Step::Accelerometer:
                 // Let the firmware select its complete event data size. The
                 // specialized axis constructor may allocate an older payload
                 // size than its own event validation/copy routines require.
                 r[13] -= 16U;
                 r[0] = 0U;
-                r[1] = Arm32AccelerationEventAbi::type;
+                r[1] = step_ == Step::AmbientLight
+                           ? Arm32AmbientLightEventAbi::type
+                           : Arm32AccelerationEventAbi::type;
                 r[2] = static_cast<std::uint32_t>(event_.timestamp);
                 r[3] = static_cast<std::uint32_t>(event_.timestamp >> 32U);
                 static_cast<void>(call.memory().write32(r[13], 0U));
                 break;
+            case Step::SerializeReport:
+                r[0] = 0U;
+                r[1] = root_event_;
+                r[2] = 0U;
+                break;
+            case Step::ReportLength:
+            case Step::ReportBytes:
+            case Step::ReleaseReport:
+                r[0] = report_data_;
+                break;
             case Step::AccelerationAxis: {
+                const auto* ambient =
+                    std::get_if<HidEventQueue::AmbientLight>(&event_.input);
+                float value;
+                if (ambient) {
+                    value = static_cast<float>(ambient->lux);
+                } else {
                 const auto& acceleration =
                     std::get<HidEventQueue::Acceleration>(event_.input);
-                const std::array axes {
-                    acceleration.x, acceleration.y, acceleration.z
-                };
+                    const std::array axes { acceleration.x, acceleration.y,
+                        acceleration.z };
+                    value = axes[acceleration_axis_];
+                }
                 r[0] = root_event_;
-                r[1] = Arm32AccelerationEventAbi::first_axis + acceleration_axis_;
-                r[2] = std::bit_cast<std::uint32_t>(axes[acceleration_axis_]);
+                r[1] = ambient ? Arm32AmbientLightEventAbi::illuminance
+                               : Arm32AccelerationEventAbi::first_axis +
+                                     acceleration_axis_;
+                r[2] = std::bit_cast<std::uint32_t>(value);
                 break;
             }
             case Step::Keyboard: {
@@ -378,6 +416,7 @@ namespace {
         {
             const char* symbol = nullptr;
             switch (step_) {
+            case Step::AmbientLight:
             case Step::Accelerometer:
                 root_event_ = call.argument(0);
                 if (!root_event_) {
@@ -387,9 +426,39 @@ namespace {
                 step_ = Step::AccelerationAxis;
                 symbol = set_float;
                 break;
+            case Step::SerializeReport:
+                report_data_ = call.argument(0);
+                step_ = Step::ReportLength;
+                symbol = "_CFDataGetLength";
+                break;
+            case Step::ReportLength:
+                report_length_ = call.argument(0);
+                step_ = Step::ReportBytes;
+                symbol = "_CFDataGetBytePtr";
+                break;
+            case Step::ReportBytes: {
+                std::vector<std::byte> data(report_length_);
+                static_cast<void>(
+                    call.memory().copy_out(call.argument(0), data));
+                report_delivery_(call, data);
+                step_ = Step::ReleaseReport;
+                symbol = "_CFRelease";
+                break;
+            }
+            case Step::ReleaseReport:
+                step_ = Step::ReleaseEvent;
+                symbol = "_CFRelease";
+                break;
             case Step::AccelerationAxis:
+                if (std::holds_alternative<HidEventQueue::AmbientLight>(
+                        event_.input)) {
+                    step_ = Step::ReleaseTranslation;
+                    complete(call);
+                    return;
+                }
                 if (step_ == Step::AccelerationAxis &&
-                    ++acceleration_axis_ < Arm32AccelerationEventAbi::axis_count) {
+                    ++acceleration_axis_ <
+                        Arm32AccelerationEventAbi::axis_count) {
                     symbol = set_float;
                     break;
                 }
@@ -439,7 +508,12 @@ namespace {
             case Step::SetSender:
                 if (observer_) {
                     step_ = Step::Callback;
-                } else if (sender_id_ && call.symbol_address(dispatch_service) &&
+                } else if (std::holds_alternative<HidEventQueue::AmbientLight>(
+                               event_.input)) {
+                    step_ = Step::SerializeReport;
+                    symbol = "_IOHIDEventCreateData";
+                } else if (sender_id_ &&
+                           call.symbol_address(dispatch_service) &&
                     call.symbol_address(copy_service) &&
                     call.symbol_address(create_number)) {
                     step_ = Step::CreateSenderNumber;
@@ -543,6 +617,8 @@ namespace {
         std::array<float, 2> translation_ { };
         DigitizerReport report_ { DigitizerReport::Normalized };
         Completion completion_;
+        HidEventTransaction::ReportDelivery report_delivery_;
+        std::uint32_t report_data_ { }, report_length_ { };
         Step step_;
         std::uint32_t acceleration_axis_ { };
         std::uint32_t root_event_ { };
@@ -559,11 +635,11 @@ bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
     DisplayGeometry geometry, DarwinVersion digitizer_abi,
     std::uint64_t sender_id, std::array<float, 2> translation,
-    std::function<void()> completion)
+    std::function<void()> completion, ReportDelivery report_delivery)
 {
     return std::make_shared<NativeEventTransaction>(std::move(event),
         consumer.system, geometry, digitizer_abi, sender_id, translation,
-        std::move(completion))
+        std::move(completion), std::move(report_delivery))
         ->start(registry, consumer.processor);
 }
 
