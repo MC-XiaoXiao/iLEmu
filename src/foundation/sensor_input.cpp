@@ -13,6 +13,19 @@ void SensorInput::reset()
     const std::lock_guard lock { mutex_ };
     motion_ = { };
     location_ = { };
+    ambient_light_lux_ = 100'000U;
+}
+
+void SensorInput::set_ambient_light(std::uint32_t lux)
+{
+    const std::lock_guard lock { mutex_ };
+    ambient_light_lux_ = lux;
+}
+
+std::uint32_t SensorInput::ambient_light() const
+{
+    const std::lock_guard lock { mutex_ };
+    return ambient_light_lux_;
 }
 
 void SensorInput::set_available(MotionSensor sensor, bool available)

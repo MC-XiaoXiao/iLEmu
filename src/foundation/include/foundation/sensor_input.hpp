@@ -44,6 +44,8 @@ struct LocationSample {
 class SensorInput {
 public:
     void reset();
+    void set_ambient_light(std::uint32_t lux);
+    [[nodiscard]] std::uint32_t ambient_light() const;
     void set_available(MotionSensor sensor, bool available);
     [[nodiscard]] bool available(MotionSensor sensor) const;
     bool publish(MotionSensor sensor, MotionSample sample);
@@ -65,6 +67,8 @@ private:
         static_cast<std::size_t>(MotionSensor::Count)>
         motion_;
     Slot<LocationSample> location_;
+    // Sunny daylight lets firmware request the host display's full brightness.
+    std::uint32_t ambient_light_lux_ { 100'000U };
 };
 
 } // namespace ilemu
