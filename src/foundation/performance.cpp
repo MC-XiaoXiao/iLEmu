@@ -14,8 +14,26 @@
 #include <limits>
 #include <sstream>
 
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 namespace ilemu {
 namespace {
+
+    std::uint64_t diagnostic_host_thread_id() noexcept
+    {
+#if defined(__linux__)
+        // Match native CPU samplers without a syscall for every Guest slice.
+        thread_local const auto id =
+            static_cast<std::uint64_t>(::syscall(SYS_gettid));
+        return id;
+#else
+        // Zero explicitly denotes an unavailable native thread identity.
+        return 0;
+#endif
+    }
 
     void add_if_enabled(std::atomic<std::uint64_t>& counter,
         const std::atomic<bool>& enabled, std::uint64_t value = 1)
@@ -150,6 +168,7 @@ namespace {
         std::uint32_t process_id { };
         std::uint32_t processor_id { };
         std::uint32_t execution_slot { };
+        std::uint64_t host_thread_id { };
         std::chrono::steady_clock::time_point started;
         std::chrono::steady_clock::time_point ended;
         std::array<std::uint64_t, diagnostic_cpu_run_phase_count>
@@ -2597,6 +2616,7 @@ void PerformanceCounters::record_cpu_run_phases(std::uint32_t process_id,
         run.process_id = process_id;
         run.processor_id = processor_id;
         run.execution_slot = execution_slot;
+        run.host_thread_id = diagnostic_host_thread_id();
         run.started = started_at;
         run.ended = ended_at;
         std::copy(phase_nanoseconds.begin(), phase_nanoseconds.end(),
@@ -3803,7 +3823,8 @@ std::string format_display_performance_summary(
             "callbacks-begin/artifact-preload/execute/result/save-state/"
             "cache-accounting/total-us:requested-ticks/consumed-ticks/"
             "host-yielded/host-yield-checks/svc-calls/svc-immediate/"
-            "halt-reason:entry-pc/entry-lr/entry-cpsr/exit-pc/exit-lr/exit-cpsr"
+            "halt-reason:entry-pc/entry-lr/entry-cpsr/exit-pc/exit-lr/exit-cpsr:"
+            "host-tid"
          << " diagnostic-cpu-run-stats=" << diagnostic_cpu_runs.size() << '/'
          << diagnostic_cpu_runs_dropped << '/'
          << maximum_diagnostic_cpu_run_samples
@@ -3842,6 +3863,7 @@ std::string format_display_performance_summary(
                     text << '/';
                 text << run.program_counters[reg];
             }
+            text << ':' << run.host_thread_id;
         }
     }
     text << " diagnostic-scheduler-dispatch-format="
