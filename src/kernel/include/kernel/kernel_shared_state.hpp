@@ -89,6 +89,7 @@
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
 #include "kernel/persona_registry.hpp"
+#include "kernel/diagnostic_snapshot.hpp"
 #include "kernel/vnode_watch.hpp"
 #include "mach/mach_namespace.hpp"
 #include "mach/mach_port_object.hpp"
@@ -560,6 +561,7 @@ struct KernelSharedState {
         std::string_view darwin_release = { },
         std::string_view version_name = { })
         : coalitions { version }
+        , microstackshots { diagnostic_snapshot::TelemetryCapturePolicy::for_version(version) }
         , darwin_version { version }
         , pthread_contract { resolve_pthread_contract(version) }
         , bsd_dispatch_table { version, darwin_release }
@@ -575,6 +577,7 @@ struct KernelSharedState {
     }
 
     DarwinCoalitionRuntime coalitions;
+    diagnostic_snapshot::Microstackshots microstackshots;
     HidEventQueue hid_event_queue;
     std::shared_ptr<SensorInput> sensors;
     CompassDevice compass;

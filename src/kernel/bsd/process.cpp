@@ -257,6 +257,10 @@ void CompatibilityKernel::exit_process(
 
 void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
 {
+    if (number == 491U || number == 492U) {
+        dispatch_bsd_stackshot(cpu, number);
+        return;
+    }
     if (number == 494U) {
         dispatch_bsd_persona(cpu);
         return;

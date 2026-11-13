@@ -770,6 +770,12 @@ private:
     void dispatch_bsd_persona(Cpu& cpu);
     [[nodiscard]] std::uint32_t read_spawn_persona(
         std::uint32_t descriptor, SpawnAttributes& attributes);
+    void dispatch_bsd_stackshot(Cpu& cpu, std::uint32_t number);
+    void sample_microstackshot(Cpu& cpu, std::uint64_t now);
+    diagnostic_snapshot::Task capture_diagnostic_task(std::uint32_t pid);
+    diagnostic_snapshot::Thread capture_diagnostic_thread(std::uint32_t pid,
+        std::uint32_t processor, std::uint32_t object,
+        std::span<const std::uint32_t> registers);
     void dispatch_bsd_getentropy(Cpu& cpu);
     void dispatch_bsd_code_signing(Cpu& cpu, bool require_audit_token = false);
     void dispatch_bsd_socket(Cpu& cpu, std::uint32_t number);

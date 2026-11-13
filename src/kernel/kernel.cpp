@@ -3579,6 +3579,9 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
     // syscalls cannot force every blocked descriptor tree to be rescanned.
     note_timer_deadline_transition();
     std::lock_guard lock { mutex_ };
+    const auto sample_time = shared_state_->clock.now();
+    if (shared_state_->microstackshots.claim_sample(sample_time))
+        sample_microstackshot(cpu, sample_time);
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         userland_hle_.set_process_incarnation(
