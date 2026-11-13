@@ -143,7 +143,7 @@ namespace {
         diagnostic_cpu_run_phase_kinds.size();
     // Retain short slices too: many small executions can fill one long frame.
     // This timeline remains opt-in and bounded independently of display rows.
-    constexpr std::size_t maximum_diagnostic_cpu_run_samples = 8192;
+    constexpr std::size_t maximum_diagnostic_cpu_run_samples = 32768;
     std::uint64_t diagnostic_cpu_runs_dropped { };
 
     struct DiagnosticCpuRun {
