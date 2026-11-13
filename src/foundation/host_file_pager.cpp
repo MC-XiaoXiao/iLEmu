@@ -11,7 +11,17 @@ void FilePageRead::read()
 {
     prepared_pages_ =
         PreparedFilePages::read(*cache_, file_, offset_, size_, shared_);
-    ready_.store(true, std::memory_order_release);
+    {
+        const std::lock_guard lock { ready_mutex_ };
+        ready_.store(true, std::memory_order_release);
+    }
+    ready_changed_.notify_all();
+}
+
+bool FilePageRead::wait_until(std::chrono::steady_clock::time_point deadline)
+{
+    std::unique_lock lock { ready_mutex_ };
+    return ready_changed_.wait_until(lock, deadline, [this] { return ready(); });
 }
 
 void FilePageRead::commit()
@@ -24,6 +34,11 @@ void FilePageRead::commit()
         prepared_pages_->commit(*cache_, shared_);
         prepared_pages_.reset();
     }
+}
+
+HostFilePager::HostFilePager(std::function<void()> completion_wake)
+    : completion_wake_ { std::move(completion_wake) }
+{
 }
 
 HostFilePager::~HostFilePager() { worker_.wait_idle(); }
@@ -49,7 +64,13 @@ std::shared_ptr<FilePageRead> HostFilePager::prepare(
     read->shared_ = shared;
     reads_.push_back(read);
     static_cast<void>(worker_.submit(HostWorkKind::Maintenance, std::nullopt,
-        [read] { read->read(); }));
+        [this, read] {
+            read->read();
+            // Publish detached bytes before notifying the serial VM owner.
+            // The pager drains this worker before releasing the callback.
+            if (completion_wake_)
+                completion_wake_();
+        }));
     return read;
 }
 

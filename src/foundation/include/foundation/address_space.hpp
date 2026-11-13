@@ -27,6 +27,7 @@
 #include <tsl/robin_set.h>
 
 #include "foundation/file_page_cache.hpp"
+#include "foundation/file_read_ahead.hpp"
 #include "foundation/guest_memory_gate.hpp"
 #include "foundation/jit_page_table.hpp"
 #include "foundation/memory_permission.hpp"
@@ -52,6 +53,8 @@ struct ExecutableBackingIdentity {
     friend constexpr bool operator==(const ExecutableBackingIdentity&,
         const ExecutableBackingIdentity&) = default;
 };
+
+enum class ExecutableBackingResidency { Mapped, Resident };
 
 struct AddressSpaceWriteStats {
     std::uint64_t batch_calls { };
@@ -387,7 +390,8 @@ public:
     // layout-sensitive artifact accidentally. Host path, vnode generation and
     // registry revision are runtime backing state and are intentionally absent.
     [[nodiscard]] std::optional<ExecutableBackingIdentity>
-    executable_backing_identity(std::uint32_t address, std::size_t size) const;
+    executable_backing_identity(std::uint32_t address, std::size_t size,
+        ExecutableBackingResidency residency = ExecutableBackingResidency::Mapped) const;
     // Monotonic, lock-free content/mapping stamp for cheap JIT probe validity.
     // It changes on mapping mutations and writes to executable ranges; it is a
     // validity token only, never an artifact identity or a hash filter.
@@ -541,6 +545,7 @@ private:
         // Retain the original object/cache when VM_PROT_COPY shadows a file.
         bool needs_copy { };
         std::shared_ptr<const FilePageTransform> transform { };
+        FileReadAhead read_ahead { };
     };
     struct TrackedWriteRange {
         std::uint32_t begin { };
@@ -615,7 +620,9 @@ private:
     void ensure_unique_page_map_locked();
     void rebuild_page_lookup_locked();
     void ensure_jit_page_tables_locked();
-    void refresh_jit_page_locked(std::uint32_t address);
+    enum class JitPageRefresh { All, Write };
+    void refresh_jit_page_locked(std::uint32_t address,
+        JitPageRefresh refresh = JitPageRefresh::All);
     void refresh_jit_page_range_locked(
         std::uint32_t address, std::uint64_t end);
     void finish_shared_write_tracking_locked(std::uint64_t initial_epoch,
@@ -729,7 +736,11 @@ private:
     // Conservative membership: stale entries are harmless, but every backing
     // of a guarded page must be present. Shared pixel stores can then reject
     // unrelated reservations without scanning all virtual page markers.
-    tsl::robin_pg_set<const GuestPageBacking*> exclusive_write_backings_;
+    struct BackingPointerHash {
+        std::size_t operator()(const GuestPageBacking* backing) const noexcept;
+    };
+    tsl::robin_pg_set<const GuestPageBacking*, BackingPointerHash>
+        exclusive_write_backings_;
     // Dense occupied-key list makes reset independent of retained bucket count.
     std::vector<const GuestPageBacking*> exclusive_write_backing_keys_;
     std::atomic<bool> exclusive_write_tracking_active_ { };

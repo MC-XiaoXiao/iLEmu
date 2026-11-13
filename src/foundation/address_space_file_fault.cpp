@@ -25,7 +25,7 @@ bool AddressSpace::prepare_file_access(std::uint32_t address,
         if (after == file_mappings_.begin())
             continue;
         const auto entry = std::prev(after);
-        const auto& mapping = entry->second;
+        auto& mapping = entry->second;
         if (current >= mapping.end)
             continue;
         const auto offset = mapping.file_offset + base - entry->first;
@@ -35,16 +35,18 @@ bool AddressSpace::prepare_file_access(std::uint32_t address,
         if (!mapping.cache->needs_file_read(
                 mapping.backing, offset, count, shared))
             continue;
-        // Only batch pages touched by this access, within one mapping and the
-        // bounded host ticket. Other pages remain lazy until guest demand.
-        const auto finish = std::min({ mapping.backing->end_offset,
+        const auto limit = std::min({ mapping.backing->end_offset,
             mapping.file_offset + mapping.end - entry->first,
+            offset + batch_bytes });
+        const auto demanded = std::min(limit,
             mapping.file_offset +
                 ((end + page_size - 1U) & ~(std::uint64_t { page_size } - 1U)) -
-                entry->first,
-            offset + batch_bytes });
+                entry->first);
+        const auto read_size = mapping.read_ahead.window(offset,
+            static_cast<std::size_t>(demanded - offset),
+            static_cast<std::size_t>(limit - offset));
         auto read = file_pager_->prepare(mapping.cache, mapping.backing, offset,
-            static_cast<std::size_t>(finish - offset), shared);
+            read_size, shared);
         FilePageFaultScope::suspend({ std::move(read), address, size, access });
         return false;
     }

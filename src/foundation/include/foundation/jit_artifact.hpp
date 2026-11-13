@@ -390,6 +390,11 @@ public:
     [[nodiscard]] JitArtifactLookup lookup(const JitArtifactKey& key,
         JitArtifactRetention retention = JitArtifactRetention::Normal,
         bool allow_disk_payload = true) const;
+    // Reuse a receipt only after every result from its previous lookup has
+    // completed. Independent lookups retain their own accounting state.
+    [[nodiscard]] JitArtifactLookup lookup(const JitArtifactKey& key,
+        JitArtifactRetention retention, bool allow_disk_payload,
+        const std::shared_ptr<JitArtifactLookupToken>& receipt) const;
     // Guest execution only submits and polls this bounded queue. The existing
     // low-priority persistence worker performs payload I/O and IR
     // deserialization, then publishes a one-shot prepared block for a later
@@ -605,7 +610,8 @@ private:
     void promote_resident_retention_locked(
         ArtifactMap::iterator iterator) const;
     void evict_until_fit_locked(std::size_t required_bytes) const;
-    void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
+    // Callers hold mutex_ and have already ruled out a resident entry.
+    ArtifactMap::iterator insert_absent_locked(std::shared_ptr<const BlockArtifact> artifact,
         std::size_t serialized_bytes, bool loaded_from_disk = false,
         bool startup_prefetched = false,
         JitArtifactRetention retention = JitArtifactRetention::Normal) const;

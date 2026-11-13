@@ -27,10 +27,15 @@ namespace {
         Sha256State()
             : context_ { EVP_MD_CTX_new(), EVP_MD_CTX_free }
         {
-            if (!context_ ||
-                EVP_DigestInit_ex(context_.get(), algorithm(), nullptr) != 1) {
+            if (!context_) {
                 throw std::runtime_error { "SHA-256 initialization failed" };
             }
+        }
+
+        void start()
+        {
+            if (EVP_DigestInit_ex(context_.get(), algorithm(), nullptr) != 1)
+                throw std::runtime_error { "SHA-256 initialization failed" };
         }
 
         void update(std::span<const std::byte> bytes)
@@ -54,8 +59,8 @@ namespace {
     private:
         static const EVP_MD* algorithm()
         {
-            // Share the immutable algorithm, while each stream owns its
-            // context. OpenSSL selects the host's accelerated implementation.
+            // Share the immutable algorithm, while contexts stay local to a
+            // stream or thread. OpenSSL selects the accelerated implementation.
             static const std::unique_ptr<EVP_MD, decltype(&EVP_MD_free)> digest {
                 EVP_MD_fetch(nullptr, "SHA256", nullptr), EVP_MD_free
             };
@@ -103,7 +108,8 @@ std::size_t ContentIdentityHash::operator()(
 
 ContentIdentity sha256(std::span<const std::byte> bytes)
 {
-    Sha256State state;
+    static thread_local Sha256State state;
+    state.start();
     state.update(bytes);
     return state.finish();
 }
@@ -119,6 +125,7 @@ std::optional<ContentIdentity> sha256_file(int descriptor,
     }
 
     Sha256State state;
+    state.start();
     std::array<std::byte, 64U * 1024U> buffer { };
     std::uint64_t current_offset = file_offset;
     auto remaining = byte_count;
@@ -171,6 +178,7 @@ std::optional<ContentIdentity> sha256_file(const std::filesystem::path& path,
         return std::nullopt;
 
     Sha256State state;
+    state.start();
     std::array<char, 64U * 1024U> buffer { };
     auto remaining = byte_count;
     while (!remaining || *remaining != 0U) {

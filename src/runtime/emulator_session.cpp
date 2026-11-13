@@ -1586,7 +1586,7 @@ void EmulatorSession::run()
     std::array<std::atomic<std::uint64_t>, jit_precompile_target_count>
         precompile_blocks_by_target { };
     auto file_mapping_preparer = std::make_shared<HostFileMappingPreparer>();
-    auto file_pager = std::make_shared<HostFilePager>();
+    auto file_pager = std::make_shared<HostFilePager>(host_completion_wake);
     auto process_image_preparer =
         std::make_shared<HostProcessImagePreparer>(rootfs, guest_architecture);
     // A captured deferred SVC has entered the kernel even before its serial
@@ -2995,6 +2995,7 @@ void EmulatorSession::run()
     prepared_slices.reserve(guest_processor_count);
     std::vector<GuestExecutionRequest*> execution_requests;
     execution_requests.reserve(guest_processor_count);
+    std::vector<XnuThreadId> input_receivers;
     // Retain the type-erased callback as well as the batch buffers. Converting
     // its captured references to std::function on every run allocates a new
     // callback object at each CPU channel handoff.
@@ -3844,16 +3845,31 @@ void EmulatorSession::run()
             }
         }
         if (!input_preferred_thread) {
+            input_receivers.clear();
             for (const auto& runtime : runtimes) {
-                const auto processor =
-                    runtime->kernel->interactive_input_processor();
+                runtime->kernel->visit_interactive_input_processors(
+                    [&input_receivers, process = runtime->kernel->process().pid](
+                        std::size_t processor) {
+                        input_receivers.push_back({ process,
+                            static_cast<std::uint32_t>(processor) });
+                    });
+            }
+            // A continuously active receiver must not hide later receivers.
+            // Reuse their scheduler FIFO age within the existing input share.
+            input_preferred_thread = scheduler.oldest_runnable_thread(
+                std::span<const XnuThreadId> { input_receivers });
+        }
+        std::optional<XnuThreadId> queued_input_thread;
+        if (!input_preferred_thread) {
+            for (const auto& runtime : runtimes) {
+                const auto processor = runtime->kernel->pending_input_processor();
                 if (!processor)
                     continue;
                 const XnuThreadId thread { runtime->kernel->process().pid,
                     static_cast<std::uint32_t>(*processor) };
                 const auto info = scheduler.info(thread);
                 if (info && info->state == XnuThreadState::Runnable) {
-                    input_preferred_thread = thread;
+                    queued_input_thread = thread;
                     break;
                 }
             }
@@ -3895,6 +3911,7 @@ void EmulatorSession::run()
                 .realtime_inflight_thread = display_inflight_callback_thread,
                 .frame_dependency_thread = frame_dependency_thread,
                 .input_target_thread = input_preferred_thread,
+                .queued_input_thread = queued_input_thread,
                 .input_receiver_process = input_receiver_process,
                 .foreground_transition_process = transition_process,
                 .active_process = active_process,

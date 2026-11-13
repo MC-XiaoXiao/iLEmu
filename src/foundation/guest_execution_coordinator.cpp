@@ -228,6 +228,7 @@ void GuestExecutionCoordinator::execute(GuestExecutionRequest& request) noexcept
             accumulate_cpu_run(request.result, std::move(part));
             request.result.backend_switch = backend_switch;
             if (!request.continuation || request.cooperation_signal ||
+                (request.result.file_page_fault && !request.exclusive_memory) ||
                 request.result.reason != Dynarmic::HaltReason::UserDefined5 ||
                 request.result.host_yielded || request.result.fault ||
                 request.result.architectural_exception ||

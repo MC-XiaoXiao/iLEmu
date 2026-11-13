@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 #include "guest_host_continuation.hpp"
 
+#include "foundation/host_file_pager.hpp"
 #include "graphics/gles_program_renderer.hpp"
 #include "kernel/kernel.hpp"
 
@@ -18,13 +19,26 @@ bool GuestHostContinuation::eligible() const
 bool GuestHostContinuation::resume(Cpu& cpu, CpuRunResult& result,
     std::chrono::steady_clock::time_point deadline)
 {
-    while (kernel_.thread_awaits_host(thread_.thread) && eligible() &&
+    while ((result.file_page_fault || kernel_.thread_awaits_host(thread_.thread)) && eligible() &&
            std::chrono::steady_clock::now() < deadline) {
         // Sample before checking the retained ticket, covering publication
         // between readiness inspection and entry into the completion wait.
         const auto observed = gles_completion_generation();
+        // The coordinator admits file completion only with exclusive memory
+        // ownership. Input stays detached until this serial CPU turn commits
+        // it; an unfinished ticket retains the ordinary kernel wait path.
+        if (result.file_page_fault &&
+            !result.file_page_fault->read->wait_until(deadline))
+            return false;
         const auto started = std::chrono::steady_clock::now();
-        const auto completed = kernel_.deliver_pending_event(cpu);
+        bool completed;
+        if (result.file_page_fault) {
+            cpu.complete_file_page_fault(*result.file_page_fault);
+            result.file_page_fault.reset();
+            completed = true;
+        } else {
+            completed = kernel_.deliver_pending_event(cpu);
+        }
         result.host_execution_ns += static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - started).count());

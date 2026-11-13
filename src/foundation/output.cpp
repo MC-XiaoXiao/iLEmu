@@ -39,6 +39,7 @@ namespace {
             "[perf-reclamation]",
             "[perf-jit-profile]",
             "[jit-tiered]",
+            "[jit-pressure]",
             "[precompile]",
             "[precompile-outcomes]",
             "[precompile-schedule]",

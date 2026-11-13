@@ -229,6 +229,7 @@ public:
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void invalidate_cache_ranges(
         std::span<const CacheInvalidationRange> ranges);
+    void complete_file_page_fault(const FilePageFault& fault);
     // Kernel-side traps that touch an invalid guest range use the same
     // Dynarmic memory-abort result as an ordinary load/store fault. When the
     // trap is dispatched outside a running executor, this also records the

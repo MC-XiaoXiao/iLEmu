@@ -11,6 +11,7 @@
 #include "cpu_independent_executor.hpp"
 #include "foundation/jit_tiered_execution.hpp"
 #include "foundation/guest_execution_coordinator.hpp"
+#include "foundation/host_file_pager.hpp"
 
 #include <algorithm>
 #include <array>
@@ -771,8 +772,12 @@ public:
             const auto key = make_artifact_key(location_descriptor);
             if (!key)
                 return {};
+            if (!native_template_lookup_receipt_)
+                native_template_lookup_receipt_ =
+                    std::make_shared<JitArtifactLookupToken>();
             auto lookup = artifact_store_->lookup(
-                *key, artifact_retention_, false);
+                *key, artifact_retention_, false,
+                native_template_lookup_receipt_);
             if (!lookup || !lookup.artifact->data.native_template ||
                 lookup.artifact->data.native_template->LocationDescriptor() !=
                     location_descriptor ||
@@ -1341,13 +1346,9 @@ private:
         if (artifact.data.code_dependencies.empty())
             return false;
         for (const auto& dependency : artifact.data.code_dependencies) {
-            if (dependency.size == 0 ||
-                !memory_.is_read_only_executable(
-                    dependency.address, dependency.size)) {
-                return false;
-            }
             const auto current = memory_.executable_backing_identity(
-                dependency.address, dependency.size);
+                dependency.address, dependency.size,
+                ExecutableBackingResidency::Resident);
             if (!current || current->content != dependency.content_identity ||
                 current->layout != dependency.layout_identity) {
                 return false;
@@ -2141,7 +2142,8 @@ private:
             memory_fault(address, sizeof(T), MemoryPermission::Read);
             return 0;
         }
-        record_constant_dependency(address, sizeof(T), *value);
+        if (!executing)
+            record_constant_dependency(address, sizeof(T), *value);
         return *value;
     }
 
@@ -2262,6 +2264,7 @@ private:
     bool explicit_artifact_publication_ { };
     std::shared_ptr<const Dynarmic::A32::NativeCodeTemplate> produced_native_template_;
     JitArtifactLookup native_template_lookup_;
+    std::shared_ptr<JitArtifactLookupToken> native_template_lookup_receipt_;
     std::chrono::steady_clock::time_point native_template_import_started_;
     std::optional<std::uint64_t> portable_generation_location_;
     bool portable_generation_published_ { };
@@ -5906,6 +5909,17 @@ void Cpu::raise_memory_fault(
     // is no Dynarmic callback object available to carry MemoryFault. Preserve
     // the scheduler-visible fatal boundary in that case.
     halt(Dynarmic::HaltReason::UserDefined4);
+}
+void Cpu::complete_file_page_fault(const FilePageFault& fault)
+{
+    fault.read->commit();
+    if (fault.access == MemoryPermission::Execute) {
+        // A Thumb-32 decode can cache a failed block just before the
+        // missing trailing halfword. Retire that prefix before retrying.
+        const auto overlap = std::min(fault.address, std::uint32_t { 2 });
+        invalidate_cache_range(fault.address - overlap, fault.size + overlap);
+    }
+    clear_halt();
 }
 void Cpu::clear_halt()
 {

@@ -5,6 +5,10 @@
 #include "foundation/host_resource_controller.hpp"
 #include "foundation/file_page_fault.hpp"
 
+#include <functional>
+#include <chrono>
+#include <condition_variable>
+
 namespace ilemu {
 
 // Owns only retained vnode input and detached host bytes. Guest publication is
@@ -13,6 +17,7 @@ class FilePageRead {
 public:
     [[nodiscard]] bool ready() const noexcept
     { return ready_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool wait_until(std::chrono::steady_clock::time_point deadline);
     void commit();
 
 private:
@@ -26,10 +31,13 @@ private:
     bool shared_ { };
     bool consumed_ { };
     std::atomic<bool> ready_ { false };
+    std::mutex ready_mutex_;
+    std::condition_variable ready_changed_;
 };
 
 class HostFilePager {
 public:
+    explicit HostFilePager(std::function<void()> completion_wake = {});
     ~HostFilePager();
     [[nodiscard]] std::shared_ptr<FilePageRead> prepare(
         std::shared_ptr<FilePageCache> cache,
@@ -42,6 +50,7 @@ private:
     static constexpr std::size_t maximum_reads = 64;
     std::mutex mutex_;
     std::deque<std::shared_ptr<FilePageRead>> reads_;
+    std::function<void()> completion_wake_;
     HostResourceController worker_;
 };
 
