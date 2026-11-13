@@ -28,7 +28,7 @@ android {
         externalNativeBuild {
             cmake {
                 // Native libraries exchange C++ objects and exception state.
-                arguments += listOf("-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DANDROID_STL=c++_shared")
+                arguments += listOf("-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DANDROID_STL=c++_shared", "-DILEMU_ENABLE_IPO=ON")
                 targets += listOf("ilemu", "SDL2", "firmware_dmg", "firmware_decrypt", "firmware_hfstar")
             }
         }
