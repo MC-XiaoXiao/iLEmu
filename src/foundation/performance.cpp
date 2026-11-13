@@ -475,6 +475,10 @@ namespace {
         case PerfLatencyKind::SchedulerRunnableToDispatch:
         case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
         case PerfLatencyKind::RuntimeHostEvents:
+        case PerfLatencyKind::RuntimeHostCompletions:
+        case PerfLatencyKind::RuntimeDeviceService:
+        case PerfLatencyKind::KernelEventPoll:
+        case PerfLatencyKind::KernelEventDelivery:
         case PerfLatencyKind::RuntimePacing:
         case PerfLatencyKind::RuntimeLifecycle:
         case PerfLatencyKind::RuntimeDispatch:
@@ -3301,6 +3305,14 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind)
         return "scheduler-preemption-request-return";
     case PerfLatencyKind::RuntimeHostEvents:
         return "runtime-host-events";
+    case PerfLatencyKind::RuntimeHostCompletions:
+        return "runtime-host-completions";
+    case PerfLatencyKind::RuntimeDeviceService:
+        return "runtime-device-service";
+    case PerfLatencyKind::KernelEventPoll:
+        return "kernel-event-poll";
+    case PerfLatencyKind::KernelEventDelivery:
+        return "kernel-event-delivery";
     case PerfLatencyKind::RuntimePacing:
         return "runtime-pacing";
     case PerfLatencyKind::RuntimeLifecycle:
@@ -3723,6 +3735,10 @@ std::string format_display_performance_summary(
         PerfLatencyKind::SchedulerRunnableToDispatch,
         PerfLatencyKind::SchedulerPreemptionRequestToReturn,
         PerfLatencyKind::RuntimeHostEvents,
+        PerfLatencyKind::RuntimeHostCompletions,
+        PerfLatencyKind::RuntimeDeviceService,
+        PerfLatencyKind::KernelEventPoll,
+        PerfLatencyKind::KernelEventDelivery,
         PerfLatencyKind::RuntimePacing,
         PerfLatencyKind::RuntimeLifecycle,
         PerfLatencyKind::RuntimeDispatch,

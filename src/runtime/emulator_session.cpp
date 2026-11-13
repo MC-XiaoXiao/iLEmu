@@ -2737,6 +2737,8 @@ void EmulatorSession::run()
     auto last_device_service_time =
         initial_runtime->kernel->current_absolute_time();
     const auto synchronize_device_time_to_host = [&]() {
+        const PerformanceLatencyScope latency { PerfLatencyKind::RuntimeDeviceService,
+            performance_counters().cpu_source_diagnostics_enabled() };
         if (!realtime_pacer)
             return;
         const auto current_time = last_device_service_time;
@@ -2999,7 +3001,11 @@ void EmulatorSession::run()
         execution_requests.clear();
         prepared_slices.clear();
         scheduled_batch.clear();
-        guest_execution_coordinator->poll_host_completions();
+        {
+            const PerformanceLatencyScope latency { PerfLatencyKind::RuntimeHostCompletions,
+                performance_counters().cpu_source_diagnostics_enabled() };
+            guest_execution_coordinator->poll_host_completions();
+        }
         synchronize_device_time_to_host();
         synchronize_scheduler_time();
         observe_transition_stability();

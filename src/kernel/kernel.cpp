@@ -1640,6 +1640,8 @@ bool CompatibilityKernel::deliver_pending_io(Cpu& cpu)
 
 bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
 {
+    const PerformanceLatencyScope latency { PerfLatencyKind::KernelEventDelivery,
+        performance_counters().cpu_source_diagnostics_enabled() };
     std::lock_guard lock { mutex_ };
     if (exception_delivery_.waiting(cpu.processor_id())) {
         const auto completion = exception_delivery_.poll(*shared_state_, process_, cpu);
@@ -1732,6 +1734,8 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
 std::vector<std::size_t>
 CompatibilityKernel::pending_event_poll_candidates()
 {
+    const PerformanceLatencyScope latency { PerfLatencyKind::KernelEventPoll,
+        performance_counters().cpu_source_diagnostics_enabled() };
     std::lock_guard lock { mutex_ };
     // Capture before committing notifications. A publication racing the
     // commit must remain newer than any negative wait observation below.
