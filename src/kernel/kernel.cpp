@@ -83,6 +83,7 @@
 #include <sys/stat.h>
 
 #include "mach/support.hpp"
+#include "mach/transport/message_trace.hpp"
 
 namespace ilemu {
 
@@ -2664,6 +2665,14 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
             cpu.registers()[0] = terminated  ? darwin::mach::terminated
                                  : timed_out ? darwin::mach::operation_timed_out
                                              : darwin::mach::success;
+        }
+        if (mach_transport::flow_for_process(*shared_state_, process_.pid)) {
+            output_.line("[perf] semaphore-flow phase=complete pid=" + std::to_string(process_.pid) +
+                " cpu=" + std::to_string(cpu.processor_id()) +
+                " object=" + std::to_string(pending->second.semaphore) +
+                " time-ns=" + std::to_string(mach_transport::flow_timestamp()) +
+                " awakened=" + std::to_string(awakened) +
+                " timed-out=" + std::to_string(timed_out) + " terminated=" + std::to_string(terminated));
         }
         pending_semaphore_waits_.erase(pending);
         process_.waiting_for_events = false;

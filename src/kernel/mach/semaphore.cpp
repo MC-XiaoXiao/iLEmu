@@ -7,6 +7,7 @@
 // Apple public ABI/behavior references (guest profiles may differ):
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/sync_sema.c
 
+#include "transport/message_trace.hpp"
 #include "mach/bootstrap_mig_ids.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
@@ -324,6 +325,12 @@ void CompatibilityKernel::wait_on_semaphore_object(Cpu& cpu,
         return;
     }
     process_.waiting_for_events = true;
+    if (mach_transport::flow_for_process(*shared_state_, process_.pid)) {
+        output_.line("[perf] semaphore-flow phase=wait pid=" + std::to_string(process_.pid) +
+            " cpu=" + std::to_string(cpu.processor_id()) + " object=" + std::to_string(wait_object) +
+            " time-ns=" + std::to_string(mach_transport::flow_timestamp()) +
+            " interval=" + std::to_string(timeout_interval.value_or(0U)));
+    }
     if (semaphore_wait_trace_count_ < maximum_semaphore_wait_traces) {
         output_.write(
             "[semaphore] wait pid=" + std::to_string(process_.pid) +

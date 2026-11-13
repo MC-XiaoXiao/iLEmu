@@ -12,6 +12,7 @@
 #include "kernel/kernel.hpp"
 #include "foundation/performance.hpp"
 #include "foundation/application_path.hpp"
+#include "../../mach/transport/message_trace.hpp"
 #include "../../mach/support.hpp"
 
 #include <cstdint>
@@ -396,12 +397,19 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
             PreparedProcessImage image) mutable {
         const auto path = image.requested_path;
         const auto trace_launch_intent = [&](std::string_view stage) {
-            if (!is_application_executable_path(path) ||
-                !performance_counters().cpu_source_diagnostics_enabled())
+            if (!performance_counters().cpu_source_diagnostics_enabled())
                 return;
             const std::lock_guard lock { shared_state_->mach_mutex };
+            if (!is_application_executable_path(path) &&
+                !shared_state_->foreground_application_attempt_process_id)
+                return;
             std::ostringstream trace;
             trace << "[perf] launch-intent action=" << stage
+                  << " time-ns=" << mach_transport::flow_timestamp()
+                  << " policy-type=" << static_cast<unsigned>(process_.execution_policy->type())
+                  << " policy-background=" << process_.execution_policy->qos_policy().background
+                  << " policy-donating=" << process_.execution_policy->importance()->donating()
+                  << " policy-boosted=" << process_.execution_policy->importance()->boosted()
                   << " pid=" << process_.pid << " parent=" << process_.parent_pid
                   << " path=" << path
                   << " pending=" << shared_state_->pending_application_launch_touch_sequence.value_or(0U)

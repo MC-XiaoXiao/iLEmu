@@ -18,6 +18,7 @@
 #include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel.hpp"
 #include "transport/message_importance.hpp"
+#include "transport/message_trace.hpp"
 #include "kernel/kernel_clock.hpp"
 #include "kernel/kernel_iokit.hpp"
 #include "kernel/kernel_mach_ipc.hpp"
@@ -691,10 +692,14 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             }
         }
     }
+    mach_transport::trace_foreground_message(*shared_state_, output_, pending_message,
+        process_.pid, receive.processor, receive.options, "receive");
     mach_transport::ReceiveImportance importance { *shared_state_, process_,
         pending_message, receive.options, received->bytes };
     if (importance.error() != 0U)
         return fail_receive(importance.error());
+    mach_transport::trace_foreground_message(*shared_state_, output_, pending_message,
+        process_.pid, receive.processor, receive.options, "receive-importance");
 
     if (pending_message.voucher_object && pending_message.voucher_right) {
         if ((receive.options & darwin::mach_message::option_receive_voucher) != 0U) {

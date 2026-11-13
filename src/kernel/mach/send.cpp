@@ -60,6 +60,7 @@
 #include "transport/copyin_cleanup.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/port_copyin.hpp"
+#include "transport/message_trace.hpp"
 #include "transport/pseudo_copyout.hpp"
 #include <algorithm>
 #include <array>
@@ -334,6 +335,8 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
             *shared_state_, *clock_service, queued);
         remote_object = destination.value_or(0U);
     } else {
+        mach_transport::trace_foreground_message(*shared_state_, output_, queued,
+            process_.pid, cpu.processor_id(), registers[1], "send");
         shared_state_->enqueue_mach_message_locked(
             remote_object, std::move(queued));
     }
