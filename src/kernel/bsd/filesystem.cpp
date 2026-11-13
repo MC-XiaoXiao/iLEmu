@@ -359,10 +359,13 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
     case 5: // open
     case 216: // open_dprotected_np
     case 463: // openat
-    case 464: { // openat_nocancel
+    case 464: // openat_nocancel
+    case 479: { // openbyid_np
         const bool relative_to_descriptor = number == 463U || number == 464U;
-        const auto flags = registers[relative_to_descriptor ? 2 : 1];
+        const bool by_identifier = number == 479U;
+        const auto flags = registers[relative_to_descriptor || by_identifier ? 2 : 1];
         const auto mode = number == 216U ? registers[4]
+                          : by_identifier ? 0U
                           : relative_to_descriptor ? registers[3]
                                                    : registers[2];
         constexpr std::uint32_t raw_encrypted = 1U; // O_DP_GETRAWENCRYPTED
@@ -381,9 +384,35 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         // The VFS exposes an unencrypted volume (F_GETPROTECTIONCLASS=0).
         // Raw reads therefore use the same bytes and descriptor lifecycle as
         // open; a requested creation class adds no encryption metadata.
-        const auto path = relative_to_descriptor
-            ? read_guest_path_at(cpu, registers[0], registers[1])
-            : memory_.read_c_string(registers[0]);
+        std::optional<std::string> path;
+        if (by_identifier) {
+            // XNU openbyid_np resolves the catalog object and enters the same
+            // open path as a pathname call; it does not create another vnode.
+            if (process_.effective_uid != 0U) {
+                bsd_error(cpu, darwin::error::operation_not_permitted);
+                return;
+            }
+            const auto fsid = memory_.read32(registers[0]);
+            const auto fsid_type = memory_.read32(registers[0] + 4U);
+            const auto object = memory_.read64(registers[1]);
+            if (!fsid || !fsid_type || !object) {
+                bsd_error(cpu, darwin::error::bad_address);
+                return;
+            }
+            const auto host = *fsid == hfs::filesystem_identifier
+                ? hfs_metadata_.path_for_catalog_id(*object) : std::nullopt;
+            if (!host) {
+                bsd_error(cpu, darwin::error::no_entry);
+                return;
+            }
+            path = (*host == rootfs_ ? std::filesystem::path { "/" }
+                : std::filesystem::path { "/" } / host->lexically_relative(rootfs_))
+                .generic_string();
+        } else {
+            path = relative_to_descriptor
+                ? read_guest_path_at(cpu, registers[0], registers[1])
+                : memory_.read_c_string(registers[0]);
+        }
         if (!path) {
             if (!relative_to_descriptor)
                 bsd_error(cpu, bsd_support::bad_address);
