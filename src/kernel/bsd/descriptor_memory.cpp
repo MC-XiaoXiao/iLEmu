@@ -145,6 +145,11 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             return;
         }
         const auto virtual_descriptor = virtual_descriptors_.find(fd);
+        if (virtual_descriptor != virtual_descriptors_.end() &&
+            virtual_descriptor->second == "nexus") {
+            bsd_error(cpu, darwin::error::no_such_device_or_address);
+            return;
+        }
         const auto offline_serial_descriptor =
             virtual_descriptor != virtual_descriptors_.end() &&
             virtual_descriptor->second ==
@@ -297,6 +302,13 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         if (const auto duplicate = duplicated_descriptors_.find(fd);
             duplicate != duplicated_descriptors_.end()) {
             fd = duplicate->second;
+        }
+        if (const auto descriptor = virtual_descriptors_.find(fd);
+            descriptor != virtual_descriptors_.end() &&
+            descriptor->second == "nexus") {
+            if (!reject_guarded_descriptor(cpu, fd, DarwinFileGuard::write))
+                bsd_error(cpu, darwin::error::no_such_device_or_address);
+            return;
         }
         const auto address = registers[1];
         const auto size = static_cast<std::size_t>(registers[2]);
@@ -793,6 +805,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 policy != network_policy_descriptors_.end()) {
                 network_policy_descriptors_[allocated] = policy->second;
             }
+            if (const auto nexus = nexus_controllers_.find(source);
+                nexus != nexus_controllers_.end())
+                nexus_controllers_[allocated] = nexus->second;
         } else {
             const auto original = duplicated_descriptors_.contains(source)
                                       ? duplicated_descriptors_.at(source)
@@ -1032,6 +1047,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 policy != network_policy_descriptors_.end()) {
                 network_policy_descriptors_[destination] = policy->second;
             }
+            if (const auto nexus = nexus_controllers_.find(source);
+                nexus != nexus_controllers_.end())
+                nexus_controllers_[destination] = nexus->second;
             if (const auto event_stream =
                     wifi_driver_event_streams_.find(source);
                 event_stream != wifi_driver_event_streams_.end()) {

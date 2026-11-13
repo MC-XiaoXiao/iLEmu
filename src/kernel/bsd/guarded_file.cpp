@@ -187,6 +187,12 @@ void CompatibilityKernel::dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t numb
         registers[1] = registers[2]; // buffer
         registers[2] = registers[3]; // byte count
         if (number == 485U) {
+            if (const auto descriptor = virtual_descriptors_.find(fd);
+                descriptor != virtual_descriptors_.end() &&
+                descriptor->second == "nexus") {
+                bsd_error(cpu, darwin::error::no_such_device_or_address);
+                return;
+            }
             dispatch_bsd_descriptor_memory(cpu, darwin::syscall::write);
             return;
         }

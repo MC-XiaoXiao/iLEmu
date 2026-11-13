@@ -63,6 +63,10 @@ void CompatibilityKernel::refresh_network_policy_clients()
 
 void CompatibilityKernel::dispatch_bsd_network_policy(Cpu& cpu, std::uint32_t number)
 {
+    if (number >= 503U && number <= 509U) {
+        dispatch_bsd_nexus(cpu, number);
+        return;
+    }
     const auto& registers = cpu.registers();
     if (number == 501U) {
         const auto fd = allocate_file_descriptor();

@@ -63,6 +63,15 @@ std::uint32_t CompatibilityKernel::apply_kevent_change(
         return 0U;
     }
     if ((flags & darwin::kqueue::event_add) != 0) {
+        if (signed_filter == darwin::kqueue::filter_read ||
+            signed_filter == darwin::kqueue::filter_write ||
+            signed_filter == darwin::kqueue::filter_vnode) {
+            const auto descriptor = virtual_descriptors_.find(
+                static_cast<std::uint32_t>(ident));
+            if (descriptor != virtual_descriptors_.end() &&
+                descriptor->second == "nexus")
+                return darwin::error::not_supported;
+        }
         KeventRegistration registration {
             ident,
             signed_filter,

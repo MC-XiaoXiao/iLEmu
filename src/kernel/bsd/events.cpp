@@ -218,6 +218,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, 25); // ENOTTY
             return;
         }
+        if (device->second == "nexus") {
+            bsd_error(cpu, darwin::error::not_supported);
+            return;
+        }
         if (registers[1] == darwin::socket::ioctl_non_block) {
             const auto enabled = memory_.read32(registers[2]);
             if (!enabled) {

@@ -782,6 +782,8 @@ private:
     void dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_network_policy(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_nexus(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_nexus_options(Cpu& cpu, nexus::Controller& controller, bool set);
     void refresh_network_policy_clients();
     bool reject_guarded_descriptor(Cpu& cpu, std::uint32_t fd, std::uint32_t flags);
     void dispatch_bsd_events(Cpu& cpu, std::uint32_t number);
@@ -1267,6 +1269,7 @@ private:
     std::unordered_map<std::uint32_t, std::string> virtual_descriptors_;
     std::map<std::uint32_t, std::shared_ptr<darwin::necp::Clients::Session>>
         network_policy_descriptors_;
+    std::map<std::uint32_t, std::shared_ptr<nexus::Controller>> nexus_controllers_;
     std::map<std::uint32_t, std::shared_ptr<SemaphoreState>> posix_semaphore_descriptors_;
     std::map<std::uint32_t,
         std::shared_ptr<bsd::baseband_device::OpenDescription>>

@@ -89,6 +89,7 @@
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
 #include "kernel/persona_registry.hpp"
+#include "kernel/nexus_registry.hpp"
 #include "kernel/diagnostic_snapshot.hpp"
 #include "kernel/vnode_watch.hpp"
 #include "mach/mach_namespace.hpp"
@@ -777,7 +778,7 @@ struct KernelSharedState {
         {
             // Other represented descriptions are vnode, socket, pipe or shm.
             return !posix_semaphore && virtual_type != "kqueue" &&
-                virtual_type != "necp";
+                virtual_type != "necp" && virtual_type != "nexus";
         }
     };
     struct SocketAncillaryRecord {
@@ -1997,6 +1998,7 @@ struct KernelSharedState {
     // extension names independently of the process that registered them.
     std::vector<std::string> package_extensions;
     PersonaRegistry personas;
+    nexus::Registry nexus_registry;
     std::map<std::uint32_t, ProcessRecord> processes;
     // EVFILT_PROC is edge-triggered and may outlive the process-table zombie.
     // Retain compact per-PID generations so an exec/exit between kevent

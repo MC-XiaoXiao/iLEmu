@@ -42,6 +42,13 @@ void bind_bsd_entries(Table& table, DarwinVersion version)
     add(500, "getentropy", Handler::BsdEntropy);
     add(501, "necp_open", Handler::BsdNetworkPolicy);
     add(502, "necp_client_action", Handler::BsdNetworkPolicy);
+    add(503, "__nexus_open", Handler::BsdNetworkPolicy);
+    add(504, "__nexus_register", Handler::BsdNetworkPolicy);
+    add(505, "__nexus_deregister", Handler::BsdNetworkPolicy);
+    add(506, "__nexus_create", Handler::BsdNetworkPolicy);
+    add(507, "__nexus_destroy", Handler::BsdNetworkPolicy);
+    add(508, "__nexus_get_opt", Handler::BsdNetworkPolicy);
+    add(509, "__nexus_set_opt", Handler::BsdNetworkPolicy);
     add(479, "openbyid_np", Handler::BsdFilesystem);
     add(483, "csrctl", Handler::BsdSecurity);
     add(494, "persona", Handler::BsdProcess);

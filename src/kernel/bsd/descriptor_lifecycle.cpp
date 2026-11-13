@@ -31,6 +31,7 @@ bool CompatibilityKernel::release_file_descriptor(std::uint32_t descriptor)
                         duplicated_descriptors_.erase(descriptor);
     posix_semaphore_descriptors_.erase(descriptor);
     network_policy_descriptors_.erase(descriptor);
+    nexus_controllers_.erase(descriptor);
     if (erased != 0)
         detach_kevents_for_descriptor(descriptor);
     file_offsets_.erase(descriptor);

@@ -3467,6 +3467,7 @@ void CompatibilityKernel::inherit_process_state(
     descriptor_flags_ = parent.descriptor_flags_;
     virtual_descriptors_ = parent.virtual_descriptors_;
     network_policy_descriptors_ = parent.network_policy_descriptors_;
+    nexus_controllers_ = parent.nexus_controllers_;
     posix_semaphore_descriptors_ = parent.posix_semaphore_descriptors_;
     baseband_open_descriptions_ = parent.baseband_open_descriptions_;
     wifi_driver_event_streams_ = parent.wifi_driver_event_streams_;

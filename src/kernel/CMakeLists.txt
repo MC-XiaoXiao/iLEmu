@@ -279,6 +279,9 @@ target_sources(ilemu_kernel PRIVATE
     bsd/dispatch_table.cpp
     bsd/coalition.cpp
     bsd/network_policy.cpp
+    bsd/network/nexus_control.cpp
+    bsd/network/nexus_options.cpp
+    bsd/network/nexus_registry.cpp
     bsd/platform.cpp
     bsd/pthread_runtime.cpp
     bsd/workqueue_kevents.cpp
