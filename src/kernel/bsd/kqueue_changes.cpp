@@ -13,6 +13,8 @@ namespace ilemu {
 std::uint32_t CompatibilityKernel::apply_kevent_change(
     std::uint32_t queue_fd, const KeventValue& value)
 {
+    if (queue_fd == darwin::kqueue::workqueue_descriptor)
+        workqueue_mach_poll_cache_.reset();
     auto queue = kqueues_.find(queue_fd);
     if (queue == kqueues_.end())
         return bsd_support::bad_file_descriptor;

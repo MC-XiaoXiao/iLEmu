@@ -1254,6 +1254,15 @@ private:
     std::map<std::uint32_t, std::set<std::uint32_t>> workqueue_kevent_processors_;
     // Knote changes key the timer view; workqueue slot changes invalidate it.
     mutable std::optional<TimerDeadlineSnapshot> workqueue_timer_snapshot_;
+    struct WorkqueueMachPollCache {
+        std::uint64_t generation { };
+        xnu::ipc::ReceiveQueueGeneration::DependencyMask dependencies;
+        std::size_t mach_count { };
+        const KeventRegistration* registrations { };
+        std::size_t registration_count { };
+        boost::container::small_vector<std::size_t, 16> other_indices;
+    };
+    mutable std::optional<WorkqueueMachPollCache> workqueue_mach_poll_cache_;
     std::map<std::uint32_t, std::filesystem::path> file_descriptors_;
     std::map<std::uint32_t, std::shared_ptr<bsd::RegularFileOpenDescription>>
         regular_file_open_descriptions_;

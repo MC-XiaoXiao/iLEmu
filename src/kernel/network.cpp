@@ -1817,6 +1817,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     KeventDataBuffer* data_buffer,
     std::optional<std::uint32_t> required_qos_bucket)
 {
+    // Delivery can erase or disable registrations and install a servicer.
+    if (queue_fd == darwin::kqueue::workqueue_descriptor)
+        workqueue_mach_poll_cache_.reset();
     const KeventWireFormat wire { format };
     const auto queue = kqueues_.find(queue_fd);
     if (queue == kqueues_.end())
