@@ -2650,9 +2650,11 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         return write_reply(memory, message_address, reply);
     }
 
-    output.write("[iokit] unhandled pid=" + std::to_string(process.pid) +
-                 " id=" + std::to_string(message_id) +
-                 " remote-object=" + std::to_string(remote_object) + "\n");
+    if (output.enabled("[iokit]")) {
+        output.write("[iokit] unhandled pid=" + std::to_string(process.pid) +
+                     " id=" + std::to_string(message_id) +
+                     " remote-object=" + std::to_string(remote_object) + "\n");
+    }
     return std::nullopt;
 }
 

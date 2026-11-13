@@ -339,6 +339,8 @@ public:
     [[nodiscard]] std::optional<XnuThreadId> oldest_runnable_thread(
         std::span<const std::uint32_t> processes,
         std::optional<XnuThreadId> excluded = std::nullopt) const;
+    [[nodiscard]] std::optional<XnuThreadId> oldest_runnable_thread(
+        std::span<const XnuThreadId> candidates) const;
     // A bounded foreground handoff can depend on a lower-priority worker in
     // another task. Query FIFO runnable age without changing guest priority,
     // quantum, queue membership or eligibility.

@@ -275,19 +275,18 @@ bool HidEventSystemHle::pending_event_ready(std::uint32_t process,
            consumer->processor == processor;
 }
 
-std::optional<std::size_t> HidEventSystemHle::interactive_processor(
-    std::uint32_t process) const
+void HidEventSystemHle::visit_interactive_processors(std::uint32_t process,
+    const std::function<void(std::size_t)>& visitor) const
 {
     if (!state_)
-        return std::nullopt;
+        return;
     for (const auto processor : delivering_processors_) {
         // A physical event must not wait behind an in-flight periodic sensor
         // callback. Finish that dependency with the same input preference.
         if (interactive_processors_.contains(processor) ||
             state_->hid_event_queue.has_pending(process, processor))
-            return processor;
+            visitor(processor);
     }
-    return std::nullopt;
 }
 
 bool HidEventSystemHle::prepare_pending_event(

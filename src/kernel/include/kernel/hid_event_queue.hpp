@@ -192,6 +192,20 @@ public:
         observer->events.pop_front();
         return delivery;
     }
+    [[nodiscard]] std::optional<std::size_t> pending_processor(
+        std::uint32_t process) const
+    {
+        std::lock_guard lock { mutex_ };
+        if (consumer_ && consumer_->process == process && !events_.empty())
+            return consumer_->processor;
+        const auto observer = std::find_if(observers_.begin(), observers_.end(),
+            [&](const ObserverState& state) {
+                return state.observer.process == process && !state.events.empty();
+            });
+        if (observer == observers_.end())
+            return std::nullopt;
+        return observer->observer.processor;
+    }
     [[nodiscard]] bool has_pending(
         std::uint32_t process, std::size_t processor) const
     {
@@ -204,6 +218,28 @@ public:
                 return state.observer.process == process &&
                        state.observer.processor == processor &&
                        !state.events.empty();
+            });
+    }
+
+    template<typename Iterator>
+    [[nodiscard]] bool has_receiver(std::uint32_t process,
+        Iterator first, Iterator last) const
+    {
+        if (first == last)
+            return false;
+        auto second = first;
+        if (++second == last)
+            return is_receiver(process, *first);
+        std::lock_guard lock { mutex_ };
+        const auto matches = [&](const auto& receiver) {
+            return receiver.process == process &&
+                std::find(first, last, receiver.processor) != last;
+        };
+        if (consumer_ && matches(*consumer_))
+            return true;
+        return std::any_of(observers_.begin(), observers_.end(),
+            [&](const ObserverState& state) {
+                return matches(state.observer);
             });
     }
 

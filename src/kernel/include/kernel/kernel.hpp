@@ -12,6 +12,7 @@
 #include "kernel/darwin_signal_state.hpp"
 #include "kernel/persona_registry.hpp"
 #include <boost/container/flat_map.hpp>
+#include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
 #include <array>
 #include <chrono>
@@ -588,10 +589,16 @@ public:
     take_last_delivered_graphics_input(std::size_t processor);
     // Native physical-input callbacks remain interactive through their guest
     // continuations; periodic sensor samples do not carry this preference.
-    [[nodiscard]] std::optional<std::size_t> interactive_input_processor()
+    void visit_interactive_input_processors(
+        const std::function<void(std::size_t)>& visitor)
     {
         std::lock_guard lock { mutex_ };
-        return hid_event_system_hle_.interactive_processor(process_.pid);
+        hid_event_system_hle_.visit_interactive_processors(process_.pid, visitor);
+    }
+    // A queued physical event can precede entry into the native callback.
+    [[nodiscard]] std::optional<std::size_t> pending_input_processor() const
+    {
+        return shared_state_->hid_event_queue.pending_processor(process_.pid);
     }
     [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
     [[nodiscard]] TimerDeadlineSnapshot timer_deadline_snapshot() const;
@@ -1449,7 +1456,7 @@ private:
     // producers retain their independent cross-process generation.
     std::uint64_t local_io_event_generation_ { };
     std::map<std::size_t, PendingIoPollCache> pending_io_poll_cache_;
-    std::set<std::size_t> pending_event_processors_;
+    boost::container::flat_set<std::size_t> pending_event_processors_;
     std::uint64_t pending_event_topology_generation_ { 1 };
     std::uint64_t pending_event_poll_topology_generation_ { };
     std::uint64_t pending_event_poll_io_generation_ { };
@@ -1464,7 +1471,6 @@ private:
     std::vector<MachPollDependency> pending_event_mach_dependencies_;
     std::vector<std::size_t> pending_event_mach_candidates_;
     std::uint64_t pending_event_mach_snapshot_receiver_generation_ { };
-    std::uint64_t pending_event_mach_snapshot_timer_generation_ { };
     bool pending_event_mach_snapshot_valid_ { };
     struct PendingIoDeadlineCache {
         std::uint64_t generation { };

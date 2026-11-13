@@ -47,6 +47,19 @@ namespace {
     constexpr std::uint32_t einval = 22;
     constexpr std::uint32_t enotconn = 57;
 
+    template <typename Predicate>
+    bool any_descriptor_knote(const std::vector<KeventRegistration>& registrations,
+        Predicate&& predicate)
+    {
+        return std::any_of(registrations.begin(), registrations.end(),
+            [&](const auto& registration) {
+                return registration.enabled &&
+                    (registration.filter == darwin::kqueue::filter_read ||
+                        registration.filter == darwin::kqueue::filter_write) &&
+                    predicate(static_cast<std::uint32_t>(registration.ident));
+            });
+    }
+
     void post_kernel_event(KernelSharedState& state, std::uint32_t event_class,
         std::uint32_t event_subclass, std::uint32_t event_code,
         std::span<const std::byte> event_data)
@@ -1337,8 +1350,8 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         return control->second->statistics &&
             control->second->statistics->pending_bytes() != 0;
     }
-    if (const auto descriptor = virtual_descriptors_.find(fd);
-        descriptor != virtual_descriptors_.end() &&
+    const auto descriptor = virtual_descriptors_.find(fd);
+    if (descriptor != virtual_descriptors_.end() &&
         descriptor->second == CompassDevice::descriptor_kind) {
         return shared_state_->sensors && shared_state_->compass.pending_bytes(
             *shared_state_->sensors, shared_state_->clock.now()) != 0;
@@ -1347,8 +1360,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         return true;
     if (bpf_descriptor_readable(fd))
         return true;
-    if (const auto descriptor = virtual_descriptors_.find(fd);
-        descriptor != virtual_descriptors_.end() &&
+    if (descriptor != virtual_descriptors_.end() &&
         descriptor->second == "random") {
         // Entropy character devices always have bytes available. OpenSSL's
         // RAND_poll probes them with select(2) before issuing read(2).
@@ -1359,8 +1371,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         event_stream->second && event_stream->second->readable()) {
         return true;
     }
-    if (const auto descriptor = virtual_descriptors_.find(fd);
-        descriptor != virtual_descriptors_.end() &&
+    if (descriptor != virtual_descriptors_.end() &&
         descriptor->second == bsd::baseband_device::descriptor_kind) {
         if (const auto endpoint = baseband_open_description(fd);
             endpoint && (endpoint->pending_receive_bytes() != 0 ||
@@ -1368,8 +1379,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
             return true;
         }
     }
-    if (const auto descriptor = virtual_descriptors_.find(fd);
-        descriptor != virtual_descriptors_.end() &&
+    if (descriptor != virtual_descriptors_.end() &&
         descriptor->second == bsd::offline_serial_device::descriptor_kind &&
         offline_serial_state_.pending_bytes() != 0) {
         return true;
@@ -1413,28 +1423,10 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
     const auto queue = kqueues_.find(fd);
     if (queue == kqueues_.end())
         return false;
-    return std::any_of(
-        queue->second.begin(), queue->second.end(), [&](const auto& event) {
-            // Disabled knotes cannot make a kqueue readable to select/poll or
-            // to another kqueue watching this descriptor.
-            if (!event.enabled)
-                return false;
-            return (event.ident != fd &&
-                       event.filter == darwin::kqueue::filter_read &&
-                       descriptor_readable(static_cast<std::uint32_t>(event.ident))) ||
-                   (event.filter == darwin::kqueue::filter_write &&
-                       descriptor_writable(static_cast<std::uint32_t>(event.ident))) ||
-                   (event.filter == darwin::kqueue::filter_mach_port &&
-                       ready_mach_kevent_name(event).has_value()) ||
-                   (event.enabled && event.timer &&
-                       event.timer->expirations(shared_state_->clock.now()) != 0) ||
-                   (event.enabled &&
-                       event.filter == darwin::kqueue::filter_vnode &&
-                       event.vnode_watch &&
-                       (event.vnode_watch->pending(
-                            *shared_state_->guest_file_generation_registry) &
-                           event.filter_flags) != 0U);
-        });
+    // The zero-capacity probe shares kevent's filter and EV_CLEAR rules. It
+    // updates readiness observations without copying out or consuming events.
+    return const_cast<CompatibilityKernel*>(this)->collect_ready_kevents(
+               0, fd, 0, 0) == 1U;
 }
 
 bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const
@@ -1491,14 +1483,18 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd) const
         const auto queue = kqueues_.find(fd);
         if (queue == kqueues_.end())
             return false;
-        const auto active = std::any_of(queue->second.begin(), queue->second.end(),
-            [](const auto& registration) {
-                return registration.enabled &&
-                    (registration.filter == darwin::kqueue::filter_read ||
-                        registration.filter == darwin::kqueue::filter_write);
-            });
+        const auto active = any_descriptor_knote(queue->second,
+            [](std::uint32_t) { return true; });
         if (!active)
             return false;
+        // The root is already classified. Retain its cycle marker without
+        // repeating the descriptor lookups in the recursive leaf probe.
+        DescriptorPollVisited visited;
+        visited.try_emplace(fd, true);
+        return any_descriptor_knote(queue->second,
+            [&](std::uint32_t descriptor) {
+                return descriptor_requires_host_poll(descriptor, visited);
+            });
     }
     DescriptorPollVisited visited;
     return descriptor_requires_host_poll(fd, visited);
@@ -1535,16 +1531,11 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd,
         visited.find(fd)->second = requires_poll;
         return requires_poll;
     }
-    for (const auto& registration : queue->second) {
-        if (!registration.enabled ||
-            (registration.filter != darwin::kqueue::filter_read &&
-                registration.filter != darwin::kqueue::filter_write)) {
-            continue;
-        }
-        if (descriptor_requires_host_poll(
-                static_cast<std::uint32_t>(registration.ident), visited))
-            return true;
-    }
+    if (any_descriptor_knote(queue->second,
+            [&](std::uint32_t descriptor) {
+                return descriptor_requires_host_poll(descriptor, visited);
+            }))
+        return true;
     visited.find(fd)->second = false;
     return false;
 }
@@ -1922,8 +1913,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         }
         const auto ready =
             registration->filter == darwin::kqueue::filter_read
-                ? (terminal_listener_pending ? *terminal_listener_pending != 0
-                    : descriptor_readable(descriptor))
+                ? descriptor != queue_fd &&
+                    (terminal_listener_pending ? *terminal_listener_pending != 0
+                        : descriptor_readable(descriptor))
             : registration->filter == darwin::kqueue::filter_write
                 ? descriptor_writable(static_cast<std::uint32_t>(registration->ident))
             : registration->filter == darwin::kqueue::filter_mach_port

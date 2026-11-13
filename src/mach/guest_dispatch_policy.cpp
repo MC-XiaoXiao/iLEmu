@@ -174,7 +174,8 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
     };
     const auto realtime = [&](std::optional<XnuThreadId> thread,
                               GuestDispatchReason reason) {
-        if (thread && observation.active_process == thread->process &&
+        if (reason != GuestDispatchReason::QueuedInput && thread &&
+            observation.active_process == thread->process &&
             (!observation.foreground_transition_process ||
                 observation.foreground_transition_process == thread->process)) {
             // Preserve callback locality for the settled foreground owner.
@@ -219,23 +220,26 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
         runnable(scheduler, *observation.input_target_thread)) {
         input_process_ = observation.input_target_thread->process;
         interaction_deadline_ = observation.now + interaction_lease_;
-        if (++input_target_burst_ > preferred_process_burst_limit) {
+        if (++input_target_burst_ < preferred_process_burst_limit)
+            return direct(observation.input_target_thread,
+                GuestDispatchReason::InputTarget);
+        if (input_target_burst_ > preferred_process_burst_limit) {
             if (input_target_burst_ == preferred_process_burst_limit + 1U) {
                 // Firmware callbacks can spin on work owned by another
-                // thread. Give that dependency a turn even at lower priority.
+                // thread. Keep that dependency's bounded turn too.
                 if (const auto dependency = scheduler.oldest_runnable_thread(
                         *input_process_, observation.input_target_thread))
                     return direct(dependency, GuestDispatchReason::InputProcess);
             }
-            // Also return one selection to XNU for cross-process dependencies
-            // and rendering; a pending callback must not monopolize dispatch.
             input_target_burst_ = 0U;
             return direct(std::nullopt, GuestDispatchReason::Ordinary);
         }
-        return direct(observation.input_target_thread,
-            GuestDispatchReason::InputTarget);
+        // Let a real frame dependency use the last preferred turn before
+        // ordinary-head debt is exhausted. Input remains the fallback below
+        // when no frame work is ready.
+    } else {
+        input_target_burst_ = 0U;
     }
-    input_target_burst_ = 0U;
 
     if (observation.frame_dependency_thread &&
         runnable(scheduler, *observation.frame_dependency_thread)) {
@@ -245,10 +249,25 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
         if (++frame_dependency_burst_ <= preferred_process_burst_limit)
             return direct(observation.frame_dependency_thread,
                 GuestDispatchReason::FrameDependency);
+        // Do not turn the frame burst's ordinary opportunity into an input
+        // preference when these two bounded bursts meet.
+        if (input_target_burst_ == preferred_process_burst_limit) {
+            frame_dependency_burst_ = 0U;
+            return direct(std::nullopt, GuestDispatchReason::Ordinary);
+        }
     }
     frame_dependency_burst_ = 0U;
 
-    if (!observation.active_process) {
+    if (observation.queued_input_thread &&
+        runnable(scheduler, *observation.queued_input_thread)) {
+        // Queued input has not entered a native callback yet. Preserve active
+        // input/frame dependencies and bound this receiver with the existing
+        // realtime dependency budget rather than renewing an input burst.
+        return realtime(observation.queued_input_thread,
+            GuestDispatchReason::QueuedInput);
+    }
+
+    if (!observation.active_process && input_target_burst_ == 0U) {
         if (!realtime_burst_deadline_)
             realtime_burst_deadline_ =
                 observation.now + realtime_burst_period_;
@@ -341,6 +360,10 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
             }
         }
     }
+
+    if (input_target_burst_ == preferred_process_burst_limit)
+        return direct(observation.input_target_thread,
+            GuestDispatchReason::InputTarget);
 
     if (observation.active_process)
         realtime_burst_deadline_.reset();
