@@ -59,8 +59,8 @@ bool DarwinPthreadRuntime::has_pending_workitems() const noexcept
 }
 
 std::optional<DarwinWorkqueueItem> DarwinPthreadRuntime::take_workitem(
-    std::optional<std::size_t> active_worker_count,
-    std::optional<std::uint32_t> returning_processor)
+    const ActiveWorkers& active_workers,
+    std::optional<std::uint32_t> returning_processor, bool requires_new_worker)
 {
     if (!workqueue_open_)
         return std::nullopt;
@@ -70,12 +70,25 @@ std::optional<DarwinWorkqueueItem> DarwinPthreadRuntime::take_workitem(
     // capacity. Leave blocked requests queued while selecting the first
     // eligible request in priority/FIFO order, including within one bucket.
     for (auto& queue : workitems_) {
-        const auto ready = std::find_if(queue.begin(), queue.end(),
-            [&](const auto& item) {
-                return (item.overcommit || constrained_allowed) &&
-                       (!active_worker_count || should_create_worker(
-                            item.priority, item.overcommit, *active_worker_count));
-            });
+        auto ready = queue.end();
+        for (auto candidate = queue.begin(); candidate != queue.end(); ++candidate) {
+            const auto& item = *candidate;
+            std::size_t active_count = 0;
+            if (item.delivery == DarwinWorkqueueDelivery::WorkItem) {
+                for (std::size_t priority = 0; priority <= item.priority; ++priority)
+                    active_count += active_workers.priorities[priority];
+            } else {
+                active_count = active_workers.classes[item.thread_class];
+            }
+            const auto unconstrained = item.overcommit || item.event_manager;
+            if ((!unconstrained && (!constrained_allowed ||
+                    active_count >= target_concurrency_[item.priority])) ||
+                (requires_new_worker && !should_create_worker(
+                    item.priority, unconstrained, active_count)))
+                continue;
+            if (ready == queue.end() || item.thread_class > ready->thread_class)
+                ready = candidate;
+        }
         if (ready == queue.end())
             continue;
         const auto item = *ready;
@@ -164,12 +177,14 @@ DarwinPthreadRuntime::active_worker_processors() const
 }
 
 void DarwinPthreadRuntime::mark_worker_running(
-    std::uint32_t processor, std::uint32_t priority, bool overcommit)
+    std::uint32_t processor, std::uint32_t priority, bool overcommit,
+    std::uint32_t thread_class)
 {
     if (const auto found = workers_.find(processor); found != workers_.end()) {
         found->second.idle = false;
         found->second.priority = priority;
         found->second.overcommit = overcommit;
+        found->second.thread_class = thread_class;
     }
 }
 

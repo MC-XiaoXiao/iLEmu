@@ -91,18 +91,14 @@ bool CompatibilityKernel::apply_workqueue_qos_policy(
     return boost_workqueue_qos(processor, item.kevent_qos_override);
 }
 
-bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
+DarwinPthreadRuntime::ActiveWorkers CompatibilityKernel::workqueue_active_workers(
+    std::optional<std::uint32_t> returning_processor) const
 {
-    const auto& registration = pthread_runtime_.registration();
-    if (!registration || !pthread_runtime_.workqueue_open())
-        return false;
-    if (!pthread_runtime_.has_pending_workitems())
-        return true;
-
-    const auto idle_worker = pthread_runtime_.idle_worker();
-    std::size_t active_worker_count { };
+    DarwinPthreadRuntime::ActiveWorkers counts;
     for (const auto processor :
         pthread_runtime_.active_worker_processors()) {
+        if (returning_processor == processor)
+            continue;
         const auto scheduling_state =
             thread_scheduling_state_query_
                 ? thread_scheduling_state_query_(process_.pid, processor)
@@ -112,11 +108,25 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         // Missing scheduler information is conservatively treated as active.
         if (!scheduling_state ||
             *scheduling_state != XnuThreadState::Waiting) {
-            ++active_worker_count;
+            const auto worker = *pthread_runtime_.worker(processor);
+            ++counts.priorities[worker.priority];
+            ++counts.classes[worker.thread_class];
         }
     }
+    return counts;
+}
+
+bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
+{
+    const auto& registration = pthread_runtime_.registration();
+    if (!registration || !pthread_runtime_.workqueue_open())
+        return false;
+    if (!pthread_runtime_.has_pending_workitems())
+        return true;
+
+    const auto idle_worker = pthread_runtime_.idle_worker();
     const auto next_item = pthread_runtime_.take_workitem(
-        idle_worker ? std::nullopt : std::optional { active_worker_count });
+        workqueue_active_workers(), std::nullopt, !idle_worker);
     if (!next_item)
         return true;
     note_workqueue_kevent_transition();
@@ -159,7 +169,8 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
             return false;
         }
         pthread_runtime_.mark_worker_running(
-            idle_worker->processor, next_item->priority, next_item->overcommit);
+            idle_worker->processor, next_item->priority, next_item->overcommit,
+            next_item->event_manager ? 0U : next_item->thread_class);
         if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
             workqueue_kevent_processors_[next_item->kevent_qos_bucket].insert(
                 idle_worker->processor);
@@ -206,6 +217,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         .stack_bottom = *base + guard_size,
         .priority = next_item->priority,
         .overcommit = next_item->overcommit,
+        .thread_class = next_item->event_manager ? 0U : next_item->thread_class,
     };
     auto state =
         workqueue_thread_state(*registration, worker, *next_item, false);
@@ -823,7 +835,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             static_cast<void>(signal_state_.update(processor, 3,
                 DarwinSignalState::workqueue_mask, DarwinSignalState::Scope::Thread));
             const auto next_item =
-                pthread_runtime_.take_workitem(std::nullopt, processor);
+                pthread_runtime_.take_workitem(workqueue_active_workers(processor), processor);
             if (next_item) {
                 note_workqueue_kevent_transition();
                 if (!apply_workqueue_qos_policy(processor, *next_item)) {
@@ -848,7 +860,8 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                 cpu.set_cpsr(
                     pthread_start_cpsr(registration.workqueue_thread_start));
                 pthread_runtime_.mark_worker_running(
-                    processor, next_item->priority, next_item->overcommit);
+                    processor, next_item->priority, next_item->overcommit,
+                    next_item->event_manager ? 0U : next_item->thread_class);
                 if (next_item->delivery == DarwinWorkqueueDelivery::Kevent)
                     workqueue_kevent_processors_[
                         next_item->kevent_qos_bucket].insert(processor);

@@ -55,6 +55,7 @@ struct DarwinWorkqueueWorker {
     std::uint32_t priority { };
     bool idle { };
     bool overcommit { };
+    std::uint32_t thread_class { };
 };
 
 // Per-process state installed by Darwin's bsdthread_register syscall. The
@@ -73,6 +74,13 @@ public:
     static constexpr std::size_t maximum_workqueue_workers = 512U;
     static constexpr std::size_t maximum_constrained_workqueue_workers = 64U;
     static constexpr std::size_t maximum_workqueue_items_per_priority = 64U;
+
+    struct ActiveWorkers {
+        std::array<std::size_t, maximum_workqueue_priority_count> priorities { };
+        // Public QoS classes are retained separately: user-interactive and
+        // user-initiated share legacy queue 0 but have distinct native buckets.
+        std::array<std::size_t, 0x22U> classes { };
+    };
 
     [[nodiscard]] bool register_process(DarwinPthreadRegistration registration);
     [[nodiscard]] const std::optional<DarwinPthreadRegistration>&
@@ -111,11 +119,12 @@ public:
         std::uint32_t count, std::uint32_t priority, bool overcommit,
         std::uint32_t thread_class);
     [[nodiscard]] bool has_pending_workitems() const noexcept;
-    // A supplied active count means delivery requires a new worker. Reusing
-    // an idle/returning worker needs only the constrained assignment limit.
+    // Native QoS admission counts the requested class; legacy workitems count
+    // that priority and higher. The caller excludes blocked/returning workers.
     [[nodiscard]] std::optional<DarwinWorkqueueItem> take_workitem(
-        std::optional<std::size_t> active_worker_count,
-        std::optional<std::uint32_t> returning_processor = std::nullopt);
+        const ActiveWorkers& active_workers,
+        std::optional<std::uint32_t> returning_processor = std::nullopt,
+        bool requires_new_worker = false);
     [[nodiscard]] bool remove_workitem(
         std::uint32_t address, std::uint32_t priority);
     [[nodiscard]] bool should_create_worker(
@@ -129,7 +138,7 @@ public:
     [[nodiscard]] std::optional<DarwinWorkqueueWorker> idle_worker() const;
     [[nodiscard]] std::vector<std::uint32_t> active_worker_processors() const;
     void mark_worker_running(std::uint32_t processor, std::uint32_t priority,
-        bool overcommit);
+        bool overcommit, std::uint32_t thread_class = 0U);
     void park_worker(std::uint32_t processor);
     void remove_worker(std::uint32_t processor);
     [[nodiscard]] bool set_target_concurrency(

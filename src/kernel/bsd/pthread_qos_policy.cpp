@@ -138,7 +138,7 @@ bool CompatibilityKernel::set_bsd_pthread_qos(Cpu& cpu)
             PthreadPriority::decode_dispatch_workqueue_priority(
                 contract, *encoded);
         pthread_runtime_.mark_worker_running(
-            processor, decoded->queue, decoded->overcommit);
+            processor, decoded->queue, decoded->overcommit, decoded->thread_class);
     }
     bsd_success(cpu, 0);
     if (scheduler_preemption_query_ && scheduler_preemption_query_(processor))
