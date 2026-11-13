@@ -11,6 +11,7 @@
 #include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel.hpp"
 #include "foundation/performance.hpp"
+#include "foundation/application_path.hpp"
 #include "../../mach/support.hpp"
 
 #include <cstdint>
@@ -394,7 +395,26 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
             attributes = std::move(*attributes), arguments = std::move(*arguments)](Cpu& cpu,
             PreparedProcessImage image) mutable {
         const auto path = image.requested_path;
+        const auto trace_launch_intent = [&](std::string_view stage) {
+            if (!is_application_executable_path(path) ||
+                !performance_counters().cpu_source_diagnostics_enabled())
+                return;
+            const std::lock_guard lock { shared_state_->mach_mutex };
+            std::ostringstream trace;
+            trace << "[perf] launch-intent action=" << stage
+                  << " pid=" << process_.pid << " parent=" << process_.parent_pid
+                  << " path=" << path
+                  << " pending=" << shared_state_->pending_application_launch_touch_sequence.value_or(0U)
+                  << " incarnation=" << shared_state_->processes.at(process_.pid).incarnation
+                  << " gesture-boundary=" << shared_state_->pending_application_launch_incarnation_boundary
+                  << " foreground=" << shared_state_->foreground_application_attempt_process_id.value_or(0U)
+                  << " type=" << static_cast<unsigned>(attributes.task.process_type)
+                  << " role=" << (attributes.task.role ? static_cast<int>(*attributes.task.role) : -1)
+                  << " qos-clamp=" << static_cast<unsigned>(attributes.task.qos_clamp);
+            output_.line(trace.str());
+        };
         if (attributes.setexec) {
+            trace_launch_intent("setexec-before");
             if (!exec_handler_ ||
                 !exec_handler_(cpu, std::move(image), environment)) {
                 bsd_error(cpu, 8); // ENOEXEC
@@ -418,6 +438,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
             graphics_services_input::record_application_spawn(*shared_state_,
                 process_.parent_pid, process_.pid, path, arguments,
                 scene_coordinator_.get(), true);
+            trace_launch_intent("setexec-after");
             performance_counters().record_exec();
             std::ostringstream message;
             message << "[process] spawn-setexec pid=" << process_.pid

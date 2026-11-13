@@ -663,6 +663,14 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
     }();
     performance_counters().record_diagnostic_input("touch", phase, input.x,
         input.y, queued, input_sequence, enqueued_at);
+    if (input.phase != TouchPhase::Move &&
+        performance_counters().cpu_source_diagnostics_enabled()) {
+        const std::lock_guard lock { shared_state_->mach_mutex };
+        output_.line("[perf] launch-intent action=touch phase=" + std::string { phase } +
+            " sequence=" + std::to_string(input_sequence) +
+            " pending=" + std::to_string(shared_state_->pending_application_launch_touch_sequence.value_or(0U)) +
+            " foreground=" + std::to_string(shared_state_->foreground_application_attempt_process_id.value_or(0U)));
+    }
     output_.write("[input] touch phase=" + std::string { phase } + " x=" +
                   std::to_string(input.x) + " y=" + std::to_string(input.y) +
                   (queued ? " queued\n" : " ignored (no HID receiver)\n"));
@@ -702,8 +710,12 @@ void CompatibilityKernel::enqueue_system_button_impl(
         (input.button == SystemButton::Home ||
             input.button == SystemButton::Lock)) {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
-        if (input.button == SystemButton::Home)
+        if (input.button == SystemButton::Home) {
+            if (performance_counters().cpu_source_diagnostics_enabled())
+                output_.line("[perf] launch-intent action=host-home-reset pending=" +
+                    std::to_string(shared_state_->pending_application_launch_touch_sequence.value_or(0U)));
             shared_state_->pending_application_launch_touch_sequence.reset();
+        }
         const auto display_asleep =
             shared_state_->requested_display_power_state.value_or(1U) == 0U;
         if (display_asleep && !force_home_transition) {

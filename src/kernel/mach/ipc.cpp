@@ -1038,6 +1038,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             }
         }
         if (delivered_graphics_event_type) {
+            const auto pending_before = shared_state_->pending_application_launch_touch_sequence;
+            const auto foreground_before = shared_state_->foreground_application_attempt_process_id;
             if (delivered_input_sequence == 0U) {
                 graphics_services_input::record_system_event_delivery_locked(
                     *shared_state_, queued_port, *delivered_graphics_event_type,
@@ -1051,6 +1053,18 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             graphics_services_input::record_application_event_delivery_locked(
                 *shared_state_, delivered_sender_pid, queued_port,
                 *delivered_graphics_event_type, scene_coordinator_.get());
+            if (performance_counters().cpu_source_diagnostics_enabled() &&
+                (pending_before != shared_state_->pending_application_launch_touch_sequence ||
+                    foreground_before != shared_state_->foreground_application_attempt_process_id)) {
+                output_.line("[perf] launch-intent action=native-gs sender=" +
+                    std::to_string(delivered_sender_pid) + " receiver=" + std::to_string(process_.pid) +
+                    " event=" + std::to_string(*delivered_graphics_event_type) +
+                    " physical-sequence=" + std::to_string(delivered_input_sequence) +
+                    " pending=" + std::to_string(pending_before.value_or(0U)) + "/" +
+                    std::to_string(shared_state_->pending_application_launch_touch_sequence.value_or(0U)) +
+                    " foreground=" + std::to_string(foreground_before.value_or(0U)) + "/" +
+                    std::to_string(shared_state_->foreground_application_attempt_process_id.value_or(0U)));
+            }
         }
     }
     outcome.status = copied ? 0U : 0x10004008U; // MACH_RCV_INVALID_DATA
