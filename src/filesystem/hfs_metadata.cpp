@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <bit>
 #include <charconv>
+#include <cerrno>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -68,12 +69,30 @@ namespace {
         const std::filesystem::path& path, std::string_view name, bool follow,
         int descriptor = -1)
     {
-        const auto bytes = read_xattr(path, name, follow, descriptor);
-        if (!bytes || bytes->empty())
+        std::array<char, std::numeric_limits<std::uint32_t>::digits10 + 2>
+            inline_value;
+        const std::string attribute { name };
+        const auto reader = follow ? ::getxattr : ::lgetxattr;
+        const auto size = descriptor >= 0
+            ? ::fgetxattr(descriptor, attribute.c_str(), inline_value.data(),
+                  inline_value.size())
+            : reader(path.c_str(), attribute.c_str(), inline_value.data(),
+                  inline_value.size());
+        std::optional<std::vector<std::byte>> extended_value;
+        std::string_view text;
+        if (size < 0) {
+            if (errno != ERANGE)
+                return std::nullopt;
+            extended_value = read_xattr(path, name, follow, descriptor);
+            if (!extended_value)
+                return std::nullopt;
+            text = { reinterpret_cast<const char*>(extended_value->data()),
+                extended_value->size() };
+        } else {
+            text = { inline_value.data(), static_cast<std::size_t>(size) };
+        }
+        if (text.empty())
             return std::nullopt;
-        const std::string_view text {
-            reinterpret_cast<const char*>(bytes->data()), bytes->size()
-        };
         const auto terminator = text.find('\0');
         const auto length =
             terminator == std::string_view::npos ? text.size() : terminator;
