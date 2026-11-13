@@ -6,8 +6,34 @@
 #include <algorithm>
 #include <limits>
 #include <openssl/evp.h>
+#if defined(ILEMU_HAS_LIBPLIST)
+#include <plist/plist.h>
+#endif
 
 namespace ilemu {
+bool CodeSignature::has_boolean_entitlement(
+    std::span<const std::byte> entitlements, const char* name)
+{
+#if defined(ILEMU_HAS_LIBPLIST)
+    plist_t root = nullptr;
+    plist_format_t format = PLIST_FORMAT_NONE;
+    plist_from_memory(reinterpret_cast<const char*>(entitlements.data()),
+        static_cast<std::uint32_t>(entitlements.size()), &root, &format);
+    std::uint8_t enabled = 0U;
+    if (root && plist_get_node_type(root) == PLIST_DICT) {
+        const auto value = plist_dict_get_item(root, name);
+        if (value && plist_get_node_type(value) == PLIST_BOOLEAN)
+            plist_get_bool_val(value, &enabled);
+    }
+    plist_free(root);
+    return enabled != 0U;
+#else
+    static_cast<void>(entitlements);
+    static_cast<void>(name);
+    return false;
+#endif
+}
+
 namespace {
     std::uint32_t be32(std::span<const std::byte> bytes, std::size_t offset)
     {

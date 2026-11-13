@@ -27,6 +27,8 @@ struct CodeSignature {
     // CodeDirectory, relative to the start of its image.
     [[nodiscard]] static std::optional<std::uint64_t> covered_end_offset(
         std::span<const std::byte> signature);
+    [[nodiscard]] static bool has_boolean_entitlement(
+        std::span<const std::byte> entitlements, const char* name);
 };
 
 class PlatformTrustCache {
