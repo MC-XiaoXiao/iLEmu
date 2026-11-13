@@ -283,8 +283,13 @@ std::vector<std::uint32_t> mach_ipc_dependency_providers_locked(
         state.queued_mach_dependencies.erase_sender(sender);
         return dependencies;
     }
+    const auto background = [](const ProcessExecutionPolicy& policy) {
+        const auto qos = policy.qos_policy();
+        return qos.background || (qos.clamp != XnuQosTier::Unspecified &&
+                                    qos.clamp <= XnuQosTier::Background);
+    };
     if (client->second.pid_suspended || client->second.signal_stopped ||
-        client->second.execution_policy->qos_policy().background)
+        background(*client->second.execution_policy))
         return dependencies;
 
     const auto provider = [&](std::uint32_t object) -> std::optional<std::uint32_t> {
@@ -322,12 +327,14 @@ std::vector<std::uint32_t> mach_ipc_dependency_providers_locked(
         state.queued_mach_dependencies.visit(sender,
             [&](const auto& entry, const auto& importance) {
                 const auto destination = state.mach_port_objects.lookup(entry.destination);
-                const auto reply = state.mach_port_objects.lookup(entry.reply);
+                const auto reply = entry.reply != 0U
+                    ? state.mach_port_objects.lookup(entry.reply) : std::nullopt;
                 if (entry.sender_task.lock() != client->second.execution_policy->importance() ||
-                    !destination || !reply || entry.reply_port.lock() != reply->importance ||
-                    importance.target() != destination->importance)
+                    !destination || importance.target() != destination->importance ||
+                    (entry.reply != 0U &&
+                        (!reply || entry.reply_port.lock() != reply->importance)))
                     return false;
-                if (!importance.donating() || reply->receive_owner != sender)
+                if (!importance.donating() || (reply && reply->receive_owner != sender))
                     return true;
                 const auto target = provider(entry.destination);
                 if (!target)
@@ -335,8 +342,7 @@ std::vector<std::uint32_t> mach_ipc_dependency_providers_locked(
                 const auto server = state.processes.find(*target);
                 if (server == state.processes.end() || server->second.exited ||
                     server->second.pid_suspended || server->second.signal_stopped ||
-                    server->second.execution_policy->qos_policy().background ||
-                    !server->second.execution_policy->importance()->boosted())
+                    background(*server->second.execution_policy))
                     return true;
                 if (std::find(dependencies.begin(), dependencies.end(), *target) ==
                     dependencies.end())

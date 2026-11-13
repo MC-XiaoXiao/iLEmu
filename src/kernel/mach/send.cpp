@@ -336,13 +336,15 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
         remote_object = destination.value_or(0U);
     } else {
         try {
-            if (queued.reply_object && queued.importance) {
-                const auto reply = shared_state_->mach_port_objects.lookup(*queued.reply_object);
-                if (reply) {
+            if (queued.importance) {
+                const auto reply = queued.reply_object
+                    ? shared_state_->mach_port_objects.lookup(*queued.reply_object)
+                    : std::nullopt;
+                if (!queued.reply_object || reply) {
                     shared_state_->queued_mach_dependencies.track(process_.pid,
-                        queued.destination, *queued.reply_object,
-                        process_.execution_policy->importance(), reply->importance,
-                        queued.importance);
+                        queued.destination, queued.reply_object.value_or(0U),
+                        process_.execution_policy->importance(),
+                        reply ? reply->importance : nullptr, queued.importance);
                 }
             }
         } catch (const std::bad_alloc&) {

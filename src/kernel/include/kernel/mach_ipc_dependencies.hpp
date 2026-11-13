@@ -17,6 +17,8 @@ struct KernelSharedState;
 
 // Observe queued calls without retaining a message, right or importance
 // assertion. The existing assertion is disconnected on receive/cancellation.
+// Native importance applies to async messages too; a header reply port is
+// optional. When one exists, preserve its identity and ownership checks.
 class QueuedMachDependencies {
 public:
     struct Entry {
@@ -33,7 +35,7 @@ public:
         const std::shared_ptr<xnu::ipc::ImportancePort>& reply_port,
         const std::shared_ptr<xnu::ipc::ImportanceAssertion>& importance)
     {
-        if (!importance || !sender_task || !reply_port || reply == 0U)
+        if (!importance || !sender_task || (reply != 0U && !reply_port))
             return;
         try {
             auto& entries = senders_[sender];
