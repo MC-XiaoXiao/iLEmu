@@ -437,6 +437,13 @@ void ImportancePort::set_transit(std::shared_ptr<ImportancePort> destination)
     update_route();
 }
 
+std::shared_ptr<TaskImportance> ImportancePort::receiver_task() const
+{
+    std::lock_guard lock { ImportanceElement::mutex_ };
+    return active_ && !transit_
+        ? (temporary_owner_ ? watch_ : owner_) : nullptr;
+}
+
 void ImportancePort::clear_receiver()
 {
     std::lock_guard lock { ImportanceElement::mutex_ };

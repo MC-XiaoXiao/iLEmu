@@ -259,8 +259,13 @@ namespace {
             return;
         for (const auto object : attributes.watchports->objects) {
             const auto port = state.mach_port_objects.lookup(object);
-            if (port)
-                static_cast<void>(port->importance->set_watch_task(policy.importance()));
+            if (port && port->importance->set_watch_task(policy.importance())) {
+                try {
+                    state.mach_importance_watch_tasks.insert_or_assign(object, target);
+                } catch (const std::bad_alloc&) {
+                    // Optional dispatch metadata must not fail a native spawn.
+                }
+            }
         }
     }
 

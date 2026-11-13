@@ -274,6 +274,88 @@ std::optional<std::size_t> CompatibilityKernel::pending_mach_receiver_processor(
     return preferred_pending_mach_receiver_locked(object);
 }
 
+std::vector<std::uint32_t> mach_ipc_dependency_providers_locked(
+    KernelSharedState& state, std::uint32_t sender)
+{
+    std::vector<std::uint32_t> dependencies;
+    const auto client = state.processes.find(sender);
+    if (client == state.processes.end() || client->second.exited) {
+        state.queued_mach_dependencies.erase_sender(sender);
+        return dependencies;
+    }
+    if (client->second.pid_suspended || client->second.signal_stopped ||
+        client->second.execution_policy->qos_policy().background)
+        return dependencies;
+
+    const auto provider = [&](std::uint32_t object) -> std::optional<std::uint32_t> {
+        std::array<std::uint32_t, 32> visited { };
+        std::size_t count = 0;
+        while (object != 0U && count < visited.size()) {
+            const auto prefix = std::span { visited }.first(count);
+            if (std::find(prefix.begin(), prefix.end(), object) != prefix.end())
+                return std::nullopt;
+            visited[count++] = object;
+            const auto port = state.mach_port_objects.lookup(object);
+            if (!port)
+                return std::nullopt;
+            if (port->transit_destination != 0U) {
+                object = port->transit_destination;
+                continue;
+            }
+            auto receiver = port->receive_owner;
+            if (port->temporary_owner) {
+                const auto binding = state.mach_importance_watch_tasks.find(object);
+                if (binding == state.mach_importance_watch_tasks.end())
+                    return std::nullopt;
+                receiver = binding->second;
+            }
+            const auto task = state.processes.find(receiver);
+            if (receiver == 0U || task == state.processes.end() ||
+                task->second.execution_policy->importance() !=
+                    port->importance->receiver_task())
+                return std::nullopt;
+            return receiver;
+        }
+        return std::nullopt;
+    };
+    try {
+        state.queued_mach_dependencies.visit(sender,
+            [&](const auto& entry, const auto& importance) {
+                const auto destination = state.mach_port_objects.lookup(entry.destination);
+                const auto reply = state.mach_port_objects.lookup(entry.reply);
+                if (entry.sender_task.lock() != client->second.execution_policy->importance() ||
+                    !destination || !reply || entry.reply_port.lock() != reply->importance ||
+                    importance.target() != destination->importance)
+                    return false;
+                if (!importance.donating() || reply->receive_owner != sender)
+                    return true;
+                const auto target = provider(entry.destination);
+                if (!target)
+                    return true;
+                const auto server = state.processes.find(*target);
+                if (server == state.processes.end() || server->second.exited ||
+                    server->second.pid_suspended || server->second.signal_stopped ||
+                    server->second.execution_policy->qos_policy().background ||
+                    !server->second.execution_policy->importance()->boosted())
+                    return true;
+                if (std::find(dependencies.begin(), dependencies.end(), *target) ==
+                    dependencies.end())
+                    dependencies.push_back(*target);
+                return true;
+            });
+    } catch (const std::bad_alloc&) {
+        dependencies.clear();
+    }
+    return dependencies;
+}
+
+std::vector<std::uint32_t> CompatibilityKernel::queued_mach_dependency_providers()
+{
+    std::lock_guard kernel_lock { mutex_ };
+    std::lock_guard mach_lock { shared_state_->mach_mutex };
+    return mach_ipc_dependency_providers_locked(*shared_state_, process_.pid);
+}
+
 bool CompatibilityKernel::mach_receive_poll_required_locked(
     const PendingMachReceive& pending, std::uint64_t now) const
 {

@@ -564,6 +564,7 @@ public:
     bool deliver_pending_io(Cpu& cpu);
     [[nodiscard]] std::optional<std::size_t> pending_mach_receiver_processor(
         std::uint32_t object);
+    [[nodiscard]] std::vector<std::uint32_t> queued_mach_dependency_providers();
     // Scheduler-facing event dispatch. A guest thread can block in only one
     // syscall at a time, so this avoids probing every unrelated pending table.
     bool deliver_pending_event(Cpu& cpu);

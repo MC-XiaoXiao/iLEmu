@@ -35,6 +35,7 @@
 #include "kernel/mach_voucher_state.hpp"
 #include "kernel/mach_message_qos.hpp"
 #include "kernel/mach_thread_objects.hpp"
+#include "kernel/mach_ipc_dependencies.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/compass_device.hpp"
@@ -1507,6 +1508,10 @@ struct KernelSharedState {
     // thread slot. Task-local names are produced only when a caller receives
     // task_threads(), preserving ipc_space separation.
     MachThreadObjectRegistry task_thread_port_objects;
+    QueuedMachDependencies queued_mach_dependencies;
+    // launchd's actual temporary-owner binding; the importance model remains
+    // authoritative when a port changes owner, enters transit or is rebound.
+    std::map<std::uint32_t, std::uint32_t> mach_importance_watch_tasks;
     std::map<std::uint32_t, std::map<std::uint32_t, std::uint32_t>>
         task_special_ports;
     std::map<std::uint32_t, std::uint32_t> host_special_ports;

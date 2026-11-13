@@ -633,6 +633,7 @@ namespace mach_support {
         state.task_port_pids.erase(object);
         state.task_name_port_pids.erase(object);
         state.task_thread_port_objects.erase_object(object);
+        state.mach_importance_watch_tasks.erase(object);
         // Surviving slots retain dead ipc_port identities. copy_send returns
         // DEAD while write-once slots still reject replacing that pointer.
         // Destroying the owning task releases every kernel-held send.
@@ -887,6 +888,9 @@ namespace mach_support {
         for (const auto object : released_kernel_ports)
             release_kernel_send_right_locked(state, object);
         state.task_thread_port_objects.erase_task(pid);
+        state.queued_mach_dependencies.erase_sender(pid);
+        std::erase_if(state.mach_importance_watch_tasks,
+            [pid](const auto& entry) { return entry.second == pid; });
         std::erase_if(state.task_port_pids,
             [pid](const auto& entry) { return entry.second == pid; });
         std::erase_if(state.task_name_port_pids,

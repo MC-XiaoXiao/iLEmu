@@ -35,6 +35,7 @@ struct GuestDispatchObservation {
     std::optional<XnuThreadId> frame_dependency_thread;
     std::optional<XnuThreadId> input_target_thread;
     std::optional<XnuThreadId> queued_input_thread;
+    std::optional<XnuThreadId> ipc_dependency_thread;
     std::optional<std::uint32_t> input_receiver_process;
     std::optional<std::uint32_t> foreground_transition_process;
     std::optional<std::uint32_t> active_process;
@@ -63,6 +64,7 @@ enum class GuestDispatchReason : std::uint8_t {
     HostContinuation,
     ForegroundProcess,
     QueuedInput,
+    IpcDependency,
 };
 
 struct GuestDispatchDecision {

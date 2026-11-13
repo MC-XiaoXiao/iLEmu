@@ -114,6 +114,7 @@ public:
     void set_owner(std::shared_ptr<TaskImportance> owner);
     void set_temporary_owner();
     bool set_watch_task(std::shared_ptr<TaskImportance> task);
+    [[nodiscard]] std::shared_ptr<TaskImportance> receiver_task() const;
     void set_transit(std::shared_ptr<ImportancePort> destination);
     void clear_receiver();
     void deactivate();

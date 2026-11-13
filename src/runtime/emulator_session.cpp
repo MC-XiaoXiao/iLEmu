@@ -3897,6 +3897,15 @@ void EmulatorSession::run()
                     prefer_runnable(display.callback);
             }
         }
+        std::optional<XnuThreadId> ipc_dependency_thread;
+        if (const auto client =
+                initial_runtime->kernel->foreground_application_process_id()) {
+            if (auto* runtime = runtime_index.find(*client)) {
+                const auto providers = runtime->kernel->queued_mach_dependency_providers();
+                ipc_dependency_thread = scheduler.oldest_runnable_thread(
+                    std::span<const std::uint32_t> { providers });
+            }
+        }
         const auto host_continuation = guest_execution_policy.host_continuation(
             scheduler, dispatch_now);
         const auto dispatch = guest_dispatch_policy.decide(scheduler,
@@ -3912,6 +3921,7 @@ void EmulatorSession::run()
                 .frame_dependency_thread = frame_dependency_thread,
                 .input_target_thread = input_preferred_thread,
                 .queued_input_thread = queued_input_thread,
+                .ipc_dependency_thread = ipc_dependency_thread,
                 .input_receiver_process = input_receiver_process,
                 .foreground_transition_process = transition_process,
                 .active_process = active_process,

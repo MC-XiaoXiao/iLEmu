@@ -335,6 +335,19 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
             *shared_state_, *clock_service, queued);
         remote_object = destination.value_or(0U);
     } else {
+        try {
+            if (queued.reply_object && queued.importance) {
+                const auto reply = shared_state_->mach_port_objects.lookup(*queued.reply_object);
+                if (reply) {
+                    shared_state_->queued_mach_dependencies.track(process_.pid,
+                        queued.destination, *queued.reply_object,
+                        process_.execution_policy->importance(), reply->importance,
+                        queued.importance);
+                }
+            }
+        } catch (const std::bad_alloc&) {
+            // A reply-port snapshot is optional host dispatch metadata too.
+        }
         mach_transport::trace_foreground_message(*shared_state_, output_, queued,
             process_.pid, cpu.processor_id(), registers[1], "send");
         shared_state_->enqueue_mach_message_locked(

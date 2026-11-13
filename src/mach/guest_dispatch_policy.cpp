@@ -174,7 +174,8 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
     };
     const auto realtime = [&](std::optional<XnuThreadId> thread,
                               GuestDispatchReason reason) {
-        if (reason != GuestDispatchReason::QueuedInput && thread &&
+        if (reason != GuestDispatchReason::QueuedInput &&
+            reason != GuestDispatchReason::IpcDependency && thread &&
             observation.active_process == thread->process &&
             (!observation.foreground_transition_process ||
                 observation.foreground_transition_process == thread->process)) {
@@ -265,6 +266,15 @@ GuestDispatchDecision GuestDispatchPolicy::decide_hint(
         // realtime dependency budget rather than renewing an input burst.
         return realtime(observation.queued_input_thread,
             GuestDispatchReason::QueuedInput);
+    }
+
+    if (observation.ipc_dependency_thread &&
+        runnable(scheduler, *observation.ipc_dependency_thread)) {
+        // Native importance already identifies a live queued request from
+        // the foreground task. Async workers need no invented wait linkage;
+        // share the existing bounded dependency budget with input/display.
+        return realtime(observation.ipc_dependency_thread,
+            GuestDispatchReason::IpcDependency);
     }
 
     if (!observation.active_process && input_target_burst_ == 0U) {
