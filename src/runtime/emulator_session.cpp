@@ -107,6 +107,44 @@
 namespace ilemu {
 using namespace runtime_detail;
 namespace {
+    // CPU run intervals exclude the serial host work between execution windows.
+    // Retain exceptional gaps even when the bounded per-source table rolls over.
+    class SerialPhaseDiagnostics {
+    public:
+        explicit SerialPhaseDiagnostics(Output& output)
+            : output_ { output }
+            , enabled_ { performance_counters().cpu_source_diagnostics_enabled() }
+        {
+            if (enabled_)
+                started_ = std::chrono::steady_clock::now();
+        }
+
+        ~SerialPhaseDiagnostics() { checkpoint({ }); }
+
+        void checkpoint(std::string_view phase)
+        {
+            if (!enabled_)
+                return;
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed = std::chrono::duration_cast<
+                std::chrono::nanoseconds>(now - started_).count();
+            if (!phase_.empty() && elapsed >= 50'000'000) {
+                output_.line("[perf] serial-stall phase=" + std::string { phase_ } +
+                    " started-ns=" + std::to_string(std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(started_.time_since_epoch()).count()) +
+                    " elapsed-ns=" + std::to_string(elapsed));
+            }
+            phase_ = phase;
+            started_ = now;
+        }
+
+    private:
+        Output& output_;
+        bool enabled_;
+        std::string_view phase_ { "host-events" };
+        std::chrono::steady_clock::time_point started_;
+    };
+
     // Mixed host-control and debugger sessions use a bounded poll fallback.
     constexpr auto host_event_poll_fallback = std::chrono::milliseconds { 4 };
     struct PreparedGuestSlice {
@@ -2953,6 +2991,7 @@ void EmulatorSession::run()
     while ((!bounded_execution || remaining_ticks != 0) &&
            !initial_runtime->kernel->process().exited && !hard_stop &&
            !host.stop_requested()) {
+        SerialPhaseDiagnostics serial_phase { output };
         // run() has collected every request from the previous turn. Release
         // its state before lifecycle servicing while retaining batch capacity.
         execution_requests.clear();
@@ -3507,6 +3546,7 @@ void EmulatorSession::run()
                 }
             }
         }
+        serial_phase.checkpoint("pacing");
         // Completing a blocked send can make receivers ready after their
         // candidate lists were sampled. Revisit that generation before
         // advancing idle time or running a syscall without its copyout.
@@ -3545,6 +3585,7 @@ void EmulatorSession::run()
                 continue;
             }
         }
+        serial_phase.checkpoint("lifecycle");
         // XNU keeps a compact zombie process record until its parent waits, but
         // the dead task's translated host code has no guest-visible lifetime.
         // Give the compositor a short, generic grace interval before background
@@ -3660,6 +3701,7 @@ void EmulatorSession::run()
                 ++runtime;
             }
         }
+        serial_phase.checkpoint("dispatch");
         const auto display_dispatch_snapshot = [&]() {
             if (display_urgent_process) {
                 if (auto* runtime = runtime_index.find(*display_urgent_process);
@@ -4203,6 +4245,7 @@ void EmulatorSession::run()
         // Retain the accumulated prefix while a serial window resumes. Kernel
         // statistics and retirement queries reuse the existing pending-tick view.
         pending_kernel_entries = prepared_slices;
+        serial_phase.checkpoint("guest-execution");
         if (parallel_guest_batch) {
             for (auto& prepared : prepared_slices)
                 execution_requests.push_back(&prepared.execution);
@@ -4216,6 +4259,7 @@ void EmulatorSession::run()
             }
         }
 
+        serial_phase.checkpoint("kernel-commit");
         // Guest dyld can publish its fixed shared-cache mappings from an SVC.
         // Observe that publication only after every Cpu::run has returned: the
         // profile queue has its own lock, while executing JIT callbacks must
@@ -4617,6 +4661,7 @@ void EmulatorSession::run()
             if (hard_stop)
                 break;
         }
+        serial_phase.checkpoint("display-refresh");
         if (device_time_policy == DeviceTimePolicy::DeterministicExecution) {
             // Bounded runs derive DeterministicTime from executed guest ticks.
             // CPU usage and quantum accounting already happened in
@@ -4748,6 +4793,7 @@ void EmulatorSession::run()
             schedule_jit_profile_work(
                 observation, host_compile_deadline, false);
         }
+        serial_phase.checkpoint({ });
         if (!ran_thread) {
             constexpr auto jit_quota_refresh_period =
                 std::chrono::milliseconds { 250 };

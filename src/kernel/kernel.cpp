@@ -133,17 +133,21 @@ namespace {
     class SvcDispatchDiagnostics {
     public:
         SvcDispatchDiagnostics(
-            std::uint32_t process_id, const Cpu& cpu, std::uint32_t immediate)
+            Output& output, std::uint32_t process_id, const Cpu& cpu,
+            std::uint32_t immediate)
             : enabled_ {
                 performance_counters().cpu_source_diagnostics_enabled()
             }
             , process_id_ { process_id }
+            , output_ { output }
         {
             if (!enabled_)
                 return;
             const auto [kind, number] = svc_diagnostic_source(cpu, immediate);
             kind_ = kind;
             number_ = number;
+            processor_ = cpu.processor_id();
+            pc_ = cpu.registers()[15];
             started_ = std::chrono::steady_clock::now();
         }
 
@@ -162,6 +166,19 @@ namespace {
                 static_cast<std::uint64_t>(elapsed.count());
             performance_counters().record_diagnostic_svc_dispatch(
                 kind_, process_id_, number_, nanoseconds);
+            // One-shot slow calls can be evicted from the bounded source table
+            // by per-generation scheduler records before a window is printed.
+            if (nanoseconds >= 50'000'000U) {
+                output_.line("[perf] kernel-stall pid=" +
+                    std::to_string(process_id_) + " processor=" +
+                    std::to_string(processor_) + " kind=" +
+                    std::to_string(static_cast<unsigned>(kind_)) +
+                    " number=" + std::to_string(number_) + " pc=" +
+                    std::to_string(pc_) + " started-ns=" +
+                    std::to_string(std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(started_.time_since_epoch()).count()) +
+                    " elapsed-ns=" + std::to_string(nanoseconds));
+            }
         }
 
     private:
@@ -169,6 +186,9 @@ namespace {
         PerfDiagnosticSourceKind kind_ { };
         std::uint32_t process_id_ { };
         std::uint32_t number_ { };
+        Output& output_;
+        std::size_t processor_ { };
+        std::uint32_t pc_ { };
         std::chrono::steady_clock::time_point started_;
     };
 
@@ -3572,7 +3592,7 @@ void CompatibilityKernel::inherit_process_state(
 
 void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
 {
-    const SvcDispatchDiagnostics diagnostics { process_.pid, cpu,
+    const SvcDispatchDiagnostics diagnostics { output_, process_.pid, cpu,
         svc_immediate };
     std::optional<BsdSyscallContext> bsd_entry;
     // Guest kernel entries conservatively invalidate timer topology. I/O
