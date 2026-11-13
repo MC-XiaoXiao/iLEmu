@@ -219,7 +219,8 @@ void CompatibilityKernel::service_file_io()
         if (!operation->ready() ||
             (!operation->abandoned && operation->owner != process_.pid))
             break;
-        const auto host_error = operation->cancelled || operation->error ? 0
+        const auto host_error = operation->cancelled || operation->error ||
+                operation->host_work ? 0
                                 : operation->sync_request
                                     ? *operation->sync_request->result()
                                     : operation->request->error();
@@ -231,6 +232,9 @@ void CompatibilityKernel::service_file_io()
         } else if (host_error) {
             operation->error = bsd_support::darwin_filesystem_error(
                 std::error_code { host_error, std::generic_category() });
+        } else if (operation->kind == FileIoOperation::Kind::HostCall) {
+            operation->host_complete(
+                *operation, operation->abandoned ? nullptr : &memory_);
         } else if (operation->kind == FileIoOperation::Kind::Synchronize) {
             operation->result = 0;
         } else {
@@ -280,6 +284,9 @@ void CompatibilityKernel::service_file_io()
         operation->admit_write = {};
         operation->request.reset();
         operation->sync_request.reset();
+        operation->host_work.reset();
+        operation->host_call = {};
+        operation->host_complete = {};
         operation->description.reset();
         operation->mapping_identity.reset();
         operation->committed = true;

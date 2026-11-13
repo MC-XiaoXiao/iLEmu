@@ -20,6 +20,9 @@
 namespace ilemu::bsd_support {
 
 [[nodiscard]] bool is_virtual_character_device(std::string_view descriptor_kind);
+[[nodiscard]] std::filesystem::path resolve_guest_path(
+    const std::filesystem::path& root, const std::filesystem::path& directory,
+    std::string_view path, bool follow_final_symlink);
 
 inline constexpr std::uint32_t carry_flag = 1U << 29U;
 inline constexpr std::uint32_t bad_file_descriptor = 9;

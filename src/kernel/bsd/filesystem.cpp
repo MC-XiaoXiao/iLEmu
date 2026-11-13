@@ -140,6 +140,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         filesystem_dispatch_conflicts_with_rename(cpu, number) &&
         defer_filesystem_dispatch(cpu, number))
         return;
+    if (number == 136U || number == 475U || number == 220U) {
+        dispatch_bsd_filesystem_metadata(cpu, number);
+        return;
+    }
     if (dispatch_bsd_directory(cpu, number))
         return;
     if (dispatch_bsd_filesystem_control(cpu, number)) {
@@ -912,75 +916,6 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
     case 128: // rename
         dispatch_bsd_filesystem_rename(cpu);
         return;
-    case 136: // mkdir
-    case 475: { // mkdirat
-        const auto path = number == 475
-            ? read_guest_path_at(cpu, registers[0], registers[1])
-            : memory_.read_c_string(registers[0]);
-        if (!path) {
-            if (number == 136)
-                bsd_error(cpu, bsd_support::bad_address);
-            return;
-        }
-        const auto mode = registers[number == 475 ? 2 : 1];
-        const auto host = resolve_guest_path(cpu, *path);
-        std::error_code error;
-        {
-            std::lock_guard filesystem_lock { shared_state_->filesystem_mutex };
-            if (std::filesystem::exists(host, error)) {
-                bsd_error(cpu, 17); // EEXIST
-                return;
-            }
-            error.clear();
-            if (!std::filesystem::is_directory(host.parent_path(), error)) {
-                bsd_error(cpu, 2); // ENOENT
-                return;
-            }
-            error.clear();
-            if (const auto quota_error = charge_quota(host, process_.effective_uid,
-                    process_.effective_gid, 0, 1)) {
-                bsd_error(cpu, quota_error);
-                return;
-            }
-            if (!std::filesystem::create_directory(host, error)) {
-                static_cast<void>(charge_quota(host, process_.effective_uid,
-                    process_.effective_gid, 0, -1, true));
-                bsd_error(
-                    cpu, error == std::errc::permission_denied ? 13U : 5U);
-                return;
-            }
-        }
-        {
-            const auto timestamp =
-                bsd_support::guest_filesystem_timestamp(shared_state_->clock);
-            const auto metadata = hfs_metadata_.query(host, true);
-            if (!metadata) {
-                bsd_error(cpu, 5);
-                return;
-            }
-            const std::lock_guard filesystem_lock {
-                shared_state_->filesystem_mutex
-            };
-            auto& metadata_override =
-                shared_state_->hfs_metadata_overrides[metadata->host_identity];
-            metadata_override.observe(*metadata);
-            metadata_override.mode =
-                0040000U | (mode & ~process_.file_creation_mask & 07777U);
-            metadata_override.owner = process_.effective_uid;
-            metadata_override.group = process_.effective_gid;
-            metadata_override.creation_time = timestamp;
-            metadata_override.modification_time = timestamp;
-            metadata_override.change_time = timestamp;
-            persist_hfs_metadata(*metadata, metadata_override);
-        }
-        shared_state_->guest_file_generation_registry->publish_subtree_create(
-            host);
-        directory_entries_cache_.clear();
-        output_.write("[vfs] mkdir " + *path +
-                      " mode=" + std::to_string(mode & 07777U) + "\n");
-        bsd_success(cpu, 0);
-        return;
-    }
     case 137: { // rmdir
         const auto path = memory_.read_c_string(registers[0]);
         if (!path) {
@@ -1560,98 +1495,6 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         const auto result = static_cast<std::uint64_t>(position);
         bsd_success(cpu, static_cast<std::uint32_t>(result),
             static_cast<std::uint32_t>(result >> 32U));
-        return;
-    }
-    case 220: { // getattrlist (HFS/HFS+ metadata interface)
-        const auto path = memory_.read_c_string(registers[0]);
-        const auto bitmap_count = memory_.read16(registers[1]);
-        if (!path || !bitmap_count || *bitmap_count != 5) {
-            bsd_error(cpu, path && bitmap_count ? bsd_support::invalid_argument
-                                                : bsd_support::bad_address);
-            return;
-        }
-        std::array<std::uint32_t, 5> masks { };
-        for (std::uint32_t index = 0; index < 5; ++index) {
-            const auto mask = memory_.read32(registers[1] + 4U + index * 4U);
-            if (!mask) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            masks[index] = *mask;
-        }
-        const hfs::AttributeRequest request { masks[0], masks[1], masks[2],
-            masks[3], masks[4] };
-        if (!hfs::MetadataProvider::valid_request(request)) {
-            std::ostringstream message;
-            message << "[hfs] invalid getattrlist " << *path << " masks";
-            for (const auto mask : masks)
-                message << " 0x" << std::hex << mask;
-            message << std::dec << '\n';
-            output_.write(message.str());
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return;
-        }
-        constexpr std::uint32_t fsopt_common_extended = 0x00000020U;
-        constexpr std::uint32_t common_repurposed_attributes = 0x00180000U;
-        if (request.volume == 0 &&
-            (request.common & common_repurposed_attributes) != 0U &&
-            (registers[4] & fsopt_common_extended) == 0U) {
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return;
-        }
-        constexpr std::uint32_t fsopt_nofollow = 0x00000001U;
-        constexpr std::uint32_t fsopt_report_full_size = 0x00000004U;
-        constexpr std::uint32_t fsopt_pack_invalid_attributes = 0x00000008U;
-        if ((registers[4] & fsopt_pack_invalid_attributes) != 0U &&
-            (request.common & hfs::attribute::common_returned_attributes) == 0U) {
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return;
-        }
-        const auto follow_symlink = (registers[4] & fsopt_nofollow) == 0;
-        const auto host_path = resolve_guest_path(cpu, *path, follow_symlink);
-        const auto metadata = query_hfs_metadata(host_path, follow_symlink);
-        if (!metadata) {
-            bsd_error(cpu, 2);
-            return;
-        }
-        const auto& volume = hfs_volumes_.for_guest_path(*path);
-        if (request.volume != 0 && !hfs_volumes_.is_mount_root(*path)) {
-            bsd_error(cpu, bsd_support::invalid_argument);
-            return;
-        }
-        const auto guest_path =
-            (std::filesystem::path { "/" } / host_path.lexically_relative(rootfs_))
-                .lexically_normal().generic_string();
-        const auto returned_attributes =
-            (request.common & hfs::attribute::common_returned_attributes) != 0U;
-        auto result = request.volume != 0
-            ? hfs::MetadataProvider::pack_volume_attributes(
-                  *metadata, volume, request)
-            : returned_attributes
-                ? hfs::MetadataProvider::pack_returned_attributes(*metadata,
-                      request, guest_path,
-                      (registers[4] & fsopt_pack_invalid_attributes) != 0U)
-                : hfs::MetadataProvider::pack_attributes(
-                      *metadata, request, guest_path);
-        const auto full_size = static_cast<std::uint32_t>(result.size());
-        if (result.size() > registers[3]) {
-            result.resize(registers[3]);
-        }
-        if (result.size() >= sizeof(std::uint32_t)) {
-            const auto reported_size =
-                (registers[4] & fsopt_report_full_size) != 0
-                    ? full_size
-                    : static_cast<std::uint32_t>(result.size());
-            for (std::size_t byte = 0; byte < sizeof(std::uint32_t); ++byte) {
-                result[byte] =
-                    static_cast<std::byte>(reported_size >> (byte * 8U));
-            }
-        }
-        if (!memory_.copy_to_user(registers[2], result)) {
-            bsd_error(cpu, bsd_support::bad_address);
-            return;
-        }
-        bsd_success(cpu, 0);
         return;
     }
     case 221: { // setattrlist

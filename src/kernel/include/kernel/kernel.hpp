@@ -685,6 +685,7 @@ private:
     [[nodiscard]] bool service_bsd_workqueue(Cpu* requesting_cpu);
     [[nodiscard]] DarwinPthreadRuntime::ActiveWorkers workqueue_active_workers(
         std::optional<std::uint32_t> returning_processor = std::nullopt) const;
+    void dispatch_bsd_filesystem_metadata(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool request_workqueue_kevents(Cpu* requesting_cpu);
     [[nodiscard]] bool prepare_workqueue_kevent_upcall(
         std::array<std::uint32_t, 16>& state,

@@ -18,6 +18,7 @@
 #include "foundation/application_path.hpp"
 #include "device_state/darwin_kernel_identity.hpp"
 #include "foundation/rootfs_path_resolver.hpp"
+#include "bsd/support.hpp"
 
 #include "storage/app_support_hle.hpp"
 #include "bluetooth/bluetooth_manager_hle.hpp"
@@ -4019,17 +4020,8 @@ std::filesystem::path CompatibilityKernel::resolve_guest_path(
     const std::string& path, bool follow_final_symlink,
     std::optional<std::size_t> processor) const
 {
-    constexpr std::string_view resource_fork_suffix { "/..namedfork/rsrc" };
-    if (path.ends_with(resource_fork_suffix)) {
-        auto data_path =
-            path.substr(0, path.size() - resource_fork_suffix.size());
-        if (data_path.empty())
-            data_path = "/";
-        return hfs::MetadataProvider::resource_sidecar(
-            resolve_guest_path(data_path, true, processor));
-    }
-    return RootfsPathResolver { rootfs_ }.resolve(
-        path, working_directory(processor), follow_final_symlink);
+    return bsd_support::resolve_guest_path(
+        rootfs_, working_directory(processor), path, follow_final_symlink);
 }
 
 std::optional<hfs::Metadata> CompatibilityKernel::query_hfs_metadata(

@@ -8,7 +8,8 @@ namespace ilemu {
 bool FileIoOperation::ready() const
 {
     return cancelled || error ||
-           (sync_request ? sync_request->result().has_value()
+           (host_work ? host_work->finished()
+            : sync_request ? sync_request->result().has_value()
                          : request && request->ready());
 }
 bool FileIoQueue::admits(std::size_t size) const
@@ -45,7 +46,14 @@ void FileIoQueue::start()
     auto& operation = *operations_.front();
     if (operation.cancelled || operation.error)
         return;
-    if (operation.kind == FileIoOperation::Kind::Synchronize) {
+    if (operation.kind == FileIoOperation::Kind::HostCall) {
+        if (!metadata_worker_)
+            metadata_worker_ = std::make_unique<HostResourceController>();
+        operation.host_work = metadata_worker_->submit(
+            HostWorkKind::Maintenance, std::nullopt, operation.host_call);
+        if (!operation.host_work)
+            operation.error = darwin::error::io;
+    } else if (operation.kind == FileIoOperation::Kind::Synchronize) {
         if (!synchronizer_)
             synchronizer_ = std::make_unique<HostFileSynchronizer>();
         operation.sync_request = synchronizer_->synchronize(
@@ -72,7 +80,8 @@ void FileIoQueue::start()
 void FileIoQueue::start_ready()
 {
     if (!operations_.empty() && !operations_.front()->committed &&
-        !operations_.front()->request && !operations_.front()->sync_request)
+        !operations_.front()->request && !operations_.front()->sync_request &&
+        !operations_.front()->host_work)
         start();
 }
 void FileIoQueue::repeat_write(FileIoOperation& operation)
@@ -106,7 +115,8 @@ void FileIoQueue::abandon(std::uint32_t owner)
         for (const auto& operation : *list)
             if (operation->owner == owner) {
                 operation->abandoned = true;
-                if (!operation->request && !operation->sync_request)
+                if (!operation->request && !operation->sync_request &&
+                    !operation->host_work)
                     operation->cancelled = true;
             }
 }

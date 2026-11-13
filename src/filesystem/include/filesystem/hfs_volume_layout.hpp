@@ -39,6 +39,14 @@ public:
     [[nodiscard]] const VolumeMetadata& for_mounted_device(
         std::string_view device) const;
     [[nodiscard]] bool is_mount_root(std::string_view path) const;
+    // Host namespace work keeps its own volume records while sharing the
+    // quota ledger, whose updates are serialized internally.
+    [[nodiscard]] VolumeLayout snapshot() const
+    {
+        auto result = *this;
+        result.volumes_ = std::make_shared<std::vector<VolumeMetadata>>(*volumes_);
+        return result;
+    }
     [[nodiscard]] std::span<const VolumeMetadata> volumes() const
     {
         for (auto& volume : *volumes_)

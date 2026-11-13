@@ -14,7 +14,7 @@
 
 namespace ilemu {
 struct FileIoOperation {
-    enum class Kind { Read, Write, Synchronize, MappingSync };
+    enum class Kind { Read, Write, Synchronize, MappingSync, HostCall };
     Kind kind;
     std::uint32_t owner;
     std::uint32_t descriptor;
@@ -33,6 +33,9 @@ struct FileIoOperation {
     std::shared_ptr<HostFileIoRequest> request;
     std::shared_ptr<HostFileSyncRequest> sync_request;
     std::shared_ptr<FileWritebackRequest> mapping_sync;
+    std::shared_ptr<HostWorkToken> host_work;
+    std::function<void()> host_call;
+    std::function<void(FileIoOperation&, AddressSpace*)> host_complete;
     std::uint32_t notification_signal { };
     std::int32_t result { -1 };
     std::uint32_t error { };
@@ -87,6 +90,7 @@ private:
     std::deque<std::shared_ptr<FileIoOperation>> admissions_;
     std::unique_ptr<HostFileIo> io_;
     std::unique_ptr<HostFileSynchronizer> synchronizer_;
+    std::unique_ptr<HostResourceController> metadata_worker_;
     std::shared_ptr<HostSharedFileWriter> shared_file_writer_;
 };
 } // namespace ilemu

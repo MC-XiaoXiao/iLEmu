@@ -6,10 +6,26 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-3248.60.10/bsd/vfs/vfs_syscalls.c
 
 #include "kernel/kernel.hpp"
+#include "foundation/rootfs_path_resolver.hpp"
 
 #include "../support.hpp"
 
 namespace ilemu {
+std::filesystem::path bsd_support::resolve_guest_path(
+    const std::filesystem::path& root, const std::filesystem::path& directory,
+    std::string_view path, bool follow_final_symlink)
+{
+    constexpr std::string_view suffix { "/..namedfork/rsrc" };
+    if (path.ends_with(suffix)) {
+        auto data_path = path.substr(0, path.size() - suffix.size());
+        if (data_path.empty())
+            data_path = "/";
+        return hfs::MetadataProvider::resource_sidecar(
+            RootfsPathResolver { root }.resolve(data_path, directory, true));
+    }
+    return RootfsPathResolver { root }.resolve(path, directory, follow_final_symlink);
+}
+
 
 const std::filesystem::path& CompatibilityKernel::working_directory(
     std::optional<std::size_t> processor) const
