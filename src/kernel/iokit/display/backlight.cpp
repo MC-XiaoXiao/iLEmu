@@ -80,7 +80,7 @@ void BacklightControl::publish(KernelSharedState::IOKitService& service)
     // Native HID uses this hardware table for slider/luminance conversion.
     // Keep its peak in agreement with the virtual panel's nits interface.
     Property marketing { Property::Kind::Data, { } };
-    for (const auto nits : { 5U, 140U, PanelBacklight::peak_luminance_nits }) {
+    for (const auto nits : { 50U, 140U, PanelBacklight::peak_luminance_nits }) {
         const auto encoded = number(nits << 16U).value;
         marketing.value.insert(
             marketing.value.end(), encoded.begin(), encoded.end());
