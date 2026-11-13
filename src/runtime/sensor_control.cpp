@@ -29,11 +29,13 @@ void sensor_control(
                      << " accuracy=" << sample->accuracy;
             output.marker(line.str());
         }
+        output.marker("[control] sensor ambient lux=" +
+                      std::to_string(input.ambient_light()));
         const auto fix = input.location();
         std::ostringstream line;
         line.precision(10);
-        line << "[control] sensor location available=" << input.location_available()
-             << " fresh=" << fix.has_value();
+        line << "[control] sensor location available="
+             << input.location_available() << " fresh=" << fix.has_value();
         if (fix)
             line << " latitude=" << fix->latitude
                  << " longitude=" << fix->longitude
@@ -41,6 +43,16 @@ void sensor_control(
                  << " unix-time=" << fix->unix_time_seconds;
         output.marker(line.str());
         return;
+    }
+    if (operation == "ambient") {
+        std::uint32_t lux;
+        std::string trailing;
+        if ((parser >> lux) && !(parser >> trailing)) {
+            input.set_ambient_light(lux);
+            output.marker(
+                "[control] sensor ambient lux=" + std::to_string(lux));
+            return;
+        }
     }
     for (std::size_t i = 0; i < names.size(); ++i) {
         if (operation != names[i])
@@ -57,11 +69,13 @@ void sensor_control(
                 .count();
         const auto kind = static_cast<MotionSensor>(i);
         input.set_available(kind, true);
-        output.marker(input.publish(kind, sample) ? "[control] sensor sample accepted"
-                                                  : "[control] sensor sample rejected");
+        output.marker(input.publish(kind, sample)
+                          ? "[control] sensor sample accepted"
+                          : "[control] sensor sample rejected");
         return;
     }
-    output.marker("[control] error: sensor [status|acceleration X Y Z|gyro X Y "
+    output.marker("[control] error: sensor [status|ambient LUX|acceleration X "
+                  "Y Z|gyro X Y "
                   "Z|magnetic X Y Z]");
 }
 }

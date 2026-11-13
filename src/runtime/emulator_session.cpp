@@ -3391,7 +3391,7 @@ void EmulatorSession::run()
                         "ringer ring|silent; "
                         "snapshot-sequence PATH-PREFIX INTERVAL-MS COUNT; "
                         "perf-begin LABEL; perf-end; "
-                        "sensor [status|acceleration X Y Z|gyro X Y Z|magnetic X Y Z]; "
+                        "sensor [status|ambient LUX|acceleration X Y Z|gyro X Y Z|magnetic X Y Z]; "
                         "status; ps [PID|NAME]; threads PID|NAME; quit");
                     break;
                 case LiveControlCommandKind::Quit:
