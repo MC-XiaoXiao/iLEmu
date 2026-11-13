@@ -1767,6 +1767,9 @@ struct KernelSharedState {
     // exists. Spawn consumes this candidate; Home cancels it, while Lock keeps
     // an in-flight selection available for the existing held-launch path.
     std::optional<std::uint64_t> pending_application_launch_touch_sequence;
+    // A delayed SETEXEC in an older background child cannot have been caused
+    // by this physical gesture. Exact PID-owned handoffs remain independent.
+    std::uint64_t pending_application_launch_incarnation_boundary { };
     std::uint64_t next_process_incarnation { 1 };
     std::uint32_t next_audit_identity_version { 1 };
     std::uint64_t next_foreground_transition_generation { 1 };

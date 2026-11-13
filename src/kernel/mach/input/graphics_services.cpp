@@ -1889,15 +1889,22 @@ void record_application_spawn(KernelSharedState& state,
     // child, so that successful child has parent PID 1 rather than the
     // SpringBoard PID. Keep this exception causal: a SETEXEC application is
     // foreground-observable only while a physical touch or exact handoff is
-    // still pending. Diagnostic input completion is not foreground intent.
+    // still pending. A child created before the touch cannot claim it merely
+    // because its background initialization delayed SETEXEC. Diagnostic input
+    // completion is not foreground intent.
     // Ordinary/background launches retain the sender guard.
     const auto exact_foreground_handoff =
         state.foreground_application_attempt_process_id == process_id ||
         state.pending_application_handoff_process_id == process_id;
+    const auto process = state.processes.find(process_id);
+    const auto physical_launch_candidate =
+        state.pending_application_launch_touch_sequence &&
+        process != state.processes.end() &&
+        process->second.incarnation >=
+            state.pending_application_launch_incarnation_boundary;
     const auto causal_setexec_foreground =
         force_foreground &&
-        (state.pending_application_launch_touch_sequence ||
-            exact_foreground_handoff);
+        (physical_launch_candidate || exact_foreground_handoff);
     if ((!process_is_springboard_locked(state, sender_process_id) &&
             !causal_setexec_foreground) ||
         process_id == 0U || !is_application_executable_path(executable_path) ||
