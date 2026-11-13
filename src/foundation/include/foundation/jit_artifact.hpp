@@ -390,6 +390,11 @@ public:
     [[nodiscard]] JitArtifactLookup lookup(const JitArtifactKey& key,
         JitArtifactRetention retention = JitArtifactRetention::Normal,
         bool allow_disk_payload = true) const;
+    // Reuse a receipt only after every result from its previous lookup has
+    // completed. Independent lookups retain their own accounting state.
+    [[nodiscard]] JitArtifactLookup lookup(const JitArtifactKey& key,
+        JitArtifactRetention retention, bool allow_disk_payload,
+        const std::shared_ptr<JitArtifactLookupToken>& receipt) const;
     // Guest execution only submits and polls this bounded queue. The existing
     // low-priority persistence worker performs payload I/O and IR
     // deserialization, then publishes a one-shot prepared block for a later

@@ -768,8 +768,12 @@ public:
             const auto key = make_artifact_key(location_descriptor);
             if (!key)
                 return {};
+            if (!native_template_lookup_receipt_)
+                native_template_lookup_receipt_ =
+                    std::make_shared<JitArtifactLookupToken>();
             auto lookup = artifact_store_->lookup(
-                *key, artifact_retention_, false);
+                *key, artifact_retention_, false,
+                native_template_lookup_receipt_);
             if (!lookup || !lookup.artifact->data.native_template ||
                 lookup.artifact->data.native_template->LocationDescriptor() !=
                     location_descriptor ||
@@ -2247,6 +2251,7 @@ private:
     bool explicit_artifact_publication_ { };
     std::shared_ptr<const Dynarmic::A32::NativeCodeTemplate> produced_native_template_;
     JitArtifactLookup native_template_lookup_;
+    std::shared_ptr<JitArtifactLookupToken> native_template_lookup_receipt_;
     std::optional<std::uint64_t> portable_generation_location_;
     bool portable_generation_published_ { };
     Dynarmic::IR::Block* translation_block_ { };

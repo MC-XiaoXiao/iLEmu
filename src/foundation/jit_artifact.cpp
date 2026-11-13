@@ -2267,6 +2267,13 @@ JitArtifactStore::~JitArtifactStore()
 JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
     JitArtifactRetention retention, bool allow_disk_payload) const
 {
+    return lookup(key, retention, allow_disk_payload, {});
+}
+
+JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
+    JitArtifactRetention retention, bool allow_disk_payload,
+    const std::shared_ptr<JitArtifactLookupToken>& receipt) const
+{
     const auto record_disk_hit = [this, &key] {
         ++stats_.disk_hits;
         if (stats_.disk_hit_key_fingerprint_count <
@@ -2286,7 +2293,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
                (!left.checksum_valid || left.checksum == right.checksum);
     };
     constexpr unsigned maximum_record_attempts = 3U;
-    const auto make_lookup = [this, &key](
+    const auto make_lookup = [this, &key, &receipt](
                                  std::shared_ptr<const BlockArtifact> artifact,
                                  bool disk_hit,
                                  bool transient_failure = false) {
@@ -2314,7 +2321,12 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
             ++stats_.disk_prefetched_lookups;
             break;
         }
-        result.token = std::make_shared<JitArtifactLookupToken>();
+        if (receipt) {
+            receipt->state.store(0U, std::memory_order_relaxed);
+            result.token = receipt;
+        } else {
+            result.token = std::make_shared<JitArtifactLookupToken>();
+        }
         return result;
     };
     std::shared_ptr<DiskReadFlight> flight;
