@@ -371,6 +371,7 @@ void bind_bsd_entries(Table& table, DarwinVersion version)
     add(54, "ioctl", Handler::BsdEvents);
     add(darwin::syscall::poll, "poll", Handler::BsdEvents);
     add(93, "select", Handler::BsdEvents);
+    add(394, "pselect", Handler::BsdEvents);
     add(202, "__sysctl", Handler::BsdEvents);
     add(362, "kqueue", Handler::BsdKqueue);
     add(363, "kevent", Handler::BsdKqueue);

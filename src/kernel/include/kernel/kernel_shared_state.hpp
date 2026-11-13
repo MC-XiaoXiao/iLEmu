@@ -368,6 +368,7 @@ struct PendingSelect {
     std::vector<std::uint32_t> write_words;
     std::size_t processor { };
     std::optional<std::uint64_t> deadline;
+    bool temporary_mask { };
 };
 
 struct PendingPollEntry {

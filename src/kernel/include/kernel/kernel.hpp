@@ -773,6 +773,7 @@ private:
     void refresh_network_policy_clients();
     bool reject_guarded_descriptor(Cpu& cpu, std::uint32_t fd, std::uint32_t flags);
     void dispatch_bsd_events(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_select(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool ioctl_bpf_device(Cpu& cpu, std::uint32_t fd);
     [[nodiscard]] bool create_kernel_control_socket(Cpu& cpu);
     [[nodiscard]] bool connect_kernel_control_socket(Cpu& cpu);

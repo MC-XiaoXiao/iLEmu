@@ -2648,6 +2648,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
                     pending->second.write_words[word_index]) & (1U << bit);
                 if (requested && !descriptor_valid(fd)) {
                     bsd_error(cpu, ebadf);
+                    if (pending->second.temporary_mask)
+                        signal_state_.resume(cpu.processor_id());
                     pending_selects_.erase(pending);
                     process_.waiting_for_events = false;
                     cpu.clear_halt();
@@ -2700,6 +2702,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
             bsd_success(cpu, ready_count);
         else
             bsd_error(cpu, efault);
+        if (pending->second.temporary_mask)
+            signal_state_.resume(cpu.processor_id());
         pending_selects_.erase(pending);
         process_.waiting_for_events = false;
         cpu.clear_halt();

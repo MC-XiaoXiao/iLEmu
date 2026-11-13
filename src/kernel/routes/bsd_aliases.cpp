@@ -23,6 +23,7 @@ void bind_alias_entries(Table& table)
     };
     // Existing dispatcher aliases are ungated; cancellation behavior is not
     // newly implemented.
+    alias(395, 394U, "pselect_nocancel");
     alias(396, darwin::syscall::read, "read_nocancel");
     alias(397, darwin::syscall::write, "write_nocancel");
     alias(398, darwin::syscall::open, "open_nocancel");

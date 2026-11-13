@@ -101,6 +101,10 @@ public:
         static_cast<void>(update(processor, 3, value, Scope::Thread));
         threads_[processor].saved_mask = previous;
     }
+    [[nodiscard]] bool temporary_mask(std::size_t processor) const
+    {
+        return processor < threads_.size() && threads_[processor].saved_mask.has_value();
+    }
     void resume(std::size_t processor)
     {
         if (processor < threads_.size()) {

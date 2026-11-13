@@ -51,7 +51,7 @@ bool CompatibilityKernel::deliver_pending_signal(Cpu& cpu)
     const auto bit = 1U << (signal - 1U);
     const auto action = signal_actions_[signal];
     const auto return_mask = signal_state_.inherited_mask(processor);
-    const auto suspended = pending_signal_suspends_.contains(processor);
+    const auto suspended = signal_state_.temporary_mask(processor);
     const auto temporary_mask = signal_state_.mask(processor);
     bool completed = false;
     if (has_pending_event_locked(processor) || pending_waits_.contains(processor)) {
