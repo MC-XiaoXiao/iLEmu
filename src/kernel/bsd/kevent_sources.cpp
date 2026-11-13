@@ -61,6 +61,16 @@ CompatibilityKernel::kevent_source_state(
             .available = static_cast<std::uint32_t>(registration.data),
         };
     case filter_read:
+        if (const auto policy = network_policy_descriptors_.find(
+                static_cast<std::uint32_t>(registration.ident));
+            policy != network_policy_descriptors_.end()) {
+            return KeventSourceState {
+                .ready = policy->second->readable(),
+                .available = static_cast<std::uint32_t>(registration.data),
+                .generation = policy->second->generation(),
+            };
+        }
+        return std::nullopt;
     case filter_write:
     case filter_mach_port:
         return std::nullopt;

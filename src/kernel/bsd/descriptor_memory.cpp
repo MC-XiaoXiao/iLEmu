@@ -789,6 +789,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 bpf != bpf_descriptors_.end()) {
                 bpf_descriptors_[allocated] = bpf->second;
             }
+            if (const auto policy = network_policy_descriptors_.find(source);
+                policy != network_policy_descriptors_.end()) {
+                network_policy_descriptors_[allocated] = policy->second;
+            }
         } else {
             const auto original = duplicated_descriptors_.contains(source)
                                       ? duplicated_descriptors_.at(source)
@@ -1023,6 +1027,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             if (const auto bpf = bpf_descriptors_.find(source);
                 bpf != bpf_descriptors_.end()) {
                 bpf_descriptors_[destination] = bpf->second;
+            }
+            if (const auto policy = network_policy_descriptors_.find(source);
+                policy != network_policy_descriptors_.end()) {
+                network_policy_descriptors_[destination] = policy->second;
             }
             if (const auto event_stream =
                     wifi_driver_event_streams_.find(source);

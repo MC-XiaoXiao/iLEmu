@@ -769,7 +769,8 @@ private:
     void dispatch_bsd_socket(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t number);
-    void dispatch_bsd_network_policy(Cpu& cpu);
+    void dispatch_bsd_network_policy(Cpu& cpu, std::uint32_t number);
+    void refresh_network_policy_clients();
     bool reject_guarded_descriptor(Cpu& cpu, std::uint32_t fd, std::uint32_t flags);
     void dispatch_bsd_events(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool ioctl_bpf_device(Cpu& cpu, std::uint32_t fd);
@@ -1108,6 +1109,7 @@ private:
         bool ready { };
         std::uint32_t filter_flags { };
         std::uint32_t available { 1U };
+        std::uint64_t generation { };
         std::uint16_t result_flags { };
         // Acknowledge only generations represented by a successful copyout.
         std::uint64_t process_exec_generation { };
@@ -1250,6 +1252,8 @@ private:
     std::map<std::uint32_t, DarwinFileGuard> descriptor_guards_;
     std::map<std::uint32_t, AioCompletion> aio_completions_;
     std::unordered_map<std::uint32_t, std::string> virtual_descriptors_;
+    std::map<std::uint32_t, std::shared_ptr<darwin::necp::Clients::Session>>
+        network_policy_descriptors_;
     std::map<std::uint32_t, std::shared_ptr<SemaphoreState>> posix_semaphore_descriptors_;
     std::map<std::uint32_t,
         std::shared_ptr<bsd::baseband_device::OpenDescription>>

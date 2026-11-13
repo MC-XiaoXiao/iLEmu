@@ -105,8 +105,8 @@ BsdDispatchTable::Adapter BsdDispatchTable::adapter_for(
             static_cast<void>(kernel.dispatch_bsd_coalition(cpu));
         };
     case Handler::BsdNetworkPolicy:
-        return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t) {
-            static_cast<void>(kernel.dispatch_bsd_network_policy(cpu));
+        return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
+            kernel.dispatch_bsd_network_policy(cpu, number);
         };
     case Handler::BsdDirectoryAttributes:
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t) {

@@ -24,6 +24,7 @@
 #include <kernel/guest_receive_message.hpp>
 #include <kernel/guest_socket_address_output.hpp>
 #include <network/host_socket_events.hpp>
+#include <network/necp_client.hpp>
 
 #include "kernel/unix_socket_node.hpp"
 #include "kernel/ioaccel_event_abi.hpp"
@@ -197,6 +198,7 @@ struct KeventRegistration {
     // XNU defers deletion of a disabled EV_DISPATCH2 knote until EV_ENABLE.
     bool deferred_delete { };
     std::uint32_t clear_available { };
+    std::uint64_t clear_source_generation { };
     std::uint64_t process_exec_generation { };
     std::uint64_t process_exit_generation { };
     // EVFILT_MACHPORT readiness is immutable while its receive-object queue
@@ -768,7 +770,8 @@ struct KernelSharedState {
         [[nodiscard]] bool sendable_file_type() const
         {
             // Other represented descriptions are vnode, socket, pipe or shm.
-            return !posix_semaphore && virtual_type != "kqueue";
+            return !posix_semaphore && virtual_type != "kqueue" &&
+                virtual_type != "necp";
         }
     };
     struct SocketAncillaryRecord {
@@ -1286,6 +1289,9 @@ struct KernelSharedState {
     std::string hostname { "localhost" };
     std::array<std::uint32_t, 2> task_for_pid_groups { };
     mutable std::mutex network_mutex;
+    std::shared_ptr<darwin::necp::Clients> network_policy_clients {
+        std::make_shared<darwin::necp::Clients>()
+    };
     std::map<std::string, NetworkInterface> network_interfaces {
         { "lo0", { darwin::network::interface_flag_loopback |
                          darwin::network::interface_flag_running,

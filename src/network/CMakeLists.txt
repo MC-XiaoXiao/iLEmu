@@ -11,6 +11,8 @@ add_library(ilemu_network STATIC
     dns_configuration_hle.cpp
     host_network.cpp
     host_socket_events.cpp
+    necp_client.cpp
+    necp_policy.cpp
     system_configuration_hle.cpp
     wifi_state.cpp)
 add_library(iLEmu::network ALIAS ilemu_network)

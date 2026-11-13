@@ -40,6 +40,8 @@ void bind_bsd_entries(Table& table, DarwinVersion version)
     // Distinct, additive syscall slots need no per-feature ABI selector.
     // The shared route policy handles reserved slots on older reference tables.
     add(500, "getentropy", Handler::BsdEntropy);
+    add(501, "necp_open", Handler::BsdNetworkPolicy);
+    add(502, "necp_client_action", Handler::BsdNetworkPolicy);
     add(515, "ulock_wait", Handler::BsdUlock);
     add(516, "ulock_wake", Handler::BsdUlock);
     add(461, "getattrlistbulk", Handler::BsdDirectoryAttributes,

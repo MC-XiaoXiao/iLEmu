@@ -1108,6 +1108,7 @@ void CompatibilityKernel::post_network_event(std::string_view interface_name,
     post_kernel_event(*shared_state_,
         darwin::network::kernel_event_network_class, event_subclass,
         event_code, event_data);
+    refresh_network_policy_clients();
 }
 
 void CompatibilityKernel::post_data_link_event(
@@ -1217,6 +1218,8 @@ CompatibilityKernel::consume_route_message(std::uint32_t fd)
 void CompatibilityKernel::post_route_message(std::vector<std::byte> bytes,
     std::uint8_t family, std::optional<std::uint64_t> receiver_socket)
 {
+    if (!receiver_socket)
+        refresh_network_policy_clients();
     std::lock_guard route_lock { shared_state_->route_socket_mutex };
     KernelSharedState::RouteSocketMessage message;
     message.identifier = shared_state_->next_route_message_identifier++;
@@ -1325,6 +1328,9 @@ void CompatibilityKernel::synchronize_interface_routes(
 
 bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
 {
+    if (const auto policy = network_policy_descriptors_.find(fd);
+        policy != network_policy_descriptors_.end())
+        return policy->second->readable();
     if (const auto control = kernel_control_endpoints_.find(fd);
         control != kernel_control_endpoints_.end()) {
         std::lock_guard lock { control->second->mutex };
@@ -1433,6 +1439,8 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
 
 bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const
 {
+    if (network_policy_descriptors_.contains(fd))
+        return false;
     if (fd == 1 || fd == 2 || file_descriptors_.contains(fd) ||
         socket_pair_endpoints_.contains(fd)) {
         return true;
@@ -1973,6 +1981,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             registration->filter != darwin::kqueue::filter_vnode &&
             registration->filter != darwin::kqueue::filter_mach_port &&
             registration->clear_delivered &&
+            registration->clear_source_generation == source_state.generation &&
             registration->clear_available == available) {
             ++registration;
             continue;
@@ -2071,6 +2080,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         if (clears_after_delivery) {
             registration->clear_delivered = true;
             registration->clear_available = available;
+            registration->clear_source_generation = source_state.generation;
             if (registration->filter == darwin::kqueue::filter_user)
                 registration->user_triggered = false;
             if (registration->vnode_watch)
