@@ -35,6 +35,26 @@ namespace {
     constexpr std::uint64_t ten_seconds = 10'000'000'000;
     constexpr std::size_t diagnostic_source_table_capacity = 4096;
 
+    template<typename Records, typename Member>
+    std::uint64_t update_saturated_sum(std::uint64_t total,
+        std::uint64_t previous, std::uint64_t current,
+        const Records& records, Member member)
+    {
+        constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+        if (current >= previous)
+            return total + std::min(maximum - total, current - previous);
+        if (total != maximum && previous - current <= total)
+            return total - (previous - current);
+        // Saturation discarded the excess above UINT64_MAX. A decrease can
+        // expose it again, so recover the exact clamped sum from updated rows.
+        total = 0;
+        for (const auto& [id, record] : records) {
+            static_cast<void>(id);
+            total += std::min(maximum - total, record.*member);
+        }
+        return total;
+    }
+
     // Temporary frame-hitch diagnostic. Keep the ordered values out of the
     // product snapshot and remove this probe after the exit/unlock stall is
     // localized.
@@ -1228,26 +1248,23 @@ void PerformanceCounters::record_jit_shared_slab_usage(std::uint64_t slab_id,
         return;
     std::lock_guard lock { jit_memory_mutex_ };
     auto& slab = jit_shared_slabs_[slab_id];
+    const auto previous_reserved = slab.reserved_bytes;
+    const auto previous_committed = slab.committed_bytes;
+    const auto previous_used = slab.used_bytes;
     slab.reserved_bytes = reserved_bytes;
     slab.committed_bytes = committed_bytes;
     slab.used_bytes = used_bytes;
-    std::uint64_t reserved { };
-    std::uint64_t committed { };
-    std::uint64_t used { };
-    for (const auto& [id, usage] : jit_shared_slabs_) {
-        static_cast<void>(id);
-        reserved =
-            std::min(std::numeric_limits<std::uint64_t>::max() - reserved,
-                usage.reserved_bytes) +
-            reserved;
-        committed =
-            std::min(std::numeric_limits<std::uint64_t>::max() - committed,
-                usage.committed_bytes) +
-            committed;
-        used = std::min(std::numeric_limits<std::uint64_t>::max() - used,
-                   usage.used_bytes) +
-               used;
-    }
+    const auto reserved = update_saturated_sum(
+        jit_shared_reserved_bytes_.load(std::memory_order_relaxed),
+        previous_reserved, reserved_bytes, jit_shared_slabs_,
+        &SharedSlabUsage::reserved_bytes);
+    const auto committed = update_saturated_sum(
+        jit_shared_committed_bytes_.load(std::memory_order_relaxed),
+        previous_committed, committed_bytes, jit_shared_slabs_,
+        &SharedSlabUsage::committed_bytes);
+    const auto used = update_saturated_sum(
+        jit_shared_used_bytes_.load(std::memory_order_relaxed),
+        previous_used, used_bytes, jit_shared_slabs_, &SharedSlabUsage::used_bytes);
     jit_shared_reserved_bytes_.store(reserved, std::memory_order_relaxed);
     jit_shared_committed_bytes_.store(committed, std::memory_order_relaxed);
     jit_shared_used_bytes_.store(used, std::memory_order_relaxed);
@@ -1258,7 +1275,6 @@ void PerformanceCounters::record_jit_shared_slab_usage(std::uint64_t slab_id,
     while (used > peak &&
            !jit_code_cache_peak_bytes_.compare_exchange_weak(peak, used,
                std::memory_order_relaxed, std::memory_order_relaxed)) { }
-    refresh_jit_shared_cache_stats_locked();
 }
 
 void PerformanceCounters::record_jit_shared_cache_state(std::uint64_t slab_id,
@@ -1307,6 +1323,8 @@ void PerformanceCounters::record_jit_shared_cache_state(std::uint64_t slab_id,
             recycled_code_delta, std::memory_order_relaxed);
         jit_full_generation_clears_.fetch_add(
             full_clear_delta, std::memory_order_relaxed);
+        const auto previous_ranges = slab.range_count;
+        const auto previous_descriptors = slab.descriptor_count;
         slab.range_count = range_count;
         slab.descriptor_count = descriptor_count;
         slab.invalidated_descriptors = invalidated_descriptors;
@@ -1315,7 +1333,14 @@ void PerformanceCounters::record_jit_shared_cache_state(std::uint64_t slab_id,
         slab.recycled_descriptors = recycled_descriptors;
         slab.recycled_code_bytes = recycled_code_bytes;
         slab.full_generation_clears = full_generation_clears;
-        refresh_jit_shared_cache_stats_locked();
+        jit_shared_range_count_.store(update_saturated_sum(
+            jit_shared_range_count_.load(std::memory_order_relaxed),
+            previous_ranges, range_count, jit_shared_slabs_,
+            &SharedSlabUsage::range_count), std::memory_order_relaxed);
+        jit_shared_descriptor_count_.store(update_saturated_sum(
+            jit_shared_descriptor_count_.load(std::memory_order_relaxed),
+            previous_descriptors, descriptor_count, jit_shared_slabs_,
+            &SharedSlabUsage::descriptor_count), std::memory_order_relaxed);
     }
     if (!display_window_active_.load(std::memory_order_relaxed) ||
         (segment_recycle_delta == 0U && recycled_descriptor_delta == 0U &&
