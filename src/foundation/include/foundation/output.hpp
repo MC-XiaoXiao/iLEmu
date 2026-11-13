@@ -20,6 +20,7 @@ class Output {
 public:
     explicit Output(std::ostream& stream);
     explicit Output(const std::filesystem::path& path);
+    ~Output();
 
     // Interactive frontends default to concise lifecycle output so verbose
     // guest tracing cannot become part of the emulation hot path. Diagnostic
@@ -31,13 +32,13 @@ public:
     void write(std::string_view text);
     void line(std::string_view text);
     // Emit one explicitly requested low-volume control/attribution marker.
-    // Unlike ordinary file output, markers are flushed so an external
-    // controller can use them as a causality boundary without flushing the
-    // emulation log or every frame.
+    // File markers carry a flush in the ordered sink queue. Observing one is
+    // a causality boundary; a slow sink does not hold the Guest executor.
     void marker(std::string_view text);
 
 private:
-    std::unique_ptr<std::ofstream> file_;
+    struct FileSink;
+    std::unique_ptr<FileSink> file_;
     std::ostream* stream_ { };
     bool flush_each_write_ { true };
     bool verbose_ { true };

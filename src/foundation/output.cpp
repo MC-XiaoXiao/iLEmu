@@ -6,8 +6,12 @@
 // configured sinks.
 
 #include "foundation/output.hpp"
+#include "foundation/host_resource_controller.hpp"
 
+#include <condition_variable>
+#include <deque>
 #include <stdexcept>
+#include <string>
 
 namespace ilemu {
 
@@ -53,27 +57,105 @@ namespace {
 
 } // namespace
 
+// Keep disk writes outside the executor and outside the producer mutex. The
+// existing mandatory host-work lane preserves FIFO and drains before close.
+struct Output::FileSink {
+    struct Record {
+        std::string text;
+        bool flush;
+    };
+
+    explicit FileSink(const std::filesystem::path& path)
+        : stream { path, std::ios::binary | std::ios::trunc }
+    {
+        if (!stream)
+            throw std::runtime_error { "cannot open output file: " + path.string() };
+    }
+
+    ~FileSink()
+    {
+        worker.wait_idle();
+        stream.flush();
+    }
+
+    void enqueue(std::string_view text, bool newline, bool flush)
+    {
+        const auto size = text.size() + static_cast<std::size_t>(newline);
+        std::unique_lock lock { mutex };
+        // Backpressure bounds retained log data without dropping records. One
+        // oversized diagnostic record may occupy the empty queue on its own.
+        space.wait(lock, [&] {
+            return pending_bytes == 0 ||
+                   (pending_bytes <= maximum_pending_bytes &&
+                       size <= maximum_pending_bytes - pending_bytes);
+        });
+        auto& record = records.emplace_back(std::string { text }, flush);
+        if (newline)
+            record.text.push_back('\n');
+        pending_bytes += size;
+        if (!scheduled) {
+            scheduled = true;
+            static_cast<void>(worker.submit(HostWorkKind::Maintenance,
+                std::nullopt, [this] { drain(); }));
+        }
+    }
+
+    void drain()
+    {
+        for (;;) {
+            Record record;
+            {
+                std::lock_guard lock { mutex };
+                if (records.empty()) {
+                    scheduled = false;
+                    return;
+                }
+                record = std::move(records.front());
+                records.pop_front();
+            }
+            stream.write(record.text.data(),
+                static_cast<std::streamsize>(record.text.size()));
+            if (record.flush)
+                stream.flush();
+            {
+                std::lock_guard lock { mutex };
+                pending_bytes -= record.text.size();
+            }
+            space.notify_all();
+        }
+    }
+
+    static constexpr std::size_t maximum_pending_bytes = 4U * 1024U * 1024U;
+    std::ofstream stream;
+    std::mutex mutex;
+    std::condition_variable space;
+    std::deque<Record> records;
+    std::size_t pending_bytes { };
+    bool scheduled { };
+    HostResourceController worker;
+};
+
 Output::Output(std::ostream& stream)
     : stream_ { &stream }
 {
 }
 
 Output::Output(const std::filesystem::path& path)
-    : file_ { std::make_unique<std::ofstream>(
-          path, std::ios::binary | std::ios::trunc) }
-    , stream_ { file_.get() }
+    : file_ { std::make_unique<FileSink>(path) }
     , flush_each_write_ { false }
 {
-    if (!*file_) {
-        throw std::runtime_error { "cannot open output file: " +
-                                   path.string() };
-    }
 }
+
+Output::~Output() = default;
 
 void Output::write(std::string_view text)
 {
     if (!enabled(text))
         return;
+    if (file_) {
+        file_->enqueue(text, false, false);
+        return;
+    }
     std::lock_guard lock { mutex_ };
     stream_->write(text.data(), static_cast<std::streamsize>(text.size()));
     if (flush_each_write_)
@@ -84,6 +166,10 @@ void Output::line(std::string_view text)
 {
     if (!enabled(text))
         return;
+    if (file_) {
+        file_->enqueue(text, true, text.starts_with("[perf-display]"));
+        return;
+    }
     std::lock_guard lock { mutex_ };
     stream_->write(text.data(), static_cast<std::streamsize>(text.size()));
     stream_->put('\n');
@@ -98,6 +184,10 @@ void Output::marker(std::string_view text)
 {
     if (!enabled(text))
         return;
+    if (file_) {
+        file_->enqueue(text, true, true);
+        return;
+    }
     std::lock_guard lock { mutex_ };
     stream_->write(text.data(), static_cast<std::streamsize>(text.size()));
     stream_->put('\n');
