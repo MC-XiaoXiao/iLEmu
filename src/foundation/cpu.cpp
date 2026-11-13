@@ -760,6 +760,10 @@ public:
     NativeCodeTemplateLookup(
         std::uint64_t location_descriptor) noexcept override
     {
+        const auto diagnostics = performance_counters().cpu_source_diagnostics_enabled();
+        PerformanceLatencyScope latency {
+            PerfLatencyKind::JitNativeTemplateLookup, diagnostics };
+        native_template_import_started_ = {};
         native_template_lookup_ = {};
         if (!artifact_store_ || !jit_artifact_producer_fingerprint_available)
             return {};
@@ -776,6 +780,8 @@ public:
                 return {};
             artifact_store_->record_validation_success();
             native_template_lookup_ = std::move(lookup);
+            if (diagnostics)
+                native_template_import_started_ = std::chrono::steady_clock::now();
             return native_template_lookup_.artifact->data.native_template;
         } catch (...) {
             return {};
@@ -785,6 +791,13 @@ public:
     void NativeCodeTemplateCompleted(std::uint64_t location_descriptor,
         bool imported, bool newly_emitted) noexcept override
     {
+        if (native_template_import_started_ != std::chrono::steady_clock::time_point {}) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - native_template_import_started_).count();
+            performance_counters().record_latency(
+                PerfLatencyKind::JitNativeTemplateImport, elapsed);
+            native_template_import_started_ = {};
+        }
         if (imported && newly_emitted) {
             // Copying/linking native code is cold-path work, not a sample of
             // steady-state guest throughput for the execution policy.
@@ -2249,6 +2262,7 @@ private:
     bool explicit_artifact_publication_ { };
     std::shared_ptr<const Dynarmic::A32::NativeCodeTemplate> produced_native_template_;
     JitArtifactLookup native_template_lookup_;
+    std::chrono::steady_clock::time_point native_template_import_started_;
     std::optional<std::uint64_t> portable_generation_location_;
     bool portable_generation_published_ { };
     Dynarmic::IR::Block* translation_block_ { };

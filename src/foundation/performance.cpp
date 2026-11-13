@@ -474,6 +474,15 @@ namespace {
         case PerfLatencyKind::SchedulerSliceCompletion:
         case PerfLatencyKind::SchedulerRunnableToDispatch:
         case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
+        case PerfLatencyKind::RuntimeHostEvents:
+        case PerfLatencyKind::RuntimePacing:
+        case PerfLatencyKind::RuntimeLifecycle:
+        case PerfLatencyKind::RuntimeDispatch:
+        case PerfLatencyKind::RuntimeGuestExecution:
+        case PerfLatencyKind::RuntimeKernelCommit:
+        case PerfLatencyKind::RuntimeDisplayRefresh:
+        case PerfLatencyKind::JitNativeTemplateLookup:
+        case PerfLatencyKind::JitNativeTemplateImport:
         case PerfLatencyKind::MachMessageSendToReceive:
         // Demand-launched services share the interactive guest executor.
         // Attribute their creation and image setup to the active frame window.
@@ -3290,6 +3299,25 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind)
         return "scheduler-runnable-dispatch";
     case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
         return "scheduler-preemption-request-return";
+    case PerfLatencyKind::RuntimeHostEvents:
+        return "runtime-host-events";
+    case PerfLatencyKind::RuntimePacing:
+        return "runtime-pacing";
+    case PerfLatencyKind::RuntimeLifecycle:
+        return "runtime-lifecycle";
+    case PerfLatencyKind::RuntimeDispatch:
+        return "runtime-dispatch";
+    case PerfLatencyKind::RuntimeGuestExecution:
+        return "runtime-guest-execution";
+    case PerfLatencyKind::RuntimeKernelCommit:
+        return "runtime-kernel-commit";
+    case PerfLatencyKind::RuntimeDisplayRefresh:
+        return "runtime-display-refresh";
+    case PerfLatencyKind::JitNativeTemplateLookup:
+        return "jit-native-template-lookup";
+    case PerfLatencyKind::JitNativeTemplateImport:
+        return "jit-native-template-import";
+
     case PerfLatencyKind::MachMessageSendToReceive:
         return "mach-message-send-to-receive";
     case PerfLatencyKind::VmMappingCommit:
@@ -3694,6 +3722,15 @@ std::string format_display_performance_summary(
         PerfLatencyKind::SchedulerSliceCompletion,
         PerfLatencyKind::SchedulerRunnableToDispatch,
         PerfLatencyKind::SchedulerPreemptionRequestToReturn,
+        PerfLatencyKind::RuntimeHostEvents,
+        PerfLatencyKind::RuntimePacing,
+        PerfLatencyKind::RuntimeLifecycle,
+        PerfLatencyKind::RuntimeDispatch,
+        PerfLatencyKind::RuntimeGuestExecution,
+        PerfLatencyKind::RuntimeKernelCommit,
+        PerfLatencyKind::RuntimeDisplayRefresh,
+        PerfLatencyKind::JitNativeTemplateLookup,
+        PerfLatencyKind::JitNativeTemplateImport,
     };
     text << " diagnostic-cpu-latency-ns=";
     for (std::size_t index = 0; index < cpu_source_latencies.size(); ++index) {
