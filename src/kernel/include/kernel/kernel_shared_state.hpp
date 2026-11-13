@@ -88,6 +88,7 @@
 #include "kernel/darwin_resource_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
+#include "kernel/persona_registry.hpp"
 #include "kernel/vnode_watch.hpp"
 #include "mach/mach_namespace.hpp"
 #include "mach/mach_port_object.hpp"
@@ -150,6 +151,7 @@ struct ProcessContext {
     std::uint32_t gid { };
     std::uint32_t effective_gid { };
     CredentialGroups groups;
+    std::shared_ptr<const PersonaInfo> persona;
     std::uint32_t file_creation_mask { 0022 };
     std::array<darwin::resource::Limit, darwin::resource::limit_count>
         resource_limits { darwin::resource::initial_limits() };
@@ -795,6 +797,7 @@ struct KernelSharedState {
         std::uint32_t gid { };
         std::uint32_t effective_gid { };
         CredentialGroups groups;
+        std::shared_ptr<const PersonaInfo> persona;
         std::int32_t nice_value { };
         std::uint32_t exit_status { };
         std::uint32_t termination_signal { };
@@ -1990,6 +1993,7 @@ struct KernelSharedState {
     // FSIOC_SET_PACKAGE_EXTS. HFS search/path-package operations consult the
     // extension names independently of the process that registered them.
     std::vector<std::string> package_extensions;
+    PersonaRegistry personas;
     std::map<std::uint32_t, ProcessRecord> processes;
     // EVFILT_PROC is edge-triggered and may outlive the process-table zombie.
     // Retain compact per-PID generations so an exec/exit between kevent

@@ -237,6 +237,8 @@ add_library(ilemu_kernel_bsd_process STATIC
     bsd/process/interval_timer.cpp
     bsd/process/memorystatus.cpp
     bsd/process/policy.cpp
+    bsd/process/persona.cpp
+    bsd/process/persona_registry.cpp
     bsd/process/role.cpp
     bsd/process/resource_monitor.cpp
     bsd/process/uuid_policy.cpp

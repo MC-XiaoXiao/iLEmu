@@ -42,6 +42,7 @@ namespace {
         bool process_type;
         bool qos_clamp;
         std::int32_t maximum_role;
+        bool persona;
 
         static constexpr SpawnDescriptorProfile for_version(
             DarwinVersion version)
@@ -50,7 +51,8 @@ namespace {
                 version >= DarwinGeneration::Ios7,
                 version >= DarwinGeneration::Ios8,
                 version >= DarwinGeneration::Ios9
-                    ? ProcessPriorityProfile::for_version(version).maximum_role : 0 };
+                    ? ProcessPriorityProfile::for_version(version).maximum_role : 0,
+                version >= DarwinGeneration::Ios9 };
         }
     };
 
@@ -313,6 +315,22 @@ namespace {
 void CompatibilityKernel::apply_spawn_attributes(
     const SpawnAttributes& attributes)
 {
+    if (attributes.persona) {
+        const auto& persona = *attributes.persona;
+        process_.persona = persona.identity;
+        process_.uid = process_.effective_uid = persona.uid;
+        process_.gid = persona.gid;
+        process_.effective_gid = persona.effective_gid;
+        process_.groups = persona.groups;
+        process_.login_name = persona.login;
+        const std::lock_guard lock { shared_state_->mach_mutex };
+        auto& record = shared_state_->processes.at(process_.pid);
+        record.persona = persona.identity;
+        record.uid = record.effective_uid = persona.uid;
+        record.gid = persona.gid;
+        record.effective_gid = persona.effective_gid;
+        record.groups = persona.groups;
+    }
     process_.execution_policy->set_spawn_policy(attributes.process_type, attributes.qos_clamp);
     if (attributes.role)
         process_.execution_policy->set_role(*attributes.role);
@@ -354,6 +372,13 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
         return true;
     }
 
+    if (registers[2] != 0U &&
+        SpawnDescriptorProfile::for_version(shared_state_->darwin_version).persona) {
+        if (const auto error = read_spawn_persona(registers[2], attributes->task)) {
+            bsd_error(cpu, error);
+            return true;
+        }
+    }
     if (!capture_importance_watchports(shared_state_, process_.pid, *attributes)) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return true;

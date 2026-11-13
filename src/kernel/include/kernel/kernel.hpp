@@ -10,6 +10,7 @@
 
 #include "kernel/darwin_file_guard.hpp"
 #include "kernel/darwin_signal_state.hpp"
+#include "kernel/persona_registry.hpp"
 #include <boost/container/flat_map.hpp>
 #include <boost/container/small_vector.hpp>
 #include <array>
@@ -146,6 +147,7 @@ public:
         DarwinProcessType process_type { };
         XnuQosTier qos_clamp { };
         std::optional<DarwinProcessRole> role;
+        std::optional<PersonaCredentials> persona;
     };
     using SpawnExecHandler = std::function<bool(std::uint32_t, PreparedProcessImage,
         std::vector<std::string>, bool,
@@ -765,6 +767,9 @@ private:
     [[nodiscard]] bool dispatch_bsd_debug(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_security(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_csr(Cpu& cpu);
+    void dispatch_bsd_persona(Cpu& cpu);
+    [[nodiscard]] std::uint32_t read_spawn_persona(
+        std::uint32_t descriptor, SpawnAttributes& attributes);
     void dispatch_bsd_getentropy(Cpu& cpu);
     void dispatch_bsd_code_signing(Cpu& cpu, bool require_audit_token = false);
     void dispatch_bsd_socket(Cpu& cpu, std::uint32_t number);

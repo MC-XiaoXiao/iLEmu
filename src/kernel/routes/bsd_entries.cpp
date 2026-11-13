@@ -44,6 +44,7 @@ void bind_bsd_entries(Table& table, DarwinVersion version)
     add(502, "necp_client_action", Handler::BsdNetworkPolicy);
     add(479, "openbyid_np", Handler::BsdFilesystem);
     add(483, "csrctl", Handler::BsdSecurity);
+    add(494, "persona", Handler::BsdProcess);
     add(515, "ulock_wait", Handler::BsdUlock);
     add(516, "ulock_wake", Handler::BsdUlock);
     add(461, "getattrlistbulk", Handler::BsdDirectoryAttributes,
