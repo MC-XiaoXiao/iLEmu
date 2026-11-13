@@ -77,6 +77,18 @@ bool BacklightControl::matches(std::span<const std::byte> matching)
 
 void BacklightControl::publish(KernelSharedState::IOKitService& service)
 {
+    // Native HID uses this hardware table for slider/luminance conversion.
+    // Keep its peak in agreement with the virtual panel's nits interface.
+    Property marketing { Property::Kind::Data, { } };
+    for (const auto nits : { 5U, 140U, PanelBacklight::peak_luminance_nits }) {
+        const auto encoded = number(nits << 16U).value;
+        marketing.value.insert(
+            marketing.value.end(), encoded.begin(), encoded.end());
+    }
+    service.properties.emplace(
+        "backlight-marketing-table", std::move(marketing));
+    service.properties.emplace("new-backlight-architecture",
+        Property { Property::Kind::Boolean, { std::byte { 1 } } });
     service.properties.emplace("backlight-control",
         Property { Property::Kind::Boolean, { std::byte { 1 } } });
     service.properties.emplace("IODisplayParameters",
@@ -85,16 +97,16 @@ void BacklightControl::publish(KernelSharedState::IOKitService& service)
                 { "value", number(255) } }) } }));
 }
 
-std::uint32_t BacklightControl::set_properties(
-    KernelSharedState& state, KernelSharedState::IOKitService& service,
-    std::span<const std::byte> data)
+std::uint32_t BacklightControl::set_properties(KernelSharedState& state,
+    KernelSharedState::IOKitService& service, std::span<const std::byte> data)
 {
 #ifdef ILEMU_HAS_LIBPLIST
     const auto root = parse(data);
     if (!root || plist_get_node_type(root.get()) != PLIST_DICT)
         return iokit_abi::bad_argument;
     std::map<std::string, std::uint32_t> updates;
-    for (const auto* key : { "brightness", "backlight-level", "FadePeriod" }) {
+    for (const auto* key : { "brightness", "brightness-nits", "backlight-level",
+             "FadePeriod", "DisplayBrightnessSliderPosition" }) {
         const auto item = plist_dict_get_item(root.get(), key);
         if (item == nullptr)
             continue;
@@ -102,8 +114,10 @@ std::uint32_t BacklightControl::set_properties(
             return iokit_abi::bad_argument;
         std::uint64_t value = 0;
         plist_get_uint_val(item, &value);
-        if (value >
-            (std::string_view { key } == "FadePeriod" ? 0xffffffffULL : 255ULL))
+        if (value > ((std::string_view { key } == "brightness" ||
+                         std::string_view { key } == "backlight-level")
+                            ? 255ULL
+                            : 0xffffffffULL))
             return iokit_abi::bad_argument;
         updates.emplace(key, static_cast<std::uint32_t>(value));
     }
@@ -118,9 +132,19 @@ std::uint32_t BacklightControl::set_properties(
             service.properties[key] = number(value);
         }
     }
+    std::optional<std::uint8_t> level;
     if (const auto brightness = updates.find("brightness");
-        brightness != updates.end()) {
-        state.panel_backlight.set(static_cast<std::uint8_t>(brightness->second),
+        brightness != updates.end())
+        level = static_cast<std::uint8_t>(brightness->second);
+    if (const auto luminance = updates.find("brightness-nits");
+        luminance != updates.end()) {
+        level = PanelBacklight::level_for_luminance(luminance->second);
+        service.properties.at("IODisplayParameters")
+            .dictionary_value.at("brightness")
+            .dictionary_value["value"] = number(*level);
+    }
+    if (level) {
+        state.panel_backlight.set(*level,
             updates.contains("FadePeriod") ? updates.at("FadePeriod") : 0U,
             state.clock.now());
         state.note_kernel_event_transition();

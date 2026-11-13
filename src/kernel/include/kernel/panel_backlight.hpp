@@ -14,6 +14,18 @@ namespace ilemu {
 // Clock values are Guest monotonic nanoseconds, independent of host rendering.
 class PanelBacklight {
 public:
+    // The virtual panel uses the native HID display's uncalibrated 400-nit
+    // luminance range. brightness-nits is a 16.16 cd/m^2 driver request.
+    static constexpr std::uint32_t peak_luminance_nits = 400U;
+    [[nodiscard]] static std::uint8_t level_for_luminance(std::uint32_t nits)
+    {
+        constexpr auto peak = peak_luminance_nits << 16U;
+        // Quantize physical luminance into 256 PWM steps. The upper bucket
+        // represents full brightness, including the firmware's rounded peak.
+        const auto level = static_cast<std::uint64_t>(nits) * 256U / peak;
+        return static_cast<std::uint8_t>(std::min(level, std::uint64_t { 255U }));
+    }
+
     void set(std::uint8_t level, std::uint32_t fade_period, std::uint64_t now)
     {
         initial_ = sample(now);

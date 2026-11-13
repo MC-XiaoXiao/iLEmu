@@ -8,14 +8,13 @@
 
 namespace ilemu::kernel_iokit {
 
-// Registry contract for the built-in panel's integer brightness control.
+// Registry contract for the built-in panel's integer and luminance controls.
 // Native IOHIDDisplay owns brightness curves and session properties.
 class BacklightControl {
 public:
     [[nodiscard]] static bool matches(std::span<const std::byte> matching);
     static void publish(KernelSharedState::IOKitService& service);
-    [[nodiscard]] static std::uint32_t set_properties(
-        KernelSharedState& state,
+    [[nodiscard]] static std::uint32_t set_properties(KernelSharedState& state,
         KernelSharedState::IOKitService& service,
         std::span<const std::byte> data);
 };
