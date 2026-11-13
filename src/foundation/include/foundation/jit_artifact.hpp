@@ -610,7 +610,8 @@ private:
     void promote_resident_retention_locked(
         ArtifactMap::iterator iterator) const;
     void evict_until_fit_locked(std::size_t required_bytes) const;
-    void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
+    // Callers hold mutex_ and have already ruled out a resident entry.
+    ArtifactMap::iterator insert_absent_locked(std::shared_ptr<const BlockArtifact> artifact,
         std::size_t serialized_bytes, bool loaded_from_disk = false,
         bool startup_prefetched = false,
         JitArtifactRetention retention = JitArtifactRetention::Normal) const;
