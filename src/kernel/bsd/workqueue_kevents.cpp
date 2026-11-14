@@ -342,6 +342,15 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
     }
     const auto& registrations =
         kqueues_.at(darwin::kqueue::workqueue_descriptor);
+    const auto& cached = workqueue_mach_poll_cache_;
+    // Reuse the poll's all-empty Mach observation, without advancing its
+    // generation: an enqueue racing this request must still redrive the next
+    // poll. Knote mutation, topology and journal overflow use the normal peek.
+    const bool mach_sources_empty = cached &&
+        cached->registrations == registrations.data() &&
+        cached->registration_count == registrations.size() &&
+        !shared_state_->mach_queue_generation.changed_since(
+            cached->generation, cached->dependencies, cached->mach_count);
     std::set<std::uint32_t> observed_buckets;
     std::map<std::uint32_t, std::optional<std::int32_t>> overrides;
     WorkqueueQosProbe qos_probe;
@@ -350,7 +359,8 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
         bool mach_ready = false;
         const auto registered_bucket =
             darwin::kqueue::workqueue_qos_bucket(registration.qos);
-        if (shared_state_->pthread_contract.priority_encoding !=
+        if (!mach_sources_empty &&
+            shared_state_->pthread_contract.priority_encoding !=
                 PthreadPriorityEncoding::QueueIndex &&
             registered_bucket != 0U &&
             registered_bucket != darwin::kqueue::event_manager_qos_flag &&
@@ -358,7 +368,9 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
             !registration.deferred_delete &&
             registration.filter == darwin::kqueue::filter_mach_port &&
             (registration.filter_flags &
-                darwin::mach_message::option_receive) != 0U) {
+                darwin::mach_message::option_receive) != 0U &&
+            (registration.empty_mach_queue_generation == 0U ||
+                !mach_kevent_observation_current(registration))) {
             mach_ready =
                 ready_mach_kevent_name(registration, &message_qos).has_value();
         }
