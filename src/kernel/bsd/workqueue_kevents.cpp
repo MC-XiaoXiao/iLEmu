@@ -307,9 +307,13 @@ bool CompatibilityKernel::request_workqueue_kevents(Cpu* requesting_cpu)
 {
     workqueue_kevent_redrive_ = false;
     HostSocketRequests requests;
-    std::set<std::uint32_t> visited;
-    collect_host_socket_requests(darwin::kqueue::workqueue_descriptor,
-        SocketReadable, requests, visited);
+    // Nested queues and duplicates cannot resolve a host socket when the
+    // process owns none. Still refresh watches below to remove stale ones.
+    if (!host_sockets_.empty()) {
+        std::set<std::uint32_t> visited;
+        collect_host_socket_requests(darwin::kqueue::workqueue_descriptor,
+            SocketReadable, requests, visited);
+    }
     update_host_socket_watches(std::numeric_limits<std::size_t>::max(), requests);
     if (!pthread_runtime_.workqueue_open() ||
         !kqueues_.contains(darwin::kqueue::workqueue_descriptor)) {
