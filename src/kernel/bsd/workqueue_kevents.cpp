@@ -222,38 +222,44 @@ bool CompatibilityKernel::workqueue_kevent_poll_required(
 {
     KeventProbeDiagnostics diagnostics { output_ };
     const auto generation = shared_state_->mach_queue_generation_snapshot();
+    // Separate retained readiness checks from source queries, passing the
+    // registration directly through the common evaluation path.
+    const auto query_source = [&](const KeventRegistration& registration) {
+        if (const auto source = kevent_source_state(registration)) {
+            if (!source->ready &&
+                registration.filter != darwin::kqueue::filter_timer)
+                registration.inactive_source_io_generation = io_generation;
+            return !source->ready ||
+                workqueue_kevent_bucket_active(
+                    workqueue_kevent_qos(registration, { }).bucket);
+        }
+        if (io_changed)
+            return false;
+        if (registration.filter == darwin::kqueue::filter_read ||
+            registration.filter == darwin::kqueue::filter_write) {
+            const auto fd = static_cast<std::uint32_t>(registration.ident);
+            // Composite descriptors can expose nested Mach/timer
+            // sources; polling devices also advance outside I/O notes.
+            return !kqueues_.contains(fd) &&
+                   !duplicated_descriptors_.contains(fd) &&
+                   !descriptor_requires_host_poll(fd);
+        }
+        return true;
+    };
+    const auto evaluate = [&](const KeventRegistration& registration) {
+        if (!registration.enabled && !registration.workqueue_servicer)
+            return true;
+        if (registration.deferred_delete)
+            return false;
+        if (registration.filter == darwin::kqueue::filter_mach_port)
+            return mach_kevent_observation_current(registration);
+        if (registration.inactive_source_io_generation == io_generation)
+            return true;
+        return query_source(registration);
+    };
     const auto probe = [&](const KeventRegistration& registration) {
         return diagnostics.check(registration, [&] {
-                if (!registration.enabled && !registration.workqueue_servicer)
-                    return true;
-                if (registration.deferred_delete)
-                    return false;
-                if (registration.filter == darwin::kqueue::filter_mach_port)
-                    return mach_kevent_observation_current(registration);
-                // Match delivery's readiness and bucket eligibility before
-                // asking the workqueue to rescan unrelated I/O.
-                if (registration.inactive_source_io_generation == io_generation)
-                    return true;
-                if (const auto source = kevent_source_state(registration)) {
-                    if (!source->ready &&
-                        registration.filter != darwin::kqueue::filter_timer)
-                        registration.inactive_source_io_generation = io_generation;
-                    return !source->ready ||
-                        workqueue_kevent_bucket_active(
-                            workqueue_kevent_qos(registration, { }).bucket);
-                }
-                if (io_changed)
-                    return false;
-                if (registration.filter == darwin::kqueue::filter_read ||
-                    registration.filter == darwin::kqueue::filter_write) {
-                    const auto fd = static_cast<std::uint32_t>(registration.ident);
-                    // Composite descriptors can expose nested Mach/timer
-                    // sources; polling devices also advance outside I/O notes.
-                    return !kqueues_.contains(fd) &&
-                           !duplicated_descriptors_.contains(fd) &&
-                           !descriptor_requires_host_poll(fd);
-                }
-                return true;
+            return evaluate(registration);
         });
     };
     auto& cached = workqueue_mach_poll_cache_;
