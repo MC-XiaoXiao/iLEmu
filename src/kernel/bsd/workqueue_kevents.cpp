@@ -271,29 +271,50 @@ bool CompatibilityKernel::workqueue_kevent_poll_required(
                 return probe(registrations[index]);
             });
     }
+    // A ready source cannot produce a reusable negative observation. Probe
+    // first, avoiding a transient dependency/index allocation on that path.
+    if (!std::all_of(registrations.begin(), registrations.end(), probe))
+        return true;
     WorkqueueMachPollCache candidate;
     candidate.generation = generation;
     candidate.registrations = registrations.data();
     candidate.registration_count = registrations.size();
-    const auto current = std::all_of(registrations.begin(), registrations.end(),
-        [&](const KeventRegistration& registration) {
-            if (!probe(registration))
-                return false;
-            if (registration.filter == darwin::kqueue::filter_mach_port) {
-                if (registration.enabled || registration.workqueue_servicer) {
-                    xnu::ipc::ReceiveQueueGeneration::add_dependency(
-                        candidate.dependencies, registration.empty_mach_queue_object);
-                    ++candidate.mach_count;
-                }
-            } else {
-                candidate.other_indices.push_back(static_cast<std::size_t>(
-                    &registration - registrations.data()));
+    for (const auto& registration : registrations) {
+        if (registration.filter == darwin::kqueue::filter_mach_port) {
+            if (registration.enabled || registration.workqueue_servicer) {
+                xnu::ipc::ReceiveQueueGeneration::add_dependency(
+                    candidate.dependencies, registration.empty_mach_queue_object);
+                ++candidate.mach_count;
             }
-            return true;
-        });
-    if (current)
-        cached = std::move(candidate);
-    return !current;
+            continue;
+        }
+        if (!registration.enabled && !registration.workqueue_servicer)
+            continue;
+        // Only sources that can change without a knote mutation need another
+        // poll. Changes, including NOTE_TRIGGER/EV_ENABLE, invalidate this
+        // index in apply_kevent_change; delivery does likewise. Keep ready
+        // user sources for bucket-release checks.
+        switch (registration.filter) {
+        case darwin::kqueue::filter_user:
+            if (!registration.user_triggered)
+                continue;
+            break;
+        case darwin::kqueue::filter_read:
+        case darwin::kqueue::filter_write:
+        case darwin::kqueue::filter_process:
+        case darwin::kqueue::filter_vnode:
+        case darwin::kqueue::filter_timer:
+            break;
+        default:
+            // kevent_source_state has no asynchronous source for these
+            // filters. Deferred deletes failed the readiness probe above.
+            continue;
+        }
+        candidate.other_indices.push_back(static_cast<std::size_t>(
+            &registration - registrations.data()));
+    }
+    cached = std::move(candidate);
+    return false;
 }
 
 void CompatibilityKernel::note_workqueue_kevent_transition()
