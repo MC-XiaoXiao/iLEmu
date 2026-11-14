@@ -233,8 +233,12 @@ void CompatibilityKernel::service_file_io()
             operation->error = bsd_support::darwin_filesystem_error(
                 std::error_code { host_error, std::generic_category() });
         } else if (operation->kind == FileIoOperation::Kind::HostCall) {
-            operation->host_complete(
-                *operation, operation->abandoned ? nullptr : &memory_);
+            if (!operation->host_complete(
+                    *operation, operation->abandoned ? nullptr : &memory_)) {
+                operation->host_work.reset();
+                queue.start_ready();
+                break;
+            }
         } else if (operation->kind == FileIoOperation::Kind::Synchronize) {
             operation->result = 0;
         } else {

@@ -104,7 +104,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem_metadata(Cpu& cpu, std::uint32
             report();
             result.error = work->error;
             if (result.error || !memory)
-                return;
+                return true;
             auto metadata = *work->metadata;
             {
                 const std::lock_guard lock { state->filesystem_mutex };
@@ -114,7 +114,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem_metadata(Cpu& cpu, std::uint32
             }
             if (request.volume != 0U && !mount_root) {
                 result.error = bsd_support::invalid_argument;
-                return;
+                return true;
             }
             const auto guest = (std::filesystem::path { "/" } /
                 work->path.lexically_relative(root)).lexically_normal().generic_string();
@@ -136,6 +136,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem_metadata(Cpu& cpu, std::uint32
                 result.error = bsd_support::bad_address;
             else
                 result.result = 0;
+            return true;
         };
     } else {
         const auto mode = registers[number == 475U ? 2U : 1U] & ~process_.file_creation_mask;
@@ -205,6 +206,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem_metadata(Cpu& cpu, std::uint32
                 state->guest_file_generation_registry->publish_subtree_create(work->path);
             result.error = work->error;
             result.result = 0;
+            return true;
         };
     }
     auto& queue = shared_state_->file_io;

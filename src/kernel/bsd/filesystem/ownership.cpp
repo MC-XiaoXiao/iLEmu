@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -27,6 +29,17 @@ namespace {
     constexpr std::uint32_t unchanged_identity =
         std::numeric_limits<std::uint32_t>::max();
     constexpr std::uint32_t permission_bits = 07777U;
+
+    struct ModeChangeWork {
+        std::optional<hfs::Metadata> metadata;
+        hfs::MetadataOverride update;
+        std::map<std::string, std::optional<std::vector<std::byte>>> attributes;
+        std::vector<std::string> persisted_attributes;
+        std::uint32_t error { darwin::error::io };
+        bool persisting { };
+        bool finished { };
+        bool persisted { };
+    };
 
 } // namespace
 
@@ -221,17 +234,111 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             return true;
         }
         const auto description = ensure_regular_file_open_description(fd);
-        const auto metadata = query_hfs_metadata(descriptor->second, true,
-            false, description ? description->host_descriptor() : -1);
-        if (!metadata) {
-            bsd_error(cpu, darwin::error::no_entry);
+        auto work = std::make_shared<ModeChangeWork>();
+        auto operation = std::make_shared<FileIoOperation>();
+        operation->kind = FileIoOperation::Kind::HostCall;
+        operation->owner = process_.pid;
+        operation->descriptor = fd;
+        operation->description = description;
+        const auto path = descriptor->second;
+        const auto provider = hfs_metadata_;
+        const auto state = shared_state_;
+        const auto relative = path.lexically_relative(rootfs_);
+        const auto read_only = relative.empty() || *relative.begin() == ".." ||
+            (hfs_volumes_.for_host_path(path).mount_flags & 1U) != 0U;
+        const auto guest_path =
+            (std::filesystem::path { "/" } / relative).generic_string();
+        operation->host_call = [work, provider, path, description] {
+            work->metadata = provider.query(path, true, false,
+                description ? description->host_descriptor() : -1);
+            work->error = work->metadata ? 0U : darwin::error::no_entry;
+        };
+        operation->host_complete = [work, state, provider, read_only, guest_path, fd,
+                                      uid = process_.effective_uid,
+                                      mode = registers[1], output = &output_](
+                                      FileIoOperation& result, AddressSpace*) {
+            result.error = work->error;
+            if (result.error)
+                return true;
+            if (!work->persisting) {
+                auto& metadata = *work->metadata;
+                {
+                    const std::lock_guard lock { state->filesystem_mutex };
+                    if (const auto previous = state->hfs_metadata_overrides.find(
+                            metadata.host_identity);
+                        previous != state->hfs_metadata_overrides.end()) {
+                        work->update = previous->second;
+                        hfs::MetadataProvider::apply_override(
+                            metadata, work->update);
+                    }
+                    if (uid != 0U && uid != metadata.owner) {
+                        result.error = darwin::error::operation_not_permitted;
+                        return true;
+                    }
+                    work->update.observe(metadata);
+                    work->update.mode = (metadata.mode & ~permission_bits) |
+                                        (mode & permission_bits);
+                    work->update.change_time =
+                        bsd_support::guest_filesystem_timestamp(state->clock);
+                    if (const auto attributes =
+                            state->hfs_named_attribute_overrides.find(
+                                metadata.host_identity);
+                        attributes != state->hfs_named_attribute_overrides.end())
+                        work->attributes = attributes->second;
+                }
+                if (!read_only) {
+                    work->persisting = true;
+                    // Keep the FIFO admission and retained fileglob while the
+                    // host persists. Neither phase occupies a Guest channel.
+                    result.host_call = [work, provider] {
+                        const auto& metadata = *work->metadata;
+                        work->persisted = hfs::MetadataProvider::persist_override(
+                            metadata, work->update);
+                        if (work->persisted) {
+                            for (const auto& [name, value] : work->attributes)
+                                if (hfs::MetadataProvider::persist_named_attribute(
+                                        metadata, name, value))
+                                    work->persisted_attributes.push_back(name);
+                            if (const auto current = provider.query(
+                                    metadata.host_path, true, false,
+                                    metadata.host_descriptor)) {
+                                const auto change_time = work->update.change_time;
+                                work->update.observe(*current);
+                                work->update.change_time = change_time;
+                            }
+                        }
+                        work->finished = true;
+                    };
+                    return false;
+                }
+            } else if (!work->finished) {
+                result.error = darwin::error::io;
+                return true;
+            }
+            const auto& metadata = *work->metadata;
+            {
+                const std::lock_guard lock { state->filesystem_mutex };
+                state->hfs_metadata_overrides[metadata.host_identity] = work->update;
+                if (const auto attributes = state->hfs_named_attribute_overrides.find(
+                        metadata.host_identity);
+                    attributes != state->hfs_named_attribute_overrides.end())
+                    for (const auto& name : work->persisted_attributes)
+                        attributes->second.erase(name);
+            }
+            if (work->persisting && !work->persisted && metadata.object_type != 5U)
+                output->write("[vfs] could not persist guest metadata: " +
+                              guest_path + "\n");
+            output->write("[vfs] fchmod fd=" + std::to_string(fd) + " mode=" +
+                          std::to_string(mode & permission_bits) + "\n");
+            result.result = 0;
             return true;
-        }
-        if (!change_mode(*metadata, registers[1]))
-            return true;
-        output_.write("[vfs] fchmod fd=" + std::to_string(fd) + " mode=" +
-                      std::to_string(registers[1] & permission_bits) + "\n");
-        bsd_success(cpu, 0);
+        };
+        auto& queue = shared_state_->file_io;
+        if (queue.can_submit(0))
+            queue.push(operation);
+        else
+            queue.wait(operation);
+        wait_for_file_io(cpu, std::move(operation));
         return true;
     }
     case darwin::syscall::change_mode_extended: {

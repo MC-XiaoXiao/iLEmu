@@ -35,7 +35,10 @@ struct FileIoOperation {
     std::shared_ptr<FileWritebackRequest> mapping_sync;
     std::shared_ptr<HostWorkToken> host_work;
     std::function<void()> host_call;
-    std::function<void(FileIoOperation&, AddressSpace*)> host_complete;
+    // Return false after installing the next host_call to retain the same
+    // FIFO slot across a host/kernel/host operation. Only terminal completion
+    // may publish a result or wake its guest continuation.
+    std::function<bool(FileIoOperation&, AddressSpace*)> host_complete;
     std::uint32_t notification_signal { };
     std::int32_t result { -1 };
     std::uint32_t error { };
