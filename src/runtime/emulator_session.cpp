@@ -4022,8 +4022,6 @@ void EmulatorSession::run()
                     // runnable starvation while CPU source diagnostics are
                     // explicitly active.
                     if (nanoseconds >= 50'000'000U) {
-                        const auto active_process =
-                            initial_runtime->kernel->active_client_process_id();
                         const auto transition =
                             initial_runtime->kernel
                                 ->foreground_transition_snapshot();
@@ -4046,9 +4044,6 @@ void EmulatorSession::run()
                             " base-priority=" +
                             (info ? std::to_string(info->base_priority)
                                   : "none") +
-                            " active-process=" +
-                            (active_process ? std::to_string(*active_process)
-                                            : "none") +
                             " transition-destination=" +
                             (transition && transition->destination
                                     ? std::to_string(

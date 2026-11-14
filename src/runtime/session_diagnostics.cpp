@@ -76,14 +76,11 @@ void SessionDiagnostics::status() const
     const auto submitted_frame = initial_.kernel->display_submitted_frames();
     const auto frame =
         presenter_ ? presenter_->presented_frames() : submitted_frame;
-    const auto active_process = initial_.kernel->active_client_process_id();
     output_.marker("[control] status frame=" + std::to_string(frame) +
         " submitted-frame=" + std::to_string(submitted_frame) +
         " processes=" + std::to_string(runtimes_.size()) +
         " threads=" + std::to_string(scheduler_.thread_count()) +
         " runnable=" + std::to_string(scheduler_.runnable_count()) +
-        " active-process=" +
-        (active_process ? std::to_string(*active_process) : "none") +
         " display-power=" + (initial_.kernel->display_powered_on() ? "on" : "off") +
         " backlight=" + std::to_string(initial_.kernel->display_backlight_level()) +
         "/255");
