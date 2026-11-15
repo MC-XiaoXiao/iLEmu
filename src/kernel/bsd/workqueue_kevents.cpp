@@ -251,8 +251,20 @@ bool CompatibilityKernel::workqueue_kevent_poll_required(
             return true;
         if (registration.deferred_delete)
             return false;
-        if (registration.filter == darwin::kqueue::filter_mach_port)
-            return mach_kevent_observation_current(registration);
+        if (registration.filter == darwin::kqueue::filter_mach_port) {
+            if (mach_kevent_observation_current(registration))
+                return true;
+            // A stale empty observation need not redrive every knote. Recheck
+            // its actual queue, retaining the normal request path for messages
+            // and for names that cannot establish a new empty observation.
+            if (registration.empty_mach_queue_pid == process_.pid &&
+                registration.empty_mach_queue_object != 0U &&
+                registration.empty_mach_queue_generation != 0U &&
+                !ready_mach_kevent_name(registration) &&
+                mach_kevent_observation_current(registration))
+                return true;
+            return false;
+        }
         if (registration.inactive_source_io_generation == io_generation)
             return true;
         return query_source(registration);
