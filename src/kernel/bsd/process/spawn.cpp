@@ -396,7 +396,8 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
     // must run through dyld and suspend itself in userspace. Only the actual
     // POSIX_SPAWN_START_SUSPENDED flag places the initial thread on hold.
 
-    prepare_process_image(cpu, std::move(*path), *arguments, 8,
+    auto image_arguments = *arguments;
+    prepare_process_image(cpu, std::move(*path), std::move(image_arguments), 8,
         [this, pid_address, environment = std::move(*environment),
             attributes = std::move(*attributes), arguments = std::move(*arguments)](Cpu& cpu,
             PreparedProcessImage image) mutable {
