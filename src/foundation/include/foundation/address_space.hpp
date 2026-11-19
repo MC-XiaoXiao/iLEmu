@@ -505,6 +505,7 @@ private:
     bool copy_in_batch_locked(std::span<const CopyInOperation> operations,
         bool guest_write);
     struct ParallelView {
+        void clear();
         JitPageTableStorage reads;
         JitPageTableStorage writes;
         std::unordered_set<std::uint32_t> touched;

@@ -1782,37 +1782,32 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address,
             track_exclusive_backing_locked(page->backing.get());
     }
     const auto base = page_base(address);
+    const auto index = base / page_size;
     if (refresh == JitPageRefresh::All && jit_instruction_page_table_) {
         static std::uint8_t present;
-        const auto rights = page_permission_locked(base / page_size) &
-            vm_translation_locked(base / page_size);
-        jit_instruction_page_table_->entries()[base / page_size] =
-            (rights & permission_bits(MemoryPermission::Execute)) ? &present : nullptr;
+        const auto rights = page_permission_locked(index) &
+            vm_translation_locked(index);
+        jit_instruction_page_table_->set_entry(index,
+            (rights & permission_bits(MemoryPermission::Execute)) ? &present : nullptr);
     }
     if (!jit_read_page_table_ && !jit_write_page_table_)
         return;
     // Exclusive guards revoke only writes. Restoring one must still apply
     // every write restriction, while preserving read/execute translations.
-    auto* read_entry = refresh == JitPageRefresh::All && jit_read_page_table_
-                           ? &jit_read_page_table_->entries()[base / page_size]
-                           : nullptr;
-    auto* write_entry =
-        jit_write_page_table_
-            ? &jit_write_page_table_->entries()[base / page_size]
-            : nullptr;
-    if (read_entry)
-        *read_entry = nullptr;
-    if (write_entry) {
-        if (*write_entry != nullptr) {
-            *write_entry = nullptr;
-            direct_jit_write_pages_.erase(base);
-            direct_shared_jit_write_pages_.erase(base);
-        }
+    auto* read_table = refresh == JitPageRefresh::All ? jit_read_page_table_.get() : nullptr;
+    auto* write_entry = jit_write_page_table_ ? &jit_write_page_table_->entries()[index] : nullptr;
+    if (write_entry && *write_entry) {
+        *write_entry = nullptr;
+        direct_jit_write_pages_.erase(base);
+        direct_shared_jit_write_pages_.erase(base);
     }
-    if (!jit_page_table_enabled_)
+    if (!jit_page_table_enabled_) {
+        if (read_table)
+            read_table->set_entry(index, nullptr);
         return;
+    }
 
-    const auto flags = page_permission_locked(base / page_size);
+    const auto flags = page_permission_locked(index);
     constexpr auto read_required = static_cast<std::uint8_t>(
         mapped_page_flag | permission_bits(MemoryPermission::Read));
     const auto* page = find_page_locked(base);
@@ -1821,12 +1816,13 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address,
     const bool direct_read_safe = !parallel_access_ ||
         (page != nullptr && !page->shared_writable && page->backing &&
             !page->backing->shared_write_tracking_enabled());
-    const auto translation = task_vm_events_ ? vm_translation_locked(base / page_size) : 7U;
-    if (read_entry && direct_read_safe &&
-        (translation & permission_bits(MemoryPermission::Read)) != 0U &&
-        (flags & read_required) == read_required && page != nullptr &&
-        page->backing) {
-        *read_entry = jit_page_pointer(*page->backing, base);
+    const auto translation = task_vm_events_ ? vm_translation_locked(index) : 7U;
+    if (read_table) {
+        std::uint8_t* pointer = nullptr;
+        if (direct_read_safe && (translation & permission_bits(MemoryPermission::Read)) != 0U &&
+            (flags & read_required) == read_required && page && page->backing)
+            pointer = jit_page_pointer(*page->backing, base);
+        read_table->set_entry(index, pointer);
     }
 
     constexpr auto write_required = static_cast<std::uint8_t>(

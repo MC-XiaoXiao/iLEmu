@@ -16,7 +16,17 @@ public:
     ~JitPageTableStorage();
     JitPageTableStorage(const JitPageTableStorage&) = delete;
     JitPageTableStorage& operator=(const JitPageTableStorage&) = delete;
-    [[nodiscard]] std::uint8_t** entries() const;
+    [[nodiscard]] std::uint8_t** entries() const
+    {
+        return static_cast<std::uint8_t**>(mapping_);
+    }
+    void set_entry(std::size_t index, std::uint8_t* pointer)
+    {
+        auto& entry = entries()[index];
+        // Storing even nullptr to an untouched slot commits a host page.
+        if (entry != pointer)
+            entry = pointer;
+    }
     void clear();
 private:
     void* mapping_ { };

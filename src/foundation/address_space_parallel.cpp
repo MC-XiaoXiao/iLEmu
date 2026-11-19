@@ -7,6 +7,16 @@ namespace ilemu {
 
 thread_local AddressSpace::ParallelAccess* AddressSpace::parallel_scope_ { };
 
+void AddressSpace::ParallelView::clear()
+{
+    for (auto page : touched) {
+        const auto index = page / page_size;
+        reads.set_entry(index, nullptr);
+        writes.set_entry(index, nullptr);
+    }
+    touched.clear();
+}
+
 AddressSpace::ParallelAccess* AddressSpace::parallel_scope() const noexcept
 {
     for (auto* scope = parallel_scope_; scope; scope = scope->previous_)
@@ -54,11 +64,7 @@ AddressSpace::ParallelAccess::ParallelAccess(
             }, view_);
         auto& entry = *view_;
         if (entry.owner != owner) {
-            for (auto page : entry.touched) {
-                entry.reads.entries()[page / page_size] = nullptr;
-                entry.writes.entries()[page / page_size] = nullptr;
-            }
-            entry.touched.clear();
+            entry.clear();
             entry.owner = owner;
         }
     } catch (...) {
@@ -100,12 +106,7 @@ void AddressSpace::leave_parallel_access()
     if (!scope || !scope->enabled_)
         return;
     auto lock = write_lock();
-    auto& view = *scope->view_;
-    for (auto page : view.touched) {
-        view.reads.entries()[page / page_size] = nullptr;
-        view.writes.entries()[page / page_size] = nullptr;
-    }
-    view.touched.clear();
+    scope->view_->clear();
     scope->lease_->disable();
     scope->enabled_ = false;
 }
@@ -162,7 +163,10 @@ void AddressSpace::grant_parallel_page_locked(std::uint32_t address, bool writin
     // the existing checked path. COW writes detach before reaching this point.
     if (!page || !page->backing || page->shared_writable ||
         page->backing->shared_write_tracking_enabled() ||
-        !jit_read_page_table_ || !jit_read_page_table_->entries()[index])
+        !jit_read_page_table_)
+        return;
+    auto* read_pointer = jit_read_page_table_->entries()[index];
+    if (!read_pointer)
         return;
     // Native lanes share the backend's coherent load/store domain. Do not
     // turn Guest sharing (including false sharing) into ownership ping-pong.
@@ -171,10 +175,14 @@ void AddressSpace::grant_parallel_page_locked(std::uint32_t address, bool writin
     // Existing guarded write entries still exclude reservations, COW, code
     // tracking and external/shared backing. ARM barriers remain in the JIT.
     auto& view = *scope->view_;
-    view.touched.insert(base);
-    view.reads.entries()[index] = jit_read_page_table_->entries()[index];
+    auto& read_entry = view.reads.entries()[index];
+    if (read_entry != read_pointer) {
+        if (!read_entry)
+            view.touched.insert(base);
+        read_entry = read_pointer;
+    }
     if (writing && jit_write_page_table_)
-        view.writes.entries()[index] = jit_write_page_table_->entries()[index];
+        view.writes.set_entry(index, jit_write_page_table_->entries()[index]);
 }
 
 void AddressSpace::invalidate_parallel_page_locked(std::uint32_t address)
@@ -182,11 +190,12 @@ void AddressSpace::invalidate_parallel_page_locked(std::uint32_t address)
     if (!parallel_state_)
         return;
     const auto base = address & ~(page_size - 1U);
+    const auto index = base / page_size;
     for (auto& [slot, entry] : parallel_state_->views) {
         static_cast<void>(slot);
         if (entry->touched.erase(base)) {
-            entry->reads.entries()[base / page_size] = nullptr;
-            entry->writes.entries()[base / page_size] = nullptr;
+            entry->reads.set_entry(index, nullptr);
+            entry->writes.set_entry(index, nullptr);
         }
     }
 }
@@ -197,11 +206,7 @@ void AddressSpace::clear_parallel_views_locked()
         return;
     for (auto& [slot, entry] : parallel_state_->views) {
         static_cast<void>(slot);
-        for (auto page : entry->touched) {
-            entry->reads.entries()[page / page_size] = nullptr;
-            entry->writes.entries()[page / page_size] = nullptr;
-        }
-        entry->touched.clear();
+        entry->clear();
     }
 }
 

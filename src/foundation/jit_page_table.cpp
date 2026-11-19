@@ -18,10 +18,6 @@ JitPageTableStorage::~JitPageTableStorage()
 {
     ::munmap(mapping_, byte_size);
 }
-std::uint8_t** JitPageTableStorage::entries() const
-{
-    return static_cast<std::uint8_t**>(mapping_);
-}
 void JitPageTableStorage::clear()
 {
     if (::madvise(mapping_, byte_size, MADV_DONTNEED) != 0)
