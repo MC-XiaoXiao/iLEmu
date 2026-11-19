@@ -77,7 +77,7 @@ private:
     };
 
     void split_at(std::uint64_t point);
-    void coalesce();
+    void coalesce(std::uint32_t start, std::uint64_t end);
 
     std::map<std::uint32_t, Region> regions_;
 };

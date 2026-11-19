@@ -39,11 +39,16 @@ void VmMap::split_at(std::uint64_t point)
     regions_.emplace(static_cast<std::uint32_t>(point), previous);
 }
 
-void VmMap::coalesce()
+void VmMap::coalesce(std::uint32_t start, std::uint64_t end)
 {
-    for (auto current = regions_.begin(); current != regions_.end();) {
+    // Like vm_map_simplify_range, include both neighbours of the changed
+    // range. Entries outside it were already coalesced.
+    auto current = regions_.lower_bound(start);
+    if (current != regions_.begin())
+        --current;
+    while (current != regions_.end()) {
         const auto next = std::next(current);
-        if (next == regions_.end())
+        if (next == regions_.end() || next->first > end)
             break;
         if (current->second.end == next->first &&
             current->second.permissions == next->second.permissions &&
@@ -67,14 +72,14 @@ void VmMap::map_or(
     split_at(end);
 
     std::uint64_t cursor = start;
+    auto region = regions_.lower_bound(start);
     while (cursor < end) {
-        auto region = regions_.lower_bound(static_cast<std::uint32_t>(cursor));
         if (region == regions_.end() || region->first > cursor) {
             const auto gap_end =
                 region == regions_.end()
                     ? end
                     : std::min<std::uint64_t>(end, region->first);
-            regions_.emplace(static_cast<std::uint32_t>(cursor),
+            regions_.emplace_hint(region, static_cast<std::uint32_t>(cursor),
                 Region { gap_end, permissions, attributes.inheritance,
                     attributes.maximum_permissions });
             cursor = gap_end;
@@ -83,8 +88,9 @@ void VmMap::map_or(
         // Layering internal mappings must preserve an existing limit.
         region->second.permissions |= permissions;
         cursor = region->second.end;
+        ++region;
     }
-    coalesce();
+    coalesce(start, end);
 }
 
 void VmMap::unmap(std::uint32_t start, std::uint64_t end)
@@ -97,7 +103,6 @@ void VmMap::unmap(std::uint32_t start, std::uint64_t end)
     while (region != regions_.end() && region->first < end) {
         region = regions_.erase(region);
     }
-    coalesce();
 }
 
 VmMap::ProtectionResult VmMap::protect(std::uint32_t start, std::uint64_t end,
@@ -140,7 +145,7 @@ VmMap::ProtectionResult VmMap::protect(std::uint32_t start, std::uint64_t end,
             (has_permission(previous, MemoryPermission::Execute) ||
                 has_permission(entry.permissions, MemoryPermission::Execute));
     }
-    coalesce();
+    coalesce(start, end);
     return result;
 }
 
@@ -156,7 +161,7 @@ bool VmMap::inherit(
         region != regions_.end() && region->first < end; ++region) {
         region->second.inheritance = inheritance;
     }
-    coalesce();
+    coalesce(start, end);
     return true;
 }
 
@@ -209,7 +214,6 @@ std::optional<VmMap::MappingRegion> VmMap::region_at_or_after(
                 containing->second.inheritance, containing->second.maximum_permissions };
         }
     }
-    region = regions_.lower_bound(address);
     if (region == regions_.end())
         return std::nullopt;
     return MappingRegion { region->first, region->second.end,
