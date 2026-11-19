@@ -36,9 +36,14 @@ struct GuestExecutionCoordinator::Impl {
         GuestExecutionRequest* request { };
         State state { State::Idle };
     };
+    Impl(std::size_t worker_count, CpuTimeSource source)
+        : channels(worker_count), cpu_time_source(std::move(source))
+    {
+    }
+
     std::mutex mutex;
     std::condition_variable completion_available;
-    std::vector<std::unique_ptr<Channel>> channels;
+    std::vector<Channel> channels;
     std::size_t outstanding { };
     bool stopping { };
     CpuTimeSource cpu_time_source;
@@ -46,16 +51,13 @@ struct GuestExecutionCoordinator::Impl {
 
 GuestExecutionCoordinator::GuestExecutionCoordinator(std::size_t worker_count,
     CpuTimeSource cpu_time_source)
-    : impl_ { std::make_unique<Impl>() }
+    : impl_ { std::make_unique<Impl>(worker_count, std::move(cpu_time_source)) }
 {
-    impl_->cpu_time_source = std::move(cpu_time_source);
     if (worker_count == 0U)
         throw std::invalid_argument { "guest execution requires a channel" };
-    impl_->channels.reserve(worker_count);
     try {
         for (std::size_t index = 0; index < worker_count; ++index) {
-            impl_->channels.push_back(std::make_unique<Impl::Channel>());
-            impl_->channels.back()->worker =
+            impl_->channels[index].worker =
                 std::thread([this, index] { worker_loop(index); });
         }
     } catch (...) {
@@ -76,10 +78,10 @@ void GuestExecutionCoordinator::stop() noexcept
         impl_->stopping = true;
     }
     for (auto& channel : impl_->channels)
-        channel->work_available.notify_one();
+        channel.work_available.notify_one();
     for (auto& channel : impl_->channels)
-        if (channel->worker.joinable())
-            channel->worker.join();
+        if (channel.worker.joinable())
+            channel.worker.join();
 }
 
 void GuestExecutionCoordinator::submit(GuestExecutionRequest& request)
@@ -89,12 +91,18 @@ void GuestExecutionCoordinator::submit(GuestExecutionRequest& request)
         throw std::invalid_argument { "guest request requires a CPU and valid channel" };
     if (impl_->stopping)
         throw std::logic_error { "guest execution channels are stopping" };
-    auto& channel = *impl_->channels[request.execution_slot];
+    auto& channel = impl_->channels[request.execution_slot];
     if (channel.state != Impl::State::Idle)
         throw std::logic_error { "guest execution channel is occupied" };
     for (const auto& other : impl_->channels)
-        if (other->request && other->request->cpu == request.cpu)
+        if (other.request && other.request->cpu == request.cpu)
             throw std::logic_error { "guest CPU already has an outstanding request" };
+    publish_locked(request);
+}
+
+void GuestExecutionCoordinator::publish_locked(GuestExecutionRequest& request)
+{
+    auto& channel = impl_->channels[request.execution_slot];
     request.cooperation_signal = host_completion_pending_ ? &host_completions_ : nullptr;
     request.completion_generation = polled_completion_generation_;
     channel.request = &request;
@@ -110,16 +118,16 @@ GuestExecutionRequest* GuestExecutionCoordinator::wait()
         return nullptr;
     impl_->completion_available.wait(lock, [this] {
         for (const auto& channel : impl_->channels)
-            if (channel->state == Impl::State::Completed)
+            if (channel.state == Impl::State::Completed)
                 return true;
         return false;
     });
     for (auto& channel : impl_->channels) {
-        if (channel->state != Impl::State::Completed)
+        if (channel.state != Impl::State::Completed)
             continue;
-        auto* request = channel->request;
-        channel->request = nullptr;
-        channel->state = Impl::State::Idle;
+        auto* request = channel.request;
+        channel.request = nullptr;
+        channel.state = Impl::State::Idle;
         --impl_->outstanding;
         return request;
     }
@@ -148,22 +156,24 @@ void GuestExecutionCoordinator::run(std::span<GuestExecutionRequest*> requests,
         std::lock_guard lock { impl_->mutex };
         if (impl_->outstanding != 0U)
             throw std::logic_error { "guest execution windows cannot overlap" };
-    }
-    // Validate before dispatch so a malformed window cannot partially execute.
-    for (std::size_t i = 0; i < requests.size(); ++i) {
-        if (!requests[i] || !requests[i]->cpu ||
-            requests[i]->execution_slot >= impl_->channels.size())
-            throw std::invalid_argument { "invalid guest execution request" };
-        for (std::size_t j = 0; j < i; ++j)
-            if (requests[i]->cpu == requests[j]->cpu ||
-                requests[i]->execution_slot == requests[j]->execution_slot)
-                throw std::invalid_argument { "duplicate guest execution channel or CPU" };
-    }
-    if (requests.empty())
-        return;
-    try {
+        if (impl_->stopping)
+            throw std::logic_error { "guest execution channels are stopping" };
+        // Validate before dispatch so a malformed window cannot partially execute.
+        for (std::size_t i = 0; i < requests.size(); ++i) {
+            if (!requests[i] || !requests[i]->cpu ||
+                requests[i]->execution_slot >= impl_->channels.size())
+                throw std::invalid_argument { "invalid guest execution request" };
+            for (std::size_t j = 0; j < i; ++j)
+                if (requests[i]->cpu == requests[j]->cpu ||
+                    requests[i]->execution_slot == requests[j]->execution_slot)
+                    throw std::invalid_argument { "duplicate guest execution channel or CPU" };
+        }
+        if (requests.empty())
+            return;
         for (auto* request : requests)
-            submit(*request);
+            publish_locked(*request);
+    }
+    try {
         for (;;) {
             std::unique_lock lock { impl_->mutex };
             if (impl_->outstanding == 0U)
@@ -171,7 +181,7 @@ void GuestExecutionCoordinator::run(std::span<GuestExecutionRequest*> requests,
             const auto completed = [this] {
                 return std::any_of(impl_->channels.begin(), impl_->channels.end(),
                     [](const auto& channel) {
-                        return channel->state == Impl::State::Completed;
+                        return channel.state == Impl::State::Completed;
                     });
             };
             if (service_host)
@@ -180,9 +190,9 @@ void GuestExecutionCoordinator::run(std::span<GuestExecutionRequest*> requests,
             else
                 impl_->completion_available.wait(lock, completed);
             for (auto& channel : impl_->channels) {
-                if (channel->state == Impl::State::Completed) {
-                    channel->request = nullptr;
-                    channel->state = Impl::State::Idle;
+                if (channel.state == Impl::State::Completed) {
+                    channel.request = nullptr;
+                    channel.state = Impl::State::Idle;
                     --impl_->outstanding;
                 }
             }
@@ -250,7 +260,7 @@ void GuestExecutionCoordinator::worker_loop(std::size_t index)
 {
     // Each slot has a stable host worker and memory view; host affinity remains
     // the OS scheduler's responsibility and is not part of Guest CPU identity.
-    auto& channel = *impl_->channels[index];
+    auto& channel = impl_->channels[index];
     std::unique_lock lock { impl_->mutex };
     for (;;) {
         channel.work_available.wait(lock, [this, &channel] {

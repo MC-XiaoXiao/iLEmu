@@ -81,6 +81,7 @@ public:
     [[nodiscard]] static bool in_execution_channel() noexcept;
 
 private:
+    void publish_locked(GuestExecutionRequest& request);
     void worker_loop(std::size_t index);
     void stop() noexcept;
 
