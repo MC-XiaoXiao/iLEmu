@@ -76,6 +76,7 @@ public:
             observers_.clear();
         events_.clear();
         contact_origin_.reset();
+        refresh_pending_events_locked();
         receiver_generation_.fetch_add(1, std::memory_order_release);
     }
     void close(std::uint32_t process)
@@ -93,6 +94,7 @@ public:
         });
         if (changed || removed != 0U)
             receiver_generation_.fetch_add(1, std::memory_order_release);
+        refresh_pending_events_locked();
     }
     void observe(Observer observer)
     {
@@ -115,6 +117,7 @@ public:
         if (existing->observer.processor != observer.processor)
             existing->events.clear();
         existing->observer = observer;
+        refresh_pending_events_locked();
         receiver_generation_.fetch_add(1, std::memory_order_release);
     }
     void unobserve(std::uint32_t process, std::uint32_t client)
@@ -126,6 +129,7 @@ public:
         });
         if (removed != 0U)
             receiver_generation_.fetch_add(1, std::memory_order_release);
+        refresh_pending_events_locked();
     }
     [[nodiscard]] std::uint64_t receiver_generation_snapshot() const noexcept
     {
@@ -166,6 +170,7 @@ public:
                     append(state.events, event);
             }
         }
+        events_pending_.store(true, std::memory_order_release);
         return true;
     }
     [[nodiscard]] std::optional<Event> take(
@@ -177,6 +182,7 @@ public:
             return std::nullopt;
         auto event = events_.front();
         events_.pop_front();
+        refresh_pending_events_locked();
         return event;
     }
     [[nodiscard]] std::optional<ObserverDelivery> take_observer(
@@ -194,7 +200,12 @@ public:
         ObserverDelivery delivery { observer->observer,
             observer->events.front() };
         observer->events.pop_front();
+        refresh_pending_events_locked();
         return delivery;
+    }
+    [[nodiscard]] bool has_pending_events() const
+    {
+        return events_pending_.load(std::memory_order_acquire);
     }
     [[nodiscard]] std::optional<std::size_t> pending_processor(
         std::uint32_t process) const
@@ -263,6 +274,13 @@ public:
     }
 
 private:
+    void refresh_pending_events_locked()
+    {
+        events_pending_.store(!events_.empty() ||
+            std::any_of(observers_.begin(), observers_.end(),
+                [](const ObserverState& state) { return !state.events.empty(); }),
+            std::memory_order_release);
+    }
     static void append(std::deque<Event>& queue, const Event& event)
     {
         const auto* touch = std::get_if<TouchInput>(&event.input);
@@ -292,6 +310,7 @@ private:
     // Receiver configuration invalidates scheduler eligibility; queued input
     // retains the existing receiver cadence without changing this revision.
     std::atomic_uint64_t receiver_generation_ { 1 };
+    std::atomic_bool events_pending_ { false };
 };
 
 } // namespace ilemu

@@ -316,10 +316,19 @@ bool HidEventSystemHle::prepare_pending_event(
     Cpu& cpu, std::uint32_t process, std::uint32_t svc_immediate)
 {
     const auto processor = cpu.processor_id();
-    if (!is_event_consumer(process, processor) || !state_ ||
-        delivering_processors_.contains(processor) || svc_immediate != 0x80U ||
+    if (!state_ || svc_immediate != 0x80U ||
         static_cast<std::int32_t>(cpu.registers()[12]) != -31 ||
-        cpu.registers()[2] != 0U || (cpu.registers()[1] & 2U) == 0U)
+        cpu.registers()[2] != 0U || (cpu.registers()[1] & 2U) == 0U ||
+        delivering_processors_.contains(processor))
+        return false;
+    if (!state_->hid_event_queue.has_pending_events()) {
+        if (consumer_process_ != process || consumer_processor_ != processor)
+            return false;
+        const auto deadline = next_sample_deadline();
+        if (!deadline || *deadline > state_->clock.now())
+            return false;
+    }
+    if (!is_event_consumer(process, processor))
         return false;
     // A native HID service is already published by the virtual digitizer.
     // Associate its events with that registry entry so firmware can recover

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -95,6 +96,7 @@ private:
         std::map<std::uint32_t, std::map<std::uint32_t, EventRegistration>>
             registrations;
         std::vector<PendingEvent> pending_events;
+        std::atomic_bool events_pending { false };
     };
 
     [[nodiscard]] bool valid_handle(

@@ -265,6 +265,7 @@ Apple80211Hle::Apple80211Hle(UserlandHleRegistry& registry,
                 .processor = completed.cpu().processor_id(),
                 .memory = registration.memory,
             });
+            event_broker_->events_pending.store(true, std::memory_order_release);
             completed.set_return(apple80211_abi::success);
         });
     });
@@ -282,6 +283,8 @@ void Apple80211Hle::reset(std::uint32_t process_id)
         event_broker_->pending_events, [process_id](const PendingEvent& event) {
             return event.process_id == process_id;
         });
+    event_broker_->events_pending.store(
+        !event_broker_->pending_events.empty(), std::memory_order_release);
 }
 
 void Apple80211Hle::inherit_state(const Apple80211Hle& parent,
@@ -299,6 +302,8 @@ void Apple80211Hle::inherit_state(const Apple80211Hle& parent,
         [child_process_id](const PendingEvent& event) {
             return event.process_id == child_process_id;
         });
+    event_broker_->events_pending.store(
+        !event_broker_->pending_events.empty(), std::memory_order_release);
 }
 
 void Apple80211Hle::set_wifi_state(std::shared_ptr<WifiState> state)
@@ -340,7 +345,8 @@ void Apple80211Hle::publish_state_change(
 bool Apple80211Hle::deliver_pending_event(
     Cpu& cpu, std::uint32_t process_id, std::uint32_t svc_immediate)
 {
-    if (!process_handles_.contains(process_id))
+    if (!event_broker_->events_pending.load(std::memory_order_acquire) ||
+        !process_handles_.contains(process_id))
         return false;
     PendingEvent event;
     {
@@ -364,6 +370,8 @@ bool Apple80211Hle::deliver_pending_event(
             return false;
         event = *pending;
         event_broker_->pending_events.erase(pending);
+        if (event_broker_->pending_events.empty())
+            event_broker_->events_pending.store(false, std::memory_order_release);
         const auto registrations =
             event_broker_->registrations.find(process_id);
         if (!event.callback || event.memory == nullptr ||
@@ -490,6 +498,7 @@ void Apple80211Hle::queue_event_locked(std::uint32_t process_id,
         .processor = registration.processor,
         .memory = registration.memory,
     });
+    event_broker_->events_pending.store(true, std::memory_order_release);
 }
 
 } // namespace ilemu
