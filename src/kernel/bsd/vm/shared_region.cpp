@@ -474,49 +474,37 @@ namespace {
     [[nodiscard]] std::optional<std::uint32_t> first_mapped_shared_region_page(
         const AddressSpace& memory, DarwinAddressBounds bounds)
     {
-        for (std::uint64_t address = bounds.shared_region_base;
-            address < bounds.shared_region_end;
-            address += AddressSpace::page_size) {
-            const auto page = static_cast<std::uint32_t>(address);
-            if (memory.mapped(page, AddressSpace::page_size))
-                return page;
-        }
-        return std::nullopt;
-    }
-
-    [[nodiscard]] bool mappings_fit(const AddressSpace& memory,
-        const std::vector<Mapping>& mappings, std::uint32_t slide,
-        DarwinAddressBounds bounds)
-    {
-        for (const auto& mapping : mappings) {
-            if (add_overflows(mapping.address, slide))
-                return false;
-            const auto address = mapping.address + slide;
-            if (!in_arm_shared_region(address, mapping.size, bounds) ||
-                memory.mapped(address, mapping.size)) {
-                return false;
-            }
-        }
-        return true;
+        const auto region = memory.mapping_region_at_or_after(bounds.shared_region_base);
+        if (!region || region->address >= bounds.shared_region_end)
+            return std::nullopt;
+        return std::max(bounds.shared_region_base, region->address);
     }
 
     [[nodiscard]] std::optional<std::uint32_t> choose_slide(
         const AddressSpace& memory, const std::vector<Mapping>& mappings,
         bool may_slide, DarwinAddressBounds bounds)
     {
-        if (mappings_fit(memory, mappings, 0, bounds))
-            return 0;
-        if (!may_slide || mappings.empty())
-            return std::nullopt;
-
-        // XNU's map_shared_file() applies one slide to both ARM halves.  Search
-        // by page so TEXT/DATA retain their 0x08000000 relationship.
-        for (std::uint64_t slide = AddressSpace::page_size;
-            slide < arm_shared_half_size; slide += AddressSpace::page_size) {
-            if (mappings_fit(
-                    memory, mappings, static_cast<std::uint32_t>(slide), bounds)) {
-                return static_cast<std::uint32_t>(slide);
+        // All segments move by one common slide. Every smaller step up to the
+        // end of a colliding VM interval would still overlap that interval.
+        std::uint64_t slide = 0;
+        while (slide < arm_shared_half_size) {
+            auto next_slide = slide;
+            for (const auto& mapping : mappings) {
+                const auto address = mapping.address + slide;
+                const auto end = address + mapping.size;
+                if (end > bounds.shared_region_end)
+                    return std::nullopt;
+                const auto region = memory.mapping_region_at_or_after(
+                    static_cast<std::uint32_t>(address));
+                if (region && region->address < end) {
+                    if (!may_slide)
+                        return std::nullopt;
+                    next_slide = std::max(next_slide, region->end - mapping.address);
+                }
             }
+            if (next_slide == slide)
+                return static_cast<std::uint32_t>(slide);
+            slide = next_slide;
         }
         return std::nullopt;
     }
@@ -948,7 +936,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
                                   : std::chrono::steady_clock::time_point { };
         bool mapped = true;
         if (zero_fill) {
-            mapped = memory_.map(address, mapping.size, mapping_permissions);
+            mapped = memory_.map_anonymous(address, mapping.size, mapping_permissions,
+                AddressSpace::AnonymousMappingMode::Exclusive);
             if (mapped)
                 applied.push_back({ address, mapping.size });
         } else {
@@ -967,8 +956,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
             }
             if (mapped && zero_fill_size != 0U) {
                 const auto zero_fill_address = address + file_backed_size;
-                mapped = memory_.map(
-                    zero_fill_address, zero_fill_size, mapping_permissions);
+                mapped = memory_.map_anonymous(zero_fill_address, zero_fill_size,
+                    mapping_permissions, AddressSpace::AnonymousMappingMode::Exclusive);
                 if (mapped)
                     applied.push_back({ zero_fill_address, zero_fill_size });
             }
