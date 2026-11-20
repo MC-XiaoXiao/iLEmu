@@ -1613,7 +1613,8 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
     for (const auto& image : cache.images()) {
         if (!needs_image_metadata(image.path))
             continue;
-        const auto parsed = cache.parse_image(image.index, architecture);
+        const auto parsed = cache.parse_image(image.index, architecture,
+            DyldSharedCache::ImageRetention::Caller);
         if (!parsed)
             continue;
 

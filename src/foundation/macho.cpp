@@ -1411,14 +1411,13 @@ void MachOImage::map_into(
             }
         };
 
-        const bool immutable_executable =
+        const bool immutable_file_segment =
             !fat_container_ && segment.file_size != 0 &&
-            has_permission(permissions, MemoryPermission::Execute) &&
             !has_permission(permissions, MemoryPermission::Write) &&
             segment.file_offset % AddressSpace::page_size ==
                 segment.vm_address % AddressSpace::page_size;
         const auto mapping_end = base + mapping_size;
-        if (!immutable_executable) {
+        if (!immutable_file_segment) {
             map_anonymous(base, mapping_end);
         } else {
             const auto file_guest_start =
@@ -1444,15 +1443,10 @@ void MachOImage::map_into(
                         static_cast<std::uint32_t>(
                             file_guest_end - file_guest_start),
                         permissions, path_, file_offset, file_generation_,
-                        content_identity_,
-                        batch_context && batch_context->backing
-                            ? std::shared_ptr<const std::vector<std::byte>> { }
-                            : bytes_,
+                        content_identity_, bytes_,
                         immutable_file_view_, batch_context, attributes)) {
-                    // File backing is an optimization for immutable text, not
-                    // part of the Mach-O loading contract. A transient host
-                    // mapping failure must retain the original anonymous-copy
-                    // behavior instead of terminating the whole emulator.
+                    // Use the parsed bytes when file backing is unavailable,
+                    // including when the source generation has changed.
                     map_anonymous(static_cast<std::uint32_t>(file_guest_start),
                         static_cast<std::uint32_t>(file_guest_end));
                 }

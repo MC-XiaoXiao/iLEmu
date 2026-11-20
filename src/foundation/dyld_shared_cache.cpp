@@ -1914,7 +1914,8 @@ std::optional<std::string> DyldSharedCache::read_vm_c_string(
 }
 
 std::shared_ptr<const MachOImage> DyldSharedCache::parse_image(
-    std::uint32_t image_index, ArmArchitectureVersion architecture) const
+    std::uint32_t image_index, ArmArchitectureVersion architecture,
+    ImageRetention retention) const
 {
     if (image_store_ == nullptr || image_index >= images().size())
         return { };
@@ -1960,7 +1961,8 @@ std::shared_ptr<const MachOImage> DyldSharedCache::parse_image(
                 source.content_identity, ImmutableSnapshotKind::RuntimeHot,
                 header->file_offset, source.immutable_snapshot,
                 source.file_generation, source.immutable_file_view));
-        image_store_->images.emplace(key, parsed);
+        if (retention == ImageRetention::Generation)
+            image_store_->images.emplace(key, parsed);
         ++image_builds;
         return parsed;
     } catch (const std::exception&) {

@@ -211,7 +211,7 @@ private:
     [[nodiscard]] std::span<const std::byte> byte_span() const noexcept;
 
     std::filesystem::path path_;
-    // Parsing owns one immutable byte snapshot. File-backed executable pages
+    // Parsing owns one immutable byte snapshot. File-backed read-only pages
     // share it so delayed faults cannot observe later in-place host writes.
     std::shared_ptr<const std::vector<std::byte>> bytes_;
     // Shared-cache images prefer a content-addressed, read-only mmap. Keeping

@@ -203,11 +203,8 @@ LoadedProcess ProcessLoader::load(PreparedProcessImage prepared,
         static_cast<void>(catalog_->register_image(executable));
         static_cast<void>(catalog_->register_image(dynamic_linker));
     }
-    // Each image can have several executable segments. Keep the first
-    // validated file backing for that image so later segments reuse its open
-    // descriptor and generation/content identity checks. The contexts are
-    // intentionally separate because the executable and dyld are different
-    // pathnames and may have independent generations.
+    // Read-only segments of each image reuse one validated descriptor. The
+    // executable and dyld backing contexts track independent generations.
     FileMappingBatchContext executable_mapping_context;
     executable.map_into(memory_, &executable_mapping_context);
     // XNU places a dyld whose header segment declares vmaddr zero just after

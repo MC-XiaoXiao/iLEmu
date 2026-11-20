@@ -279,11 +279,13 @@ public:
 
     [[nodiscard]] static ParseStats parse_stats() noexcept;
 
-    // Returns one immutable parsed Mach-O view per logical image and guest
-    // architecture. The returned object is shared by all registries/processes
-    // that use this cache generation.
+    enum class ImageRetention { Generation, Caller };
+
+    // Reuses an immutable Mach-O view already held by this generation. Plan
+    // builders can retain new views only while extracting their metadata.
     [[nodiscard]] std::shared_ptr<const MachOImage> parse_image(
-        std::uint32_t image_index, ArmArchitectureVersion architecture) const;
+        std::uint32_t image_index, ArmArchitectureVersion architecture,
+        ImageRetention retention = ImageRetention::Generation) const;
     [[nodiscard]] std::vector<std::uint32_t> images_intersecting_file_range(
         std::uint32_t file_index, std::uint64_t file_offset,
         std::uint64_t size) const;
