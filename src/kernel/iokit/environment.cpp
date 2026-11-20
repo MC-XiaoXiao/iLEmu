@@ -156,6 +156,9 @@ std::uint32_t ensure_hid_service_locked(KernelSharedState& state)
     std::map<std::string, Property> properties;
     properties.emplace("HIDServiceSupport",
         Property { Property::Kind::Boolean, { std::byte { 1 } } });
+    // AutoBrightness selects its primary sensor by this CFBoolean property.
+    properties.emplace("Built-In",
+        Property { Property::Kind::Boolean, { std::byte { 1 } } });
     // The sensor reports calibrated lux; firmware's adaptive plugin consumes
     // that format instead of the legacy raw photodiode channels.
     properties.emplace("UseAABPlugin",
