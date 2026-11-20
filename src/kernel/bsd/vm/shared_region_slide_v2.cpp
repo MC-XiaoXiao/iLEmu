@@ -164,7 +164,7 @@ namespace {
                                static_cast<std::uint32_t>(page) * 2U);
             if (entry == no_rebase)
                 return source;
-            auto bytes = source->bytes;
+            auto bytes = source->copy_bytes();
             if (decode_page(metadata_, bytes, entry, info_, slide_) != 0U)
                 return { };
             return cache.intern_immutable_page(bytes);

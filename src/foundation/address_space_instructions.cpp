@@ -45,7 +45,7 @@ bool AddressSpace::overlay_instructions(
             if (inserted) {
                 entry->second = std::make_shared<Bytes>(
                     page->instructions ? *page->instructions
-                                       : page->backing->bytes);
+                                       : page->backing->copy_bytes());
             }
             std::copy_n(operation.data.data() + (current - operation.address),
                 count, entry->second->data() + offset);

@@ -754,8 +754,18 @@ std::shared_ptr<const ImmutableFileView> ImmutableFileView::open(
         return { };
     }
 
+#if defined(__x86_64__)
+    // Dynarmic uses locked read-modify-write instructions for ordered loads.
+    // A private view allows these loads to complete without modifying the
+    // cached file. Ordinary reads still share its clean page-cache pages.
+    constexpr int protection = PROT_READ | PROT_WRITE;
+    constexpr int flags = MAP_PRIVATE;
+#else
+    constexpr int protection = PROT_READ;
+    constexpr int flags = MAP_SHARED;
+#endif
     void* mapping = ::mmap(nullptr, static_cast<std::size_t>(byte_size),
-        PROT_READ, MAP_SHARED, descriptor, 0);
+        protection, flags, descriptor, 0);
     if (mapping == MAP_FAILED) {
         static_cast<void>(::close(descriptor));
         return { };
@@ -1527,24 +1537,44 @@ bool GuestFileIoState::synchronize()
 }
 
 GuestPageBacking::GuestPageBacking()
-    : reservation_identity_ { next_reservation_identity.fetch_add(
+    : owned_bytes_ { std::make_unique<OwnedBytes>() }
+    , bytes_ { owned_bytes_->bytes.data() }
+    , reservation_identity_ { next_reservation_identity.fetch_add(
+          1, std::memory_order_relaxed) }
+{
+}
+
+GuestPageBacking::GuestPageBacking(BorrowedBytes source)
+    : bytes_ { source.bytes.data() }
+    , file_writeback_ { std::move(source.file) }
+    , file_offset_ { source.file_offset }
+    , file_byte_count_ { guest_memory_page_size }
+    , reservation_identity_ { next_reservation_identity.fetch_add(
           1, std::memory_order_relaxed) }
 {
 }
 
 GuestPageBacking::GuestPageBacking(const GuestPageBacking& other)
+    : owned_bytes_ { std::make_unique_for_overwrite<OwnedBytes>() }
+    , bytes_ { owned_bytes_->bytes.data() }
+    , reservation_identity_ { next_reservation_identity.fetch_add(
+          1, std::memory_order_relaxed) }
 {
     other.materialize();
     const std::scoped_lock lock { other.mutex_ };
-    bytes = other.bytes;
-    reservation_identity_.store(
-        next_reservation_identity.fetch_add(1, std::memory_order_relaxed),
-        std::memory_order_release);
+    std::ranges::copy(other.bytes(), writable_bytes().begin());
 }
 
 GuestPageBacking::~GuestPageBacking()
 {
     delete reservation_granules_.load(std::memory_order_relaxed);
+}
+
+GuestPageBytes GuestPageBacking::copy_bytes() const
+{
+    GuestPageBytes copy;
+    std::ranges::copy(bytes(), copy.begin());
+    return copy;
 }
 
 std::uint64_t GuestPageBacking::reservation_identity(
@@ -1610,6 +1640,7 @@ void GuestPageBacking::materialize() const
         return;
 
     const auto file = file_backing_;
+    auto& bytes = writable_bytes();
     std::fill(bytes.begin(), bytes.end(), std::byte { });
     if (file->immutable_file_view) {
         const auto snapshot =
@@ -1907,7 +1938,8 @@ void FilePageCache::publish_pages(PreparedFilePages& prepared, bool shared_vnode
             const std::lock_guard pending_lock { vnode->writeback_mutex };
             if (const auto pending = vnode->pending_writeback_pages.find(key.file_offset);
                 pending != vnode->pending_writeback_pages.end())
-                std::copy_n(pending->second->begin(), key.byte_count, candidate->bytes.begin());
+                std::copy_n(pending->second->begin(), key.byte_count,
+                    candidate->writable_bytes().begin());
             insert_page_locked(key, candidate);
             continue;
         }
@@ -1916,10 +1948,11 @@ void FilePageCache::publish_pages(PreparedFilePages& prepared, bool shared_vnode
         if (!page->file_backing_)
             continue;
         const std::lock_guard pending_lock { vnode->writeback_mutex };
-        page->bytes = candidate->bytes;
+        page->writable_bytes() = candidate->writable_bytes();
         if (const auto pending = vnode->pending_writeback_pages.find(key.file_offset);
             pending != vnode->pending_writeback_pages.end())
-            std::copy_n(pending->second->begin(), key.byte_count, page->bytes.begin());
+            std::copy_n(pending->second->begin(), key.byte_count,
+                page->writable_bytes().begin());
         page->file_backing_.reset();
     }
     maintain_pages_locked();
@@ -2032,9 +2065,9 @@ std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
     }
 
     const auto reusable =
-        reusable_mapping && !immutable_file_view && !immutable_snapshot &&
+        reusable_mapping && !immutable_file_view &&
                 !reusable_mapping->immutable_file_view &&
-                !reusable_mapping->immutable_snapshot &&
+                reusable_mapping->immutable_snapshot == immutable_snapshot &&
                 reusable_mapping->path == path &&
                 (!expected_generation ||
                     *expected_generation == reusable_mapping->generation) &&
@@ -2306,13 +2339,29 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
             return cached;
     }
 
-    auto page = std::make_shared<GuestPageBacking>();
-    page->file_backing_ = mapping;
-    page->file_writeback_ = mapping;
-    page->file_offset_ = file_offset;
-    page->file_byte_count_ = byte_count;
-    page->has_file_source_ = true;
-    page->shared_vnode_ = shared_vnode;
+    std::shared_ptr<GuestPageBacking> page;
+    // A full, aligned private page can fault directly into the validated
+    // snapshot. Short pages need owned storage for their zero-filled tails.
+    if (!shared_vnode && mapping->immutable_file_view &&
+        byte_count == guest_memory_page_size &&
+        file_offset % guest_memory_page_size == 0) {
+        const auto bytes =
+            mapping->immutable_file_view->range(file_offset, byte_count);
+        if (bytes.size() == guest_memory_page_size) {
+            page = std::make_shared<GuestPageBacking>(
+                GuestPageBacking::BorrowedBytes {
+                    bytes.first<guest_memory_page_size>(), mapping, file_offset });
+        }
+    }
+    if (!page) {
+        page = std::make_shared<GuestPageBacking>();
+        page->file_backing_ = mapping;
+        page->file_writeback_ = mapping;
+        page->file_offset_ = file_offset;
+        page->file_byte_count_ = byte_count;
+        page->has_file_source_ = true;
+        page->shared_vnode_ = shared_vnode;
+    }
     {
         const std::scoped_lock lock { mutex_ };
         if (auto cached = find_page_locked(key))
@@ -2441,8 +2490,8 @@ std::size_t FilePageCache::reflect_descriptor_write(int file_descriptor,
             const std::scoped_lock page_lock { page->mutex_ };
             std::copy_n(
                 bytes.begin() + static_cast<std::ptrdiff_t>(source_offset),
-                count,
-                page->bytes.begin() + static_cast<std::ptrdiff_t>(page_offset));
+                count, page->writable_bytes().begin() +
+                    static_cast<std::ptrdiff_t>(page_offset));
             page->file_flushed_bytes_.reset();
         }
         page->invalidate_reservation_identity(

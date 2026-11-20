@@ -18,15 +18,15 @@ std::shared_ptr<GuestPageBacking> FilePageCache::intern_immutable_page(
         true, false, true };
     const std::scoped_lock lock { mutex_ };
     if (auto cached = find_page_locked(key)) {
-        if (std::equal(bytes.begin(), bytes.end(), cached->bytes.begin()))
+        if (std::equal(bytes.begin(), bytes.end(), cached->bytes().begin()))
             return cached;
         // A digest collision must never substitute different guest bytes.
         auto uncached = std::make_shared<GuestPageBacking>();
-        std::copy(bytes.begin(), bytes.end(), uncached->bytes.begin());
+        std::copy(bytes.begin(), bytes.end(), uncached->writable_bytes().begin());
         return uncached;
     }
     auto page = std::make_shared<GuestPageBacking>();
-    std::copy(bytes.begin(), bytes.end(), page->bytes.begin());
+    std::copy(bytes.begin(), bytes.end(), page->writable_bytes().begin());
     lru_.push_back(key);
     pages_.emplace(key, PageRecord { page, std::prev(lru_.end()) });
     evict_locked();

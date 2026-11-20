@@ -10,6 +10,7 @@
 #include "foundation/shared_memory_identity.hpp"
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -64,11 +65,10 @@ using GuestFileGeneration = RuntimeBackingGeneration;
 [[nodiscard]] std::optional<GuestFileGeneration> file_descriptor_generation(int descriptor);
 
 // Cross-process immutable backing for a validated file generation. The
-// backing file is content-addressed and opened read-only, then mapped with
-// MAP_SHARED so independent emulator processes fault the same host page-cache
-// pages instead of allocating one heap snapshot per process. The lease keeps
-// the backing pathname alive until every process using it has released its
-// mapping; stale leases are reclaimed after a crashed process exits.
+// backing file is content-addressed and opened read-only, then mapped through
+// the OS page cache so emulator processes share clean host pages. The lease
+// keeps the backing pathname alive until every process using it has released
+// its mapping; stale leases are reclaimed after a crashed process exits.
 class ImmutableFileView {
 public:
     ~ImmutableFileView();
@@ -332,13 +332,30 @@ private:
 };
 
 struct GuestPageBacking {
-    // Preserve vector and cache-line alignment in shared allocations.
-    alignas(64) mutable GuestPageBytes bytes { };
+private:
+    using ByteView = std::span<const std::byte, guest_memory_page_size>;
+    // Preserve vector and cache-line alignment for owned storage.
+    struct alignas(64) OwnedBytes {
+        GuestPageBytes bytes;
+    };
+    struct BorrowedBytes {
+        ByteView bytes;
+        std::shared_ptr<GuestFileBacking> file;
+        std::uint64_t file_offset;
+    };
 
+public:
     GuestPageBacking();
+    explicit GuestPageBacking(BorrowedBytes source);
     ~GuestPageBacking();
     GuestPageBacking(const GuestPageBacking& other);
     GuestPageBacking& operator=(const GuestPageBacking&) = delete;
+
+    [[nodiscard]] ByteView bytes() const noexcept
+    {
+        return ByteView { bytes_, guest_memory_page_size };
+    }
+    [[nodiscard]] GuestPageBytes copy_bytes() const;
 
     // The initial reservation seed uniquely names this physical storage and
     // stays fixed when individual exclusive granules are invalidated. Reading
@@ -397,12 +414,27 @@ struct GuestPageBacking {
     [[nodiscard]] std::shared_ptr<GuestFileIoState> writeback_io_state() const;
 
 private:
+    friend class AddressSpace;
     friend class FilePageCache;
     friend class FileMappingPreparation;
     friend class SharedFileWriteback;
     friend class FilePageRead;
     friend class PreparedFilePages;
 
+    [[nodiscard]] bool has_immutable_bytes() const noexcept
+    {
+        return !owned_bytes_;
+    }
+    [[nodiscard]] GuestPageBytes& writable_bytes() const noexcept
+    {
+        assert(owned_bytes_);
+        return owned_bytes_->bytes;
+    }
+
+    std::unique_ptr<OwnedBytes> owned_bytes_;
+    // Direct JIT reads use a stable address. file_writeback_ pins any mapped
+    // bytes for the backing's lifetime.
+    const std::byte* const bytes_;
     mutable std::mutex mutex_;
     mutable std::shared_mutex instruction_mutex_;
     mutable std::shared_ptr<GuestFileBacking> file_backing_;

@@ -171,7 +171,7 @@ void AddressSpace::grant_parallel_page_locked(std::uint32_t address, bool writin
     // Native lanes share the backend's coherent load/store domain. Do not
     // turn Guest sharing (including false sharing) into ownership ping-pong.
     // C++ checked accesses are a DIFFERENT domain: scalar_access_lock drains
-    // every conflicting native view before reading or writing backing.bytes.
+    // every conflicting native view before accessing the page bytes.
     // Existing guarded write entries still exclude reservations, COW, code
     // tracking and external/shared backing. ARM barriers remain in the JIT.
     auto& view = *scope->view_;

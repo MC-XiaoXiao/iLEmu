@@ -56,7 +56,7 @@ std::shared_ptr<PreparedFilePages> PreparedFilePages::read(FilePageCache& cache,
             auto page = std::make_shared<GuestPageBacking>();
             const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(
                 guest_memory_page_size, bytes.size() - pos));
-            std::copy_n(bytes.data() + pos, count, page->bytes.begin());
+            std::copy_n(bytes.data() + pos, count, page->writable_bytes().begin());
             page->file_writeback_ = prepared->file_;
             page->file_offset_ = start + pos;
             page->file_byte_count_ = count;

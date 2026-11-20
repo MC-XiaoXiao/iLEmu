@@ -114,11 +114,12 @@ void SharedFileWriteback::append(const std::shared_ptr<GuestPageBacking>& page)
     files_.insert(file->io_state);
     const std::scoped_lock lock { page->mutex_ };
     const auto count = page->file_byte_count_;
+    const auto& bytes = page->writable_bytes();
     if (page->file_flushed_bytes_ &&
         (page->file_writeback_request_ == request_ ||
             (page->file_writeback_request_->ready() &&
                 page->file_writeback_request_->succeeded())) &&
-        std::equal(page->bytes.begin(), page->bytes.begin() + count,
+        std::equal(bytes.begin(), bytes.begin() + count,
             page->file_flushed_bytes_->begin()))
         return;
     if (range_.file &&
@@ -131,10 +132,10 @@ void SharedFileWriteback::append(const std::shared_ptr<GuestPageBacking>& page)
         range_.offset = page->file_offset_;
     }
     range_.bytes.insert(
-        range_.bytes.end(), page->bytes.begin(), page->bytes.begin() + count);
+        range_.bytes.end(), bytes.begin(), bytes.begin() + count);
     range_.pages.push_back(page);
     page->file_flushed_bytes_ =
-        std::make_shared<const GuestPageBytes>(page->bytes);
+        std::make_shared<const GuestPageBytes>(bytes);
     page->file_writeback_request_ = request_;
     range_.snapshots.emplace_back(
         page->file_offset_, page->file_flushed_bytes_);

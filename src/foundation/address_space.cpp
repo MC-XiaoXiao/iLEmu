@@ -95,10 +95,9 @@ namespace {
     }
 
     [[nodiscard]] std::uint8_t* jit_page_pointer(
-        const GuestPageBacking& backing, std::uint32_t guest_page) noexcept
+        const std::byte* bytes, std::uint32_t guest_page) noexcept
     {
-        const auto host_page =
-            reinterpret_cast<std::uintptr_t>(backing.bytes.data());
+        const auto host_page = reinterpret_cast<std::uintptr_t>(bytes);
         if constexpr (sizeof(std::uintptr_t) >= sizeof(std::uint64_t)) {
             // Dynarmic's absolute-offset page-table mode adds the full Guest
             // address to this entry. Keep the arithmetic in uintptr_t so the
@@ -1010,7 +1009,7 @@ bool AddressSpace::copy_in_batch_locked(
             auto instruction_write =
                 backing.lock_instruction_write(page.shared_writable);
             std::copy(operation.data.begin(), operation.data.end(),
-                backing.bytes.begin() + offset);
+                backing.writable_bytes().begin() + offset);
             mark_shared_backing_written_locked(
                 page, offset, operation.data.size());
             refresh_jit_page_locked(operation.address);
@@ -1046,7 +1045,7 @@ bool AddressSpace::copy_in_batch_locked(
                 backing.lock_instruction_write(page.shared_writable);
             std::copy_n(
                 operation.data.begin() + static_cast<std::ptrdiff_t>(copied),
-                chunk, backing.bytes.begin() + offset);
+                chunk, backing.writable_bytes().begin() + offset);
             mark_shared_backing_written_locked(page, offset, chunk);
             touched_pages.push_back(page_base(current));
             copied += chunk;
@@ -1095,7 +1094,7 @@ bool AddressSpace::copy_out(
                     const auto chunk = std::min<std::size_t>(
                         page_size - offset, data.size() - copied);
                     if (page != nullptr && page->backing) {
-                        std::copy_n(page->backing->bytes.begin() + offset,
+                        std::copy_n(page->backing->bytes().begin() + offset,
                             chunk,
                             data.begin() + static_cast<std::ptrdiff_t>(copied));
                     } else {
@@ -1283,7 +1282,10 @@ bool AddressSpace::map_page_ranges(std::uint32_t address, std::uint32_t size,
     if (size == 0 || address % page_size != 0 || size % page_size != 0 ||
         range_overflows(address, size) || backings.size() != size / page_size ||
         std::any_of(backings.begin(), backings.end(),
-            [](const auto& backing) { return !backing; })) {
+            [mode](const auto& backing) {
+                return !backing || (mode != PageMappingMode::CopyOnWrite &&
+                    backing->has_immutable_bytes());
+            })) {
         return false;
     }
 
@@ -1328,8 +1330,9 @@ bool AddressSpace::map_page_ranges(std::uint32_t address, std::uint32_t size,
             file_writeback_capable &&
             has_permission(permissions, MemoryPermission::Write);
         auto [page, inserted] = pages_->emplace(base,
-            Page { backings[index], 0, false, shared_writable,
-                file_writeback_capable, file_writeback, !shared_writable, { } });
+            Page { backings[index], 0, backings[index]->has_immutable_bytes(),
+                shared_writable, file_writeback_capable, file_writeback,
+                !shared_writable, { } });
         if (inserted)
             record_resident_page_locked();
         if (shared_writable && tracks_write_locked(base, page_size)) {
@@ -1430,7 +1433,7 @@ std::optional<std::vector<std::byte>> AddressSpace::read_bytes(
                     const auto chunk = std::min<std::size_t>(
                         page_size - offset, size - copied);
                     if (page != nullptr && page->backing) {
-                        std::copy_n(page->backing->bytes.begin() + offset,
+                        std::copy_n(page->backing->bytes().begin() + offset,
                             chunk,
                             result.begin() +
                                 static_cast<std::ptrdiff_t>(copied));
@@ -1478,9 +1481,10 @@ std::optional<std::string> AddressSpace::read_c_string(
                     page_size - offset, maximum_size - consumed);
                 if (page == nullptr || !page->backing)
                     return result;
+                const auto bytes = page->backing->bytes();
                 for (std::size_t index = 0; index < chunk; ++index) {
                     const auto value = std::to_integer<char>(
-                        page->backing->bytes[offset + index]);
+                        bytes[offset + index]);
                     if (value == '\0')
                         return result;
                     result.push_back(value);
@@ -1821,7 +1825,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address,
         std::uint8_t* pointer = nullptr;
         if (direct_read_safe && (translation & permission_bits(MemoryPermission::Read)) != 0U &&
             (flags & read_required) == read_required && page && page->backing)
-            pointer = jit_page_pointer(*page->backing, base);
+            pointer = jit_page_pointer(page->backing->bytes().data(), base);
         read_table->set_entry(index, pointer);
     }
 
@@ -1845,7 +1849,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address,
     }
     if (exclusive_write_tracked_pages_.contains(base))
         return;
-    *write_entry = jit_page_pointer(*page->backing, base);
+    *write_entry = jit_page_pointer(page->backing->writable_bytes().data(), base);
     direct_jit_write_pages_.insert(base);
     if (page->shared_writable)
         direct_shared_jit_write_pages_.insert(base);
@@ -1915,7 +1919,7 @@ std::byte AddressSpace::read_byte_locked(const Page* page, std::uint32_t offset)
 {
     if (page == nullptr || !page->backing)
         return std::byte { };
-    return page->backing->bytes[offset];
+    return page->backing->bytes()[offset];
 }
 
 GuestPageBacking& AddressSpace::writable_backing_locked(
@@ -2121,10 +2125,10 @@ std::optional<T> AddressSpace::read_integer(
                 const auto* page = find_page_locked(address);
                 if (page != nullptr && page->backing) {
                     T value = 0;
-                    const auto& bytes = access == MemoryPermission::Execute &&
-                                                page->instructions
-                                            ? *page->instructions
-                                            : page->backing->bytes;
+                    const auto bytes = access == MemoryPermission::Execute &&
+                                               page->instructions
+                        ? std::span<const std::byte, page_size> { *page->instructions }
+                        : page->backing->bytes();
                     for (std::size_t index = 0; index < sizeof(T); ++index) {
                         value |= static_cast<T>(
                             std::to_integer<T>(bytes[offset + index])
@@ -2182,7 +2186,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
         if (jit_eligibility_changed)
             refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
-            backing.bytes[offset + index] = static_cast<std::byte>(
+            backing.writable_bytes()[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
         mark_shared_backing_written_locked(page, offset, sizeof(T));
@@ -2206,7 +2210,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
             backing.lock_instruction_write(page.shared_writable);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
-        backing.bytes[current & (page_size - 1U)] =
+        backing.writable_bytes()[current & (page_size - 1U)] =
             static_cast<std::byte>((value >> (i * 8U)) & static_cast<T>(0xffU));
         mark_shared_backing_written_locked(
             page, current & (page_size - 1U), 1U);
@@ -2266,7 +2270,7 @@ bool AddressSpace::compare_exchange_integer(
         if (jit_eligibility_changed)
             refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
-            backing.bytes[offset + index] = static_cast<std::byte>(
+            backing.writable_bytes()[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
         mark_shared_backing_written_locked(page, offset, sizeof(T));
@@ -2304,7 +2308,7 @@ bool AddressSpace::compare_exchange_integer(
             backing.lock_instruction_write(page.shared_writable);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
-        backing.bytes[current & (page_size - 1U)] =
+        backing.writable_bytes()[current & (page_size - 1U)] =
             static_cast<std::byte>((value >> (i * 8U)) & static_cast<T>(0xffU));
         mark_shared_backing_written_locked(
             page, current & (page_size - 1U), 1U);
@@ -2382,7 +2386,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
         if (jit_eligibility_changed)
             refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
-            backing.bytes[offset + index] = static_cast<std::byte>(
+            backing.writable_bytes()[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
         mark_shared_backing_written_locked(page, offset, sizeof(T));
@@ -2413,7 +2417,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
             backing.lock_instruction_write(page.shared_writable);
         if (jit_eligibility_changed)
             refresh_jit_page_locked(current);
-        backing.bytes[current & (page_size - 1U)] = static_cast<std::byte>(
+        backing.writable_bytes()[current & (page_size - 1U)] = static_cast<std::byte>(
             (value >> (index * 8U)) & static_cast<T>(0xffU));
         mark_shared_backing_written_locked(
             page, current & (page_size - 1U), 1U);

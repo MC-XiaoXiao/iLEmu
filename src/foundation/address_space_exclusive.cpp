@@ -39,7 +39,7 @@ AddressSpace::load_exclusive(std::uint32_t address, unsigned size)
     const auto offset = address & (page_size - 1U);
     for (unsigned i = 0; i < size; ++i)
         result.value |= std::uint64_t { std::to_integer<std::uint8_t>(
-                            backing.bytes[offset + i]) } << (i * 8U);
+                            backing.bytes()[offset + i]) } << (i * 8U);
     result.key = exclusive_reservation_key(address);
     // Never accept the legacy virtual fallback as a physical reservation.
     if ((result.key & (std::uint64_t { 1 } << 63U)) == 0)
