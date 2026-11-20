@@ -58,6 +58,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -1218,6 +1219,7 @@ void EmulatorSession::run()
                                                 Runtime& runtime,
                                                 const LoadedProcess& loaded,
                                                 JitPrecompilePhase phase) {
+        runtime.jit_cache_activity = { };
         runtime.precompile_phase = phase;
         if (profile_enabled && translation_profiles) {
             runtime.jit_translation_profile = translation_profiles->profile_for(
@@ -4797,7 +4799,7 @@ void EmulatorSession::run()
         // must be idle; unrelated runnable tasks do not defer quota checks.
         const auto quota_now = std::chrono::steady_clock::now();
         for (const auto& prepared : prepared_slices)
-            prepared.runtime->last_jit_execution = quota_now;
+            prepared.runtime->jit_cache_activity.note_execution(quota_now);
         if (quota_now - last_jit_quota_refresh >= jit_quota_refresh_period) {
             last_jit_quota_refresh = quota_now;
             latest_host_memory_budget = host.memory_budget_snapshot();
@@ -4863,9 +4865,10 @@ void EmulatorSession::run()
 
             if (!pending_retirement &&
                 (memory_pressured || runtime_code > budget)) {
-                constexpr auto inactive_grace = std::chrono::seconds { 2 };
                 Runtime* victim = nullptr;
                 std::size_t victim_bytes { };
+                bool victim_segment_only { };
+                bool victim_suspended { };
                 for (const auto& runtime : runtimes) {
                     const auto& process = runtime->kernel->process();
                     if (!runtime->jit_cache_reservation ||
@@ -4873,8 +4876,8 @@ void EmulatorSession::run()
                         process.exited || runtime->pending_exec ||
                         (runtime->execution_prepare_task &&
                             !runtime->execution_prepare_task->finished()) ||
-                        quota_now - runtime->last_jit_execution <
-                            inactive_grace ||
+                        runtime->jit_cache_activity.idle_for(quota_now) <
+                            jit_quota_refresh_period ||
                         scheduler.process_runnable_count(process.pid) != 0U) {
                         continue;
                     }
@@ -4885,32 +4888,53 @@ void EmulatorSession::run()
                             [](const auto& task) { return !task.finished(); })) {
                         continue;
                     }
-                    // Favor suspended tasks, then the largest retained cache.
-                    // A small excess can be reclaimed in one bounded pass.
-                    if (!victim ||
-                        (runtime->task_suspended && !victim->task_suspended) ||
-                        (runtime->task_suspended == victim->task_suspended &&
-                            bytes > victim_bytes)) {
+                    const auto full_retirement =
+                        runtime->jit_cache_activity.full_retirement_due(
+                            quota_now);
+                    const auto segment_bytes = runtime->task_suspended ? 0U
+                        : runtime->cpus->reclaimable_jit_code_segment_bytes();
+                    const auto segment_only = segment_bytes != 0U;
+                    if (!segment_only && !full_retirement)
+                        continue;
+                    const auto candidate_bytes =
+                        segment_only ? segment_bytes : bytes;
+                    // Favor fully suspended tasks, then reclaim an older
+                    // segment while preserving the current working set.
+                    if (std::tuple { runtime->task_suspended, segment_only,
+                            candidate_bytes } >
+                        std::tuple { victim_suspended, victim_segment_only,
+                            victim_bytes }) {
                         victim = runtime.get();
-                        victim_bytes = bytes;
+                        victim_bytes = candidate_bytes;
+                        victim_segment_only = segment_only;
+                        victim_suspended = runtime->task_suspended;
                     }
                 }
                 if (victim) {
-                    auto retired = victim->cpus->retire_jit_code_cache();
-                    if (retired) {
-                        victim_bytes = retired->code_cache_used();
-                        runtime_reaper.retire_jit_code_cache(
-                            std::move(retired), victim_bytes);
+                    if (victim_segment_only) {
+                        victim_bytes = victim->cpus->reclaim_jit_code_segment();
+                    } else {
+                        auto retired = victim->cpus->retire_jit_code_cache();
+                        victim->jit_cache_activity.note_full_retirement(
+                            quota_now);
+                        if (retired) {
+                            victim_bytes = retired->code_cache_used();
+                            runtime_reaper.retire_jit_code_cache(
+                                std::move(retired), victim_bytes);
+                        }
                     }
                     jit_code_cache_governor.refresh_actual(
                         *victim->jit_cache_reservation,
                         victim->cpus->jit_code_cache_bytes());
-                    output.line("[jit-pressure] native-retired-pid=" +
-                        std::to_string(victim->kernel->process().pid) +
-                        " native-retired-bytes=" + std::to_string(victim_bytes) +
-                        " live-code-bytes=" +
-                        std::to_string(jit_code_cache_governor.total_actual()) +
-                        " live-code-budget-bytes=" + std::to_string(budget));
+                    if (victim_bytes != 0U)
+                        output.line(std::string { victim_segment_only
+                                ? "[jit-pressure] native-segment-retired-pid="
+                                : "[jit-pressure] native-retired-pid=" } +
+                            std::to_string(victim->kernel->process().pid) +
+                            " native-retired-bytes=" + std::to_string(victim_bytes) +
+                            " live-code-bytes=" +
+                            std::to_string(jit_code_cache_governor.total_actual()) +
+                            " live-code-budget-bytes=" + std::to_string(budget));
                 }
             }
         }

@@ -379,6 +379,9 @@ public:
     // The returned shared slab can be destroyed off the scheduler thread.
     [[nodiscard]] std::shared_ptr<Dynarmic::A32::NativeCodeSlab>
     retire_jit_code_cache();
+    [[nodiscard]] std::size_t reclaimable_jit_code_segment_bytes() const;
+    // Reclaim an occupied non-current segment at a completed scheduler batch.
+    [[nodiscard]] std::size_t reclaim_jit_code_segment();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(std::shared_ptr<JitTranslationProfile> profile,
         JitPrecompilePhase phase = JitPrecompilePhase::Opportunistic,

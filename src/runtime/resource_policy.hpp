@@ -8,6 +8,7 @@
 #pragma once
 
 #include "foundation/host_memory.hpp"
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <optional>
@@ -18,6 +19,23 @@ struct JitCodeCacheBudget {
     std::size_t total_bytes { };
     HostMemoryBudgetSnapshot memory;
     bool explicit_override { };
+};
+
+class JitCacheActivity {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    void note_execution(Clock::time_point now) noexcept;
+    void note_full_retirement(Clock::time_point now) noexcept;
+    [[nodiscard]] Clock::duration idle_for(Clock::time_point now) const noexcept;
+    [[nodiscard]] bool full_retirement_due(Clock::time_point now) const noexcept;
+
+private:
+    static constexpr Clock::duration initial_grace = std::chrono::seconds{2};
+    static constexpr Clock::duration maximum_grace = std::chrono::seconds{30};
+    std::optional<Clock::time_point> last_execution_;
+    std::optional<Clock::time_point> last_full_retirement_;
+    Clock::duration grace_ { initial_grace };
 };
 
 [[nodiscard]] JitCodeCacheBudget jit_code_cache_budget(

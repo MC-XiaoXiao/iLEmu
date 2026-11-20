@@ -12,6 +12,38 @@
 
 namespace ilemu::runtime_detail {
 
+void JitCacheActivity::note_execution(Clock::time_point now) noexcept
+{
+    if (last_full_retirement_) {
+        // A quick refault identifies a periodic task. Let it retain its rebuilt
+        // working set across its observed idle interval and the normal grace.
+        if (last_execution_ && now - *last_full_retirement_ < grace_) {
+            grace_ = std::min(maximum_grace,
+                std::max(grace_, now - *last_execution_ + initial_grace));
+        } else {
+            grace_ = initial_grace;
+        }
+        last_full_retirement_.reset();
+    }
+    last_execution_ = now;
+}
+
+void JitCacheActivity::note_full_retirement(Clock::time_point now) noexcept
+{
+    last_full_retirement_ = now;
+}
+
+JitCacheActivity::Clock::duration JitCacheActivity::idle_for(
+    Clock::time_point now) const noexcept
+{
+    return last_execution_ ? now - *last_execution_ : Clock::duration::max();
+}
+
+bool JitCacheActivity::full_retirement_due(Clock::time_point now) const noexcept
+{
+    return idle_for(now) >= grace_;
+}
+
 std::filesystem::path nearest_existing_filesystem_path(
     const std::filesystem::path& path)
 {

@@ -4361,6 +4361,34 @@ public:
         return { };
     }
 
+    [[nodiscard]] std::size_t reclaimable_jit_code_segment_bytes() const
+    {
+        if constexpr (JitBackendCapabilities::shared_native_cache)
+            return execution_context_->native_code_slab()
+                ->reclaimable_cold_segment_bytes();
+        return 0U;
+    }
+
+    [[nodiscard]] std::size_t reclaim_jit_code_segment()
+    {
+        if constexpr (JitBackendCapabilities::shared_native_cache) {
+            auto* slab = execution_context_->native_code_slab();
+            quiesce_tiered_compilation();
+            const auto reclaimed = slab->reclaim_cold_segment();
+            if (reclaimed == 0U)
+                return 0U;
+            if (native_preimport_tracker_)
+                native_preimport_tracker_->clear();
+            if (execution_context_->observe_slab_generation(
+                    slab->generation_snapshot())) {
+                performance_counters().record_jit_slab_generation_transition(
+                    execution_context_->process_id());
+            }
+            return reclaimed;
+        }
+        return 0U;
+    }
+
     void invalidate_cache_range(std::uint32_t address, std::size_t length)
     {
         if (length == 0U)
@@ -6341,6 +6369,17 @@ CpuCluster::retire_jit_code_cache()
             throw std::logic_error { "cannot retire native code while executing" };
     }
     return execution_pool_->retire_jit_code_cache();
+}
+
+std::size_t CpuCluster::reclaimable_jit_code_segment_bytes() const
+{
+    return execution_pool_
+        ? execution_pool_->reclaimable_jit_code_segment_bytes() : 0U;
+}
+
+std::size_t CpuCluster::reclaim_jit_code_segment()
+{
+    return execution_pool_ ? execution_pool_->reclaim_jit_code_segment() : 0U;
 }
 
 void CpuCluster::invalidate_cache_range(
