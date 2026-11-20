@@ -364,12 +364,14 @@ void EmulatorSession::run()
             " topology-cache-id=" +
             std::to_string(device.processor.topology.cache_topology_id));
     }
+    const auto initial_host_memory = host.memory_budget_snapshot();
     const auto configured_jit_code_cache_size =
         (options.jit_cache_bytes
                 ? *options.jit_cache_bytes
-                : adaptive_jit_code_cache_size(host.memory_budget_snapshot()));
+                : adaptive_jit_code_cache_size(initial_host_memory));
     const auto jit_cache_budget = jit_code_cache_budget(
-        options.jit_cache_budget_bytes, host.memory_budget_snapshot());
+        options.jit_cache_budget_bytes, initial_host_memory,
+        device.memory.ram_bytes);
     output.line("[jit] code-cache-mib=" +
                 std::to_string(configured_jit_code_cache_size / 1024U / 1024U));
     output.line(
@@ -627,20 +629,7 @@ void EmulatorSession::run()
         std::to_string(jit_code_cache_governor.total_budget() / 1024U / 1024U));
     output.line(
         "[jit] shared-slab-map-mib=" +
-        std::to_string(jit_code_cache_governor.shared_slab_cap(
-                           JitCodeCacheClass::BootCritical) /
-                       1024U / 1024U) +
-        " retention-mib=critical:" +
-        std::to_string(jit_code_cache_governor.retention_target(
-                           JitCodeCacheClass::BootCritical) /
-                       1024U / 1024U) +
-        " interactive:" +
-        std::to_string(jit_code_cache_governor.retention_target(
-                           JitCodeCacheClass::Foreground) /
-                       1024U / 1024U) +
-        " background:" +
-        std::to_string(jit_code_cache_governor.retention_target(
-                           JitCodeCacheClass::Background) /
+        std::to_string(jit_code_cache_governor.shared_slab_cap() /
                        1024U / 1024U) +
         " pressure-limited=" +
         std::to_string(jit_code_cache_governor.pressure_limited() ? 1 : 0));
@@ -1785,7 +1774,9 @@ void EmulatorSession::run()
                                 : scheduler.suspend_thread(thread);
             });
         runtime.kernel->set_process_runnable_handler(
-            [&scheduler](std::uint32_t pid, bool runnable) {
+            [&scheduler, &runtime_index](std::uint32_t pid, bool runnable) {
+                if (auto* target = runtime_index.find(pid))
+                    target->task_suspended = !runnable;
                 if (runnable)
                     static_cast<void>(scheduler.resume_process(pid));
                 else
@@ -2368,7 +2359,14 @@ void EmulatorSession::run()
         std::lock_guard lock { host_activity_mutex };
         polled_host_activity_generation = host_activity_generation;
     }
-    const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
+    constexpr auto jit_quota_refresh_period = std::chrono::milliseconds { 250 };
+    auto last_jit_quota_refresh = std::chrono::steady_clock::now();
+    auto latest_host_memory_budget = jit_cache_budget.memory;
+    bool jit_cache_pressure =
+        host_memory_is_pressured(latest_host_memory_budget);
+    bool pressure_reclamation_applied { };
+    const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay,
+                                            bool idle_batch = false) {
         // Sample before the serial readiness scan, not after it. Headless
         // sessions have no retained SDL/control event to cover that window.
         const auto activity_generation = polled_host_activity_generation;
@@ -2378,6 +2376,15 @@ void EmulatorSession::run()
         // Graphics completion separately interrupts the native idle wait;
         // neither path advances guest clocks or wakes unrelated guest tasks.
         const auto now = std::chrono::steady_clock::now();
+        if (idle_batch && jit_cache_pressure) {
+            const auto quota_deadline =
+                last_jit_quota_refresh + jit_quota_refresh_period;
+            if (quota_deadline <= now)
+                return;
+            delay = std::min(delay,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    quota_deadline - now));
+        }
         for (const auto& runtime : runtimes) {
             if (runtime->kernel->process().exited)
                 continue;
@@ -2548,9 +2555,9 @@ void EmulatorSession::run()
                                   runtime.get() == display_scanout_owner;
             const auto interactive =
                 runtime->image_activation_pending ||
-                policy.visible().value_or(
-                    (active_process && *active_process == process_id) ||
-                    (transition_destination && *transition_destination == process_id));
+                policy.visible().value_or(false) ||
+                (active_process && *active_process == process_id) ||
+                (transition_destination && *transition_destination == process_id);
             apply_jit_runtime_class(
                 *runtime, critical      ? JitCodeCacheClass::BootCritical
                           : interactive ? JitCodeCacheClass::Foreground
@@ -2714,9 +2721,6 @@ void EmulatorSession::run()
             " input-complete-ns=" +
             std::to_string(transition_attribution.input_complete_nanoseconds));
     };
-    auto last_jit_quota_refresh = last_display_submission;
-    auto latest_host_memory_budget = jit_cache_budget.memory;
-    bool pressure_reclamation_applied { };
     std::optional<std::chrono::steady_clock::time_point> guest_idle_since;
     std::uint64_t guest_timer_overshoot_samples { };
     std::uint64_t guest_timer_overshoot_total_nanoseconds { };
@@ -4788,6 +4792,128 @@ void EmulatorSession::run()
             display_inflight_callback_deadline.reset();
             display_urgent_lease_deadline.reset();
         }
+        // The coordinator has collected every submitted Guest slice and
+        // committed its deferred kernel work. Only the selected cold task
+        // must be idle; unrelated runnable tasks do not defer quota checks.
+        const auto quota_now = std::chrono::steady_clock::now();
+        for (const auto& prepared : prepared_slices)
+            prepared.runtime->last_jit_execution = quota_now;
+        if (quota_now - last_jit_quota_refresh >= jit_quota_refresh_period) {
+            last_jit_quota_refresh = quota_now;
+            latest_host_memory_budget = host.memory_budget_snapshot();
+            const auto memory_pressured =
+                host_memory_is_pressured(latest_host_memory_budget);
+            jit_code_cache_governor.set_pressure_limited(memory_pressured);
+            for (const auto& runtime : runtimes) {
+                if (runtime->jit_cache_reservation &&
+                    runtime->cpus->has_execution_resources()) {
+                    jit_code_cache_governor.refresh_actual(
+                        *runtime->jit_cache_reservation,
+                        runtime->cpus->jit_code_cache_bytes());
+                }
+            }
+            const auto shared_cache = options.executor_factory.shared_cache();
+            const auto pending_retirement =
+                runtime_reaper.pending_jit_code_bytes();
+            const auto pending_bytes = pending_retirement.value_or(0U);
+            const auto budget = jit_code_cache_governor.total_budget();
+            const auto runtime_code = jit_code_cache_governor.total_actual();
+            const std::uint64_t available =
+                budget - std::min(budget, runtime_code);
+            const auto shared_bytes =
+                shared_cache ? shared_cache->retained_bytes() : 0U;
+            jit_cache_pressure = memory_pressured || runtime_code > budget ||
+                pending_bytes > available ||
+                shared_bytes > available - std::min(available, pending_bytes);
+            if (shared_cache)
+                shared_cache->set_pressure_limited(jit_cache_pressure);
+
+            if (memory_pressured && !ran_thread &&
+                !pressure_reclamation_applied) {
+                // Host memory pressure also calls for optional work and
+                // artifact cleanup at the existing global idle boundary.
+                for (auto& runtime : runtimes) {
+                    bool active_precompile { };
+                    for (const auto& task : runtime->precompile_tasks) {
+                        if (!task.finished()) {
+                            task.cancel();
+                            active_precompile = true;
+                        }
+                    }
+                    if (active_precompile) {
+                        runtime->cpus->quiesce_precompilation();
+                        for (const auto& task : runtime->precompile_tasks)
+                            task.wait_finished();
+                    }
+                    runtime->precompile_tasks.clear();
+                }
+                jit_artifacts->cancel_writeback();
+                const auto target = jit_artifacts->stats().resident_bytes / 2U;
+                const auto reclaimed = jit_artifacts->trim_resident_bytes(target);
+                output.line("[jit-pressure] level=" +
+                    std::string {
+                        host_memory_pressure_name(latest_host_memory_budget) } +
+                    " compile=stopped writeback=stopped artifact-reclaimed-bytes=" +
+                    std::to_string(reclaimed) +
+                    " target-resident-bytes=" + std::to_string(target));
+                pressure_reclamation_applied = true;
+            } else if (!memory_pressured) {
+                pressure_reclamation_applied = false;
+            }
+
+            if (!pending_retirement &&
+                (memory_pressured || runtime_code > budget)) {
+                constexpr auto inactive_grace = std::chrono::seconds { 2 };
+                Runtime* victim = nullptr;
+                std::size_t victim_bytes { };
+                for (const auto& runtime : runtimes) {
+                    const auto& process = runtime->kernel->process();
+                    if (!runtime->jit_cache_reservation ||
+                        !runtime->cpus->has_execution_resources() ||
+                        process.exited || runtime->pending_exec ||
+                        (runtime->execution_prepare_task &&
+                            !runtime->execution_prepare_task->finished()) ||
+                        quota_now - runtime->last_jit_execution <
+                            inactive_grace ||
+                        scheduler.process_runnable_count(process.pid) != 0U) {
+                        continue;
+                    }
+                    const auto bytes = jit_code_cache_governor.reclaimable_bytes(
+                        *runtime->jit_cache_reservation);
+                    if (bytes == 0U ||
+                        std::ranges::any_of(runtime->precompile_tasks,
+                            [](const auto& task) { return !task.finished(); })) {
+                        continue;
+                    }
+                    // Favor suspended tasks, then the largest retained cache.
+                    // A small excess can be reclaimed in one bounded pass.
+                    if (!victim ||
+                        (runtime->task_suspended && !victim->task_suspended) ||
+                        (runtime->task_suspended == victim->task_suspended &&
+                            bytes > victim_bytes)) {
+                        victim = runtime.get();
+                        victim_bytes = bytes;
+                    }
+                }
+                if (victim) {
+                    auto retired = victim->cpus->retire_jit_code_cache();
+                    if (retired) {
+                        victim_bytes = retired->code_cache_used();
+                        runtime_reaper.retire_jit_code_cache(
+                            std::move(retired), victim_bytes);
+                    }
+                    jit_code_cache_governor.refresh_actual(
+                        *victim->jit_cache_reservation,
+                        victim->cpus->jit_code_cache_bytes());
+                    output.line("[jit-pressure] native-retired-pid=" +
+                        std::to_string(victim->kernel->process().pid) +
+                        " native-retired-bytes=" + std::to_string(victim_bytes) +
+                        " live-code-bytes=" +
+                        std::to_string(jit_code_cache_governor.total_actual()) +
+                        " live-code-budget-bytes=" + std::to_string(budget));
+                }
+            }
+        }
         if (ran_thread) {
             guest_idle_since.reset();
         } else if (!guest_idle_since) {
@@ -4819,10 +4945,7 @@ void EmulatorSession::run()
             }
             host_resources.set_next_deadline(host_compile_deadline);
             JitWorkObservation observation;
-            observation.memory_pressure =
-                host_memory_is_pressured(latest_host_memory_budget) ||
-                jit_code_cache_governor.total_actual() >
-                    jit_code_cache_governor.total_budget();
+            observation.memory_pressure = jit_cache_pressure;
             observation.realtime_work_pending =
                 display_callback_work_active || input_preferred_thread;
             observation.display_started = observed_display_submissions != 0U;
@@ -4850,116 +4973,6 @@ void EmulatorSession::run()
         }
         serial_phase.checkpoint(PerfLatencyKind::Count);
         if (!ran_thread) {
-            constexpr auto jit_quota_refresh_period =
-                std::chrono::milliseconds { 250 };
-            const auto quota_now = std::chrono::steady_clock::now();
-            if (quota_now - last_jit_quota_refresh >=
-                jit_quota_refresh_period) {
-                last_jit_quota_refresh = quota_now;
-                const auto memory = host.memory_budget_snapshot();
-                latest_host_memory_budget = memory;
-                const auto memory_pressured = host_memory_is_pressured(memory);
-                jit_code_cache_governor.set_pressure_limited(memory_pressured);
-                for (auto& runtime : runtimes) {
-                    if (!runtime->jit_cache_reservation ||
-                        !runtime->cpus->has_execution_resources()) {
-                        continue;
-                    }
-                    const auto actual = runtime->cpus->jit_code_cache_bytes();
-                    jit_code_cache_governor.refresh_actual(
-                        *runtime->jit_cache_reservation, actual);
-                }
-                const auto shared_cache = options.executor_factory.shared_cache();
-                const auto shared_bytes = shared_cache ? shared_cache->retained_bytes() : 0U;
-                const auto cache_budget_exceeded =
-                    shared_bytes > jit_code_cache_governor.total_budget() ||
-                    jit_code_cache_governor.total_actual() >
-                        jit_code_cache_governor.total_budget() - shared_bytes;
-                const auto reclamation_needed =
-                    memory_pressured || cache_budget_exceeded;
-                if (shared_cache)
-                    shared_cache->set_pressure_limited(reclamation_needed);
-                if (reclamation_needed && !pressure_reclamation_applied) {
-                    // Pressure handling is ordered: cancel optional compile
-                    // work first, then stop artifact writeback, then reclaim
-                    // unreferenced artifacts.
-                    for (auto& runtime : runtimes) {
-                        bool active_precompile { };
-                        for (const auto& task : runtime->precompile_tasks) {
-                            if (!task.finished()) {
-                                task.cancel();
-                                active_precompile = true;
-                            }
-                        }
-                        if (active_precompile) {
-                            runtime->cpus->quiesce_precompilation();
-                            for (const auto& task : runtime->precompile_tasks) {
-                                task.wait_finished();
-                            }
-                        }
-                        runtime->precompile_tasks.clear();
-                    }
-                    jit_artifacts->cancel_writeback();
-                    const auto artifact_before = jit_artifacts->stats();
-                    const auto target = artifact_before.resident_bytes / 2U;
-                    const auto reclaimed =
-                        jit_artifacts->trim_resident_bytes(target);
-                    output.line(
-                        "[jit-pressure] level=" +
-                        std::string { host_memory_pressure_name(memory) } +
-                        " compile=stopped writeback=stopped "
-                        "artifact-reclaimed-bytes=" +
-                        std::to_string(reclaimed) +
-                        " target-resident-bytes=" + std::to_string(target));
-                    pressure_reclamation_applied = true;
-                }
-                if (reclamation_needed) {
-                    // Native mappings stay intact. At a global Guest-idle safe
-                    // point, recycle a cold segment only in ordinary runtimes
-                    // whose measured live code exceeds the retention target.
-                    // Other segments remain available for demand execution.
-                    // This is after optional work cancellation.
-                    std::uint64_t native_reclaimed { };
-                    std::size_t native_runtimes { };
-                    for (auto& runtime : runtimes) {
-                        if (!runtime->jit_cache_reservation ||
-                            !runtime->cpus->has_execution_resources() ||
-                            runtime->jit_cache_class !=
-                                JitCodeCacheClass::Background ||
-                            scheduler.process_runnable_count(
-                                runtime->kernel->process().pid) != 0U ||
-                            jit_code_cache_governor.reclaimable_bytes(
-                                *runtime->jit_cache_reservation) == 0U) {
-                            continue;
-                        }
-                        const auto before =
-                            runtime->cpus->jit_code_cache_bytes();
-                        runtime->cpus->recycle_cache();
-                        const auto after =
-                            runtime->cpus->jit_code_cache_bytes();
-                        jit_code_cache_governor.refresh_actual(
-                            *runtime->jit_cache_reservation, after);
-                        native_reclaimed +=
-                            before > after ? before - after : 0U;
-                        ++native_runtimes;
-                    }
-                    if (native_runtimes != 0U) {
-                        output.line(
-                            "[jit-pressure] native-runtimes=" +
-                            std::to_string(native_runtimes) +
-                            " native-reclaimed-bytes=" +
-                            std::to_string(native_reclaimed) +
-                            " live-code-bytes=" +
-                            std::to_string(
-                                jit_code_cache_governor.total_actual()) +
-                            " live-code-budget-bytes=" +
-                            std::to_string(
-                                jit_code_cache_governor.total_budget()));
-                    }
-                } else {
-                    pressure_reclamation_applied = false;
-                }
-            }
             if (gdb_server && gdb_server->poll_interrupt()) {
                 const auto stopped_thread =
                     debug_target.current_thread().value_or(
@@ -5190,10 +5203,7 @@ void EmulatorSession::run()
             if (profile_background_warming_enabled) {
                 const auto now = std::chrono::steady_clock::now();
                 JitWorkObservation observation;
-                observation.memory_pressure =
-                    host_memory_is_pressured(latest_host_memory_budget) ||
-                    jit_code_cache_governor.total_actual() >
-                        jit_code_cache_governor.total_budget();
+                observation.memory_pressure = jit_cache_pressure;
                 observation.realtime_work_pending =
                     display_callback_work_active || input_preferred_thread;
                 observation.display_started =
@@ -5264,7 +5274,7 @@ void EmulatorSession::run()
                         const auto sleep_delay = realtime_pacer->limit_delay(
                             guest_ahead_delay, next_host_control_deadline());
                         if (sleep_delay > std::chrono::nanoseconds::zero()) {
-                            wait_for_host_activity(sleep_delay);
+                            wait_for_host_activity(sleep_delay, true);
                         }
                         // Keep guest-time advancement gated by the raw pacing
                         // result. A clipped host sleep only makes input polling
@@ -5349,7 +5359,7 @@ void EmulatorSession::run()
             if (realtime_pacer)
                 delay = realtime_pacer->limit_delay(
                     delay, next_host_control_deadline());
-            wait_for_host_activity(delay);
+            wait_for_host_activity(delay, true);
         }
     }
     snapshots.cancel();

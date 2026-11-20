@@ -720,6 +720,11 @@ public:
         std::size_t cell) const;
     [[nodiscard]] Dynarmic::A32::NativeCodeSlab*
     native_code_slab() const noexcept;
+    // Swap storage at a stopped execution boundary after all compiler
+    // workers have finished and the old executors have detached.
+    [[nodiscard]] std::shared_ptr<Dynarmic::A32::NativeCodeSlab>
+    replace_native_code_slab(
+        std::shared_ptr<Dynarmic::A32::NativeCodeSlab> replacement);
 
     // Guest address-space changes are published once per process context. The
     // slab owns the actual generation transition; this epoch lets each
@@ -752,6 +757,8 @@ public:
     }
 
 private:
+    std::uint64_t advance_cache_clear_epoch() noexcept;
+
     struct LinkCell {
         std::atomic<std::uint64_t> target_token { };
     };

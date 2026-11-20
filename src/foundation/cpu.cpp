@@ -1773,15 +1773,30 @@ public:
         flush_translation_profile_recorder();
         translation_profile_ = std::move(profile);
         native_preimport_tracker_ = std::move(native_preimport_tracker);
-        if (record) {
-            if (!translation_recorder_) {
-                translation_recorder_ =
-                    std::make_unique<JitTranslationProfileRecorder>();
-                translation_recorder_->set_work_signal(jit_work_signal_);
-            }
-        } else {
+        record_translation_profile_ = record;
+        if (!record) {
             translation_recorder_.reset();
+            translation_recorder_allocated_.store(
+                false, std::memory_order_relaxed);
         }
+    }
+
+    void prepare_translation_profile_recorder()
+    {
+        // Reserve the recorder before entering Dynarmic so callbacks remain
+        // allocation-free and unused execution slots keep no recorder.
+        if (record_translation_profile_ && !translation_recorder_) {
+            translation_recorder_ =
+                std::make_unique<JitTranslationProfileRecorder>();
+            translation_recorder_->set_work_signal(jit_work_signal_);
+            translation_recorder_allocated_.store(
+                true, std::memory_order_relaxed);
+        }
+    }
+
+    [[nodiscard]] bool has_translation_profile_recorder() const noexcept
+    {
+        return translation_recorder_allocated_.load(std::memory_order_relaxed);
     }
 
     void set_jit_work_signal(
@@ -2287,6 +2302,8 @@ private:
     std::uint64_t host_yield_checks_ { };
     bool translated_code_ { };
     std::chrono::steady_clock::time_point host_slice_deadline_ { };
+    bool record_translation_profile_ { };
+    std::atomic<bool> translation_recorder_allocated_ { };
     std::unique_ptr<JitTranslationProfileRecorder> translation_recorder_;
     std::shared_ptr<JitWorkObservationSignal> jit_work_signal_;
     std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
@@ -2725,16 +2742,49 @@ public:
     bool native_ready(const CpuThreadState& state)
     {
         const std::lock_guard lock{execution_mutex_};
-        ensure_jit();
         const Dynarmic::A32::LocationDescriptor location{state.registers[15],
             Dynarmic::A32::PSR{state.cpsr}, Dynarmic::A32::FPSCR{state.fpscr}};
-        return jit_->LookupCodeCache(static_cast<Dynarmic::IR::LocationDescriptor>(location).Value()).present;
+        const auto descriptor =
+            static_cast<Dynarmic::IR::LocationDescriptor>(location).Value();
+        if (jit_)
+            return jit_->LookupCodeCache(descriptor).present;
+        if constexpr (JitBackendCapabilities::shared_native_cache) {
+            // The compilation lane may have published code before this
+            // execution slot entered the JIT. A pending invalidation is a miss.
+            const auto* slab = execution_context_->native_code_slab();
+            Dynarmic::A32::NativeCodeSlab::BlockDescriptor block;
+            return slab->find_block(
+                descriptor, slab->generation_snapshot(), block);
+        }
+        return false;
     }
 
     [[nodiscard]] std::uint64_t code_cache_used()
     {
         const std::lock_guard lock { execution_mutex_ };
         return jit_ ? jit_code_cache_used(*jit_) : 0U;
+    }
+
+    void release_code_cache()
+    {
+        const std::lock_guard lock { execution_mutex_ };
+        if (!jit_)
+            return;
+        clear_exclusive_state();
+        callbacks_->attach(nullptr, nullptr);
+        jit_.reset();
+        execution_context_->unlink(lookup_link_cell_);
+        execution_context_->unlink(runtime_config_link_cell_);
+        execution_context_->unlink(fast_dispatch_table_link_cell_);
+        clear_artifact_probes();
+        portable_demand_provider_installed_ = false;
+        observed_slab_generation_ = 0U;
+        recorded_shared_memory_ = false;
+        recorded_executor_local_bytes_ = 0U;
+        performance_counters().record_jit_executor_memory_usage(
+            execution_context_->context_id(), process_id_,
+            static_cast<std::uint32_t>(execution_slot_), 0U);
+        performance_counters().record_jit_destroyed();
     }
 
     void clear_halt()
@@ -2799,8 +2849,8 @@ public:
 
     void clear_exclusive_state()
     {
-        ensure_jit();
-        jit_->ClearExclusiveState();
+        if (jit_)
+            jit_->ClearExclusiveState();
         monitor_.ClearProcessor(processor_id_);
     }
 
@@ -2833,6 +2883,11 @@ public:
         callbacks_->flush_translation_profile_recorder();
     }
 
+    [[nodiscard]] bool has_translation_profile_recorder() const noexcept
+    {
+        return callbacks_->has_translation_profile_recorder();
+    }
+
     PrecompileDisposition precompile_descriptor(std::uint64_t descriptor,
         JitPrecompileTarget target, bool profile_derived, bool execution_demand = false,
         bool optimize = false)
@@ -2847,7 +2902,6 @@ public:
         }
         const std::lock_guard execution_lock { execution_mutex_ };
         memory_.synchronize_shared_write_tracking();
-        ensure_jit();
         service_pending_shared_invalidation();
         observe_shared_cache_state();
         if (target == JitPrecompileTarget::NativeCode && !execution_demand && !optimize) {
@@ -2860,7 +2914,8 @@ public:
                     ? std::min(policy.maximum_code_bytes,
                           code_cache_size_ - demand_floor)
                     : std::size_t { 0U };
-            const auto used = jit_code_cache_used(*jit_);
+            const auto used =
+                execution_context_->native_code_slab()->code_cache_used();
             if (!native_prediction_baseline_bytes_ ||
                 used < *native_prediction_baseline_bytes_) {
                 native_prediction_baseline_bytes_ = used;
@@ -2898,6 +2953,7 @@ public:
             }
         }
         if (optimize) {
+            ensure_jit();
             if (jit_code_cache_used(*jit_) >= code_cache_size_ - code_cache_size_ / 8U)
                 return PrecompileDisposition::CacheFull;
             const auto started = std::chrono::steady_clock::now();
@@ -2917,18 +2973,16 @@ public:
             return PrecompileDisposition::ArtifactProbeHit;
         }
         if (target == JitPrecompileTarget::PortableIr) {
-            auto available = callbacks_->artifact_available(descriptor);
-            if (available) {
+            if (callbacks_->artifact_available(descriptor)) {
                 if (profile_derived) {
                     callbacks_->note_profile_portable_existence_hit();
                 }
                 return PrecompileDisposition::PortableArtifactHit;
             }
-            if (!available) {
-                callbacks_->begin(0);
-                available =
-                    callbacks_->generate_portable_artifact(*jit_, descriptor);
-            }
+            ensure_jit();
+            callbacks_->begin(0);
+            const auto available =
+                callbacks_->generate_portable_artifact(*jit_, descriptor);
             record_code_cache_usage();
             if (profile_derived && available) {
                 callbacks_->note_profile_portable_generated();
@@ -2936,6 +2990,7 @@ public:
             return available ? PrecompileDisposition::PortableGenerated
                              : PrecompileDisposition::Failed;
         }
+        ensure_jit();
         const bool before_first_demand =
             !callbacks_->demand_location_seen(descriptor);
         if (profile_derived) {
@@ -3312,16 +3367,21 @@ private:
         callbacks_->record_demand_probe_size(0U);
     }
 
+    void clear_artifact_probes()
+    {
+        artifact_probes_.clear();
+        clear_demand_artifact_probes();
+        callbacks_->clear_demand_locations();
+        callbacks_->discard_demand_artifact();
+    }
+
     void observe_shared_invalidation_epoch()
     {
         const auto invalidation_epoch =
             execution_context_->cache_invalidation_epoch();
         if (invalidation_epoch == observed_invalidation_epoch_)
             return;
-        artifact_probes_.clear();
-        clear_demand_artifact_probes();
-        callbacks_->clear_demand_locations();
-        callbacks_->discard_demand_artifact();
+        clear_artifact_probes();
         observed_invalidation_epoch_ = invalidation_epoch;
     }
 
@@ -3394,6 +3454,7 @@ private:
 
     void ensure_jit()
     {
+        callbacks_->prepare_translation_profile_recorder();
         if (jit_) {
             return;
         }
@@ -4204,10 +4265,11 @@ public:
         std::size_t maximum_ranges) const
     {
         const auto* slab = execution_context_->native_code_slab();
+        auto ranges = slab ? slab->GetCodeRanges(maximum_ranges)
+                           : Dynarmic::A32::NativeCodeSlab::CodeRangeSnapshot { };
+        ranges.storage_generation += retired_native_storage_generations_;
         return { execution_context_->context_id(),
-            execution_context_->process_id(),
-            slab ? slab->GetCodeRanges(maximum_ranges)
-                 : Dynarmic::A32::NativeCodeSlab::CodeRangeSnapshot { } };
+            execution_context_->process_id(), std::move(ranges) };
     }
 
     [[nodiscard]] std::uint64_t code_cache_used()
@@ -4218,31 +4280,14 @@ public:
                 total += executor->code_cache_used();
             return total;
         }
-        if constexpr (!JitBackendCapabilities::shared_native_cache) {
-            std::uint64_t total { };
-            for (auto& executor : executors_)
-                total += executor->code_cache_used();
-            for (auto& executor : precompile_executors_)
-                total += executor->code_cache_used();
-            return total;
-        }
-        // All executors in this pool publish into one NativeCodeSlab.  Jit's
-        // CodeCacheUsed therefore reports the same process-wide byte count
-        // from every slot; summing it would multiply one allocation by the
-        // number of guest CPUs.  Read each slot only until an initialized
-        // shared slab reports a non-zero value, without creating a JIT merely
-        // to obtain the accounting sample.
-        for (auto& executor : executors_) {
-            const auto used = executor->code_cache_used();
-            if (used != 0U)
-                return used;
-        }
-        for (auto& executor : precompile_executors_) {
-            const auto used = executor->code_cache_used();
-            if (used != 0U)
-                return used;
-        }
-        return 0U;
+        if constexpr (JitBackendCapabilities::shared_native_cache)
+            return execution_context_->native_code_slab()->code_cache_used();
+        std::uint64_t total { };
+        for (auto& executor : executors_)
+            total += executor->code_cache_used();
+        for (auto& executor : precompile_executors_)
+            total += executor->code_cache_used();
+        return total;
     }
 
     void clear_cache()
@@ -4282,29 +4327,38 @@ public:
         performance_counters().record_jit_shared_invalidation(true);
     }
 
-    void recycle_cache()
+    std::shared_ptr<Dynarmic::A32::NativeCodeSlab> retire_jit_code_cache()
     {
         if (!independent_executors_.empty()) {
-            clear_cache();
-            return;
+            for (auto& executor : independent_executors_)
+                executor->release_code_cache();
+            return { };
         }
-        if (code_cache_used() == 0U)
-            return;
+
+        quiesce_tiered_compilation();
+        std::shared_ptr<Dynarmic::A32::NativeCodeSlab> replacement;
+        if constexpr (JitBackendCapabilities::shared_native_cache)
+            replacement = std::make_shared<Dynarmic::A32::NativeCodeSlab>();
+        for (auto& executor : executors_)
+            executor->release_code_cache();
+        for (auto& executor : precompile_executors_)
+            executor->release_code_cache();
+        if (native_preimport_tracker_)
+            native_preimport_tracker_->clear();
         if constexpr (JitBackendCapabilities::shared_native_cache) {
-            execution_context_->native_code_slab()->recycle_cache();
-            execution_context_->native_code_slab()->service_pending_invalidation();
-            const auto slab_generation =
-                execution_context_->native_code_slab()->generation();
-            if (execution_context_->observe_slab_generation(slab_generation)) {
-                performance_counters().record_jit_slab_generation_transition(
-                    execution_context_->process_id());
-                if (native_preimport_tracker_)
-                    native_preimport_tracker_->clear();
-                performance_counters().record_jit_shared_invalidation(true);
-            }
-        } else {
-            clear_cache();
+            auto retired = execution_context_->replace_native_code_slab(
+                std::move(replacement));
+            retired_native_storage_generations_ +=
+                retired->GetCodeRanges(0).storage_generation + 1U;
+            performance_counters().release_jit_memory_context(
+                execution_context_->context_id());
+            performance_counters().record_jit_slab_generation_transition(
+                execution_context_->process_id());
+            performance_counters().record_jit_shared_invalidation(true);
+            return retired;
         }
+        static_cast<void>(execution_context_->request_cache_clear());
+        return { };
     }
 
     void invalidate_cache_range(std::uint32_t address, std::size_t length)
@@ -4428,7 +4482,6 @@ public:
         native_profile_recency_locations_ =
             std::move(native_prediction.recent_locations);
         translation_profile_phase_ = phase;
-        profile_recording_enabled_ = record;
         profile_location_cursors_.fill(0U);
         observed_profile_revisions_.fill(0U);
         profile_queue_entries_ = 0U;
@@ -4514,7 +4567,11 @@ public:
 
     [[nodiscard]] JitPrecompileMemoryStats precompile_memory_stats() const
     {
-        return memory_snapshot_.read();
+        auto stats = memory_snapshot_.read();
+        stats.profile_recorder_bytes = profile_recorder_bytes();
+        stats.profile_recorder_bytes_peak = std::max(
+            stats.profile_recorder_bytes_peak, stats.profile_recorder_bytes);
+        return stats;
     }
 
     void set_artifact_retention(JitArtifactRetention retention)
@@ -4817,7 +4874,7 @@ public:
         }
     }
 
-    void quiesce_precompilation()
+    void quiesce_tiered_compilation()
     {
         if (tiered_emission_)
             tiered_emission_->cancel();
@@ -4830,6 +4887,11 @@ public:
             }
             tiered_task_.reset();
         }
+    }
+
+    void quiesce_precompilation()
+    {
+        quiesce_tiered_compilation();
         {
             const std::lock_guard queue_lock { precompile_queue_mutex_ };
             precompile_quiescing_ = true;
@@ -4940,13 +5002,20 @@ private:
                (sizeof(typename Container::value_type) + 2U * sizeof(void*));
     }
 
+    [[nodiscard]] std::size_t profile_recorder_bytes() const noexcept
+    {
+        const auto allocated = std::count_if(executors_.begin(),
+            executors_.end(), [](const auto& executor) {
+                return executor->has_translation_profile_recorder();
+            });
+        return static_cast<std::size_t>(allocated) *
+               sizeof(JitTranslationProfileRecorder);
+    }
+
     void fill_memory_stats_locked(
         JitPrecompileMemoryStats& result) const noexcept
     {
-        result.profile_recorder_bytes =
-            profile_recording_enabled_
-                ? executors_.size() * sizeof(JitTranslationProfileRecorder)
-                : 0U;
+        result.profile_recorder_bytes = profile_recorder_bytes();
         result.native_profile_prediction_bytes =
             (native_profile_locations_.capacity() +
                 native_profile_recency_locations_.capacity()) *
@@ -5737,6 +5806,7 @@ private:
     const JitCompilationMode compilation_mode_;
     std::shared_ptr<JitArtifactStore> artifact_store_;
     std::size_t code_cache_size_ { 64U * 1024U * 1024U };
+    std::uint64_t retired_native_storage_generations_ { };
     std::atomic<bool> execution_started_ { false };
     std::vector<std::unique_ptr<IndependentCpuExecutor>> independent_executors_;
     std::vector<std::unique_ptr<JitExecutor>> executors_;
@@ -5765,7 +5835,6 @@ private:
     JitPrecompilePhase translation_profile_phase_ {
         JitPrecompilePhase::Opportunistic
     };
-    bool profile_recording_enabled_ { };
     bool profile_precompile_enabled_ { };
     std::array<std::size_t, jit_precompile_target_count>
         profile_location_cursors_ { };
@@ -6262,7 +6331,17 @@ CpuNativeCodeSnapshot CpuCluster::native_code_ranges(
 
 void CpuCluster::clear_cache() { execution_pool_->clear_cache(); }
 
-void CpuCluster::recycle_cache() { execution_pool_->recycle_cache(); }
+std::shared_ptr<Dynarmic::A32::NativeCodeSlab>
+CpuCluster::retire_jit_code_cache()
+{
+    if (!execution_pool_)
+        return { };
+    for (const auto& cpu : cpus_) {
+        if (cpu->active_executor_ || cpu->active_independent_executor_)
+            throw std::logic_error { "cannot retire native code while executing" };
+    }
+    return execution_pool_->retire_jit_code_cache();
+}
 
 void CpuCluster::invalidate_cache_range(
     std::uint32_t address, std::size_t length)

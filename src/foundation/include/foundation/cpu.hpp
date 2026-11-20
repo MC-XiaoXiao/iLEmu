@@ -374,10 +374,11 @@ public:
     [[nodiscard]] CpuNativeCodeSnapshot native_code_ranges(
         std::size_t maximum_ranges) const;
     void clear_cache();
-    // Reclaim one cold segment from a shared native-code slab. Backends that
-    // do not expose segmented storage fall back to their normal full clear.
-    // Call only at a Guest-idle boundary after precompilation is quiesced.
-    void recycle_cache();
+    // Detach cold native storage without changing saved guest state. Call at
+    // a completed scheduler batch after this cluster's profile workers exit.
+    // The returned shared slab can be destroyed off the scheduler thread.
+    [[nodiscard]] std::shared_ptr<Dynarmic::A32::NativeCodeSlab>
+    retire_jit_code_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(std::shared_ptr<JitTranslationProfile> profile,
         JitPrecompilePhase phase = JitPrecompilePhase::Opportunistic,

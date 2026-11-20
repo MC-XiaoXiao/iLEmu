@@ -5579,11 +5579,27 @@ ExecutionContext::native_code_slab() const noexcept
     return native_code_slab_.get();
 }
 
+std::shared_ptr<Dynarmic::A32::NativeCodeSlab>
+ExecutionContext::replace_native_code_slab(
+    std::shared_ptr<Dynarmic::A32::NativeCodeSlab> replacement)
+{
+    const std::lock_guard lock { invalidation_mutex_ };
+    native_code_slab_.swap(replacement);
+    observed_slab_generation_.store(0U, std::memory_order_release);
+    advance_cache_clear_epoch();
+    return replacement;
+}
+
 std::uint64_t ExecutionContext::request_cache_clear()
 {
     const std::lock_guard lock { invalidation_mutex_ };
     if constexpr (JitBackendCapabilities::shared_native_cache)
         native_code_slab_->request_cache_clear();
+    return advance_cache_clear_epoch();
+}
+
+std::uint64_t ExecutionContext::advance_cache_clear_epoch() noexcept
+{
     auto clear_epoch =
         cache_clear_epoch_.fetch_add(1U, std::memory_order_acq_rel) + 1U;
     if (clear_epoch == 0U) {

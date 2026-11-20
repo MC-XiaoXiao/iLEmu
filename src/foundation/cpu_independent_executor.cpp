@@ -57,6 +57,11 @@ void IndependentCpuExecutor::clear_cache()
     if (executor_)
         executor_->clear_cache();
 }
+void IndependentCpuExecutor::release_code_cache()
+{
+    const std::lock_guard lock { mutex_ };
+    executor_.reset();
+}
 void IndependentCpuExecutor::invalidate_cache_range(
     std::uint32_t address, std::size_t size)
 {

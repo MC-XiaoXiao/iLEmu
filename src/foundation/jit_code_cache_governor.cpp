@@ -54,11 +54,10 @@ std::size_t JitCodeCacheGovernor::recommended_total_budget(
 
 JitCodeCacheReservation::JitCodeCacheReservation(JitCodeCacheGovernor& governor,
     std::size_t shared_slab_bytes, std::size_t mapped_bytes,
-    std::size_t retention_floor, JitCodeCacheClass cache_class) noexcept
+    JitCodeCacheClass cache_class) noexcept
     : governor_ { &governor }
     , shared_slab_bytes_ { shared_slab_bytes }
     , mapped_bytes_ { mapped_bytes }
-    , retention_floor_ { retention_floor }
     , cache_class_ { cache_class }
 {
 }
@@ -91,13 +90,12 @@ JitCodeCacheGovernor::JitCodeCacheGovernor(std::size_t runtime_cap,
     std::size_t total_budget, execution::NativeCacheLayout layout,
     std::size_t working_set_floor) noexcept
     : layout_ { layout }
-    , retention_floor_ {
-        layout.storage == execution::NativeCacheLayout::Storage::None
-            ? 0U : std::max(working_set_floor, layout.minimum_bytes) }
     , shared_slab_cap_ {
         layout.storage == execution::NativeCacheLayout::Storage::None
             ? 0U : std::max(runtime_cap, layout.minimum_bytes) }
-    , total_budget_ { std::max(total_budget, retention_floor_) }
+    , total_budget_ { layout.storage == execution::NativeCacheLayout::Storage::None
+              ? total_budget
+              : std::max({ total_budget, working_set_floor, layout.minimum_bytes }) }
 {
 }
 
@@ -114,27 +112,10 @@ std::shared_ptr<JitCodeCacheReservation> JitCodeCacheGovernor::reserve(
         : std::max(shared_slab_cap_ / mapping_count, layout_.minimum_bytes);
     const auto mapped_bytes = saturating_multiply(emitter_bytes, mapping_count);
     auto reservation = std::shared_ptr<JitCodeCacheReservation> {
-        new JitCodeCacheReservation { *this, emitter_bytes, mapped_bytes,
-            std::max(retention_floor_, saturating_multiply(layout_.minimum_bytes,
-                mapping_count)), cache_class }
+        new JitCodeCacheReservation { *this, emitter_bytes, mapped_bytes, cache_class }
     };
     mapped_bytes_total_ = saturating_add(mapped_bytes_total_, mapped_bytes);
     return reservation;
-}
-
-std::size_t JitCodeCacheGovernor::retention_target_for_locked(
-    JitCodeCacheClass cache_class, std::size_t capacity,
-    std::size_t floor) const noexcept
-{
-    auto target = capacity;
-    if (cache_class == JitCodeCacheClass::Background) {
-        target = std::max(floor,
-            std::min(capacity / 4U, maximum_background_retention_bytes));
-    }
-    if (pressure_limited_ && cache_class != JitCodeCacheClass::BootCritical) {
-        target = std::max(floor, target / 2U);
-    }
-    return std::min(target, capacity);
 }
 
 std::optional<std::size_t> JitCodeCacheGovernor::reclassify(
@@ -182,27 +163,9 @@ bool JitCodeCacheGovernor::pressure_limited() const noexcept
     return pressure_limited_;
 }
 
-std::size_t JitCodeCacheGovernor::shared_slab_cap(
-    JitCodeCacheClass cache_class) const noexcept
+std::size_t JitCodeCacheGovernor::shared_slab_cap() const noexcept
 {
-    static_cast<void>(cache_class);
     return shared_slab_cap_;
-}
-
-std::size_t JitCodeCacheGovernor::retention_target(
-    JitCodeCacheClass cache_class) const noexcept
-{
-    std::lock_guard lock { mutex_ };
-    return retention_target_for_locked(
-        cache_class, shared_slab_cap_, retention_floor_);
-}
-
-std::size_t JitCodeCacheGovernor::retention_target(
-    const JitCodeCacheReservation& reservation) const noexcept
-{
-    std::lock_guard lock { mutex_ };
-    return retention_target_for_locked(reservation.cache_class_,
-        reservation.mapped_bytes_, reservation.retention_floor_);
 }
 
 std::size_t JitCodeCacheGovernor::reclaimable_bytes(
@@ -211,13 +174,9 @@ std::size_t JitCodeCacheGovernor::reclaimable_bytes(
     std::lock_guard lock { mutex_ };
     if (!pressure_limited_ && actual_bytes_total_ <= total_budget_)
         return 0U;
-    if (reservation.cache_class_ == JitCodeCacheClass::BootCritical)
+    if (reservation.cache_class_ != JitCodeCacheClass::Background)
         return 0U;
-    const auto target = retention_target_for_locked(reservation.cache_class_,
-        reservation.mapped_bytes_, reservation.retention_floor_);
-    return reservation.actual_bytes_ > target
-               ? static_cast<std::size_t>(reservation.actual_bytes_ - target)
-               : 0U;
+    return static_cast<std::size_t>(reservation.actual_bytes_);
 }
 
 std::size_t JitCodeCacheGovernor::total_budget() const noexcept

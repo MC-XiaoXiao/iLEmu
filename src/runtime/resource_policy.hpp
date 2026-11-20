@@ -22,7 +22,7 @@ struct JitCodeCacheBudget {
 
 [[nodiscard]] JitCodeCacheBudget jit_code_cache_budget(
     std::optional<std::size_t> configured,
-    const HostMemoryBudgetSnapshot& memory);
+    const HostMemoryBudgetSnapshot& memory, std::uint64_t guest_ram_bytes);
 [[nodiscard]] std::filesystem::path nearest_existing_filesystem_path(
     const std::filesystem::path& path);
 [[nodiscard]] std::size_t adaptive_jit_code_cache_size(

@@ -136,6 +136,8 @@ struct Runtime {
     // releases the budget only after Dynarmic's code cache has been destroyed.
     std::shared_ptr<JitCodeCacheReservation> jit_cache_reservation;
     JitCodeCacheClass jit_cache_class { JitCodeCacheClass::Background };
+    std::chrono::steady_clock::time_point last_jit_execution { };
+    bool task_suspended { };
     std::unique_ptr<AddressSpace> memory;
     std::unique_ptr<CpuCluster> cpus;
     std::shared_ptr<JitTranslationProfile> jit_translation_profile;

@@ -46,13 +46,11 @@ private:
 
     JitCodeCacheReservation(JitCodeCacheGovernor& governor,
         std::size_t shared_slab_bytes, std::size_t mapped_bytes,
-        std::size_t retention_floor,
         JitCodeCacheClass cache_class) noexcept;
 
     JitCodeCacheGovernor* governor_ { };
     std::size_t shared_slab_bytes_ { };
     std::size_t mapped_bytes_ { };
-    std::size_t retention_floor_ { };
     JitCodeCacheClass cache_class_ { JitCodeCacheClass::Background };
     std::uint64_t actual_bytes_ { };
 };
@@ -65,12 +63,10 @@ class JitCodeCacheGovernor {
 public:
     static constexpr std::size_t bytes_per_mebibyte = 1024U * 1024U;
     // Shared-slab measurements retained the demand working set at 64 MiB.
-    // Use this as a soft retention and aggregate-budget floor; executor-local
+    // Use this as an aggregate-budget floor; executor-local
     // emitters use their backend's smaller minimum mapping capacity.
     static constexpr std::size_t minimum_demand_working_set_bytes =
         64U * bytes_per_mebibyte;
-    static constexpr std::size_t maximum_background_retention_bytes =
-        256U * bytes_per_mebibyte;
     static constexpr std::size_t maximum_adaptive_budget_bytes =
         8192U * bytes_per_mebibyte;
 
@@ -93,16 +89,10 @@ public:
 
     void set_pressure_limited(bool limited) noexcept;
     [[nodiscard]] bool pressure_limited() const noexcept;
-    // Every class receives the same lazy mapping capacity. The class-specific
-    // distinction is exposed separately as a soft retention target.
-    [[nodiscard]] std::size_t shared_slab_cap(
-        JitCodeCacheClass cache_class) const noexcept;
-    [[nodiscard]] std::size_t retention_target(
-        JitCodeCacheClass cache_class) const noexcept;
-    [[nodiscard]] std::size_t retention_target(
-        const JitCodeCacheReservation& reservation) const noexcept;
-    // Returns bytes above the reservation's retention target only while the
-    // aggregate live-code budget or host pressure requires reclamation.
+    [[nodiscard]] std::size_t shared_slab_cap() const noexcept;
+    // Return the size of a background victim while the aggregate budget or
+    // host pressure calls for reclamation. The scheduler establishes that the
+    // task is cold and that neither guest execution nor compilation is active.
     [[nodiscard]] std::size_t reclaimable_bytes(
         const JitCodeCacheReservation& reservation) const noexcept;
     [[nodiscard]] std::size_t total_budget() const noexcept;
@@ -121,13 +111,9 @@ private:
 
     JitCodeCacheGovernor(std::size_t runtime_cap, std::size_t total_budget,
         execution::NativeCacheLayout, std::size_t working_set_floor) noexcept;
-    [[nodiscard]] std::size_t retention_target_for_locked(
-        JitCodeCacheClass cache_class, std::size_t capacity,
-        std::size_t floor) const noexcept;
     void release(std::size_t mapped_bytes, std::uint64_t actual_bytes) noexcept;
 
     const execution::NativeCacheLayout layout_;
-    const std::size_t retention_floor_;
     const std::size_t shared_slab_cap_;
     const std::size_t total_budget_;
     mutable std::mutex mutex_;

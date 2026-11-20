@@ -54,6 +54,26 @@ public:
         memory.clear();
     }
 
+    [[nodiscard]] std::optional<std::uint64_t> pending_jit_code_bytes()
+    {
+        const std::lock_guard lock { mutex_ };
+        return retired_jit_code_bytes_;
+    }
+
+    // The coordinator submits at most one cold slab at a time, including the
+    // one being destroyed. Keep its live-byte charge until the mapping is gone.
+    void retire_jit_code_cache(
+        std::shared_ptr<Dynarmic::A32::NativeCodeSlab> cache,
+        std::uint64_t bytes)
+    {
+        {
+            const std::lock_guard lock { mutex_ };
+            retired_jit_code_ = std::move(cache);
+            retired_jit_code_bytes_ = bytes;
+        }
+        work_available_.notify_one();
+    }
+
     void finish()
     {
         if (!worker_.joinable())
@@ -79,12 +99,18 @@ private:
         std::unique_lock lock { mutex_ };
         for (;;) {
             work_available_.wait(lock, [this] {
-                return stopping_ || !mappings_.empty() || !runtimes_.empty();
+                return stopping_ || retired_jit_code_ || !mappings_.empty() ||
+                       !runtimes_.empty();
             });
-            // Short, detached exec mappings must not wait behind every queued
-            // Runtime's native metadata. Their lifetime is independent now
-            // that CPU pools are never detached from their owning Runtime.
-            if (!mappings_.empty() && (mapping_turn_ || runtimes_.empty())) {
+            if (retired_jit_code_) {
+                auto cache = std::move(retired_jit_code_);
+                lock.unlock();
+                cache.reset();
+                lock.lock();
+                retired_jit_code_bytes_.reset();
+            } else if (!mappings_.empty() &&
+                       (mapping_turn_ || runtimes_.empty())) {
+                // Interleave detached exec mappings with whole Runtimes.
                 auto mappings = std::move(mappings_.front());
                 mappings_.pop_front();
                 lock.unlock();
@@ -109,6 +135,8 @@ private:
     std::condition_variable work_available_;
     std::deque<std::unique_ptr<Runtime>> runtimes_;
     std::deque<std::shared_ptr<AddressSpace::RetiredMappings>> mappings_;
+    std::shared_ptr<Dynarmic::A32::NativeCodeSlab> retired_jit_code_;
+    std::optional<std::uint64_t> retired_jit_code_bytes_;
     std::size_t mapping_count_ {};
     bool mapping_turn_ { true };
     bool stopping_ {};

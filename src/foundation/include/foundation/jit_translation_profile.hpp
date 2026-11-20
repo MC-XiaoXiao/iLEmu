@@ -34,8 +34,8 @@ namespace ilemu {
 inline constexpr std::size_t jit_translation_profile_maximum_locations =
     262'144;
 
-// A recorder belongs to one JIT executor. Its arrays are allocated with the
-// executor, so ordinary demand translation never allocates or contends on the
+// A recorder belongs to one JIT executor. Its arrays are allocated before
+// entering the JIT, so demand translation never allocates or contends on the
 // profile's merge mutex. The hash table is deliberately larger than the
 // descriptor array so a full recorder still has an empty probe slot.
 // Hold one complete sustained foreground burst between Guest safe points.

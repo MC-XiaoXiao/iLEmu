@@ -34,7 +34,7 @@ std::filesystem::path nearest_existing_filesystem_path(
 
 [[nodiscard]] JitCodeCacheBudget jit_code_cache_budget(
     std::optional<std::size_t> configured,
-    const HostMemoryBudgetSnapshot& memory)
+    const HostMemoryBudgetSnapshot& memory, std::uint64_t guest_ram_bytes)
 {
     if (configured)
         return JitCodeCacheBudget { *configured, memory, true };
@@ -72,7 +72,12 @@ std::filesystem::path nearest_existing_filesystem_path(
     const auto target =
         JitCodeCacheGovernor::recommended_total_budget(effective_limit,
             effective_limit_value.has_value(), headroom, headroom_known);
-    return JitCodeCacheBudget { target, memory, false };
+    // Native code also owns host-side block indexes and relocation metadata.
+    // Limit automatic code retention by device scale as well as host headroom.
+    const auto device_target = guest_ram_bytes == 0U ? target
+        : static_cast<std::size_t>(std::min<std::uint64_t>(
+              target, guest_ram_bytes));
+    return JitCodeCacheBudget { device_target, memory, false };
 }
 
 std::size_t adaptive_jit_code_cache_size(const HostMemoryBudgetSnapshot& memory)

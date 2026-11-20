@@ -19,6 +19,7 @@ public:
     void set_backend_write_observer(ExecutionMemory::WriteObserver observer)
     { backend_write_observer_ = std::move(observer); }
     void clear_cache();
+    void release_code_cache();
     void invalidate_cache_range(std::uint32_t, std::size_t);
     void clear_exclusive_state();
     void set_cache_size(std::size_t bytes);
