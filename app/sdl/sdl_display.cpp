@@ -28,6 +28,9 @@
 #include "foundation/application_display.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
+#if defined(__ANDROID__) && defined(ILEMU_HAS_SDL2)
+#include "graphics/gles_work_completion.hpp"
+#endif
 #include "foundation/performance.hpp"
 #include "sdl_input.hpp"
 
@@ -338,11 +341,39 @@ struct SdlDisplay::Impl {
     bool presentation_stopping { };
     bool presentation_failed { };
     bool presentation_active { };
+#if defined(__ANDROID__) && defined(ILEMU_HAS_SDL2)
+    // Access under frame_mutex. The event pump keeps ownership while choosing
+    // window changes, repaint work, and CPU fallback from the ordered queue.
+    bool direct_native_admission_open { };
+    bool native_presenter_warmed { };
+    bool direct_native_frame_pending { };
+#endif
     bool cpu_presentation_stopping { };
     bool cpu_presentation_active { };
     std::exception_ptr cpu_presentation_error;
     SdlInput input;
     bool running { true };
+
+#if defined(__ANDROID__) && defined(ILEMU_HAS_SDL2)
+    // Called under frame_mutex. Check SDL's queue without pumping it so input
+    // and lifecycle events already waiting still go through the host thread.
+    [[nodiscard]] bool can_admit_native_directly(const DisplayFrame& frame) const
+    {
+        if (!direct_native_admission_open || !native_presenter_warmed ||
+            queued_frame_count != 0 || presentation_active ||
+            cpu_presentation_active || native_fallback_active ||
+            !pending_cpu_frames.empty() || !host_graphics ||
+            !host_graphics->native_presentation_available() ||
+            frame.panel_refresh || !frame.host_surface || !frame.presentation_lease ||
+            frame.nominal_period <= std::chrono::nanoseconds::zero() ||
+            frame.orientation != orientation ||
+            SDL_HasEvents(SDL_QUIT, SDL_FINGERMOTION) != SDL_FALSE) {
+            return false;
+        }
+        const auto writer = frame.host_surface->writer();
+        return !writer || writer->succeeded();
+    }
+#endif
 
     template <std::size_t N>
     static void set_surface_in_use_locked(
@@ -456,6 +487,9 @@ struct SdlDisplay::Impl {
         pending_frames.clear();
         overflow_frame.reset();
         pending_native_frames.clear();
+#if defined(__ANDROID__) && defined(ILEMU_HAS_SDL2)
+        direct_native_frame_pending = false;
+#endif
         native_fallback_frames.clear();
         native_fallback_active = false;
         pending_cpu_frames.clear();
@@ -1073,6 +1107,11 @@ struct SdlDisplay::Impl {
                 std::uint64_t released_depth { };
                 lock.lock();
                 presentation_active = false;
+#if defined(__ANDROID__) && defined(ILEMU_HAS_SDL2)
+                direct_native_frame_pending = false;
+                native_presenter_warmed =
+                    result == HostGraphicsDevice::PresentResult::Queued;
+#endif
                 if (result == HostGraphicsDevice::PresentResult::Queued) {
                     release_frame_surface_in_use_locked(frame);
                     if (queued_frame_count != 0) {
@@ -1105,6 +1144,12 @@ struct SdlDisplay::Impl {
 
     void stop_native_presenter()
     {
+#if defined(__ANDROID__) && defined(ILEMU_HAS_SDL2)
+        {
+            std::lock_guard lock { frame_mutex };
+            direct_native_admission_open = false;
+        }
+#endif
         static_cast<void>(flush_native_presenter());
         {
             std::lock_guard lock { frame_mutex };
@@ -1117,6 +1162,9 @@ struct SdlDisplay::Impl {
             std::lock_guard lock { frame_mutex };
             presentation_stopping = false;
             presentation_active = false;
+#if defined(__ANDROID__) && defined(ILEMU_HAS_SDL2)
+            native_presenter_warmed = false;
+#endif
         }
     }
 
@@ -1332,11 +1380,35 @@ void SdlDisplay::present(DisplayFrame frame)
     }
     std::uint64_t depth { };
     bool coalesced { };
+#if defined(__ANDROID__)
+    bool queued_directly { };
+#endif
     {
         std::lock_guard lock { impl_->frame_mutex };
         if (impl_->presentation_stopping || impl_->presentation_failed ||
             !impl_->running) {
             coalesced = true;
+#if defined(__ANDROID__)
+        } else if (impl_->can_admit_native_directly(frame)) {
+            auto& performance = performance_counters();
+            if (performance.enabled()) {
+                const auto admitted_at = std::chrono::steady_clock::now();
+                frame.native_queued_at = admitted_at;
+                performance.record_diagnostic_display_dequeue(frame.sequence, admitted_at);
+                performance.record_diagnostic_native_queue(frame.sequence, admitted_at);
+                if (frame.submitted_at != std::chrono::steady_clock::time_point { }) {
+                    const auto residence = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        admitted_at - frame.submitted_at);
+                    performance.record_latency(PerfLatencyKind::DisplayMailbox,
+                        static_cast<std::uint64_t>(residence.count()));
+                }
+            }
+            impl_->pending_native_frames.push_back(std::move(frame));
+            impl_->direct_native_frame_pending = true;
+            ++impl_->queued_frame_count;
+            performance.record_display_queue_depth(impl_->queued_frame_count);
+            queued_directly = true;
+#endif
         } else if (impl_->queued_frame_count < presentation_queue_capacity) {
             impl_->pending_frames.push_back(std::move(frame));
             ++impl_->queued_frame_count;
@@ -1370,6 +1442,10 @@ void SdlDisplay::present(DisplayFrame frame)
             depth = impl_->queued_frame_count;
         }
     }
+#if defined(__ANDROID__)
+    if (queued_directly)
+        impl_->presentation_available.notify_one();
+#endif
     if (coalesced)
         performance_counters().record_display_mailbox_coalesced();
     if (depth != 0)
@@ -1456,6 +1532,12 @@ std::uint64_t SdlDisplay::presented_frames() const
 bool SdlDisplay::poll_events()
 {
 #if defined(ILEMU_HAS_SDL2)
+#if defined(__ANDROID__)
+    {
+        std::lock_guard lock { impl_->frame_mutex };
+        impl_->direct_native_admission_open = false;
+    }
+#endif
     // SDL events are latency-sensitive and must be drained before any CPU
     // fallback upload. Native presentation is handed to an ordered worker queue
     // and never waits on acquire/present from the guest scheduler thread.
@@ -1504,7 +1586,13 @@ bool SdlDisplay::poll_events()
             impl_->overflow_frame.reset();
             queued_frame = true;
         }
-        if (!frame && redraw_requested && impl_->last_presented_frame) {
+        if (!frame && redraw_requested && impl_->last_presented_frame
+#if defined(__ANDROID__)
+            // A direct frame already waiting for the worker provides the
+            // repaint. Never enqueue an older cached frame behind it.
+            && !impl_->direct_native_frame_pending
+#endif
+        ) {
             frame = *impl_->last_presented_frame;
             repainting = true;
         }
@@ -1641,6 +1729,12 @@ bool SdlDisplay::poll_events()
         static_cast<void>(impl_->queue_cpu_frame(
             std::move(*frame), queued_frame, native_failed, repainting));
     }
+#if defined(__ANDROID__)
+    {
+        std::lock_guard lock { impl_->frame_mutex };
+        impl_->direct_native_admission_open = true;
+    }
+#endif
 #endif
     return impl_->running;
 }
@@ -1658,6 +1752,13 @@ bool SdlDisplay::wait_for_event(std::chrono::nanoseconds timeout)
 {
     performance_counters().record_sdl_idle_wait();
 #if defined(ILEMU_HAS_SDL2)
+#if defined(__ANDROID__)
+    {
+        std::lock_guard lock { impl_->frame_mutex };
+        // A consumed window event can require a redraw at the next poll.
+        impl_->direct_native_admission_open = false;
+    }
+#endif
     bool input_running { };
     {
         std::lock_guard lock { impl_->sdl_mutex };
