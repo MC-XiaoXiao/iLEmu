@@ -819,6 +819,19 @@ namespace {
                     pixel =
                         premultiplied_source_over(pixel, frame.pixels[offset]);
                 } else if (state.blend_enabled &&
+                           state.blend_source ==
+                               gles_abi::one_minus_destination_alpha &&
+                           state.blend_destination ==
+                               gles_abi::one_minus_source_alpha) {
+                    const auto source = unpack_color(pixel);
+                    const auto destination = unpack_color(frame.pixels[offset]);
+                    Color blended;
+                    for (std::size_t component = 0; component < 4U; ++component)
+                        blended[component] =
+                            source[component] * (1.0F - destination[3]) +
+                            destination[component] * (1.0F - source[3]);
+                    pixel = pack_color(blended);
+                } else if (state.blend_enabled &&
                            state.blend_source == gles_abi::one &&
                            state.blend_destination ==
                                gles_abi::one_minus_source_color) {
