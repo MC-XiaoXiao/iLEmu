@@ -479,8 +479,8 @@ namespace {
             return "apple-effaceable-storage";
         case KernelSharedState::IOKitUserClientKind::MultitouchHid:
             return "multitouch-hid";
-        case KernelSharedState::IOKitUserClientKind::AmbientLightHid:
-            return "ambient-light-hid";
+        case KernelSharedState::IOKitUserClientKind::HidEventService:
+            return "hid-event-service";
         case KernelSharedState::IOKitUserClientKind::None:
             break;
         }
@@ -916,6 +916,11 @@ namespace {
                 ensure_platform_expert_service_locked(shared_state);
             services.push_back(kernel_iokit::hid::ensure_service_locked(
                 shared_state, platform_expert));
+            if (shared_state.darwin_version >= DarwinGeneration::Ios10) {
+                services.push_back(
+                    kernel_iokit::hid::ensure_button_service_locked(
+                        shared_state, platform_expert));
+            }
             services.push_back(
                 kernel_iokit::environment::ensure_hid_service_locked(
                     shared_state));
@@ -2116,10 +2121,11 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                     shared_state, service->second, *data);
             } else if (service != shared_state.iokit_services.end() &&
                        service->second.user_client_kind ==
-                           KernelSharedState::IOKitUserClientKind::
-                               AmbientLightHid) {
-                result = kernel_iokit::environment::set_hid_properties_locked(
-                    shared_state, service->second, *data);
+                           KernelSharedState::IOKitUserClientKind::HidEventService) {
+                result = remote_object == shared_state.ambient_light_hid_service
+                    ? kernel_iokit::environment::set_hid_properties_locked(
+                          shared_state, service->second, *data)
+                    : iokit_abi::unsupported;
             } else {
                 shared_state.nvram_serialized = *data;
             }

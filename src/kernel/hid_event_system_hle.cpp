@@ -330,22 +330,24 @@ bool HidEventSystemHle::prepare_pending_event(
     }
     if (!is_event_consumer(process, processor))
         return false;
-    // A native HID service is already published by the virtual digitizer.
-    // Associate its events with that registry entry so firmware can recover
-    // the service's usage and display properties during input routing.
-    std::uint64_t digitizer_sender_id;
-    {
+    const auto sender_for = [this](const HidEventQueue::Event& event) {
         std::lock_guard lock { state_->mach_mutex };
-        digitizer_sender_id = state_->multitouch_hid_service;
-    }
+        if (std::holds_alternative<HidEventQueue::AmbientLight>(event.input))
+            return state_->ambient_light_hid_service;
+        if (state_->button_hid_service &&
+            std::holds_alternative<HidEventQueue::KeyboardInput>(event.input))
+            return state_->button_hid_service;
+        return state_->multitouch_hid_service;
+    };
     if (auto observed =
             state_->hid_event_queue.take_observer(process, processor)) {
         delivering_processors_.insert(processor);
         interactive_processors_.insert(processor);
+        const auto sender = sender_for(observed->event);
         const auto queued =
             HidEventTransaction::enqueue(registry_, observed->observer,
                 std::move(observed->event), state_->user_interface_geometry,
-                state_->darwin_version, digitizer_sender_id,
+                state_->darwin_version, sender,
                 [this, process, processor] {
                     delivering_processors_.erase(processor);
                     interactive_processors_.erase(processor);
@@ -401,8 +403,7 @@ bool HidEventSystemHle::prepare_pending_event(
         interactive_processors_.insert(processor);
     const auto queued = HidEventTransaction::enqueue(
         registry_, *consumer, *event, state_->user_interface_geometry,
-        state_->darwin_version,
-        ambient ? state_->ambient_light_hid_service : digitizer_sender_id,
+        state_->darwin_version, sender_for(*event),
         translation,
         [this, process, processor] {
             delivering_processors_.erase(processor);

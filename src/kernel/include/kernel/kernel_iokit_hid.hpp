@@ -36,6 +36,8 @@ namespace kernel_iokit::hid {
     // The caller holds KernelSharedState::mach_mutex.
     [[nodiscard]] std::uint32_t ensure_service_locked(
         KernelSharedState& state, std::uint32_t parent_object);
+    [[nodiscard]] std::uint32_t ensure_button_service_locked(
+        KernelSharedState& state, std::uint32_t parent_object);
 
     [[nodiscard]] std::optional<MethodResult> dispatch_connect_method(
         KernelSharedState& state, const ProcessContext& process,

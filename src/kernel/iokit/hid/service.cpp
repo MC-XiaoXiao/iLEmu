@@ -211,7 +211,7 @@ namespace {
                (service->second.user_client_kind ==
                        KernelSharedState::IOKitUserClientKind::MultitouchHid ||
                service->second.user_client_kind ==
-                       KernelSharedState::IOKitUserClientKind::AmbientLightHid);
+                       KernelSharedState::IOKitUserClientKind::HidEventService);
     }
 
     bool request_targets_current_task_locked(const KernelSharedState& state,
@@ -376,7 +376,7 @@ namespace {
                 const auto service =
                     state.iokit_connections.at(connection_object).service_port;
                 if (state.iokit_services.at(service).user_client_kind ==
-                    KernelSharedState::IOKitUserClientKind::AmbientLightHid)
+                    KernelSharedState::IOKitUserClientKind::HidEventService)
                     static_cast<void>(memory.write32(mapped_address,
                         *mapped_size - 3U * sizeof(std::uint32_t)));
                 connection.memory_mappings.emplace(memory_type,
@@ -511,6 +511,54 @@ std::uint32_t ensure_service_locked(KernelSharedState& state,
     return object;
 }
 
+std::uint32_t ensure_button_service_locked(KernelSharedState& state,
+    std::uint32_t parent_object)
+{
+    if (state.button_hid_service != 0U)
+        return state.button_hid_service;
+
+    const auto object = state.allocate_mach_object();
+    state.button_hid_service = object;
+    static_cast<void>(state.mach_port_objects.create(object));
+    state.mach_queues.try_emplace(object);
+
+    using Property = KernelSharedState::IOKitRegistryProperty;
+    // ButtonResolver selects the built-in buttons by their Telephony/Phone
+    // primary usage. The Home key itself reports Consumer/Menu.
+    constexpr std::uint32_t telephony = 0x0bU;
+    constexpr std::uint32_t phone = 0x01U;
+    constexpr std::uint32_t consumer_menu = (0x0cU << 16U) | 0x40U;
+    Property usages;
+    usages.kind = Property::Kind::Array;
+    usages.array_value.push_back(dictionary_property({
+        { "DeviceUsagePage", number_property(telephony) },
+        { "DeviceUsage", number_property(phone) },
+    }));
+    Property press_usages;
+    press_usages.kind = Property::Kind::Array;
+    press_usages.array_value.push_back(number_property(consumer_menu));
+    std::map<std::string, Property> properties;
+    properties.emplace("HIDServiceSupport", boolean_property(true));
+    properties.emplace("Built-In", boolean_property(true));
+    properties.emplace("IOProviderClass", string_property("IOService"));
+    properties.emplace("IOClass", string_property("AppleM68Buttons"));
+    properties.emplace("PrimaryUsagePage", number_property(telephony));
+    properties.emplace("PrimaryUsage", number_property(phone));
+    properties.emplace("DeviceUsagePairs", std::move(usages));
+    properties.emplace("PressCountUsagePairs", std::move(press_usages));
+    properties.emplace("IORegistryEntryID", number64_property(object));
+    properties.emplace("IOCFPlugInTypes", dictionary_property({
+        { std::string { plugin_type_uuid },
+            string_property("IOHIDFamily.kext/PlugIns/IOHIDLib.plugin") }
+    }));
+    state.iokit_services.emplace(object,
+        KernelSharedState::IOKitService { "AppleM68Buttons",
+            { "IOHIDEventService", "IOService" }, std::move(properties),
+            "IOService:/IOPlatformExpertDevice/AppleM68Buttons", parent_object,
+            KernelSharedState::IOKitUserClientKind::HidEventService });
+    return object;
+}
+
 std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const ProcessContext& process, std::uint32_t connection_object,
     std::uint32_t selector, std::span<const std::uint64_t> scalar_input,
@@ -524,7 +572,7 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const auto& service = state.iokit_services.at(
         state.iokit_connections.at(connection_object).service_port);
     if (service.user_client_kind ==
-        KernelSharedState::IOKitUserClientKind::AmbientLightHid) {
+        KernelSharedState::IOKitUserClientKind::HidEventService) {
         if (selector == 0U || selector == 1U) {
             state.iokit_hid_connections[connection_object].started =
                 selector == 0U;

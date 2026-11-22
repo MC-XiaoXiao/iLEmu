@@ -91,8 +91,10 @@ namespace {
             if (touch.phase == TouchPhase::Cancel)
                 mask |= Profile::cancelled;
         }
-        if (collection && event.contact_origin &&
-            (digitizer_abi >= DarwinGeneration::Ios7)) {
+        // iOS 10 BackBoard rebuilds the hand for each client from its fingers.
+        const auto edge_abi =
+            collection ? DarwinGeneration::Ios7 : DarwinGeneration::Ios10;
+        if (event.contact_origin && digitizer_abi >= edge_abi) {
             const auto& origin = *event.contact_origin;
             const bool horizontal_edge =
                 origin[0] < Profile::edge_extent ||

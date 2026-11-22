@@ -181,7 +181,7 @@ std::uint32_t ensure_hid_service_locked(KernelSharedState& state)
         KernelSharedState::IOKitService { "IOHIDEventService", { "IOService" },
             std::move(properties), "IOService:/AmbientLightSensor",
             state.iokit_registry_root_object,
-            KernelSharedState::IOKitUserClientKind::AmbientLightHid });
+            KernelSharedState::IOKitUserClientKind::HidEventService });
     return object;
 }
 
