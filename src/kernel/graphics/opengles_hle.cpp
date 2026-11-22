@@ -46,6 +46,63 @@ namespace {
         "/OpenGLES.framework/OpenGLES"
     };
 
+    constexpr char quartzcore_update_image[] =
+        "__ZN2CA3OGL11GLESContext12update_imageEPNS0_7GLImageEPNS_6Render5ImageEjPKc";
+
+    GlesPixelUnpack texture_unpack(UserlandHleCall& call, GlesPixelUnpack unpack,
+        std::uint32_t width, std::uint32_t height)
+    {
+        const auto pixels = call.argument(8);
+        if (!pixels || !call.prefix_argument(0) || unpack.row_bytes ||
+            unpack.row_length || unpack.skip_rows || unpack.skip_pixels)
+            return unpack;
+
+        // The ARM32 QuartzCore ES2 upload omits UNPACK_ROW_LENGTH. Recover
+        // the pitch from the Render::Image used by the native GLI caller.
+        const auto entry = call.symbol_address(quartzcore_update_image);
+        const auto& regs = call.cpu().registers();
+        const auto pc = regs[14] & ~1U;
+        const auto& memory = call.memory();
+        if (!entry || pc < *entry || regs[5] != pixels)
+            return unpack;
+        const auto offset = pc - *entry;
+        const auto level = call.argument(1);
+        // Identify the ordinary and mip-level calls within the mapped method.
+        // Check the BLX and the next Thumb instruction before using its frame.
+        const auto instructions = memory.read32(pc - 2, MemoryPermission::Execute);
+        const bool single = offset == 0x190 && instructions == 0x9c0747b0U;
+        const bool mip = offset == 0x294 && instructions == 0xb12d47c8U;
+        if (!(single && level == 0) && !(mip && level == regs[6] && level < 32))
+            return unpack;
+        if (regs[13] > UINT32_MAX - 0x38)
+            return unpack;
+        const auto bitmap = memory.read32(regs[13] + 0x38).value_or(0);
+        if (!bitmap || bitmap > UINT32_MAX - (0x4c + 4 * level) ||
+            memory.read8(bitmap + 0x49).value_or(0) <= level)
+            return unpack;
+        const auto base_width = memory.read32(bitmap + 8).value_or(0);
+        const auto base_height = memory.read32(bitmap + 12).value_or(0);
+        if (!base_width || !base_height ||
+            std::max(1U, base_width >> level) != width ||
+            std::max(1U, base_height >> level) != height)
+            return unpack;
+
+        const auto pixel_size = memory.read32(regs[13] + 0x28).value_or(0);
+        if (!pixel_size || pixel_size > 4)
+            return unpack;
+        std::uint64_t source = memory.read32(bitmap + 0x28).value_or(0);
+        for (std::uint32_t i = 0; i <= level; ++i) {
+            const auto pitch = memory.read32(bitmap + 0x4c + 4 * i).value_or(0);
+            if (!source || source > pixels || pitch > gles_abi::maximum_resource_bytes ||
+                pitch / pixel_size < std::max(1U, base_width >> i))
+                break;
+            if (i == level && source == pixels)
+                unpack.row_bytes = pitch;
+            source += static_cast<std::uint64_t>(pitch) * std::max(1U, base_height >> i);
+        }
+        return unpack;
+    }
+
     constexpr std::uint32_t egl_false = 0;
     constexpr std::uint32_t egl_true = 1;
     constexpr std::uint32_t egl_default_display = 1;
@@ -2320,6 +2377,8 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
 
 void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
 {
+    registry.register_guest_function(
+        "/QuartzCore.framework/QuartzCore", quartzcore_update_image);
     const auto add = [&registry](std::string symbol,
                          UserlandHleRegistry::Handler handler) {
         registry.register_function(std::string { opengles_image },
@@ -3211,7 +3270,9 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             static_cast<std::uint32_t>(level), call.argument(2),
             static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height), call.argument(6),
-            call.argument(7), call.argument(8), context->unpack,
+            call.argument(7), call.argument(8),
+            texture_unpack(call, context->unpack, static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height)),
             open_gles_client_bitmap_profile(context->guest_capabilities));
         if (error != gles_abi::no_error) {
             set_gl_error(call, error);
@@ -3288,7 +3349,9 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             static_cast<std::uint32_t>(level), static_cast<std::uint32_t>(x),
             static_cast<std::uint32_t>(y), static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height), call.argument(6),
-            call.argument(7), call.argument(8), context->unpack,
+            call.argument(7), call.argument(8),
+            texture_unpack(call, context->unpack, static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height)),
             open_gles_client_bitmap_profile(context->guest_capabilities));
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
