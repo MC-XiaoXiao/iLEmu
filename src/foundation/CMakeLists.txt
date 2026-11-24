@@ -66,6 +66,7 @@ add_library(ilemu_foundation STATIC
     jit_work_policy.cpp
     jit_work_scheduler.cpp
     macho.cpp
+    firmware_routine.cpp
     memory_routine_hle.cpp
     output.cpp
     performance.cpp
@@ -73,6 +74,7 @@ add_library(ilemu_foundation STATIC
     rootfs_path_resolver.cpp
     scene_coordinator.cpp
     sensor_input.cpp
+    unicode_search_hle.cpp
     userland_hle_pending.cpp
     userland_hle.cpp
     userland_hle_guard.cpp

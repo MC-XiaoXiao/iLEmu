@@ -943,6 +943,13 @@ bool UserlandHleCall::continue_deferred_guest_callback(
 
 void UserlandHleCall::resume_original() { resume_original_ = true; }
 
+void UserlandHleCall::resume_original_at(
+    std::uint32_t address, bool remove_interception)
+{
+    tail_call_address_ = address;
+    resume_original_ = remove_interception;
+}
+
 void UserlandHleCall::resume_original_persistently()
 {
     resume_original_persistently_ = true;
@@ -1996,6 +2003,13 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
         };
     const auto reapply_installed_patch = [&](std::uint32_t address,
                                              const InstalledCall& installed) {
+        if (const auto& guard = installed.argument_guard_patch) {
+            if (guard->routine.matches(memory_, address)) {
+                static_cast<void>(
+                    queue_patch(address, guard->instruction, std::nullopt));
+            }
+            return;
+        }
         if (installed.thumb) {
             const auto instruction =
                 make_thumb_hle_patch(installed.original.size());
@@ -2607,7 +2621,7 @@ bool UserlandHleRegistry::finish_call(UserlandHleCall& call)
     const auto installed = installed_calls_.find(entry);
     const auto* registration = find_registration(call.registration_id_);
     auto& registers = cpu.registers();
-    if (call.tail_call_address_) {
+    if (call.tail_call_address_ && !call.resume_original_) {
         const auto target = *call.tail_call_address_;
         registers[15] = target & ~1U;
         auto cpsr = cpu.cpsr();
@@ -2624,22 +2638,17 @@ bool UserlandHleRegistry::finish_call(UserlandHleCall& call)
             ? installed->second.original_entry
             : entry;
     if (call.resume_original_persistently_) {
-        const auto original_size = installed == installed_calls_.end()
-                                       ? 0U
-                                       : installed->second.original.size();
-        const auto valid_original_size =
-            installed != installed_calls_.end() &&
-            (installed->second.thumb
-                    ? (original_size == sizeof(std::uint16_t) ||
-                          original_size == 4U)
-                    : (original_size == sizeof(std::uint32_t) ||
-                          (original_size == 12U &&
-                              installed->second.original_entry != 0U)));
-        if (!valid_original_size) {
+        if (installed == installed_calls_.end()) {
             return false;
         }
         auto trampoline = persistent_trampolines_.find(original_entry);
         if (trampoline == persistent_trampolines_.end()) {
+            const auto original_size = installed->second.original.size();
+            if (original_size != sizeof(std::uint32_t) &&
+                !(installed->second.thumb &&
+                    original_size == sizeof(std::uint16_t))) {
+                return false;
+            }
             const auto address = persistent_trampoline_cursor_;
             const auto code =
                 installed->second.thumb
@@ -2693,24 +2702,31 @@ bool UserlandHleRegistry::finish_call(UserlandHleCall& call)
     if (call.resume_original_) {
         if (installed == installed_calls_.end())
             return false;
-        const AddressSpace::CopyInOperation original {
-            original_entry, installed->second.original
-        };
-        const bool restored =
-            registration && registration->patch == EntryPatch::InstructionFetch
-                ? memory_.overlay_instructions({ &original, 1U })
-                : memory_.copy_in(original_entry, installed->second.original);
-        if (!restored)
+        if (registration && registration->patch == EntryPatch::InstructionFetch) {
+            // A new mapping can occupy this address. Instruction overlays
+            // always expose its current data-visible bytes when removed.
+            const auto bytes =
+                memory_.read_bytes(original_entry, installed->second.original.size());
+            if (!bytes)
+                return false;
+            const AddressSpace::CopyInOperation original { original_entry, *bytes };
+            if (!memory_.overlay_instructions({ &original, 1U }))
+                return false;
+        } else if (!memory_.copy_in(original_entry, installed->second.original)) {
             return false;
+        }
         const bool original_thumb = installed->second.thumb;
         cpu.invalidate_cache_range(
             original_entry, installed->second.original.size());
         installed_calls_.erase(installed);
+        persistent_trampolines_.erase(original_entry);
         if (original_entry != entry)
             installed_calls_.erase(original_entry);
-        registers[15] = original_entry;
+        const auto target = call.tail_call_address_.value_or(
+            original_entry | static_cast<std::uint32_t>(original_thumb));
+        registers[15] = target & ~1U;
         auto cpsr = cpu.cpsr();
-        if (original_thumb) {
+        if ((target & 1U) != 0) {
             cpsr |= arm_thumb_state_bit;
         } else {
             cpsr &= ~arm_thumb_state_bit;

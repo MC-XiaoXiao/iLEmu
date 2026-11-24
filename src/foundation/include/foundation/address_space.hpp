@@ -283,6 +283,23 @@ public:
     // loaders continue to use the permission-bypassing copy_in APIs.
     [[nodiscard]] bool copy_to_user(std::uint32_t address,
         std::span<const std::byte> data, std::size_t* transferred = nullptr);
+    // HLE may replay a guest routine if a destination is unsuitable. Reject
+    // the entire store before changing bytes, including for overlapping moves.
+    [[nodiscard]] bool try_copy_to_private_data(
+        std::span<const CopyInOperation> operations);
+    // Return data-visible bytes without faulting in a file or reading a
+    // shared writable backing. Unmaterialized anonymous pages read as zero.
+    [[nodiscard]] std::optional<std::vector<std::byte>> try_read_private_data(
+        std::uint32_t address, std::size_t size);
+    // Stream between resident private pages eligible for direct JIT access.
+    // Preflight the full transfer and the optional single-page preceding
+    // store before writing bytes, so the caller can replay unsupported calls.
+    [[nodiscard]] bool try_move_private_data(std::uint32_t destination,
+        std::uint32_t source, std::uint32_t size,
+        const CopyInOperation& preceding_store);
+    [[nodiscard]] bool try_fill_private_data(std::uint32_t destination,
+        std::byte value, std::uint32_t size,
+        const CopyInOperation& preceding_store);
     [[nodiscard]] bool copy_out(
         std::uint32_t address, std::span<std::byte> data) const;
     // Installs page-aligned immutable file backing. A guest write automatically
@@ -586,6 +603,12 @@ private:
     [[nodiscard]] std::optional<T> exchange_integer(
         std::uint32_t address, T value);
 
+    [[nodiscard]] bool private_data_range_locked(std::uint32_t address,
+        std::size_t size, MemoryPermission access) const;
+    [[nodiscard]] bool direct_private_data_range_locked(std::uint32_t address,
+        std::size_t size, MemoryPermission access) const;
+    [[nodiscard]] bool try_direct_preceding_store_locked(
+        const CopyInOperation& store);
     [[nodiscard]] bool range_accessible_locked(
         std::uint32_t address, std::size_t size, MemoryPermission access) const;
     [[nodiscard]] const Page* find_page_locked(std::uint32_t address) const;

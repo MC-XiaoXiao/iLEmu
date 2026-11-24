@@ -5,11 +5,10 @@
 #include "foundation/memory_routine_hle.hpp"
 
 #include "foundation/address_space.hpp"
-#include "foundation/content_identity.hpp"
 #include "foundation/cpu.hpp"
+#include "foundation/firmware_routine.hpp"
 #include "foundation/userland_hle.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -18,106 +17,99 @@
 namespace ilemu {
 namespace {
 
-    // ARM AAPCS memset: r0=destination, r1=byte, r2=size, r0 returned.
-    // This position-independent NEON implementation has 64-byte, 8-byte and
-    // byte tails, all contained in these 46 ARM instructions. The digest
-    // covers every instruction and return, not just an entry prologue.
-    // It identifies executable semantics independently of device/OS versions.
-    struct NeonMemoryFill {
-        static constexpr std::size_t code_size = 184U;
-        static constexpr std::array<std::uint8_t, 32> digest {
-            0x15,
-            0x10,
-            0x1c,
-            0x82,
-            0xfd,
-            0x09,
-            0xe6,
-            0x5e,
-            0x0b,
-            0x9b,
-            0xcc,
-            0xb0,
-            0x4c,
-            0xdf,
-            0xd1,
-            0x58,
-            0xb5,
-            0x95,
-            0x0e,
-            0x2e,
-            0x20,
-            0xac,
-            0x2f,
-            0x49,
-            0xa3,
-            0x99,
-            0x6a,
-            0xaa,
-            0x75,
-            0x00,
-            0x73,
-            0x34,
-        };
+    // ARM memset: r0=destination, r1=byte, r2=size, r0 returned. The entire
+    // NEON routine is position-independent and shared by older libsystem_c
+    // and libsystem_platform. bzero sets r2=size and r1=0 before falling in.
+    constexpr FirmwareRoutine neon_memory_fill { 184U,
+        { 0x15, 0x10, 0x1c, 0x82, 0xfd, 0x09, 0xe6, 0x5e, 0x0b, 0x9b, 0xcc,
+            0xb0, 0x4c, 0xdf, 0xd1, 0x58, 0xb5, 0x95, 0x0e, 0x2e, 0x20, 0xac,
+            0x2f, 0x49, 0xa3, 0x99, 0x6a, 0xaa, 0x75, 0x00, 0x73, 0x34 } };
 
-        [[nodiscard]] static bool matches(
-            AddressSpace& memory, std::uint32_t entry)
-        {
-            const auto code = memory.read_bytes(entry, code_size);
-            if (!code)
-                return false;
-            const auto identity = sha256(*code);
-            for (std::size_t i = 0; i < digest.size(); ++i) {
-                if (std::to_integer<std::uint8_t>(identity.digest[i]) !=
-                    digest[i])
-                    return false;
-            }
-            return true;
-        }
-    };
+    // The A6 CPU's Thumb-2 memmove serves both memcpy and memmove in the ARMv7s
+    // shared cache. r0=destination, r1=source, r2=size, r0 returned.
+    // The fingerprint includes the forward/backward paths and jump tables.
+    constexpr FirmwareRoutine neon_memory_move { 0x610U,
+        { 0xe0, 0xad, 0xdf, 0x76, 0x78, 0xc5, 0xb8, 0x35, 0xff, 0x00, 0x1f,
+            0x77, 0xa9, 0x8e, 0x27, 0x93, 0x0c, 0x49, 0xf3, 0x79, 0x6c, 0x28,
+            0xea, 0xef, 0xf4, 0xe5, 0x94, 0x71, 0x1d, 0x60, 0xdf, 0x4c } };
 
-    class MemoryFillAccelerator {
+    enum class MemoryRoutine { LegacyFill, PlatformFill, PlatformMove };
+
+    class MemoryRoutineAccelerator {
     public:
+        explicit MemoryRoutineAccelerator(MemoryRoutine routine)
+            : routine_ { routine }
+        {
+        }
+
         void operator()(UserlandHleCall& call) const
         {
-            // Preserve instruction breakpoints and per-store watchpoints.
             if (call.cpu().guest_debugging_enabled()) {
                 call.resume_original();
                 return;
             }
+
             auto& memory = call.memory();
             const AddressSpace::ExclusiveAccess access { memory };
-            const auto entry = call.symbol_address(call.symbol());
-            if (!entry || (call.cpu().cpsr() & (1U << 5U)) != 0U) {
-                call.resume_original();
-                return;
-            }
-            if (!NeonMemoryFill::matches(memory, *entry)) {
-                call.resume_original();
-                return;
-            }
-
-            if (!call.guard_unsigned_argument(
-                    2U, minimum_host_size, maximum_host_size)) {
+            const auto cpsr = call.cpu().cpsr();
+            const auto thumb = (cpsr & (1U << 5U)) != 0U;
+            const bool move = routine_ == MemoryRoutine::PlatformMove;
+            const bool legacy_fill = routine_ == MemoryRoutine::LegacyFill;
+            const auto& fingerprint =
+                move ? neon_memory_move : neon_memory_fill;
+            const auto minimum_host_size = move ? 32U * 1024U
+                                           : legacy_fill
+                                               ? AddressSpace::page_size
+                                               : 64U * 1024U;
+            if (thumb != move ||
+                !call.guard_unsigned_argument(
+                    2U, minimum_host_size, maximum_host_size, fingerprint)) {
                 call.resume_original();
                 return;
             }
 
             const auto destination = call.argument(0);
+            const auto source_or_byte = call.argument(1);
             const auto size = call.argument(2);
-            // Keep host work bounded and small operations in the firmware.
-            // Validate every mapping before the first write. In particular,
-            // executable output must retain ordinary guest invalidation.
-            if (size < minimum_host_size || size > maximum_host_size ||
-                static_cast<std::uint64_t>(destination) + size >
-                    (1ULL << 32U) ||
-                !writable_data(memory, destination, size)) {
+            const auto& registers = call.cpu().registers();
+            const auto sp = registers[13];
+            const bool big_endian = (cpsr & (1U << 9U)) != 0U;
+            if (big_endian || size < minimum_host_size ||
+                size > maximum_host_size || !valid_range(destination, size) ||
+                (sp & 3U) != 0U || sp < 8U ||
+                overlaps_frame(destination, size, sp) ||
+                (move && (destination == source_or_byte ||
+                             !valid_range(source_or_byte, size) ||
+                             overlaps_frame(source_or_byte, size, sp)))) {
                 call.resume_original_persistently();
                 return;
             }
-            const std::vector<std::byte> bytes(
-                size, static_cast<std::byte>(call.argument(1) & 0xffU));
-            if (!memory.copy_to_user(destination, bytes)) {
+
+            // Reproduce the two stack stores from push {r7,lr}. They must
+            // pass preflight together with the destination so we can still
+            // execute the guest routine if any store would fail.
+            std::array<std::byte, 8> frame { };
+            for (std::size_t i = 0; i < 4U; ++i) {
+                frame[i] = static_cast<std::byte>(registers[7] >> (8U * i));
+                frame[i + 4U] =
+                    static_cast<std::byte>(registers[14] >> (8U * i));
+            }
+            const AddressSpace::CopyInOperation store { sp - 8U, frame };
+            const auto fill_byte =
+                static_cast<std::byte>(source_or_byte & 0xffU);
+            auto completed = move ? memory.try_move_private_data(destination,
+                                        source_or_byte, size, store)
+                                  : memory.try_fill_private_data(
+                                        destination, fill_byte, size, store);
+            if (!completed && legacy_fill) {
+                // Keep older libsystem_c's checked fill path for private
+                // demand-zero pages and COW destinations.
+                const std::vector<std::byte> bytes(size, fill_byte);
+                const std::array operations { store,
+                    AddressSpace::CopyInOperation { destination, bytes } };
+                completed = memory.try_copy_to_private_data(operations);
+            }
+            if (!completed) {
                 call.resume_original_persistently();
                 return;
             }
@@ -125,28 +117,23 @@ namespace {
         }
 
     private:
-        // A page-sized floor amortizes dispatch and code verification; bound
-        // temporary host memory and let larger fills retain guest scheduling.
-        static constexpr std::uint32_t minimum_host_size = 4096U;
+        // Bound host work and leave unusually large operations interruptible.
         static constexpr std::uint32_t maximum_host_size = 1024U * 1024U;
 
-        [[nodiscard]] static bool writable_data(
-            AddressSpace& memory, std::uint32_t address, std::uint32_t size)
+        [[nodiscard]] static bool valid_range(
+            std::uint32_t address, std::uint32_t size)
+        {
+            return static_cast<std::uint64_t>(address) + size <= (1ULL << 32U);
+        }
+
+        [[nodiscard]] static bool overlaps_frame(
+            std::uint32_t address, std::uint32_t size, std::uint32_t sp)
         {
             const auto end = static_cast<std::uint64_t>(address) + size;
-            for (std::uint64_t cursor = address; cursor < end;) {
-                const auto region = memory.mapping_region_at_or_after(
-                    static_cast<std::uint32_t>(cursor));
-                if (!region || region->address > cursor ||
-                    !has_permission(
-                        region->permissions, MemoryPermission::Write) ||
-                    has_permission(
-                        region->permissions, MemoryPermission::Execute))
-                    return false;
-                cursor = std::min(end, region->end);
-            }
-            return true;
+            return address < sp && end > sp - 8U;
         }
+
+        MemoryRoutine routine_;
     };
 
 } // namespace
@@ -156,17 +143,21 @@ void register_memory_routine_hle(
 {
     if (architecture != ArmArchitectureVersion::Armv7)
         return;
-    const UserlandHleRegistry::Handler handler = MemoryFillAccelerator { };
-    // Resolve implementation variants from symbols, including cache locals.
-    // Unknown implementations resume their original first instruction and
-    // remove the interception. Instruction overlays leave firmware bytes
-    // intact.
-    registry.register_prefix("/libsystem_c.dylib", "_memset$VARIANT$", handler,
-        UserlandHleRegistry::SymbolLookup::ImageAndCacheLocals,
-        UserlandHleRegistry::EntryPatch::InstructionFetch);
-    registry.register_function("/libsystem_c.dylib", "_memset", handler,
-        UserlandHleRegistry::SymbolLookup::Image,
-        UserlandHleRegistry::EntryPatch::InstructionFetch);
+    using Lookup = UserlandHleRegistry::SymbolLookup;
+    constexpr auto overlay = UserlandHleRegistry::EntryPatch::InstructionFetch;
+    const UserlandHleRegistry::Handler legacy_fill =
+        MemoryRoutineAccelerator { MemoryRoutine::LegacyFill };
+    registry.register_prefix("/libsystem_c.dylib", "_memset$VARIANT$",
+        legacy_fill, Lookup::ImageAndCacheLocals, overlay);
+    registry.register_function(
+        "/libsystem_c.dylib", "_memset", legacy_fill, Lookup::Image, overlay);
+    registry.register_function("/libsystem_platform.dylib", "__platform_memset",
+        MemoryRoutineAccelerator { MemoryRoutine::PlatformFill }, Lookup::Image,
+        overlay);
+    registry.register_function("/libsystem_platform.dylib",
+        "__platform_memmove",
+        MemoryRoutineAccelerator { MemoryRoutine::PlatformMove }, Lookup::Image,
+        overlay);
 }
 
 } // namespace ilemu

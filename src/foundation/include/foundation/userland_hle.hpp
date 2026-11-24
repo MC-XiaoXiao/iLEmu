@@ -25,6 +25,7 @@
 
 #include "foundation/arm_cpu_model.hpp"
 #include "foundation/content_identity.hpp"
+#include "foundation/firmware_routine.hpp"
 
 namespace ilemu {
 
@@ -119,12 +120,16 @@ public:
     // zero, just like native Darwin callback registrations.
     [[nodiscard]] bool continue_deferred_guest_callback(std::uint32_t address,
         Continuation setup, Continuation completion = { });
-    // Install an ARMv7 argument gate so calls outside the inclusive range stay
-    // entirely in the guest. The handler must first verify the complete
-    // implementation and its ABI (including volatile condition flags). Only
-    // relocatable frame/IP prologues are supported; failure leaves it intact.
+    // Verify the firmware at the intercepted entry before installing an ARMv7
+    // argument gate. Calls outside the inclusive range stay in the guest.
     [[nodiscard]] bool guard_unsigned_argument(
-        std::size_t index, std::uint32_t minimum, std::uint32_t maximum);
+        std::size_t index, std::uint32_t minimum, std::uint32_t maximum,
+        const FirmwareRoutine& routine);
+    [[nodiscard]] std::optional<std::uint32_t> argument_guard_entry() const;
+    // Resume a firmware routine that has already established its guest frame.
+    // Bit zero selects Thumb mode, as with a guest branch target.
+    void resume_original_at(
+        std::uint32_t address, bool remove_interception = false);
     // Stop intercepting this entry in the current process and execute the
     // original guest implementation from its first instruction.
     void resume_original();
@@ -330,6 +335,10 @@ private:
         SymbolLookup lookup { SymbolLookup::Image };
         EntryPatch patch { EntryPatch::Memory };
     };
+    struct ArgumentGuardPatch {
+        FirmwareRoutine routine;
+        std::vector<std::byte> instruction;
+    };
     struct InstalledCall {
         std::uint16_t id { };
         std::string symbol;
@@ -337,6 +346,7 @@ private:
         std::vector<std::byte> original;
         std::uint8_t prefix_arguments { };
         std::uint32_t original_entry { };
+        std::shared_ptr<const ArgumentGuardPatch> argument_guard_patch { };
     };
     struct CachedMappedSymbol {
         std::uint32_t symbol_index { };

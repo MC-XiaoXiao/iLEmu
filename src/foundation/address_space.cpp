@@ -968,6 +968,157 @@ bool AddressSpace::copy_to_user(std::uint32_t address,
     return true;
 }
 
+bool AddressSpace::try_copy_to_private_data(std::span<const CopyInOperation> operations)
+{
+    auto lock = write_lock();
+    for (const auto& operation : operations) {
+        if (!private_data_range_locked(operation.address, operation.data.size(),
+                MemoryPermission::Write))
+            return false;
+    }
+    return copy_in_batch_locked(operations, true);
+}
+
+std::optional<std::vector<std::byte>> AddressSpace::try_read_private_data(
+    std::uint32_t address, std::size_t size)
+{
+    const ExclusiveAccess access { *this };
+    if (!private_data_range_locked(address, size, MemoryPermission::Read))
+        return std::nullopt;
+    return read_bytes(address, size);
+}
+
+bool AddressSpace::private_data_range_locked(std::uint32_t address,
+    std::size_t size, MemoryPermission access) const
+{
+    if (size == 0)
+        return true;
+    if (range_overflows(address, size))
+        return false;
+    const auto end = static_cast<std::uint64_t>(address) + size;
+    for (std::uint64_t base = page_base(address); base < end; base += page_size) {
+        const auto current = static_cast<std::uint32_t>(base);
+        const auto flags = page_permission_locked(current / page_size);
+        if ((flags & permission_bits(access)) == 0U ||
+            (access == MemoryPermission::Write &&
+                (flags & permission_bits(MemoryPermission::Execute)) != 0U))
+            return false;
+        const auto* page = find_page_locked(current);
+        // Leave aliases and demand-paged files to the guest. Anonymous zero
+        // pages and private COW backings can be written without a file fault.
+        if (page && page->shared_writable)
+            return false;
+        if (page && page->backing) {
+            if (page->backing->shared_write_tracking_enabled())
+                return false;
+        } else if (find_file_mapping_locked(current)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool AddressSpace::direct_private_data_range_locked(std::uint32_t address,
+    std::size_t size, MemoryPermission access) const
+{
+    const auto& table = access == MemoryPermission::Write
+                            ? jit_write_page_table_
+                            : jit_read_page_table_;
+    if (size == 0U)
+        return true;
+    if (!table || range_overflows(address, size))
+        return false;
+
+    // Reuse the JIT's permission, translation, COW, write observation and
+    // exclusive reservation checks. Serialized JIT views can also expose
+    // shared mappings, which are unsuitable for a host bulk operation.
+    const auto end = page_range_end(address, size);
+    for (std::uint64_t base = page_base(address); base < end; base += page_size) {
+        if (!table->entries()[base / page_size])
+            return false;
+        const auto* page = find_page_locked(static_cast<std::uint32_t>(base));
+        if (!page || !page->backing || page->shared_writable ||
+            page->backing->shared_write_tracking_enabled())
+            return false;
+    }
+    return true;
+}
+
+bool AddressSpace::try_direct_preceding_store_locked(const CopyInOperation& store)
+{
+    if (store.data.empty())
+        return true;
+    const auto offset = store.address & (page_size - 1U);
+    if (store.data.size() > page_size - offset ||
+        !direct_private_data_range_locked(
+            store.address, store.data.size(), MemoryPermission::Write))
+        return false;
+    const auto* page = find_page_locked(store.address);
+    std::memmove(page->backing->writable_bytes().data() + offset,
+        store.data.data(), store.data.size());
+    return true;
+}
+
+bool AddressSpace::try_move_private_data(std::uint32_t destination,
+    std::uint32_t source, std::uint32_t size,
+    const CopyInOperation& preceding_store)
+{
+    auto lock = write_lock();
+    if (!direct_private_data_range_locked(source, size, MemoryPermission::Read) ||
+        !direct_private_data_range_locked(
+            destination, size, MemoryPermission::Write) ||
+        !try_direct_preceding_store_locked(preceding_store))
+        return false;
+
+    // Limit each memmove to one source and destination page. Advance in
+    // guest address order so overlap across page boundaries behaves like
+    // a single memmove, even when the host pages are elsewhere in memory.
+    const bool backward = source < destination && destination - source < size;
+    for (auto remaining = size; remaining != 0U;) {
+        const auto cursor = backward ? remaining - 1U : size - remaining;
+        const auto source_offset = (source + cursor) & (page_size - 1U);
+        const auto destination_offset = (destination + cursor) & (page_size - 1U);
+        const auto chunk = backward
+                               ? std::min({ remaining, source_offset + 1U,
+                                     destination_offset + 1U })
+                               : std::min({ remaining, page_size - source_offset,
+                                     page_size - destination_offset });
+        const auto offset = backward ? remaining - chunk : cursor;
+        const auto from = source + offset;
+        const auto to = destination + offset;
+        const auto* source_page = find_page_locked(from);
+        const auto* destination_page = find_page_locked(to);
+        std::memmove(destination_page->backing->writable_bytes().data() +
+                (to & (page_size - 1U)),
+            source_page->backing->bytes().data() + (from & (page_size - 1U)),
+            chunk);
+        remaining -= chunk;
+    }
+    return true;
+}
+
+bool AddressSpace::try_fill_private_data(std::uint32_t destination,
+    std::byte value, std::uint32_t size,
+    const CopyInOperation& preceding_store)
+{
+    auto lock = write_lock();
+    if (!direct_private_data_range_locked(
+            destination, size, MemoryPermission::Write) ||
+        !try_direct_preceding_store_locked(preceding_store))
+        return false;
+
+    for (auto remaining = size; remaining != 0U;) {
+        const auto address = destination + (size - remaining);
+        const auto offset = address & (page_size - 1U);
+        const auto chunk = std::min(remaining, page_size - offset);
+        const auto* page = find_page_locked(address);
+        std::memset(page->backing->writable_bytes().data() + offset,
+            std::to_integer<int>(value), chunk);
+        remaining -= chunk;
+    }
+    return true;
+}
+
 bool AddressSpace::copy_in_batch_locked(
     std::span<const CopyInOperation> operations, bool guest_write)
 {

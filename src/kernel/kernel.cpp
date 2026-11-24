@@ -24,6 +24,7 @@
 #include "bluetooth/bluetooth_manager_hle.hpp"
 #include "mach/bootstrap_mig_ids.hpp"
 #include "graphics/core_animation_remote_abi.hpp"
+#include "graphics/core_graphics_resample_hle.hpp"
 #include "telephony/core_telephony_hle.hpp"
 #include "crypto/core_crypto_hle.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -56,6 +57,7 @@
 #include "mach/mig_wire_abi.hpp"
 #include "kernel/offline_serial_device.hpp"
 #include "foundation/performance.hpp"
+#include "foundation/unicode_search_hle.hpp"
 #include "mach/task_mig_ids.hpp"
 #include "mach/thread_act_mig_ids.hpp"
 #include "mach/vm_map_mig_ids.hpp"
@@ -546,8 +548,11 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     register_lockdown_hle(userland_hle_, activated, lockdown_capabilities);
     register_bluetooth_manager_hle(userland_hle_);
     register_core_crypto_hle(userland_hle_);
-    register_memory_routine_hle(userland_hle_,
-        arm_architecture_for_model(device_model_.processor.model));
+    const auto architecture = arm_architecture_for_model(device_model_.processor.model);
+    if (architecture == ArmArchitectureVersion::Armv7)
+        register_core_graphics_resample_hle(userland_hle_);
+    register_memory_routine_hle(userland_hle_, architecture);
+    register_unicode_search_hle(userland_hle_, architecture);
     register_mbx_connect_hle(userland_hle_);
     graphics_services_input::register_springboard_alert_observers(userland_hle_,
         [this](std::uint32_t object,
