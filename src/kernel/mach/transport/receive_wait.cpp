@@ -7,16 +7,16 @@
 
 namespace ilemu {
 
-bool KernelSharedState::handoff_mach_message_locked(
+std::optional<XnuThreadId> KernelSharedState::handoff_mach_message_locked(
     std::uint32_t destination, MachMessage& message)
 {
     using State = MachReceiveWaiters::State;
     if (mach_receive_waiters.empty())
-        return false;
+        return std::nullopt;
     const auto queue = mach_queues.find(destination);
     // An older queued message must win over a newly arriving one.
     if (queue != mach_queues.end() && !queue->second.empty())
-        return false;
+        return std::nullopt;
     for (;;) {
         auto* selected = mach_receive_waiters.first(destination);
         auto position =
@@ -34,7 +34,7 @@ bool KernelSharedState::handoff_mach_message_locked(
             }
         }
         if (!selected)
-            return false;
+            return std::nullopt;
         const auto& receive = selected->receive;
         const auto object = *receive.receive_object;
         const auto right = receive.receive_is_port_set
@@ -74,10 +74,12 @@ bool KernelSharedState::handoff_mach_message_locked(
         selected->message.emplace(std::move(message));
         mach_receive_waiters.complete(*selected, State::MessageReady);
         mach_queue_generation.note_enqueue(object);
+        const auto receiver = XnuThreadId { selected->task,
+            static_cast<std::uint32_t>(receive.processor) };
         // Direct delivery releases the slot now, even when the receiver is
         // suspended. Existing sender reservations and notifications share it.
         note_mach_message_dequeued_locked(destination);
-        return true;
+        return receiver;
     }
 }
 

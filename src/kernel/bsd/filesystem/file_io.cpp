@@ -193,17 +193,16 @@ void CompatibilityKernel::wait_for_file_io(
 
 void CompatibilityKernel::service_file_io()
 {
+    auto& queue = shared_state_->file_io;
+    if (queue.empty())
+        return;
     // A shared snapshot can overwrite in-flight descriptor I/O. Keep commit
     // behind persistence, then use the existing revision replay for writes.
     if (shared_state_->shared_file_writer->pending())
         return;
-    auto& queue = shared_state_->file_io;
     queue.start_ready();
     for (;;) {
-        if (const auto waiting = queue.admission();
-            waiting &&
-            (waiting->abandoned || (waiting->owner == process_.pid &&
-                                       queue.admits(waiting->size)))) {
+        if (const auto waiting = queue.admissible(process_.pid)) {
             queue.retire_admission();
             if (waiting->abandoned || !copy_file_io_input(*waiting)) {
                 waiting->committed = true;
@@ -213,11 +212,8 @@ void CompatibilityKernel::service_file_io()
             }
             queue.push(waiting);
         }
-        const auto operation = queue.front();
+        const auto operation = queue.completed(process_.pid);
         if (!operation)
-            break;
-        if (!operation->ready() ||
-            (!operation->abandoned && operation->owner != process_.pid))
             break;
         const auto host_error = operation->cancelled || operation->error ||
                 operation->host_work ? 0

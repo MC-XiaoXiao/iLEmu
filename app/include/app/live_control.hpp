@@ -28,6 +28,8 @@ public:
         SystemGestures system_gestures = classic_compact_system_gestures);
 
     ~LiveControl() override;
+    [[nodiscard]] bool supports_completion_wake() const noexcept override
+    { return true; }
     void wake_event_wait() noexcept override;
     [[nodiscard]] std::vector<LiveControlCommand> poll() override;
     // Blocks until the descriptor is readable/hung up or the timeout expires.

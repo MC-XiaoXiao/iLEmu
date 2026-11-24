@@ -218,14 +218,14 @@ CompatibilityKernel::workqueue_kevent_deadline() const
 
 bool CompatibilityKernel::workqueue_kevent_poll_required(
     std::span<const KeventRegistration> registrations,
-    std::uint64_t io_generation, bool io_changed) const
+    std::uint64_t guest_now, std::uint64_t io_generation, bool io_changed) const
 {
     KeventProbeDiagnostics diagnostics { output_ };
     const auto generation = shared_state_->mach_queue_generation_snapshot();
     // Separate retained readiness checks from source queries, passing the
     // registration directly through the common evaluation path.
     const auto query_source = [&](const KeventRegistration& registration) {
-        if (const auto source = kevent_source_state(registration)) {
+        if (const auto source = kevent_source_state(registration, guest_now)) {
             if (!source->ready &&
                 registration.filter != darwin::kqueue::filter_timer)
                 registration.inactive_source_io_generation = io_generation;

@@ -1525,7 +1525,8 @@ struct KernelSharedState {
     MachSendWaiters mach_send_waiters;
     using MachReceiveWaiters = MachReceiveWaitQueue<MachMessage, PendingMachReceive>;
     MachReceiveWaiters mach_receive_waiters;
-    bool handoff_mach_message_locked(std::uint32_t destination, MachMessage& message);
+    std::optional<XnuThreadId> handoff_mach_message_locked(
+        std::uint32_t destination, MachMessage& message);
     void cancel_mach_receives_locked(std::uint32_t task,
         std::optional<std::uint32_t> processor = std::nullopt);
     std::map<std::uint32_t, std::deque<MachMessage>> mach_queues;
@@ -1556,13 +1557,13 @@ struct KernelSharedState {
     // The caller holds mach_mutex. Centralizing enqueue makes it impossible for
     // a new message source to publish data without also waking cached empty
     // receives on the next scheduler pass.
-    void enqueue_mach_message_locked(
+    std::optional<XnuThreadId> enqueue_mach_message_locked(
         std::uint32_t destination, MachMessage message)
     {
-        const bool handed_off = handoff_mach_message_locked(destination, message);
+        const auto receiver = handoff_mach_message_locked(destination, message);
         auto& queue = mach_queues[destination];
         const auto was_empty = queue.empty();
-        if (!handed_off) {
+        if (!receiver) {
             if (message.graphics_input_sequence != 0U &&
                 message.graphics_input_kind != MachMessage::GraphicsInputKind::None) {
                 // Publish a conservative candidate before the message, so a
@@ -1576,7 +1577,7 @@ struct KernelSharedState {
                 older->qos.override_tier = message.qos.override_tier;
             queue.push_back(std::move(message));
         }
-        if (!handed_off && was_empty) {
+        if (!receiver && was_empty) {
             if (const auto links =
                     mach_port_set_links_by_member.find(destination);
                 links != mach_port_set_links_by_member.end()) {
@@ -1595,6 +1596,7 @@ struct KernelSharedState {
             for (const auto& link : links->second)
                 mach_queue_generation.note_enqueue(link.set_object);
         }
+        return receiver;
     }
 
     // The caller holds mach_mutex. Deliver armed name notifications when a

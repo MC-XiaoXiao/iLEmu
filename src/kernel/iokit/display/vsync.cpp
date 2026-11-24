@@ -533,6 +533,9 @@ void index_vsync_deadline_locked(
 
 void deliver_due_vsync_locked(KernelSharedState& state, std::uint64_t deadline)
 {
+    if (state.iokit_display_vsync_deadlines.empty() ||
+        state.iokit_display_vsync_deadlines.begin()->first > deadline)
+        return;
     while (!state.iokit_display_vsync_deadlines.empty() &&
            state.iokit_display_vsync_deadlines.begin()->first <= deadline) {
         const auto indexed_deadline =
@@ -597,6 +600,7 @@ void deliver_due_vsync_locked(KernelSharedState& state, std::uint64_t deadline)
             *registration.next_deadline + (elapsed / period + 1U) * period;
         index_vsync_deadline_locked(state, connection_object);
     }
+    state.note_kernel_event_transition();
 }
 
 void open_connection_locked(KernelSharedState& state,

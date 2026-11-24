@@ -24,13 +24,29 @@ void FileIoQueue::push(std::shared_ptr<FileIoOperation> operation)
     if (operations_.size() == 1)
         start();
 }
-std::shared_ptr<FileIoOperation> FileIoQueue::front() const
+std::shared_ptr<FileIoOperation> FileIoQueue::completed(
+    std::uint32_t owner) const
 {
-    return operations_.empty() ? nullptr : operations_.front();
+    if (operations_.empty())
+        return nullptr;
+    const auto& operation = operations_.front();
+    if ((!operation->abandoned && operation->owner != owner) ||
+        !operation->ready()) {
+        return nullptr;
+    }
+    return operation;
 }
-std::shared_ptr<FileIoOperation> FileIoQueue::admission() const
+std::shared_ptr<FileIoOperation> FileIoQueue::admissible(
+    std::uint32_t owner) const
 {
-    return admissions_.empty() ? nullptr : admissions_.front();
+    if (admissions_.empty())
+        return nullptr;
+    const auto& waiting = admissions_.front();
+    if (!waiting->abandoned &&
+        (waiting->owner != owner || !admits(waiting->size))) {
+        return nullptr;
+    }
+    return waiting;
 }
 void FileIoQueue::pop()
 {

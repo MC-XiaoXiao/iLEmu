@@ -1143,7 +1143,8 @@ private:
         std::uint64_t process_exit_generation { };
     };
     [[nodiscard]] std::optional<KeventSourceState> kevent_source_state(
-        const KeventRegistration& registration) const;
+        const KeventRegistration& registration,
+        std::optional<std::uint64_t> guest_now = std::nullopt) const;
     struct WorkqueueKeventQos {
         std::uint32_t bucket;
         std::optional<std::int32_t> override_priority;
@@ -1157,7 +1158,8 @@ private:
     workqueue_kevent_deadline() const;
     [[nodiscard]] bool workqueue_kevent_poll_required(
         std::span<const KeventRegistration> registrations,
-        std::uint64_t io_generation, bool io_changed) const;
+        std::uint64_t guest_now, std::uint64_t io_generation,
+        bool io_changed) const;
     void note_workqueue_kevent_transition();
     [[nodiscard]] bool mach_kevent_observation_current(
         const KeventRegistration& registration) const;
@@ -1209,6 +1211,12 @@ private:
         std::uint32_t wait_trace_identifier,
         std::optional<std::uint32_t> signal_trace_identifier = std::nullopt,
         std::shared_ptr<SemaphoreState> posix_semaphore = {});
+    struct LocalDeviceTimerDeadlines {
+        std::optional<std::uint64_t> audio;
+        std::optional<std::uint64_t> interval;
+    };
+    [[nodiscard]] LocalDeviceTimerDeadlines local_device_timer_deadlines() const;
+    void service_shared_devices(std::uint64_t deadline);
     void schedule_due_audio_io(std::uint64_t deadline);
     void inject_wifi_driver_event(
         std::uint32_t descriptor, std::uint32_t event);
@@ -1483,6 +1491,8 @@ private:
     std::uint64_t pending_graphics_generation_ { };
     mutable std::optional<std::uint64_t> local_timer_deadline_cache_;
     mutable bool local_timer_deadline_cache_valid_ { };
+    mutable LocalDeviceTimerDeadlines local_device_timer_deadlines_;
+    mutable std::uint64_t local_device_timer_generation_ { };
     // Scheduler-owned copy of the shared snapshot, populated under mach_mutex.
     // The atomic event generation invalidates it without reading shared data.
     mutable std::optional<TimerDeadlineSnapshot> shared_timer_deadline_snapshot_;

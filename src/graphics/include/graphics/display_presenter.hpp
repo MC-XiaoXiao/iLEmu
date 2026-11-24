@@ -41,6 +41,9 @@ public:
     [[nodiscard]] virtual std::uint64_t presented_frames() const = 0;
     // Returns false after the user closes the window.
     [[nodiscard]] virtual bool poll_events() = 0;
+    // An implemented wake must also interrupt a wait that is about to start.
+    [[nodiscard]] virtual bool supports_completion_wake() const noexcept
+    { return false; }
     virtual void wake_event_wait() noexcept { }
     // Blocks on the host event queue until an event or the supplied deadline.
     // The caller remains responsible for processing Guest deadlines.

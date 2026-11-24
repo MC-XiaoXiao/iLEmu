@@ -8,7 +8,8 @@ namespace ilemu {
 
 std::optional<CompatibilityKernel::KeventSourceState>
 CompatibilityKernel::kevent_source_state(
-    const KeventRegistration& registration) const
+    const KeventRegistration& registration,
+    std::optional<std::uint64_t> guest_now) const
 {
     using namespace darwin::kqueue;
     switch (registration.filter) {
@@ -49,11 +50,15 @@ CompatibilityKernel::kevent_source_state(
             .available = 0U,
         };
     }
-    case filter_timer:
+    case filter_timer: {
+        const auto deadline = registration.timer
+            ? registration.timer->deadline() : std::nullopt;
         return KeventSourceState {
-            .ready = registration.timer &&
-                registration.timer->expirations(shared_state_->clock.now()) != 0,
+            .ready = deadline &&
+                (guest_now ? *guest_now : shared_state_->clock.now()) >=
+                    *deadline,
         };
+    }
     case filter_user:
         return KeventSourceState {
             .ready = registration.user_triggered,

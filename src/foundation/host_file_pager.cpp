@@ -36,8 +36,11 @@ void FilePageRead::commit()
     }
 }
 
-HostFilePager::HostFilePager(std::function<void()> completion_wake)
+HostFilePager::HostFilePager(
+    std::function<void()> completion_wake, bool reliable_completion_wake)
     : completion_wake_ { std::move(completion_wake) }
+    , reliable_completion_wake_ {
+          reliable_completion_wake && static_cast<bool>(completion_wake_) }
 {
 }
 
@@ -62,6 +65,7 @@ std::shared_ptr<FilePageRead> HostFilePager::prepare(
     read->offset_ = offset;
     read->size_ = size;
     read->shared_ = shared;
+    read->reliable_completion_wake_ = reliable_completion_wake_;
     reads_.push_back(read);
     static_cast<void>(worker_.submit(HostWorkKind::Maintenance, std::nullopt,
         [this, read] {

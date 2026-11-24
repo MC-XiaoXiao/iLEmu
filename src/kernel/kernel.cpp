@@ -1836,11 +1836,16 @@ CompatibilityKernel::pending_event_poll_candidates()
     }
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
-    const auto guest_now = shared_state_->clock.now();
+    std::optional<std::uint64_t> sampled_guest_time;
+    const auto guest_time = [&] {
+        if (!sampled_guest_time)
+            sampled_guest_time = shared_state_->clock.now();
+        return *sampled_guest_time;
+    };
     poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Deadline);
     const auto workqueue_deadline = workqueue_kevent_deadline();
     const auto workqueue_timer_due =
-        workqueue_deadline && guest_now >= *workqueue_deadline;
+        workqueue_deadline && guest_time() >= *workqueue_deadline;
     // A Mach message can be enqueued by another task after every workqueue
     // worker has parked. Redrive the process-private kqueue on that transition
     // so EVFILT_MACHPORT can schedule its libpthread event worker.
@@ -1858,7 +1863,7 @@ CompatibilityKernel::pending_event_poll_candidates()
 
         if (workqueue_kevent_redrive_ || workqueue_timer_due ||
             workqueue_kevent_poll_required(
-                queue->second, io_generation, io_changed)) {
+                queue->second, guest_time(), io_generation, io_changed)) {
             poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Redrive);
             poll_diagnostics.redriven();
             // A timer pop activates the knote without unrelated I/O or IPC.
@@ -1869,7 +1874,6 @@ CompatibilityKernel::pending_event_poll_candidates()
         }
     }
     poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Cache);
-    const auto host_now = std::chrono::steady_clock::now();
     const auto graphics_generation = gles_completion_generation();
     // Host graphics waits park HLE calls. Unrelated processes keep their own
     // Mach/I/O generations and deadlines instead of walking every waiter.
@@ -1890,10 +1894,15 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto readiness_changed =
         (mach_changed || io_changed) && !mach_snapshot_current;
     const auto deadline_due = pending_event_poll_deadline_ &&
-                              guest_now >= *pending_event_poll_deadline_;
+                              guest_time() >= *pending_event_poll_deadline_;
     const auto sample_deadline = hid_event_system_hle_.next_sample_deadline();
-    const auto sample_due = sample_deadline && guest_now >= *sample_deadline;
-    const auto host_probe_due = host_now >= pending_event_host_probe_;
+    const auto sample_due = sample_deadline && guest_time() >= *sample_deadline;
+    using HostClock = std::chrono::steady_clock;
+    constexpr auto no_host_probe = HostClock::time_point::max();
+    const auto host_now = pending_event_host_probe_ == no_host_probe
+        ? no_host_probe : HostClock::now();
+    const auto host_probe_due =
+        host_now != no_host_probe && host_now >= pending_event_host_probe_;
     // Page input publishes readiness before waking the host wait. Only its
     // owning process needs to revisit a cached negative observation.
     const auto file_page_ready = std::any_of(pending_file_page_faults_.begin(),
@@ -1928,6 +1937,7 @@ CompatibilityKernel::pending_event_poll_candidates()
     std::optional<std::uint64_t> next_deadline;
     bool requires_host_probe = false;
     bool mach_snapshot_valid = pending_thread_aborts_.empty();
+    const auto guest_now = guest_time();
     pending_event_mach_dependencies_.clear();
     pending_event_mach_snapshot_receiver_generation_ =
         shared_state_->hid_event_queue.receiver_generation_snapshot();
@@ -1992,9 +2002,11 @@ CompatibilityKernel::pending_event_poll_candidates()
     }
     pending_event_poll_deadline_ = next_deadline;
     constexpr auto host_probe_interval = std::chrono::milliseconds { 1 };
-    pending_event_host_probe_ = requires_host_probe
-                                    ? host_now + host_probe_interval
-                                    : std::chrono::steady_clock::time_point::max();
+    pending_event_host_probe_ = no_host_probe;
+    if (requires_host_probe) {
+        const auto probe_start = host_now == no_host_probe ? HostClock::now() : host_now;
+        pending_event_host_probe_ = probe_start + host_probe_interval;
+    }
     pending_event_mach_snapshot_valid_ = false;
     pending_event_mach_candidates_.clear();
     if (mach_snapshot_valid) {
@@ -2368,11 +2380,15 @@ bool CompatibilityKernel::pending_io_requires_host_poll_locked(
     if (pending_file_ios_.contains(processor) ||
         pending_aio_suspends_.contains(processor) ||
         pending_file_mappings_.contains(processor) ||
-        pending_file_page_faults_.contains(processor) ||
         pending_process_images_.contains(processor) ||
         pending_file_renames_.contains(processor) ||
         pending_filesystem_dispatches_.contains(processor) ||
         pending_baseband_writes_.contains(processor)) {
+        return true;
+    }
+    if (const auto page = pending_file_page_faults_.find(processor);
+        page != pending_file_page_faults_.end() &&
+        !page->second.read->has_reliable_completion_wake()) {
         return true;
     }
     if (const auto found = pending_socket_reads_.find(processor);
@@ -3199,6 +3215,19 @@ void CompatibilityKernel::note_timer_deadline_transition() noexcept
     shared_state_->note_kernel_event_transition();
 }
 
+CompatibilityKernel::LocalDeviceTimerDeadlines
+CompatibilityKernel::local_device_timer_deadlines() const
+{
+    if (local_device_timer_generation_ != local_timer_deadline_generation_) {
+        local_device_timer_deadlines_ = {
+            core_audio_hle_.next_io_proc_deadline(),
+            kernel_bsd::interval_timer::next_deadline(*shared_state_, process_.pid)
+        };
+        local_device_timer_generation_ = local_timer_deadline_generation_;
+    }
+    return local_device_timer_deadlines_;
+}
+
 CompatibilityKernel::TimerDeadlineSnapshot
 CompatibilityKernel::timer_deadline_snapshot() const
 {
@@ -3264,9 +3293,9 @@ CompatibilityKernel::timer_deadline_snapshot(
             static_cast<void>(processor);
             consider(local_deadline, receive.deadline);
         }
-        consider(local_deadline, core_audio_hle_.next_io_proc_deadline());
-        consider(local_deadline, kernel_bsd::interval_timer::next_deadline(
-                                     *shared_state_, process_.pid));
+        const auto device_deadlines = local_device_timer_deadlines();
+        consider(local_deadline, device_deadlines.audio);
+        consider(local_deadline, device_deadlines.interval);
         local_timer_deadline_cache_ = local_deadline;
         local_timer_deadline_cache_valid_ = true;
     }
@@ -3335,11 +3364,9 @@ CompatibilityKernel::next_display_vsync_deadline() const
 
 void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline)
 {
-    const auto next_service_deadline = next_timer_deadline();
     shared_state_->clock.advance_to(deadline);
-    if (!next_service_deadline || *next_service_deadline > deadline)
-        return;
-    {
+    if (const auto shared_deadline = shared_timer_deadline_snapshot().deadline;
+        shared_deadline && *shared_deadline <= deadline) {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         auto due_ports = shared_state_->mach_timer_deadlines.keys_due(deadline);
         std::sort(due_ports.begin(), due_ports.end());
@@ -3367,19 +3394,38 @@ void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline)
             output_.write(
                 "[timer] expired port=" + std::to_string(port) + "\n");
         }
+        if (!due_ports.empty())
+            shared_state_->note_kernel_event_transition();
         deliver_due_clock_alarms_locked(*shared_state_, deadline);
         kernel_iokit::display::deliver_due_vsync_locked(
             *shared_state_, deadline);
     }
     service_time_dependent_devices(deadline);
-    note_timer_deadline_transition();
 }
 
 void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
 {
-    const auto next_service_deadline = next_timer_deadline();
-    if (!next_service_deadline || *next_service_deadline > deadline)
-        return;
+    const auto shared_deadline = shared_timer_deadline_snapshot().deadline;
+    if (shared_deadline && *shared_deadline <= deadline)
+        service_shared_devices(deadline);
+
+    const auto device_deadlines = local_device_timer_deadlines();
+    if (device_deadlines.interval && *device_deadlines.interval <= deadline &&
+        kernel_bsd::interval_timer::service_due(
+            *shared_state_, process_.pid, deadline)) {
+        static_cast<void>(
+            deliver_signal(kernel_bsd::interval_timer::expiration_signal));
+        note_timer_deadline_transition();
+    }
+    if (device_deadlines.audio && *device_deadlines.audio <= deadline) {
+        schedule_due_audio_io(deadline);
+        // Taking a due callback can also stop an invalid registration.
+        note_timer_deadline_transition();
+    }
+}
+
+void CompatibilityKernel::service_shared_devices(std::uint64_t deadline)
+{
     std::optional<std::vector<std::uint32_t>> console_pixels;
     std::optional<std::uint8_t> backlight_level;
     {
@@ -3391,11 +3437,12 @@ void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
                 iokit_abi::display_vsync::period_absolute_time);
             shared_state_->note_kernel_event_transition();
         }
+        const auto console_deadline = shared_state_->display_console.next_deadline();
         console_pixels = shared_state_->display_console.take_frame(deadline,
             shared_state_->display_geometry,
             shared_state_->user_interface_geometry,
             shared_state_->requested_display_power_state.value_or(1U) != 0U);
-        if (shared_state_->display_console.next_deadline())
+        if (console_deadline != shared_state_->display_console.next_deadline())
             shared_state_->note_kernel_event_transition();
     }
     if (backlight_level)
@@ -3419,13 +3466,6 @@ void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
     }
     kernel_iokit::camera::service_due_captures(
         *shared_state_, process_.pid, memory_, *surface_store_, deadline);
-    if (kernel_bsd::interval_timer::service_due(
-            *shared_state_, process_.pid, deadline)) {
-        static_cast<void>(
-            deliver_signal(kernel_bsd::interval_timer::expiration_signal));
-    }
-    schedule_due_audio_io(deadline);
-    note_timer_deadline_transition();
 }
 
 void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline)

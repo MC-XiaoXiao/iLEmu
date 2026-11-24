@@ -499,6 +499,7 @@ void service_due_captures(KernelSharedState& state, std::uint32_t process_id,
     std::vector<DueCapture> due;
     {
         std::lock_guard lock { state.mach_mutex };
+        const auto pending = state.iokit_camera_capture_requests.size();
         for (auto request = state.iokit_camera_capture_requests.begin();
             request != state.iokit_camera_capture_requests.end();) {
             const auto connection =
@@ -523,6 +524,8 @@ void service_due_captures(KernelSharedState& state, std::uint32_t process_id,
             due.push_back(DueCapture { *request, accelerator->second });
             request = state.iokit_camera_capture_requests.erase(request);
         }
+        if (state.iokit_camera_capture_requests.size() != pending)
+            state.note_kernel_event_transition();
     }
 
     for (const auto& capture : due) {

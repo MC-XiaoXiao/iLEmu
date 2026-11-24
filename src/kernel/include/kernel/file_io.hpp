@@ -58,7 +58,8 @@ class FileIoQueue {
 public:
     [[nodiscard]] bool admits(std::size_t size) const;
     void push(std::shared_ptr<FileIoOperation> operation);
-    [[nodiscard]] std::shared_ptr<FileIoOperation> front() const;
+    [[nodiscard]] std::shared_ptr<FileIoOperation> completed(
+        std::uint32_t owner) const;
     [[nodiscard]] bool empty() const
     {
         return operations_.empty() && admissions_.empty();
@@ -71,7 +72,8 @@ public:
     {
         admissions_.push_back(std::move(operation));
     }
-    [[nodiscard]] std::shared_ptr<FileIoOperation> admission() const;
+    [[nodiscard]] std::shared_ptr<FileIoOperation> admissible(
+        std::uint32_t owner) const;
     void retire_admission() { admissions_.pop_front(); }
     void pop();
     void abandon(std::uint32_t owner);

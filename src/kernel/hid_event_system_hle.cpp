@@ -271,10 +271,11 @@ bool HidEventSystemHle::is_event_consumer(
 
 std::optional<std::uint64_t> HidEventSystemHle::next_sample_deadline() const
 {
-    if (delivering_processors_.contains(consumer_processor_))
+    if (consumer_process_ == 0U ||
+        delivering_processors_.contains(consumer_processor_))
         return std::nullopt;
     auto deadline = accelerometer_.next_deadline();
-    if (state_ && consumer_process_ != 0U) {
+    if (state_) {
         const auto ambient = state_->ambient_light_input.next_deadline();
         if (ambient && (!deadline || *ambient < *deadline))
             deadline = ambient;
@@ -289,9 +290,10 @@ bool HidEventSystemHle::pending_event_ready(
         return false;
     if (state_->hid_event_queue.has_pending(process, processor))
         return true;
+    if (consumer_process_ != process || consumer_processor_ != processor)
+        return false;
     const auto deadline = next_sample_deadline();
-    if (consumer_process_ != process || consumer_processor_ != processor ||
-        !deadline || now < *deadline)
+    if (!deadline || now < *deadline)
         return false;
     const auto consumer = state_->hid_event_queue.consumer();
     return consumer && consumer->process == process &&

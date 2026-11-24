@@ -68,6 +68,9 @@ class ControlChannel {
 public:
     virtual ~ControlChannel() = default;
     [[nodiscard]] virtual std::vector<LiveControlCommand> poll() = 0;
+    // An implemented wake must also interrupt a wait that is about to start.
+    [[nodiscard]] virtual bool supports_completion_wake() const noexcept
+    { return false; }
     virtual void wake_event_wait() noexcept { }
     virtual void wait_for(std::chrono::nanoseconds timeout) = 0;
     [[nodiscard]] virtual bool closed() const = 0;

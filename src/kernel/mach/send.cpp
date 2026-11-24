@@ -155,7 +155,7 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
         kernel_clock::Server::identify(remote_object, message_id);
     std::uint32_t remote_owner = 0;
     std::size_t remote_queue_depth = 0;
-    std::optional<std::size_t> local_pending_receiver;
+    std::optional<XnuThreadId> wake_receiver;
     std::string bootstrap_service_name;
     bool kernel_service_handled = false;
     bool task_suspended = false;
@@ -352,7 +352,7 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
         }
         mach_transport::trace_foreground_message(*shared_state_, output_, queued,
             process_.pid, cpu.processor_id(), registers[1], "send");
-        shared_state_->enqueue_mach_message_locked(
+        wake_receiver = shared_state_->enqueue_mach_message_locked(
             remote_object, std::move(queued));
     }
     remote_owner = shared_state_->mach_port_objects.lookup(remote_object)
@@ -362,9 +362,14 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     remote_queue_depth = response_queue == shared_state_->mach_queues.end()
                              ? 0U
                              : response_queue->second.size();
-    if (remote_owner == process_.pid) {
-        local_pending_receiver =
-            preferred_pending_mach_receiver_locked(remote_object);
+    // A direct delivery names its receiver. A new search can find an older
+    // completed ticket that still awaits copyout.
+    if (!scheduler_completion && !wake_receiver && thread_wake_handler_ &&
+        remote_owner == process_.pid) {
+        if (const auto processor =
+                preferred_pending_mach_receiver_locked(remote_object))
+            wake_receiver = XnuThreadId { process_.pid,
+                static_cast<std::uint32_t>(*processor) };
     }
     mach_lock.unlock();
 
@@ -372,11 +377,11 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     // During event polling the candidate list is already a snapshot. A newly
     // ready receiver must complete copyout on the next generation-driven poll
     // before becoming runnable; waking it here could resume its raw syscall.
-    if (!scheduler_completion && local_pending_receiver && thread_wake_handler_) {
+    if (!scheduler_completion && wake_receiver && thread_wake_handler_) {
         receiver_wake_result = thread_wake_handler_(
-            process_.pid, static_cast<std::uint32_t>(*local_pending_receiver));
-    } else if (!scheduler_completion && remote_owner != process_.pid && mach_message_wake_handler_ &&
-               remote_owner != 0) {
+            wake_receiver->process, wake_receiver->thread);
+    } else if (!scheduler_completion && remote_owner != process_.pid &&
+               mach_message_wake_handler_ && remote_owner != 0) {
         // The sender's CompatibilityKernel does not own the receiver's
         // pending-mach map. The app-level callback resolves that map
         // and wakes the selected receiver without touching Dynarmic

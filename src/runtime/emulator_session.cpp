@@ -1577,7 +1577,13 @@ void EmulatorSession::run()
     std::array<std::atomic<std::uint64_t>, jit_precompile_target_count>
         precompile_blocks_by_target { };
     auto file_mapping_preparer = std::make_shared<HostFileMappingPreparer>();
-    auto file_pager = std::make_shared<HostFilePager>(host_completion_wake);
+    // The session condition variable retains its wake. Any host adapter
+    // that can also wait must explicitly guarantee the same behavior.
+    const bool reliable_completion_wake =
+        (!display_presenter || display_presenter->supports_completion_wake()) &&
+        (!live_control || live_control->supports_completion_wake());
+    auto file_pager = std::make_shared<HostFilePager>(
+        host_completion_wake, reliable_completion_wake);
     auto process_image_preparer =
         std::make_shared<HostProcessImagePreparer>(rootfs, guest_architecture);
     // A captured deferred SVC has entered the kernel even before its serial
@@ -2419,7 +2425,9 @@ void EmulatorSession::run()
         }
         if (waitable_window_session) {
             static_cast<void>(display_presenter->wait_for_event(delay));
-        } else if (display_presenter) {
+            return;
+        }
+        if (display_presenter) {
             delay = std::min(
                 delay, std::chrono::duration_cast<std::chrono::nanoseconds>(
                            host_event_poll_fallback));
@@ -3431,11 +3439,8 @@ void EmulatorSession::run()
                 display_urgent_receiver_thread.reset();
                 return;
             }
-            for (auto& runtime : runtimes) {
-                if (runtime->kernel->process().pid != *display_urgent_process ||
-                    runtime->kernel->process().exited) {
-                    continue;
-                }
+            auto* runtime = runtime_index.find(*display_urgent_process);
+            if (runtime && !runtime->kernel->process().exited) {
                 // Keep the Mach receiver and firmware NotifyFunc continuation
                 // as distinct dependencies. After receive copyout, the former
                 // remains the dependency processor until NotifyFunc advances
@@ -3473,7 +3478,6 @@ void EmulatorSession::run()
                         }
                     }
                 }
-                break;
             }
             if (!display_receive_pending)
                 display_urgent_receiver_thread.reset();
@@ -4145,14 +4149,8 @@ void EmulatorSession::run()
         for (const auto& scheduled_value : scheduled_batch) {
             if (!scheduler.contains(scheduled_value.thread))
                 continue;
-            Runtime* selected_runtime = nullptr;
-            for (auto& candidate : runtimes) {
-                if (candidate->kernel->process().pid ==
-                    scheduled_value.thread.process) {
-                    selected_runtime = candidate.get();
-                    break;
-                }
-            }
+            auto* selected_runtime =
+                runtime_index.find(scheduled_value.thread.process);
             if (selected_runtime == nullptr ||
                 scheduled_value.thread.thread >=
                     selected_runtime->cpus->size()) {

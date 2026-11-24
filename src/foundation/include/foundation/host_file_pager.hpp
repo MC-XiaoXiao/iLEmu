@@ -17,6 +17,8 @@ class FilePageRead {
 public:
     [[nodiscard]] bool ready() const noexcept
     { return ready_.load(std::memory_order_acquire); }
+    [[nodiscard]] bool has_reliable_completion_wake() const noexcept
+    { return reliable_completion_wake_; }
     [[nodiscard]] bool wait_until(std::chrono::steady_clock::time_point deadline);
     void commit();
 
@@ -30,6 +32,7 @@ private:
     std::shared_ptr<PreparedFilePages> prepared_pages_;
     bool shared_ { };
     bool consumed_ { };
+    bool reliable_completion_wake_ { };
     std::atomic<bool> ready_ { false };
     std::mutex ready_mutex_;
     std::condition_variable ready_changed_;
@@ -37,7 +40,9 @@ private:
 
 class HostFilePager {
 public:
-    explicit HostFilePager(std::function<void()> completion_wake = {});
+    // Only a callback guaranteed to interrupt the host wait can replace polling.
+    explicit HostFilePager(std::function<void()> completion_wake = {},
+        bool reliable_completion_wake = false);
     ~HostFilePager();
     [[nodiscard]] std::shared_ptr<FilePageRead> prepare(
         std::shared_ptr<FilePageCache> cache,
@@ -51,6 +56,7 @@ private:
     std::mutex mutex_;
     std::deque<std::shared_ptr<FilePageRead>> reads_;
     std::function<void()> completion_wake_;
+    const bool reliable_completion_wake_;
     HostResourceController worker_;
 };
 
