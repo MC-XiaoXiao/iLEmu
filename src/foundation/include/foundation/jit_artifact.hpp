@@ -528,12 +528,18 @@ private:
         std::uint64_t mutation_generation { };
     };
     // Published artifacts own immutable keys. Keep their full hash with the
-    // borrowed pointer for resident-table growth.
+    // borrowed pointer so probes can reject collisions and reuse the hash
+    // when a new key is inserted.
     class ResidentKey {
     public:
         explicit ResidentKey(const JitArtifactKey* key) noexcept
+            : ResidentKey { key, JitArtifactKeyHash { }(*key) }
+        {
+        }
+
+        ResidentKey(const JitArtifactKey* key, std::size_t hash) noexcept
             : key_ { key }
-            , hash_ { JitArtifactKeyHash { }(*key) }
+            , hash_ { hash }
         {
         }
 
@@ -567,10 +573,17 @@ private:
     };
     struct JitArtifactKeyPointerEqual {
         using is_transparent = void;
+        [[nodiscard]] bool operator()(const ResidentKey& left,
+            const ResidentKey& right) const noexcept
+        {
+            return left.hash() == right.hash() && (*this)(
+                static_cast<const JitArtifactKey*>(left),
+                static_cast<const JitArtifactKey*>(right));
+        }
         [[nodiscard]] bool operator()(const JitArtifactKey* left,
             const JitArtifactKey* right) const noexcept
         {
-            return *left == *right;
+            return left == right || *left == *right;
         }
         [[nodiscard]] bool operator()(const JitArtifactKey* left,
             const JitArtifactKey& right) const noexcept
@@ -606,16 +619,18 @@ private:
     void mark_hotset_dirty_locked() const noexcept;
     [[nodiscard]] std::optional<HotsetSnapshot> hotset_snapshot_locked() const;
     [[nodiscard]] ArtifactMap::iterator promote_retention_locked(
-        const JitArtifactKey& key, JitArtifactRetention retention) const;
+        const ResidentKey& resident_key, JitArtifactRetention retention) const;
     void promote_resident_retention_locked(
         ArtifactMap::iterator iterator) const;
     void evict_until_fit_locked(std::size_t required_bytes) const;
     // Callers hold mutex_ and have already ruled out a resident entry.
-    ArtifactMap::iterator insert_absent_locked(std::shared_ptr<const BlockArtifact> artifact,
-        std::size_t serialized_bytes, bool loaded_from_disk = false,
-        bool startup_prefetched = false,
-        JitArtifactRetention retention = JitArtifactRetention::Normal) const;
-    [[nodiscard]] bool enqueue_writeback_locked(
+    ArtifactMap::iterator insert_absent_locked(
+        std::shared_ptr<const BlockArtifact> artifact, std::size_t key_hash,
+        std::size_t serialized_bytes,
+        DiskArtifactMap::const_iterator disk, bool loaded_from_disk,
+        bool startup_prefetched, JitArtifactRetention retention) const;
+    // Publication has established that writeback is enabled and the key is new.
+    [[nodiscard]] bool enqueue_absent_writeback_locked(
         const std::shared_ptr<const BlockArtifact>& artifact,
         std::size_t serialized_bytes, JitArtifactRetention retention) const;
     void retire_writeback_locked(const JitArtifactKey& key) const;

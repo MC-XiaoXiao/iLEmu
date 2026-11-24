@@ -503,6 +503,7 @@ public:
     // The default scanout may be imported into several task-local stores. Its
     // publishing task remains the owner whose address space drives scanout.
     [[nodiscard]] bool owns_display_scanout() const;
+    [[nodiscard]] std::optional<std::uint32_t> display_scanout_producer() const;
     bool set_virtual_processor_count(std::size_t processor_count);
     void set_preferred_wifi_networks(std::vector<std::string> ssids)
     {

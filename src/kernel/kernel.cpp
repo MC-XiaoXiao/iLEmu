@@ -138,10 +138,10 @@ namespace {
     class EventPollDiagnostics {
     public:
         enum class Phase : std::size_t { Services, Deadline, Probe, Redrive, Cache, Scan, Count };
-        explicit EventPollDiagnostics(Output& output)
+        explicit EventPollDiagnostics(Output* output)
             : output_ { output }
         {
-            if (!performance_counters().cpu_source_diagnostics_enabled())
+            if (!output_)
                 return;
             batch_.random = batch_.random * 6364136223846793005ULL +
                             1442695040888963407ULL;
@@ -168,7 +168,7 @@ namespace {
             constexpr std::array names { "services", "deadline", "probe", "redrive", "cache", "scan" };
             for (std::size_t i = 0; i < names.size(); ++i)
                 report << ' ' << names[i] << "-ns=" << batch_.nanoseconds[i];
-            output_.line(report.str());
+            output_->line(report.str());
             batch_.samples = batch_.scans = batch_.redrives = 0;
             batch_.nanoseconds.fill(0);
         }
@@ -191,7 +191,7 @@ namespace {
             std::array<std::uint64_t, 6> nanoseconds { };
         };
         static thread_local Batch batch_;
-        Output& output_;
+        Output* output_;
         bool sampled_ { }, scanned_ { }, redriven_ { };
         Phase phase_ { Phase::Services };
         std::chrono::steady_clock::time_point started_;
@@ -1036,6 +1036,14 @@ bool CompatibilityKernel::owns_display_scanout() const
     return backing && backing->provenance.producer_process_id == process_.pid;
 }
 
+std::optional<std::uint32_t> CompatibilityKernel::display_scanout_producer() const
+{
+    const auto backing = surface_store_->shared_mapping(
+        iokit_abi::mobile_framebuffer_default_surface_id);
+    if (!backing)
+        return std::nullopt;
+    return backing->metadata.provenance.producer_process_id;
+}
 
 void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 {
@@ -1802,9 +1810,12 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
 std::vector<std::size_t>
 CompatibilityKernel::pending_event_poll_candidates()
 {
+    const auto diagnostics_enabled =
+        performance_counters().cpu_source_diagnostics_enabled();
     const PerformanceLatencyScope latency { PerfLatencyKind::KernelEventPoll,
-        performance_counters().cpu_source_diagnostics_enabled() };
-    EventPollDiagnostics poll_diagnostics { output_ };
+        diagnostics_enabled };
+    EventPollDiagnostics poll_diagnostics {
+        diagnostics_enabled ? &output_ : nullptr };
     std::lock_guard lock { mutex_ };
     // Capture before committing notifications. A publication racing the
     // commit must remain newer than any negative wait observation below.
@@ -1837,11 +1848,11 @@ CompatibilityKernel::pending_event_poll_candidates()
     // unchanged I/O filters; timers are independently driven by their deadline.
     poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Probe);
     if (const auto queue = kqueues_.rbegin();
-        queue != kqueues_.rend() &&
-        queue->first == darwin::kqueue::workqueue_descriptor &&
         (workqueue_kevent_redrive_ || workqueue_timer_due ||
             pending_event_poll_mach_generation_ != mach_generation ||
-            pending_event_poll_io_generation_ != io_generation)) {
+            pending_event_poll_io_generation_ != io_generation) &&
+        queue != kqueues_.rend() &&
+        queue->first == darwin::kqueue::workqueue_descriptor) {
         const auto io_changed =
             pending_event_poll_io_generation_ != io_generation;
 

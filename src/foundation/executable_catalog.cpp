@@ -1246,8 +1246,21 @@ bool ExecutableCatalog::load(const std::filesystem::path& path) noexcept
         for (const auto& entry : storage->entries) {
             for (const auto& alias : entry.aliases)
                 storage->path_index[alias].push_back(entry.content_identity);
-            for (const auto& record : entry.file_generations)
+            for (const auto& record : entry.file_generations) {
                 storage->generation_paths.insert(record.path);
+                if (!storage->generations_match_aliases)
+                    continue;
+                if (entry.aliases.size() == 1U) {
+                    storage->generations_match_aliases =
+                        record.path == entry.aliases.front();
+                } else {
+                    // This entry's aliases were the last ones indexed.
+                    const auto owners = storage->path_index.find(record.path);
+                    storage->generations_match_aliases =
+                        owners != storage->path_index.end() &&
+                        owners->second.back() == entry.content_identity;
+                }
+            }
         }
         storage_ = std::move(storage);
         reliable_entry_points_current_ = reliable_entry_points_current;
@@ -1592,24 +1605,50 @@ void ExecutableCatalog::add_alias(ExecutableCatalogEntry& entry,
 
 void ExecutableCatalog::remove_path(const std::filesystem::path& path)
 {
-    // Data notifications need neither a scan nor a detached snapshot. Index
-    // generation records separately because manifests can retain paths that
-    // are no longer aliases.
-    if (!storage_->path_index.contains(path) &&
-        !storage_->generation_paths.contains(path))
+    auto owners = storage_->path_index.find(path);
+    const bool had_alias = owners != storage_->path_index.end();
+    if (!had_alias && !storage_->generation_paths.contains(path))
         return;
-    detach_storage();
-    storage_->path_index.erase(path);
+
+    if (storage_.use_count() != 1) {
+        detach_storage();
+        owners = storage_->path_index.find(path);
+    }
+    const auto erase_path_records = [&path](ExecutableCatalogEntry& entry) {
+        const auto aliases_removed = std::erase(entry.aliases, path);
+        const auto generations_removed = std::erase_if(entry.file_generations,
+            [&path](const ExecutableCatalogPathGeneration& record) {
+                return record.path == path;
+            });
+        return aliases_removed != 0U || generations_removed != 0U;
+    };
     storage_->generation_paths.erase(path);
+    if (had_alias && owners->second.size() == 1U &&
+        storage_->generations_match_aliases) {
+        const auto owner = storage_->identity_index.find(owners->second.front());
+        const auto index = owner->second;
+        storage_->path_index.erase(owners);
+        auto& entries = storage_->entries;
+        erase_path_records(entries[index]);
+        ++mutation_revision_;
+        if (entries[index].aliases.empty()) {
+            storage_->identity_index.erase(owner);
+            entries.erase(entries.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto moved = index; moved < entries.size(); ++moved) {
+                storage_->identity_index.at(entries[moved].content_identity) =
+                    moved;
+            }
+        }
+        return;
+    }
+
+    if (had_alias)
+        storage_->path_index.erase(owners);
     bool changed = false;
     bool removed_entry = false;
     for (auto entry = storage_->entries.begin();
         entry != storage_->entries.end();) {
-        changed |= std::erase(entry->aliases, path) != 0U;
-        changed |= std::erase_if(entry->file_generations,
-                       [&path](const ExecutableCatalogPathGeneration& record) {
-                           return record.path == path;
-                       }) != 0U;
+        changed |= erase_path_records(*entry);
         if (entry->aliases.empty()) {
             entry = storage_->entries.erase(entry);
             removed_entry = true;

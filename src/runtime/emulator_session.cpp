@@ -4754,16 +4754,16 @@ void EmulatorSession::run()
                 display_scanout_owner->kernel->process().exited ||
                 !display_scanout_owner->kernel->owns_display_scanout()) {
                 display_scanout_owner = nullptr;
-                for (auto& runtime : runtimes) {
-                    if (!runtime->kernel->process().exited &&
-                        runtime->kernel->owns_display_scanout()) {
-                        display_scanout_owner = runtime.get();
-                        output.line(
-                            "[display] scanout-owner pid=" +
-                            std::to_string(
-                                display_scanout_owner->kernel->process().pid));
-                        break;
-                    }
+                const auto producer =
+                    initial_runtime->kernel->display_scanout_producer();
+                auto* runtime = producer ? runtime_index.find(*producer) : nullptr;
+                // Importers can keep a shared backing alive after the producer
+                // releases its own mapping or exits.
+                if (runtime != nullptr && !runtime->kernel->process().exited &&
+                    runtime->kernel->owns_display_scanout()) {
+                    display_scanout_owner = runtime;
+                    output.line("[display] scanout-owner pid=" +
+                        std::to_string(*producer));
                 }
             }
             if (display_scanout_owner != nullptr)

@@ -2274,13 +2274,14 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
     JitArtifactRetention retention, bool allow_disk_payload,
     const std::shared_ptr<JitArtifactLookupToken>& receipt) const
 {
-    const auto record_disk_hit = [this, &key] {
+    const ResidentKey resident_key { &key };
+    const auto record_disk_hit = [this, &resident_key] {
         ++stats_.disk_hits;
         if (stats_.disk_hit_key_fingerprint_count <
             stats_.disk_hit_key_fingerprints.size()) {
             stats_.disk_hit_key_fingerprints[stats_
                     .disk_hit_key_fingerprint_count++] =
-                static_cast<std::uint64_t>(JitArtifactKeyHash { }(key));
+                static_cast<std::uint64_t>(resident_key.hash());
         }
     };
     const auto record_matches = [](const DiskArtifactRecord& left,
@@ -2293,7 +2294,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
                (!left.checksum_valid || left.checksum == right.checksum);
     };
     constexpr unsigned maximum_record_attempts = 3U;
-    const auto make_lookup = [this, &key, &receipt](
+    const auto make_lookup = [this, &resident_key, &receipt](
                                  std::shared_ptr<const BlockArtifact> artifact,
                                  bool disk_hit,
                                  bool transient_failure = false) {
@@ -2304,7 +2305,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
             return result;
         if (disk_hit) {
             result.provenance = JitArtifactLookupProvenance::DiskDemand;
-            if (const auto resident = artifacts_.find(key);
+            if (const auto resident = artifacts_.find(resident_key);
                 resident != artifacts_.end() &&
                 resident->second.startup_prefetched) {
                 result.provenance = JitArtifactLookupProvenance::DiskPrefetched;
@@ -2333,7 +2334,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
     {
         std::unique_lock lock { mutex_ };
         ++stats_.lookups;
-        if (auto artifact = promote_retention_locked(key, retention);
+        if (auto artifact = promote_retention_locked(resident_key, retention);
             artifact != artifacts_.end()) {
             const auto disk_hit = artifact->second.loaded_from_disk;
             if (disk_hit) {
@@ -2381,7 +2382,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
             } else {
                 ++stats_.memory_hits;
             }
-            if (auto resident = artifacts_.find(key);
+            if (auto resident = artifacts_.find(resident_key);
                 resident != artifacts_.end()) {
                 if (retention == JitArtifactRetention::BootWorkingSet) {
                     resident->second.boot_working_set = true;
@@ -2421,7 +2422,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
             std::filesystem::path source_path;
             {
                 std::unique_lock lock { mutex_ };
-                if (auto artifact = promote_retention_locked(key, retention);
+                if (auto artifact = promote_retention_locked(resident_key, retention);
                     artifact != artifacts_.end()) {
                     const auto disk_hit = artifact->second.loaded_from_disk;
                     if (disk_hit) {
@@ -2471,7 +2472,7 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
                 stats_.demand_deserialization_nanoseconds =
                     std::numeric_limits<std::uint64_t>::max();
             }
-            if (auto artifact = promote_retention_locked(key, retention);
+            if (auto artifact = promote_retention_locked(resident_key, retention);
                 artifact != artifacts_.end()) {
                 const auto disk_hit = artifact->second.loaded_from_disk;
                 if (disk_hit) {
@@ -2507,8 +2508,9 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
                 ++stats_.misses;
                 return finish_locked(lock, nullptr, false, true);
             }
-            auto artifact = insert_absent_locked(*loaded,
-                static_cast<std::size_t>(record.serialized_bytes), true, false,
+            auto artifact = insert_absent_locked(*loaded, resident_key.hash(),
+                static_cast<std::size_t>(record.serialized_bytes), current,
+                true, false,
                 current->second.boot_working_set
                     ? JitArtifactRetention::BootWorkingSet
                     : retention);
@@ -2779,11 +2781,12 @@ JitArtifactStore::hotset_snapshot_locked() const
 }
 
 JitArtifactStore::ArtifactMap::iterator JitArtifactStore::promote_retention_locked(
-    const JitArtifactKey& key, JitArtifactRetention retention) const
+    const ResidentKey& resident_key, JitArtifactRetention retention) const
 {
-    const auto resident = artifacts_.find(key);
+    const auto resident = artifacts_.find(resident_key);
     if (retention != JitArtifactRetention::BootWorkingSet)
         return resident;
+    const auto& key = *resident_key;
     bool changed = false;
     std::uint64_t membership_generation = 0U;
     const auto generation = [this, &membership_generation] {
@@ -2792,9 +2795,9 @@ JitArtifactStore::ArtifactMap::iterator JitArtifactStore::promote_retention_lock
         }
         return membership_generation;
     };
-    if (const auto disk = disk_artifacts_.find(key);
-        disk != disk_artifacts_.end()) {
-        if (!disk->second.boot_working_set) {
+    if (!disk_artifacts_.empty()) {
+        if (const auto disk = disk_artifacts_.find(key);
+            disk != disk_artifacts_.end() && !disk->second.boot_working_set) {
             disk->second.boot_working_set = true;
             disk->second.benefit_generation = generation();
             changed = true;
@@ -2808,9 +2811,10 @@ JitArtifactStore::ArtifactMap::iterator JitArtifactStore::promote_retention_lock
             changed = true;
         }
     }
-    if (const auto pending = pending_writebacks_.find(key);
-        pending != pending_writebacks_.end()) {
-        if (!pending->second.boot_working_set) {
+    if (!pending_writebacks_.empty()) {
+        if (const auto pending = pending_writebacks_.find(key);
+            pending != pending_writebacks_.end() &&
+                !pending->second.boot_working_set) {
             pending->second.boot_working_set = true;
             pending->second.benefit_generation = generation();
             changed = true;
@@ -2846,7 +2850,7 @@ void JitArtifactStore::evict_until_fit_locked(std::size_t required_bytes) const
            !lru_.empty()) {
         const auto victim = lru_.begin();
         const auto* key = *victim;
-        const auto iterator = artifacts_.find(key);
+        const auto iterator = artifacts_.find(ResidentKey { key });
         // A successful native import proves reuse across a cache miss. Give
         // that template one more turn before a stream of first translations
         // evicts it; the existing queue and byte budget remain authoritative.
@@ -2871,7 +2875,8 @@ void JitArtifactStore::evict_until_fit_locked(std::size_t required_bytes) const
 }
 
 JitArtifactStore::ArtifactMap::iterator JitArtifactStore::insert_absent_locked(
-    std::shared_ptr<const BlockArtifact> artifact, std::size_t serialized_bytes,
+    std::shared_ptr<const BlockArtifact> artifact, std::size_t key_hash,
+    std::size_t serialized_bytes, DiskArtifactMap::const_iterator disk,
     bool loaded_from_disk, bool startup_prefetched,
     JitArtifactRetention retention) const
 {
@@ -2908,7 +2913,6 @@ JitArtifactStore::ArtifactMap::iterator JitArtifactStore::insert_absent_locked(
         std::numeric_limits<std::size_t>::max() - resident_bytes_) {
         return artifacts_.end();
     }
-    const auto disk = disk_artifacts_.find(key);
     const bool boot_working_set = !native_only &&
         (retention == JitArtifactRetention::BootWorkingSet ||
             (disk != disk_artifacts_.end() && disk->second.boot_working_set));
@@ -2930,7 +2934,8 @@ JitArtifactStore::ArtifactMap::iterator JitArtifactStore::insert_absent_locked(
     if (boot_working_set && !had_boot_records) {
         boot_lru_begin_ = lru_position;
     }
-    const auto iterator = artifacts_.try_emplace(ResidentKey { key_pointer },
+    const auto iterator = artifacts_.try_emplace(
+        ResidentKey { key_pointer, key_hash },
         ArtifactRecord { std::move(artifact), resident_bytes, lru_position,
             loaded_from_disk, startup_prefetched, false, benefit_generation,
             benefit_hits, boot_working_set }).first;
@@ -2940,17 +2945,10 @@ JitArtifactStore::ArtifactMap::iterator JitArtifactStore::insert_absent_locked(
     return iterator;
 }
 
-bool JitArtifactStore::enqueue_writeback_locked(
+bool JitArtifactStore::enqueue_absent_writeback_locked(
     const std::shared_ptr<const BlockArtifact>& artifact,
     std::size_t serialized_bytes, JitArtifactRetention retention) const
 {
-    if (artifact->data.native_only() || writeback_disabled_ ||
-        persistence_path_.empty() ||
-        !limits_.persistence_enabled || limits_.writeback_bytes == 0U ||
-        disk_artifacts_.contains(artifact->key) ||
-        pending_writebacks_.contains(artifact->key)) {
-        return false;
-    }
     if (serialized_bytes > limits_.writeback_bytes ||
         pending_writeback_bytes_ > limits_.writeback_bytes - serialized_bytes) {
         ++stats_.writeback_dropped;
@@ -2958,23 +2956,14 @@ bool JitArtifactStore::enqueue_writeback_locked(
     }
     writeback_order_.push_back(&artifact->key);
     const auto queue_position = std::prev(writeback_order_.end());
-    const auto resident = artifacts_.find(artifact->key);
     const bool boot_working_set =
-        retention == JitArtifactRetention::BootWorkingSet ||
-        (resident != artifacts_.end() && resident->second.boot_working_set);
-    const bool membership_added =
-        boot_working_set &&
-        (resident == artifacts_.end() || !resident->second.boot_working_set);
+        retention == JitArtifactRetention::BootWorkingSet;
     const auto benefit_generation =
-        resident != artifacts_.end()
-            ? resident->second.benefit_generation
-            : (membership_added ? next_benefit_generation_locked() : 0U);
-    const auto benefit_hits =
-        resident != artifacts_.end() ? resident->second.benefit_hits : 0U;
+        boot_working_set ? next_benefit_generation_locked() : 0U;
     const auto [iterator, inserted] =
         pending_writebacks_.try_emplace(&artifact->key,
             PendingWriteback { artifact, serialized_bytes, queue_position,
-                benefit_generation, benefit_hits, boot_working_set });
+                benefit_generation, 0U, boot_working_set });
     if (!inserted) {
         writeback_order_.erase(queue_position);
         return false;
@@ -2987,7 +2976,7 @@ bool JitArtifactStore::enqueue_writeback_locked(
         return false;
     }
     pending_writeback_bytes_ += serialized_bytes;
-    if (membership_added) {
+    if (boot_working_set) {
         mark_hotset_dirty_locked();
     }
     ++stats_.writeback_enqueued;
@@ -3012,12 +3001,13 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
     const auto artifact_bytes = serialized_artifact_bytes(data);
     if (!artifact_bytes)
         return nullptr;
+    const ResidentKey resident_key { &key };
     std::shared_ptr<const BlockArtifact> result;
     bool notify_writeback = false;
     {
         const std::lock_guard lock { mutex_ };
         ++stats_.publish_calls;
-        if (const auto existing = promote_retention_locked(key, retention);
+        if (const auto existing = promote_retention_locked(resident_key, retention);
             existing != artifacts_.end()) {
             // Portable publication may replace an earlier transient template.
             // The template never prevents explicit portable artifact creation.
@@ -3044,16 +3034,18 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
         }
         auto artifact = std::make_shared<const BlockArtifact>(
             BlockArtifact { std::move(key), std::move(data) });
-        const auto& lookup_key = artifact->key;
+        const auto disk = disk_artifacts_.empty()
+                              ? disk_artifacts_.end()
+                              : disk_artifacts_.find(artifact->key);
         // The queue owns the immutable artifact before insertion can evict
         // a resident entry to make room for it.
         const auto requires_writeback =
             !artifact->data.native_only() && !writeback_disabled_ &&
             !persistence_path_.empty() &&
             limits_.persistence_enabled && limits_.writeback_bytes != 0U &&
-            !disk_artifacts_.contains(lookup_key);
-        notify_writeback =
-            enqueue_writeback_locked(artifact, *artifact_bytes, retention);
+            disk == disk_artifacts_.end();
+        notify_writeback = requires_writeback &&
+            enqueue_absent_writeback_locked(artifact, *artifact_bytes, retention);
         // Under ordinary queue pressure, decline the optional publication
         // rather than evicting a retained artifact for an unqueued newcomer.
         // Boot-set translations are the exception: keep them resident so the
@@ -3061,7 +3053,8 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
         auto inserted = artifacts_.end();
         if (!requires_writeback || notify_writeback ||
             retention == JitArtifactRetention::BootWorkingSet) {
-            inserted = insert_absent_locked(artifact, *artifact_bytes, false, false, retention);
+            inserted = insert_absent_locked(artifact, resident_key.hash(),
+                *artifact_bytes, disk, false, false, retention);
         }
         result = inserted != artifacts_.end()
                      ? inserted->second.artifact
@@ -3251,7 +3244,8 @@ void JitArtifactStore::record_native_imported(
                 std::memory_order_acq_rel, std::memory_order_relaxed)) {
             const std::lock_guard lock { mutex_ };
             ++stats_.native_imported;
-            if (const auto resident = artifacts_.find(lookup.artifact->key);
+            const ResidentKey resident_key { &lookup.artifact->key };
+            if (const auto resident = artifacts_.find(resident_key);
                 resident != artifacts_.end() &&
                 resident->second.artifact == lookup.artifact &&
                 lookup.artifact->data.native_only()) {

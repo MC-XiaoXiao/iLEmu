@@ -199,6 +199,7 @@ private:
         std::map<std::filesystem::path, std::vector<ContentIdentity>>
             path_index;
         std::unordered_set<std::filesystem::path> generation_paths;
+        bool generations_match_aliases { true };
     };
     void detach_storage();
     std::shared_ptr<Storage> storage_ { std::make_shared<Storage>() };
