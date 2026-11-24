@@ -25,6 +25,7 @@
 #include "mach/bootstrap_mig_ids.hpp"
 #include "graphics/core_animation_remote_abi.hpp"
 #include "graphics/core_graphics_resample_hle.hpp"
+#include "graphics/vimage_tent_hle.hpp"
 #include "telephony/core_telephony_hle.hpp"
 #include "crypto/core_crypto_hle.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -549,8 +550,10 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     register_bluetooth_manager_hle(userland_hle_);
     register_core_crypto_hle(userland_hle_);
     const auto architecture = arm_architecture_for_model(device_model_.processor.model);
-    if (architecture == ArmArchitectureVersion::Armv7)
+    if (architecture == ArmArchitectureVersion::Armv7) {
         register_core_graphics_resample_hle(userland_hle_);
+        register_vimage_tent_hle(userland_hle_);
+    }
     register_memory_routine_hle(userland_hle_, architecture);
     register_unicode_search_hle(userland_hle_, architecture);
     register_mbx_connect_hle(userland_hle_);

@@ -992,6 +992,30 @@ void UserlandHleRegistry::register_function(std::string image_suffix,
     ++registration_generation_;
 }
 
+void UserlandHleRegistry::register_thumb_instruction(std::string image_suffix,
+    std::string symbol, std::uint32_t offset, FirmwareRoutine routine,
+    Handler handler)
+{
+    if (offset == 0U || (offset & 1U) != 0U || routine.size < 4U)
+        throw std::invalid_argument { "invalid Thumb instruction site" };
+    register_function(std::move(image_suffix), std::move(symbol),
+        std::move(handler), SymbolLookup::ImageAndCacheLocals,
+        EntryPatch::InstructionFetch);
+    registrations_.back().thumb_instruction =
+        ThumbInstructionSite { offset, routine };
+}
+
+std::optional<std::uint32_t> UserlandHleRegistry::thumb_instruction_offset(
+    const ThumbInstructionSite& site, const MachSymbol& symbol,
+    ArmArchitectureVersion architecture)
+{
+    if (architecture != ArmArchitectureVersion::Armv7 ||
+        !symbol.thumb_definition() ||
+        site.offset > std::numeric_limits<std::uint32_t>::max() - symbol.value)
+        return std::nullopt;
+    return site.offset;
+}
+
 void UserlandHleRegistry::register_prefix(
     std::string image_suffix, std::string symbol_prefix, Handler handler,
     SymbolLookup lookup, EntryPatch patch)
@@ -1528,6 +1552,11 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
         plan_key += registration.patch == EntryPatch::InstructionFetch
                         ? "fetch1|"
                         : "fetch0|";
+        if (registration.thumb_instruction) {
+            plan_key += "thumb-offset" +
+                        std::to_string(registration.thumb_instruction->offset) +
+                        "|";
+        }
         plan_key.push_back('\n');
     }
     for (const auto& dependency : guest_functions_) {
@@ -1639,6 +1668,18 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
                     return path_has_suffix(image.path, dependency.first) &&
                            dependency.second == symbol.name;
                 });
+            if (registration && registration->thumb_instruction) {
+                const auto offset = thumb_instruction_offset(
+                    *registration->thumb_instruction, symbol, architecture);
+                if (offset) {
+                    add_patch(image, location.file_offset + *offset,
+                        thumb_patch_size(*parsed, symbol.value + *offset,
+                            architecture),
+                        true, symbol.name, rule_key(*registration), false);
+                }
+                // Keep a callable dependency at the function entry, if any.
+                registration = nullptr;
+            }
             if (registration == nullptr && !guest_function)
                 continue;
             const auto patch_size =
@@ -1860,6 +1901,7 @@ UserlandHleRegistry::ParsedImageCacheEntry& UserlandHleRegistry::cached_image(
     // Bindings only borrow registry strings for this plan construction.
     const ImageSymbolBindings bindings { *this, logical_image_path };
     entry.mapped_symbols.reserve(entry.image->symbol_file_locations().size());
+    bool has_instruction_sites = false;
     for (const auto& location : entry.image->symbol_file_locations()) {
         const auto& symbol = entry.image->symbols()[location.symbol_index];
         const auto* registration =
@@ -1869,6 +1911,19 @@ UserlandHleRegistry::ParsedImageCacheEntry& UserlandHleRegistry::cached_image(
             registration = nullptr;
         const auto guest_function = bindings.guest_function(symbol.name);
         const auto guest_data_symbol = bindings.guest_data_symbol(symbol.name);
+        if (registration && registration->thumb_instruction) {
+            const auto offset = thumb_instruction_offset(
+                *registration->thumb_instruction, symbol, architecture);
+            if (offset) {
+                entry.mapped_symbols.push_back(CachedMappedSymbol {
+                    location.symbol_index, location.file_offset + *offset,
+                    registration->id,
+                    static_cast<std::uint8_t>(thumb_patch_size(
+                        *entry.image, symbol.value + *offset, architecture)) });
+                has_instruction_sites = true;
+            }
+            registration = nullptr;
+        }
         const auto registration_id =
             registration != nullptr ? registration->id : std::uint16_t { 0 };
         const auto patch_size = registration != nullptr
@@ -1881,6 +1936,12 @@ UserlandHleRegistry::ParsedImageCacheEntry& UserlandHleRegistry::cached_image(
         entry.mapped_symbols.push_back(CachedMappedSymbol {
             location.symbol_index, location.file_offset, registration_id,
             patch_size, guest_function, guest_data_symbol });
+    }
+    if (has_instruction_sites) {
+        std::stable_sort(entry.mapped_symbols.begin(), entry.mapped_symbols.end(),
+            [](const CachedMappedSymbol& left, const CachedMappedSymbol& right) {
+                return left.file_offset < right.file_offset;
+            });
     }
     return entry;
 }
@@ -2020,6 +2081,17 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
             arm_svc_opcode | userland_hle_svc_namespace | installed.id);
         static_cast<void>(queue_patch(address, instruction, std::nullopt));
     };
+    const auto instruction_site_matches = [&](const Registration& registration,
+                                              std::uint32_t address,
+                                              std::uint64_t offset) {
+        if (!registration.thumb_instruction)
+            return true;
+        const auto& routine = registration.thumb_instruction->routine;
+        return routine.size <= mapping_file_end - offset &&
+               memory_.accessible(address, routine.size,
+                   MemoryPermission::Execute) &&
+               routine.matches(memory_, address);
+    };
     if (use_shared_plan) {
         const auto* image_patches = shared_image_patches;
         if (image_patches != nullptr) {
@@ -2063,14 +2135,18 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
                 }
                 const auto runtime_address =
                     mapping_address + static_cast<std::uint32_t>(mapping_delta);
-                if (patch.rule || patch.guest_function) {
+                const auto* registration =
+                    patch.rule ? find_registration(*patch.rule) : nullptr;
+                if (patch.guest_function ||
+                    (patch.rule &&
+                        (!registration || !registration->thumb_instruction))) {
                     pending_plan_symbols.push_back(
                         PendingPlanSymbol { std::string { patch.symbol },
                             runtime_address, patch.thumb });
                 }
-                const auto* registration =
-                    patch.rule ? find_registration(*patch.rule) : nullptr;
-                if (registration == nullptr || patch.patch_size == 0U)
+                if (registration == nullptr || patch.patch_size == 0U ||
+                    !instruction_site_matches(*registration, runtime_address,
+                        patch.file_offset))
                     continue;
                 if (const auto installed =
                         installed_calls_.find(runtime_address);
@@ -2126,9 +2202,17 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
             }
             const auto runtime_address =
                 mapping_address + static_cast<std::uint32_t>(mapping_delta);
-            if ((hle_relevant && (!symbol.cache_local ||
-                                     cached_symbol.registration_id != 0U)) ||
-                cached_symbol.guest_function || cached_symbol.guest_data_symbol) {
+            const auto* registration =
+                cached_symbol.registration_id == 0U
+                    ? nullptr
+                    : find_registration(cached_symbol.registration_id);
+            const bool instruction_site =
+                registration && registration->thumb_instruction;
+            if (!instruction_site &&
+                ((hle_relevant &&
+                     (!symbol.cache_local || cached_symbol.registration_id != 0U)) ||
+                    cached_symbol.guest_function ||
+                    cached_symbol.guest_data_symbol)) {
                 if (cached_symbol.guest_data_symbol) {
                     installed_symbols_.insert_or_assign(symbol.name, runtime_address);
                 } else {
@@ -2136,11 +2220,9 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
                 }
             }
 
-            const auto* registration =
-                cached_symbol.registration_id == 0U
-                    ? nullptr
-                    : find_registration(cached_symbol.registration_id);
-            if (registration == nullptr)
+            if (registration == nullptr ||
+                !instruction_site_matches(*registration, runtime_address,
+                    symbol_file_offset))
                 continue;
             const auto patch_size = cached_symbol.patch_size;
             if (symbol_file_offset + patch_size > mapping_file_end)

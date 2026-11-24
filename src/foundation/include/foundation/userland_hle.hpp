@@ -34,6 +34,7 @@ class Cpu;
 class DyldSharedCache;
 class ImmutableArtifactView;
 class MachOImage;
+struct MachSymbol;
 class Output;
 
 // ARM SVC immediates in this namespace are emitted only into intercepted
@@ -192,6 +193,9 @@ public:
     void register_function(std::string image_suffix, std::string symbol,
         Handler handler, SymbolLookup lookup = SymbolLookup::Image,
         EntryPatch patch = EntryPatch::Memory);
+    // Intercept a verified Thumb instruction inside a named guest routine.
+    void register_thumb_instruction(std::string image_suffix, std::string symbol,
+        std::uint32_t offset, FirmwareRoutine routine, Handler handler);
     void register_call_gate(std::string image_suffix,
         std::function<void(UserlandHleCall&, Handler)> gate);
     void register_prefix(std::string image_suffix, std::string symbol_prefix,
@@ -323,6 +327,10 @@ public:
 private:
     friend class UserlandHleCall;
 
+    struct ThumbInstructionSite {
+        std::uint32_t offset;
+        FirmwareRoutine routine;
+    };
     struct Registration {
         std::uint16_t id { };
         std::string image_suffix;
@@ -334,7 +342,11 @@ private:
         Handler handler;
         SymbolLookup lookup { SymbolLookup::Image };
         EntryPatch patch { EntryPatch::Memory };
+        std::optional<ThumbInstructionSite> thumb_instruction { };
     };
+    [[nodiscard]] static std::optional<std::uint32_t> thumb_instruction_offset(
+        const ThumbInstructionSite& site, const MachSymbol& symbol,
+        ArmArchitectureVersion architecture);
     struct ArgumentGuardPatch {
         FirmwareRoutine routine;
         std::vector<std::byte> instruction;

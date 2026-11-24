@@ -101,7 +101,8 @@ namespace {
                                         source_or_byte, size, store)
                                   : memory.try_fill_private_data(
                                         destination, fill_byte, size, store);
-            if (!completed && legacy_fill) {
+            if (!completed && legacy_fill &&
+                memory.accessible(sp - 8U, frame.size(), MemoryPermission::Read)) {
                 // Keep older libsystem_c's checked fill path for private
                 // demand-zero pages and COW destinations.
                 const std::vector<std::byte> bytes(size, fill_byte);

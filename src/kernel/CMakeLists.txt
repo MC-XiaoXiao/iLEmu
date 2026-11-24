@@ -76,6 +76,7 @@ ilemu_configure_module(ilemu_kernel)
 
 add_library(ilemu_kernel_graphics STATIC
     graphics/core_graphics_resample_hle.cpp
+    graphics/vimage_tent_hle.cpp
     graphics/core_surface_hle.cpp
     graphics/core_surface_sync.cpp
     graphics/core_surface_import.cpp
