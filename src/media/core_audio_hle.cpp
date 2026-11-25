@@ -6,6 +6,7 @@
 // emulated audio hardware.
 
 #include "media/core_audio_hle.hpp"
+#include "media/openal_stream_compatibility.hpp"
 #include "native_io_trace.hpp"
 #include "media/audio_output_gain.hpp"
 
@@ -270,6 +271,7 @@ CoreAudioHle::CoreAudioHle(UserlandHleRegistry& registry,
     , service_ { std::move(service) }
     , callback_thread_layout_ { std::move(query) }
 {
+    register_openal_stream_compatibility(registry);
     const auto register_function = [&](std::string symbol, auto handler) {
         registry.register_function(std::string { core_audio_image },
             std::move(symbol),

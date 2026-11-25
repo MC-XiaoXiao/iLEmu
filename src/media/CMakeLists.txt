@@ -10,6 +10,7 @@ add_library(ilemu_media STATIC
     celestial_volume_protocol.cpp
     core_audio_hle.cpp
     core_audio_native_io.cpp
+    openal_stream_compatibility.cpp
     core_media_hle.cpp
     video_decoder.cpp
     vxd390_video_hle.cpp
