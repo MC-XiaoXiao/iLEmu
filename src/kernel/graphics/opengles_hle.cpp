@@ -7,6 +7,7 @@
 
 #include "kernel/opengles_hle.hpp"
 
+#include "../mach/support.hpp"
 #include "guest_drawable_geometry.hpp"
 #include "guest_eagl_window.hpp"
 #include "opengles_dispatch_hle.hpp"
@@ -45,6 +46,41 @@ namespace {
     constexpr std::string_view opengles_image {
         "/OpenGLES.framework/OpenGLES"
     };
+    constexpr std::uint32_t gl_invalid_framebuffer_operation = 0x0506U;
+    constexpr std::uint32_t gl_depth_test = 0x0b71U;
+    constexpr std::uint32_t gl_constant_color = 0x8001U;
+    constexpr std::uint32_t gl_one_minus_constant_color = 0x8002U;
+    constexpr std::uint32_t gl_constant_alpha = 0x8003U;
+    constexpr std::uint32_t gl_one_minus_constant_alpha = 0x8004U;
+
+    bool valid_blend_factor(
+        std::uint32_t factor, bool source, bool programmable)
+    {
+        switch (factor) {
+        case gles_abi::zero:
+        case gles_abi::one:
+        case gles_abi::source_alpha:
+        case gles_abi::one_minus_source_alpha:
+        case gles_abi::destination_alpha:
+        case gles_abi::one_minus_destination_alpha:
+            return true;
+        case gles_abi::source_color:
+        case gles_abi::one_minus_source_color:
+            return programmable || !source;
+        case gles_abi::destination_color:
+        case gles_abi::one_minus_destination_color:
+            return programmable || source;
+        case gles_abi::source_alpha_saturate:
+            return source;
+        case gl_constant_color:
+        case gl_one_minus_constant_color:
+        case gl_constant_alpha:
+        case gl_one_minus_constant_alpha:
+            return programmable;
+        default:
+            return false;
+        }
+    }
 
     constexpr char quartzcore_update_image[] =
         "__ZN2CA3OGL11GLESContext12update_imageEPNS0_7GLImageEPNS_6Render5ImageEjPKc";
@@ -271,6 +307,7 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
     register_eagl(registry);
     register_egl(registry);
     register_gles(registry);
+    register_vertex_arrays(registry);
     register_framebuffers(registry);
     register_programmable_gles(registry);
     register_program_queries(registry);
@@ -324,6 +361,17 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent,
         caller != parent.threads_.end())
         threads_.emplace(0U, caller->second);
     contexts_ = parent.contexts_;
+    // Preserve immutable clear history across fork, with independent
+    // renderer storage for subsequent writes in the child.
+    for (auto& [context_name, context] : contexts_) {
+        static_cast<void>(context_name);
+        for (auto& [renderbuffer_name, renderbuffer] : context.renderbuffers) {
+            static_cast<void>(renderbuffer_name);
+            if (renderbuffer.depth)
+                renderbuffer.depth->identity =
+                    std::make_shared<ResourceLifetime>();
+        }
+    }
     eagl_contexts_.clear();
     // Guest object addresses survive fork, while their process namespace
     // changes. Public EAGL calls and the inherited driver handles must resolve
@@ -335,6 +383,11 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent,
     eagl_context_abi_ = parent.eagl_context_abi_;
     dispatch_hle_->inherit_state(*parent.dispatch_hle_);
     surfaces_ = parent.surfaces_;
+    for (auto& [name, surface] : surfaces_) {
+        static_cast<void>(name);
+        if (surface.depth)
+            surface.depth->identity = std::make_shared<ResourceLifetime>();
+    }
     compatibility_display_surface_ = { };
     compatibility_display_process_id_ = 0;
     compatibility_surfaces_.clear();
@@ -529,15 +582,21 @@ void OpenGlesHle::set_array_pointer(
             stride < 0 ? gles_abi::invalid_value : gles_abi::invalid_enum);
         return;
     }
+    const auto pointer = call.argument(3);
+    if (context->bound_vertex_array != 0 && context->bound_array_buffer == 0 &&
+        pointer != 0) {
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    auto& arrays = context->vertex_arrays();
     auto* array =
-        array_name == gles_abi::vertex_array ? &context->vertex_array
+        array_name == gles_abi::vertex_array ? &arrays.vertex_array
         : array_name == gles_abi::color_array
-            ? &context->color_array
-            : &context->texture_units[context->client_active_texture_unit]
-                   .texture_array;
+            ? &arrays.color_array
+            : &arrays.texture_arrays[context->client_active_texture_unit];
     const auto enabled = array->enabled;
     *array = ContextState::ArrayPointer { static_cast<std::uint32_t>(size),
-        type, static_cast<std::uint32_t>(stride), call.argument(3),
+        type, static_cast<std::uint32_t>(stride), pointer,
         context->bound_array_buffer, array_name == gles_abi::color_array,
         enabled };
 }
@@ -567,7 +626,7 @@ bool OpenGlesHle::read_array(UserlandHleCall& call,
                              static_cast<std::uint64_t>(index) * stride;
     const auto* buffer =
         array.buffer == 0 ? nullptr : resources_.buffer(array.buffer);
-    if (array.buffer != 0 && buffer == nullptr)
+    if (array.buffer != 0 && (!buffer || buffer->mapped_address != 0))
         return false;
     if (buffer == nullptr && array.size != 0U) {
         if (base_offset > std::numeric_limits<std::uint32_t>::max())
@@ -637,10 +696,11 @@ std::optional<GlesRasterVertex> OpenGlesHle::read_vertex(UserlandHleCall& call,
     const ContextState& context, std::uint32_t index,
     const ProgrammableDrawState* programmable) const
 {
+    const auto& arrays = context.vertex_arrays();
     const auto& position_array =
-        programmable ? programmable->position_array : context.vertex_array;
+        programmable ? programmable->position_array : arrays.vertex_array;
     const auto& color_array =
-        programmable ? programmable->color_array : context.color_array;
+        programmable ? programmable->color_array : arrays.color_array;
     if (!position_array.enabled)
         return std::nullopt;
     std::array<std::byte, 4 * sizeof(std::uint32_t)> client_bytes;
@@ -680,7 +740,7 @@ std::optional<GlesRasterVertex> OpenGlesHle::read_vertex(UserlandHleCall& call,
         const auto& unit = context.texture_units[unit_index];
         const auto& texture_array =
             programmable ? programmable->texture_arrays[unit_index]
-                         : unit.texture_array;
+                         : arrays.texture_arrays[unit_index];
         if (texture_array.enabled) {
             std::array<float, 4> texture { };
             if (!read_array(call, texture_array, index, texture,
@@ -1199,7 +1259,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
                 context->texture_units[unit].bound_texture_2d;
         program_draw->state = program;
         program_draw->depth_test =
-            context->enabled_capabilities.contains(0x0b71U);
+            context->enabled_capabilities.contains(gl_depth_test);
         program_draw->depth_write = context->depth_mask;
         program_draw->depth_function = context->depth_function;
         program_draw->depth_clear = context->depth_clear;
@@ -1228,10 +1288,15 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     }
     const auto index_size = index_type == gles_abi::unsigned_short ? 2U : 1U;
     const auto index_pointer = indexed ? call.argument(3) : 0;
-    const auto* element_buffer =
-        indexed && context->bound_element_array_buffer != 0
-            ? resources_.buffer(context->bound_element_array_buffer)
-            : nullptr;
+    const auto element_buffer_name =
+        context->vertex_arrays().bound_element_array_buffer;
+    const auto* element_buffer = indexed && element_buffer_name != 0
+                                     ? resources_.buffer(element_buffer_name)
+                                     : nullptr;
+    if (element_buffer && element_buffer->mapped_address != 0) {
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
     if (program_draw && indexed)
         program_draw->indices.reserve(static_cast<std::size_t>(count));
     for (std::uint32_t item = 0;
@@ -1356,6 +1421,13 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     state.line_width = context->line_width;
     state.render_target_inverted_vertical = binding->inverted_vertical;
     state.render_target_premultiplied = binding->premultiplied;
+    if (const auto* depth = current_depth_buffer(call, *context)) {
+        state.depth.attachment = depth->identity;
+        state.depth.clears = depth->clears;
+        state.depth.test = context->enabled_capabilities.contains(gl_depth_test);
+        state.depth.write = context->depth_mask;
+        state.depth.function = context->depth_function;
+    }
     if (programmable) {
         state.filter = programmable->filter;
         state.fragment_operation = programmable->fragment_operation;
@@ -2007,7 +2079,8 @@ void OpenGlesHle::create_surface(UserlandHleCall& call)
         call.set_return(0U);
         return;
     }
-    if (!egl_config(call.argument(1))) {
+    const auto* config = egl_config(call.argument(1));
+    if (!config) {
         publish_created_surface(call, std::nullopt);
         return;
     }
@@ -2017,7 +2090,7 @@ void OpenGlesHle::create_surface(UserlandHleCall& call)
             publish_created_surface(call, std::nullopt);
             return;
         }
-        create_pixmap_surface(call, *identifier);
+        create_pixmap_surface(call, *identifier, config->depth != 0);
         return;
     }
     const auto geometry = display_geometry_for_process(shared_state_,
@@ -2026,6 +2099,8 @@ void OpenGlesHle::create_surface(UserlandHleCall& call)
     SurfaceState state;
     state.width = geometry.width;
     state.height = geometry.height;
+    if (config->depth != 0)
+        state.depth.emplace(state.width, state.height);
     publish_created_surface(call, std::move(state));
 }
 
@@ -2550,6 +2625,15 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         case gles_abi::renderbuffer_binding:
             values[0] = context->bound_renderbuffer;
             break;
+        case gles_abi::vertex_array_binding_oes:
+            values[0] = context->bound_vertex_array;
+            break;
+        case gles_abi::array_buffer_binding:
+            values[0] = context->bound_array_buffer;
+            break;
+        case gles_abi::element_array_buffer_binding:
+            values[0] = context->vertex_arrays().bound_element_array_buffer;
+            break;
         case gles_abi::texture_binding_2d:
             values[0] = context->texture_units[context->active_texture_unit]
                             .bound_texture_2d;
@@ -2664,6 +2748,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             count = context->current_color.size();
         } else if (call.argument(0) == gles_abi::line_width_query) {
             current[0] = context->line_width;
+            values = &current;
+            count = 1U;
+        } else if (call.argument(0) == gles_abi::vertex_array_binding_oes) {
+            current[0] = static_cast<float>(context->bound_vertex_array);
             values = &current;
             count = 1U;
         } else if (call.argument(0) == gles_abi::modelview_matrix_query) {
@@ -2890,15 +2978,34 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_value);
             return;
         }
-        if ((mask & gles_abi::depth_buffer_bit) != 0U && context->depth_mask)
-            ++context->depth_generation;
-        if ((mask & gles_abi::color_buffer_bit) == 0)
+        if (context->bound_framebuffer != 0 &&
+            !current_framebuffer_level(*context)) {
+            set_gl_error(call, gl_invalid_framebuffer_operation);
             return;
-        const auto binding = resolve_render_target(call, *context, true);
-        if (!binding) {
+        }
+        const auto color_requested = (mask & gles_abi::color_buffer_bit) != 0;
+        const auto binding = color_requested
+                                 ? resolve_render_target(call, *context, true)
+                                 : std::nullopt;
+        if (color_requested && !binding) {
             set_gl_error(call, gles_abi::invalid_operation);
             return;
         }
+        if ((mask & gles_abi::depth_buffer_bit) != 0 && context->depth_mask) {
+            if (auto* depth = current_depth_buffer(call, *context)) {
+                try {
+                    record_depth_clear(*depth, *context);
+                } catch (const std::bad_alloc&) {
+                    set_gl_error(call, gles_abi::out_of_memory);
+                    return;
+                }
+            }
+            // The native programmable renderer still uses its own depth
+            // storage and clear watermark.
+            ++context->depth_generation;
+        }
+        if (!binding)
+            return;
         const auto clear_argb = binding->premultiplied
                                     ? premultiply_argb(context->clear_argb)
                                     : context->clear_argb;
@@ -3045,6 +3152,16 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             context->depth_mask = call.argument(0) != 0;
         }
     });
+    add("_glClearDepthx", [this](UserlandHleCall& call) {
+        auto* context = current_context(call);
+        if (!context) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        const auto value = static_cast<std::int32_t>(call.argument(0));
+        context->depth_clear =
+            static_cast<float>(std::clamp(value, 0, 65'536)) / 65'536.0F;
+    });
     add("_glStencilMask", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
         if (context == nullptr) {
@@ -3183,9 +3300,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             return;
         }
         resources_.ensure_buffer(call.argument(1));
-        auto& binding = target == gles_abi::array_buffer
-                            ? context->bound_array_buffer
-                            : context->bound_element_array_buffer;
+        auto& binding =
+            target == gles_abi::array_buffer
+                ? context->bound_array_buffer
+                : context->vertex_arrays().bound_element_array_buffer;
         binding = call.argument(1);
     });
     add("_glDeleteTextures",
@@ -3579,6 +3697,85 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         }
         set_texture_environment(call, std::bit_cast<float>(*raw));
     });
+    const auto get_texture_environment = [this](UserlandHleCall& call) {
+        const auto* context = current_context(call);
+        const auto output = call.argument(2);
+        if (context == nullptr || output == 0) {
+            set_gl_error(call, context == nullptr ? gles_abi::invalid_operation
+                                                  : gles_abi::invalid_value);
+            return;
+        }
+        if (call.argument(0) != gles_abi::texture_environment) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        const auto& environment =
+            context->texture_units[context->active_texture_unit]
+                .texture_environment;
+        const auto name = call.argument(1);
+        const auto scalar = [&]() -> std::optional<float> {
+            switch (name) {
+            case gles_abi::texture_environment_mode:
+                return static_cast<float>(environment.mode);
+            case gles_abi::combine_rgb:
+                return static_cast<float>(environment.combine_rgb);
+            case gles_abi::combine_alpha:
+                return static_cast<float>(environment.combine_alpha);
+            case gles_abi::rgb_scale:
+                return environment.rgb_scale;
+            case gles_abi::alpha_scale:
+                return environment.alpha_scale;
+            default:
+                break;
+            }
+            if (name >= gles_abi::source0_rgb && name <= gles_abi::source2_rgb)
+                return static_cast<float>(
+                    environment.rgb_sources[name - gles_abi::source0_rgb]);
+            if (name >= gles_abi::source0_alpha &&
+                name <= gles_abi::source2_alpha)
+                return static_cast<float>(
+                    environment.alpha_sources[name - gles_abi::source0_alpha]);
+            if (name >= gles_abi::operand0_rgb &&
+                name <= gles_abi::operand2_rgb)
+                return static_cast<float>(
+                    environment.rgb_operands[name - gles_abi::operand0_rgb]);
+            if (name >= gles_abi::operand0_alpha &&
+                name <= gles_abi::operand2_alpha)
+                return static_cast<float>(environment
+                        .alpha_operands[name - gles_abi::operand0_alpha]);
+            return std::nullopt;
+        };
+        const bool color = name == gles_abi::texture_environment_color;
+        const auto value = color ? std::optional<float> { } : scalar();
+        if (!color && !value) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        const std::span<const float> values =
+            color ? std::span<const float> { environment.color }
+                  : std::span<const float> { &*value, 1U };
+        if (output > std::numeric_limits<std::uint32_t>::max() -
+                         (values.size_bytes() - 1U)) {
+            set_gl_error(call, gles_abi::invalid_value);
+            return;
+        }
+        const bool integer = call.symbol() == "_glGetTexEnviv";
+        const double scale =
+            color ? std::numeric_limits<std::int32_t>::max() : 1.0;
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            const auto raw = integer
+                                 ? static_cast<std::uint32_t>(
+                                       std::lround(values[index] * scale))
+                                 : std::bit_cast<std::uint32_t>(values[index]);
+            if (!call.memory().write32(
+                    output + static_cast<std::uint32_t>(index * 4U), raw)) {
+                set_gl_error(call, gles_abi::invalid_value);
+                return;
+            }
+        }
+    };
+    add("_glGetTexEnviv", get_texture_environment);
+    add("_glGetTexEnvfv", get_texture_environment);
     add("_glTexImageCoreSurfaceAPPLE", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
         if (context == nullptr) {
@@ -3626,19 +3823,28 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     });
-    add("_glBufferData", [this](UserlandHleCall& call) {
-        auto* context = current_context(call);
-        const auto size = static_cast<std::int32_t>(call.argument(1));
-        if (context == nullptr) {
+    const auto buffer_binding =
+        [this](UserlandHleCall& call) -> std::optional<std::uint32_t> {
+        const auto* context = current_context(call);
+        if (!context) {
             set_gl_error(call, gles_abi::invalid_operation);
-            return;
+            return std::nullopt;
         }
-        const auto target = call.argument(0);
-        if (target != gles_abi::array_buffer &&
-            target != gles_abi::element_array_buffer) {
+        switch (call.argument(0)) {
+        case gles_abi::array_buffer:
+            return context->bound_array_buffer;
+        case gles_abi::element_array_buffer:
+            return context->vertex_arrays().bound_element_array_buffer;
+        default:
             set_gl_error(call, gles_abi::invalid_enum);
-            return;
+            return std::nullopt;
         }
+    };
+    add("_glBufferData", [this, buffer_binding](UserlandHleCall& call) {
+        const auto binding = buffer_binding(call);
+        if (!binding)
+            return;
+        const auto size = static_cast<std::int32_t>(call.argument(1));
         if (size < 0) {
             set_gl_error(call, gles_abi::invalid_value);
             return;
@@ -3649,58 +3855,96 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_enum);
             return;
         }
-        const auto binding = target == gles_abi::array_buffer
-                                 ? context->bound_array_buffer
-                                 : context->bound_element_array_buffer;
-        const auto error = resources_.upload_buffer(call.memory(), binding,
+        const auto error = resources_.upload_buffer(call.memory(), *binding,
             static_cast<std::uint32_t>(size), call.argument(2),
             call.argument(3));
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     });
-    add("_glBufferSubData", [this](UserlandHleCall& call) {
-        auto* context = current_context(call);
+    add("_glBufferSubData", [this, buffer_binding](UserlandHleCall& call) {
+        const auto binding = buffer_binding(call);
+        if (!binding)
+            return;
         const auto offset = static_cast<std::int32_t>(call.argument(1));
         const auto size = static_cast<std::int32_t>(call.argument(2));
-        if (context == nullptr) {
-            set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        const auto target = call.argument(0);
-        if (target != gles_abi::array_buffer &&
-            target != gles_abi::element_array_buffer) {
-            set_gl_error(call, gles_abi::invalid_enum);
-            return;
-        }
         if (offset < 0 || size < 0) {
             set_gl_error(call, gles_abi::invalid_value);
             return;
         }
-        const auto binding = target == gles_abi::array_buffer
-                                 ? context->bound_array_buffer
-                                 : context->bound_element_array_buffer;
-        const auto error = resources_.update_buffer(call.memory(), binding,
+        const auto error = resources_.update_buffer(call.memory(), *binding,
             static_cast<std::uint32_t>(offset),
             static_cast<std::uint32_t>(size), call.argument(3));
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     });
-    add("_glGetBufferParameteriv", [this](UserlandHleCall& call) {
-        auto* context = current_context(call);
-        if (context == nullptr) {
-            set_gl_error(call, gles_abi::invalid_operation);
+    add("_glMapBufferOES", [this, buffer_binding](UserlandHleCall& call) {
+        const auto binding = buffer_binding(call);
+        call.set_return(0);
+        if (!binding)
             return;
-        }
-        const auto target = call.argument(0);
-        if (target != gles_abi::array_buffer &&
-            target != gles_abi::element_array_buffer) {
+        if (call.argument(1) != gles_abi::write_only_oes) {
             set_gl_error(call, gles_abi::invalid_enum);
             return;
         }
-        const auto binding = target == gles_abi::array_buffer
-                                 ? context->bound_array_buffer
-                                 : context->bound_element_array_buffer;
-        const auto* buffer = resources_.buffer(binding);
+        const auto* buffer = resources_.buffer(*binding);
+        if (!buffer || buffer->mapped_address != 0) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        if (buffer->bytes.empty()) {
+            set_gl_error(call, gles_abi::out_of_memory);
+            return;
+        }
+        constexpr auto page_mask = AddressSpace::page_size - 1U;
+        const auto size =
+            (static_cast<std::uint32_t>(buffer->bytes.size()) + page_mask) &
+            ~page_mask;
+        auto& memory = call.memory();
+        const AddressSpace::ExclusiveAccess access { memory };
+        const auto address = mach_support::find_free_guest_region(
+            memory, mach_support::default_dynamic_base, size);
+        if (!address ||
+            !resources_.map_buffer(memory, *binding, *address, size)) {
+            set_gl_error(call, gles_abi::out_of_memory);
+            return;
+        }
+        call.set_return(*address);
+    });
+    add("_glUnmapBufferOES", [this, buffer_binding](UserlandHleCall& call) {
+        const auto binding = buffer_binding(call);
+        call.set_return(0);
+        if (!binding)
+            return;
+        const auto* buffer = resources_.buffer(*binding);
+        if (!buffer || buffer->mapped_address == 0) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        call.set_return(
+            resources_.unmap_buffer(call.memory(), *binding) ? 1U : 0U);
+    });
+    add("_glGetBufferPointervOES", [this, buffer_binding](UserlandHleCall& call) {
+        const auto binding = buffer_binding(call);
+        if (!binding)
+            return;
+        if (call.argument(1) != gles_abi::buffer_map_pointer_oes) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        const auto* buffer = resources_.buffer(*binding);
+        if (!buffer) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        const auto output = call.argument(2);
+        if (!output || !call.write32(output, buffer->mapped_address))
+            set_gl_error(call, gles_abi::invalid_value);
+    });
+    add("_glGetBufferParameteriv", [this, buffer_binding](UserlandHleCall& call) {
+        const auto binding = buffer_binding(call);
+        if (!binding)
+            return;
+        const auto* buffer = resources_.buffer(*binding);
         if (buffer == nullptr) {
             set_gl_error(call, gles_abi::invalid_operation);
             return;
@@ -3710,17 +3954,25 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             return;
         }
         std::uint32_t value { };
-        if (call.argument(1) == gles_abi::buffer_size) {
+        switch (call.argument(1)) {
+        case gles_abi::buffer_size:
             value = static_cast<std::uint32_t>(buffer->bytes.size());
-        } else if (call.argument(1) == gles_abi::buffer_usage) {
+            break;
+        case gles_abi::buffer_usage:
             value = buffer->usage;
-        } else {
+            break;
+        case gles_abi::buffer_access_oes:
+            value = gles_abi::write_only_oes;
+            break;
+        case gles_abi::buffer_mapped_oes:
+            value = buffer->mapped_address != 0 ? 1U : 0U;
+            break;
+        default:
             set_gl_error(call, gles_abi::invalid_enum);
             return;
         }
-        if (!call.write32(call.argument(2), value)) {
+        if (!call.write32(call.argument(2), value))
             set_gl_error(call, gles_abi::invalid_value);
-        }
     });
     add("_glVertexPointer", [this](UserlandHleCall& call) {
         set_array_pointer(call, gles_abi::vertex_array);
@@ -3737,14 +3989,14 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_operation);
             return;
         }
+        auto& arrays = context->vertex_arrays();
         ContextState::ArrayPointer* array { };
         if (call.argument(0) == gles_abi::vertex_array) {
-            array = &context->vertex_array;
+            array = &arrays.vertex_array;
         } else if (call.argument(0) == gles_abi::color_array) {
-            array = &context->color_array;
+            array = &arrays.color_array;
         } else if (call.argument(0) == gles_abi::texture_coord_array) {
-            array = &context->texture_units[context->client_active_texture_unit]
-                         .texture_array;
+            array = &arrays.texture_arrays[context->client_active_texture_unit];
         } else {
             set_gl_error(call, gles_abi::invalid_enum);
             return;
@@ -3759,8 +4011,16 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_operation);
             return;
         }
-        context->blend_source = call.argument(0);
-        context->blend_destination = call.argument(1);
+        const auto source = call.argument(0);
+        const auto destination = call.argument(1);
+        const auto programmable = context->client_api >= 2U;
+        if (!valid_blend_factor(source, true, programmable) ||
+            !valid_blend_factor(destination, false, programmable)) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        context->blend_source = source;
+        context->blend_destination = destination;
     });
     add("_glDrawArrays", [this](UserlandHleCall& call) { draw(call, false); });
     add("_glDrawElements", [this](UserlandHleCall& call) { draw(call, true); });

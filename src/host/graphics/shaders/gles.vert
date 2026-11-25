@@ -28,8 +28,10 @@ layout(location = 7) noperspective out vec2 projected_texture2;
 layout(location = 8) noperspective out vec2 projected_texture3;
 
 void main() {
+    // OpenGL ES clips depth against [-w, w]. Vulkan uses [0, w].
     gl_Position = vec4(
-        in_position.x, -in_position.y, in_position.z, in_position.w);
+        in_position.x, -in_position.y,
+        0.5 * (in_position.z + in_position.w), in_position.w);
     primary_color = in_color;
     texture0 = in_texture0;
     texture1 = in_texture1;

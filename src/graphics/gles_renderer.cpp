@@ -8,9 +8,12 @@
 #include "graphics/gles_renderer.hpp"
 #include "graphics/gles_program_renderer.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -19,11 +22,59 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "graphics/display.hpp"
 
 namespace ilemu {
 namespace {
+
+    struct ReferenceDepthBuffer {
+        std::vector<float> pixels;
+        std::uint64_t owner { };
+        std::uint64_t clear_generation { };
+        std::uint32_t width { };
+        std::uint32_t height { };
+
+        void prepare(const DisplayFrame& frame, const GlesRasterDepth& state)
+        {
+            if (width != frame.width || height != frame.height) {
+                pixels.assign(frame.pixels.size(), 1.0F);
+                width = frame.width;
+                height = frame.height;
+                clear_generation = 0;
+            }
+            if (!state.clears)
+                return;
+            for (const auto& clear : *state.clears) {
+                if (clear.generation <= clear_generation)
+                    continue;
+                const auto value = std::clamp(clear.value, 0.0F, 1.0F);
+                if (!clear.scissor) {
+                    std::fill(pixels.begin(), pixels.end(), value);
+                } else {
+                    const auto& [x, y, w, h] = *clear.scissor;
+                    const auto bound = [](std::int64_t offset,
+                                           std::uint32_t size) {
+                        return static_cast<std::uint32_t>(
+                            std::clamp<std::int64_t>(offset, 0, size));
+                    };
+                    const auto left = bound(x, width);
+                    const auto bottom = bound(y, height);
+                    const auto right = bound(std::int64_t { x } + w, width);
+                    const auto top = bound(std::int64_t { y } + h, height);
+                    if (right > left) {
+                        for (auto row = bottom; row < top; ++row) {
+                            const auto begin = pixels.data() +
+                                static_cast<std::size_t>(row) * width + left;
+                            std::fill_n(begin, right - left, value);
+                        }
+                    }
+                }
+                clear_generation = clear.generation;
+            }
+        }
+    };
 
     // Standalone core tests do not install a host adapter. The application
     // always installs one, including a failing factory in non-Vulkan builds.
@@ -34,7 +85,24 @@ namespace {
             const GlesRasterState& state) override
         {
             static_cast<void>(target);
-            return GlesSoftwareRasterizer::draw(frame, vertices, mode, state);
+            if (!state.depth.attachment || !state.depth.test)
+                return GlesSoftwareRasterizer::draw(frame, vertices, mode, state);
+            if (frame.width == 0 || frame.height == 0 ||
+                frame.pixels.size() !=
+                    static_cast<std::size_t>(frame.width) * frame.height) {
+                return false;
+            }
+            std::lock_guard lock { depth_mutex_ };
+            const auto [entry, inserted] = depth_buffers_.try_emplace(
+                std::weak_ptr<const void> { state.depth.attachment });
+            auto& depth = entry->second;
+            if (inserted) {
+                depth.owner = state.resource_owner;
+                discard_expired_depth();
+            }
+            depth.prepare(frame, state.depth);
+            return GlesSoftwareRasterizer::draw(
+                frame, vertices, mode, state, depth.pixels);
         }
 
         bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target,
@@ -71,12 +139,17 @@ namespace {
         bool release(std::span<const GlesRenderTargetKey> targets) override
         {
             static_cast<void>(targets);
+            std::lock_guard lock { depth_mutex_ };
+            discard_expired_depth();
             return true;
         }
 
         bool release_owner(std::uint64_t owner) override
         {
-            static_cast<void>(owner);
+            std::lock_guard lock { depth_mutex_ };
+            std::erase_if(depth_buffers_, [owner](const auto& entry) {
+                return entry.first.expired() || entry.second.owner == owner;
+            });
             return true;
         }
 
@@ -94,6 +167,19 @@ namespace {
         {
             return PerfFallbackReason::None;
         }
+
+    private:
+        void discard_expired_depth()
+        {
+            std::erase_if(depth_buffers_,
+                [](const auto& entry) { return entry.first.expired(); });
+        }
+
+        // Color invalidation and attachment rebinding leave renderbuffer
+        // contents intact. Weak identity keeps deleted storage reclaimable.
+        std::mutex depth_mutex_;
+        std::map<std::weak_ptr<const void>, ReferenceDepthBuffer,
+            std::owner_less<>> depth_buffers_;
     };
 
     struct SharedRendererState {

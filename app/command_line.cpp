@@ -518,6 +518,12 @@ void inspect(const std::vector<std::string>& args, Output& output)
     text << '\n' << "dyld: " << image.dynamic_linker().value_or("none") << '\n';
     if (option(args, "--shared-cache"))
         text << "storage: " << image.path().string() << '\n';
+    for (const auto& encryption : image.encryption_info()) {
+        text << "LC_ENCRYPTION_INFO cryptoff=0x" << std::hex
+             << encryption.file_offset << " cryptsize=0x"
+             << encryption.file_size << std::dec
+             << " cryptid=" << encryption.crypt_id << '\n';
+    }
     for (const auto& segment : image.segments()) {
         text << "segment " << segment.name << " vm=0x" << std::hex
              << segment.vm_address << " size=0x" << segment.vm_size
@@ -572,9 +578,13 @@ void inspect(const std::vector<std::string>& args, Output& output)
     }
 
     if (!option(args, "--shared-cache")) {
-        AddressSpace memory;
-        image.map_into(memory);
-        text << "mapped_pages: " << memory.mapped_page_count();
+        if (image.encrypted_range()) {
+            text << "mapped_pages: unavailable (protected Mach-O)";
+        } else {
+            AddressSpace memory;
+            image.map_into(memory);
+            text << "mapped_pages: " << memory.mapped_page_count();
+        }
     }
     output.line(text.str());
 }

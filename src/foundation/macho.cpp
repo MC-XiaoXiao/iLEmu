@@ -48,6 +48,7 @@ namespace {
     constexpr std::uint32_t lc_load_weak_dylib = 0x80000018U;
     constexpr std::uint32_t lc_reexport_dylib = 0x8000001fU;
     constexpr std::uint32_t lc_lazy_load_dylib = 0x20;
+    constexpr std::uint32_t lc_encryption_info = 0x21;
     constexpr std::uint32_t lc_load_upward_dylib = 0x80000023U;
     constexpr std::uint32_t lc_code_signature = 0x1d;
     constexpr std::uint32_t lc_uuid = 0x1b;
@@ -656,7 +657,6 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
         0x1b,
         0x1d,
         0x1e,
-        0x21,
         0x80000022U,
         0x24,
         0x25,
@@ -827,6 +827,12 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             }
             code_signature = std::pair { read_u32(bytes, offset + 8U),
                 read_u32(bytes, offset + 12U) };
+        } else if (command == lc_encryption_info) {
+            if (command_size < 20U) {
+                throw std::runtime_error { "truncated LC_ENCRYPTION_INFO" };
+            }
+            image.encryption_info_.push_back({ read_u32(bytes, offset + 8U),
+                read_u32(bytes, offset + 12U), read_u32(bytes, offset + 16U) });
         } else if (command == lc_function_starts) {
             if (command_size < 16U) {
                 throw std::runtime_error { "truncated LC_FUNCTION_STARTS" };
@@ -981,6 +987,25 @@ const MachDylib* MachOImage::dylib_identity() const
             return &dylib;
     }
     return nullptr;
+}
+
+const MachEncryptionInfo* MachOImage::encrypted_range() const
+{
+    const auto found =
+        std::find_if(encryption_info_.begin(), encryption_info_.end(),
+            [](const MachEncryptionInfo& info) { return info.crypt_id != 0U; });
+    return found == encryption_info_.end() ? nullptr : &*found;
+}
+
+void MachOImage::require_supported_encryption() const
+{
+    if (const auto* info = encrypted_range()) {
+        throw std::runtime_error {
+            "cannot map protected Mach-O " + path_.string() +
+            " (LC_ENCRYPTION_INFO cryptid=" + std::to_string(info->crypt_id) +
+            "): no protected page provider is available"
+        };
+    }
 }
 
 const MachSymbol* MachOImage::find_symbol(std::string_view name) const
@@ -1357,6 +1382,7 @@ void MachOImage::apply_load_slide(std::uint32_t slide)
 void MachOImage::map_into(
     AddressSpace& memory, FileMappingBatchContext* batch_context) const
 {
+    require_supported_encryption();
     const auto bytes = byte_span();
     for (const auto& segment : segments_) {
         if (segment.vm_size == 0 || segment.name == "__PAGEZERO") {

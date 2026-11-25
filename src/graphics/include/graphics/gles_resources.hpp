@@ -100,6 +100,8 @@ public:
         std::uint32_t name { };
         std::uint32_t usage { };
         std::vector<std::byte> bytes;
+        std::uint32_t mapped_address { };
+        std::uint64_t mapping_lease { };
     };
 
     void reset();
@@ -110,7 +112,7 @@ public:
     void ensure_texture(std::uint32_t name);
     void ensure_buffer(std::uint32_t name);
     void erase_texture(std::uint32_t name);
-    void erase_buffer(std::uint32_t name);
+    void erase_buffer(AddressSpace& memory, std::uint32_t name);
     [[nodiscard]] bool has_texture(std::uint32_t name) const;
     [[nodiscard]] bool has_buffer(std::uint32_t name) const;
     enum class TextureSnapshot { CpuPixels, NativeImages };
@@ -165,6 +167,9 @@ public:
     [[nodiscard]] std::uint32_t update_buffer(AddressSpace& memory,
         std::uint32_t name, std::uint32_t offset, std::uint32_t size,
         std::uint32_t data);
+    [[nodiscard]] bool map_buffer(AddressSpace& memory, std::uint32_t name,
+        std::uint32_t address, std::uint32_t mapping_size);
+    [[nodiscard]] bool unmap_buffer(AddressSpace& memory, std::uint32_t name);
 
     [[nodiscard]] Texture* texture(std::uint32_t name);
     [[nodiscard]] const Texture* texture(std::uint32_t name) const;

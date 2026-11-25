@@ -1236,25 +1236,7 @@ bool AddressSpace::copy_out(
                 return false;
             }
             if (!range_needs_file_fault_locked(address, data.size())) {
-                std::size_t copied = 0;
-                while (copied < data.size()) {
-                    const auto current =
-                        address + static_cast<std::uint32_t>(copied);
-                    const auto* page = find_page_locked(current);
-                    const auto offset = current & (page_size - 1U);
-                    const auto chunk = std::min<std::size_t>(
-                        page_size - offset, data.size() - copied);
-                    if (page != nullptr && page->backing) {
-                        std::copy_n(page->backing->bytes().begin() + offset,
-                            chunk,
-                            data.begin() + static_cast<std::ptrdiff_t>(copied));
-                    } else {
-                        std::fill_n(
-                            data.begin() + static_cast<std::ptrdiff_t>(copied),
-                            chunk, std::byte { });
-                    }
-                    copied += chunk;
-                }
+                copy_resident_bytes_locked(address, data);
                 return true;
             }
         }
@@ -1262,6 +1244,22 @@ bool AddressSpace::copy_out(
                 address, data.size())) {
             return false;
         }
+    }
+}
+
+void AddressSpace::copy_resident_bytes_locked(
+    std::uint32_t address, std::span<std::byte> data) const
+{
+    while (!data.empty()) {
+        const auto* page = find_page_locked(address);
+        const auto offset = address & (page_size - 1U);
+        const auto chunk = std::min<std::size_t>(page_size - offset, data.size());
+        if (page && page->backing)
+            std::copy_n(page->backing->bytes().begin() + offset, chunk, data.begin());
+        else
+            std::fill_n(data.begin(), chunk, std::byte { });
+        data = data.subspan(chunk);
+        address += static_cast<std::uint32_t>(chunk);
     }
 }
 
@@ -1508,22 +1506,49 @@ bool AddressSpace::map_page_ranges(std::uint32_t address, std::uint32_t size,
     }
     refresh_jit_page_range_locked(address, end);
     bump_executable_content_generation_locked();
-    if (mapping_lease_token) {
-        auto token = next_mapping_lease_token_++;
-        if (token == 0U)
-            token = next_mapping_lease_token_++;
-        while (mapping_leases_.contains(token)) {
-            token = next_mapping_lease_token_++;
-            if (token == 0U)
-                token = next_mapping_lease_token_++;
-        }
-        mapping_leases_.emplace(token, MappingLease { address, end });
-        *mapping_lease_token = token;
-    }
+    if (mapping_lease_token)
+        *mapping_lease_token = create_mapping_lease_locked(address, end);
     return true;
 }
 
-bool AddressSpace::unmap_mapping_lease(std::uint64_t mapping_lease_token)
+std::uint64_t AddressSpace::create_mapping_lease_locked(
+    std::uint32_t address, std::uint64_t end)
+{
+    auto token = next_mapping_lease_token_++;
+    while (token == 0 || mapping_leases_.contains(token))
+        token = next_mapping_lease_token_++;
+    mapping_leases_.emplace(token, MappingLease { address, end });
+    return token;
+}
+
+std::uint64_t AddressSpace::map_anonymous_with_lease(
+    std::uint32_t address, std::uint32_t size,
+    std::span<const std::byte> initial_data)
+{
+    if (size == 0 || address % page_size != 0 || size % page_size != 0 ||
+        range_overflows(address, size) || initial_data.size() > size)
+        return 0;
+
+    auto lock = write_lock();
+    const auto end = page_range_end(address, size);
+    if (vm_map_.overlaps(address, end))
+        return 0;
+
+    constexpr auto permissions = MemoryPermission::Read | MemoryPermission::Write;
+    try {
+        map_range_locked(address, end, permissions, { permissions });
+        const CopyInOperation operation { address, initial_data };
+        if (copy_in_batch_locked({ &operation, 1U }, false))
+            return create_mapping_lease_locked(address, end);
+    } catch (const std::bad_alloc&) {
+        // Discard partially initialized guest pages on allocation failure.
+    }
+    unmap_range_locked(address, end, false);
+    return 0;
+}
+
+bool AddressSpace::unmap_mapping_lease(std::uint64_t mapping_lease_token,
+    std::span<std::byte> data)
 {
     if (mapping_lease_token == 0U)
         return false;
@@ -1532,10 +1557,17 @@ bool AddressSpace::unmap_mapping_lease(std::uint64_t mapping_lease_token)
     if (lease == mapping_leases_.end() || lease->second.observation_only)
         return false;
     const auto range = lease->second;
+    const auto can_copy = data.empty() ||
+                          (data.size() <= range.end - range.begin &&
+                              range_accessible_locked(range.begin, data.size(),
+                                  MemoryPermission::Read) &&
+                              !range_needs_file_fault_locked(range.begin, data.size()));
+    if (can_copy)
+        copy_resident_bytes_locked(range.begin, data);
     mapping_leases_.erase(lease);
     invalidate_mapping_leases_locked(range.begin, range.end);
     unmap_range_locked(range.begin, range.end);
-    return true;
+    return can_copy;
 }
 
 AddressSpace::MappingObservation AddressSpace::observe_mapping(

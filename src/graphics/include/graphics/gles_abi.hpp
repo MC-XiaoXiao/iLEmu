@@ -79,8 +79,15 @@ inline constexpr std::uint32_t maximum_combined_texture_image_units = 0x8b4dU;
 inline constexpr std::size_t maximum_shader_source_bytes = 256U * 1024U;
 inline constexpr std::uint32_t array_buffer = 0x8892U;
 inline constexpr std::uint32_t element_array_buffer = 0x8893U;
+inline constexpr std::uint32_t array_buffer_binding = 0x8894U;
+inline constexpr std::uint32_t element_array_buffer_binding = 0x8895U;
+inline constexpr std::uint32_t vertex_array_binding_oes = 0x85b5U;
 inline constexpr std::uint32_t buffer_size = 0x8764U;
 inline constexpr std::uint32_t buffer_usage = 0x8765U;
+inline constexpr std::uint32_t write_only_oes = 0x88b9U;
+inline constexpr std::uint32_t buffer_access_oes = 0x88bbU;
+inline constexpr std::uint32_t buffer_mapped_oes = 0x88bcU;
+inline constexpr std::uint32_t buffer_map_pointer_oes = 0x88bdU;
 
 inline constexpr std::uint32_t pack_alignment = 0x0d05U;
 inline constexpr std::uint32_t unpack_alignment = 0x0cf5U;
@@ -157,7 +164,11 @@ inline constexpr std::uint32_t zero = 0;
 inline constexpr std::uint32_t one = 1;
 inline constexpr std::uint32_t source_alpha = 0x0302U;
 inline constexpr std::uint32_t one_minus_source_alpha = 0x0303U;
+inline constexpr std::uint32_t destination_alpha = 0x0304U;
 inline constexpr std::uint32_t one_minus_destination_alpha = 0x0305U;
+inline constexpr std::uint32_t destination_color = 0x0306U;
+inline constexpr std::uint32_t one_minus_destination_color = 0x0307U;
+inline constexpr std::uint32_t source_alpha_saturate = 0x0308U;
 
 inline constexpr std::uint32_t clockwise = 0x0900U;
 inline constexpr std::uint32_t counter_clockwise = 0x0901U;

@@ -98,6 +98,7 @@ add_library(ilemu_kernel_graphics STATIC
     graphics/mobile_framebuffer_sync.cpp
     graphics/mobile_framebuffer_devices.cpp
     graphics/opengles_hle.cpp
+    graphics/opengles_vertex_arrays.cpp
     graphics/opengles_dispatch_hle.cpp
     graphics/opengles_programmable.cpp
     graphics/opengles_sync.cpp

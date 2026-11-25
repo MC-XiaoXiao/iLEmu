@@ -329,12 +329,33 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::uint32_t blend_destination { };
         std::uint8_t color_mask { };
         StencilMode stencil_mode { };
+        std::uint32_t depth_function { };
+        bool depth_write { };
+        bool straight_source_over { };
 
         auto operator<=>(const PipelineKey&) const = default;
     };
 
     constexpr std::uint32_t constant_alpha_blend_factor = 0x8003U;
     constexpr std::uint32_t one_minus_constant_alpha_blend_factor = 0x8004U;
+
+    VkBlendFactor alpha_blend_factor(VkBlendFactor factor)
+    {
+        switch (factor) {
+        case VK_BLEND_FACTOR_SRC_COLOR:
+            return VK_BLEND_FACTOR_SRC_ALPHA;
+        case VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR:
+            return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case VK_BLEND_FACTOR_DST_COLOR:
+            return VK_BLEND_FACTOR_DST_ALPHA;
+        case VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR:
+            return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        case VK_BLEND_FACTOR_SRC_ALPHA_SATURATE:
+            return VK_BLEND_FACTOR_ONE;
+        default:
+            return factor;
+        }
+    }
 
     class VulkanGlesRenderer final : public GlesRenderer {
     public:
@@ -442,7 +463,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             PerfCpuMapReason reason);
         bool draw_batch(DisplayFrame& frame, GlesRenderTargetKey target,
             std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
-            const GlesRasterState& state);
+            const GlesRasterState& state, bool blend_to_premultiplied = false);
         class Encoder;
         struct Buffer {
             VkDevice device { };
@@ -516,12 +537,32 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             auto operator<=>(const TextureKey&) const = default;
         };
 
+        struct DepthTarget {
+            Image image;
+            std::uint64_t clear_generation { };
+            std::uint64_t last_batch { };
+            bool initialized { };
+        };
+
+        struct DepthFramebuffer {
+            VkDevice device { };
+            VkFramebuffer framebuffer { };
+            std::shared_ptr<DepthTarget> depth;
+
+            ~DepthFramebuffer()
+            {
+                if (framebuffer != VK_NULL_HANDLE)
+                    vkDestroyFramebuffer(device, framebuffer, nullptr);
+            }
+        };
+
         struct Target {
             Image image;
             Image render_target_snapshot;
             Image stencil;
             VkFramebuffer framebuffer { };
             VkFramebuffer stencil_framebuffer { };
+            std::unique_ptr<DepthFramebuffer> depth_framebuffer;
             VkImageLayout layout { VK_IMAGE_LAYOUT_UNDEFINED };
             VkImageLayout render_target_snapshot_layout {
                 VK_IMAGE_LAYOUT_UNDEFINED
@@ -591,6 +632,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 }
                 return true;
             });
+            std::erase_if(depth_targets_, [](const auto& entry) {
+                return entry.first.expired() && entry.second.use_count() == 1;
+            });
         }
 
         struct CommandSlot {
@@ -638,6 +682,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         [[nodiscard]] static VkDeviceSize target_allocation_size(
             const Target& target);
         void ensure_stencil_framebuffer(Target& target);
+        DepthFramebuffer& ensure_depth_framebuffer(
+            Target& target, const std::shared_ptr<const void>& attachment);
+        void clear_depth(VkCommandBuffer command, DepthTarget& target,
+            const GlesRasterDepth& depth, bool inverted);
         void upload(Buffer& buffer, const void* data, std::size_t size,
             VkDeviceSize offset = 0,
             PerfSurfaceKind surface = PerfSurfaceKind::Unknown) const;
@@ -717,7 +765,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             VkPipelineStageFlags source_stage,
             VkPipelineStageFlags destination_stage, VkAccessFlags source_access,
             VkAccessFlags destination_access,
-            std::uint32_t mip_levels = 1U) const;
+            std::uint32_t mip_levels = 1U,
+            VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) const;
         void destroy() noexcept;
 
         VulkanPresentTiming presentation_timing_;
@@ -737,6 +786,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         bool hardware_accelerated_ { };
         float maximum_sampler_anisotropy_ { 1.0F };
         VkFormat stencil_format_ { VK_FORMAT_UNDEFINED };
+        VkFormat depth_format_ { VK_FORMAT_UNDEFINED };
         VkDevice device_ { };
         VmaAllocator image_allocator_ { };
         VmaPool color_image_pool_ { };
@@ -746,6 +796,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkCommandPool command_pool_ { };
         VkRenderPass render_pass_ { };
         VkRenderPass stencil_render_pass_ { };
+        VkRenderPass depth_render_pass_ { };
         VkDescriptorSetLayout descriptor_layout_ { };
         VkPipelineLayout pipeline_layout_ { };
         VkPipelineCache pipeline_cache_ { };
@@ -761,6 +812,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         };
         std::uint64_t next_target_incarnation_ { 1 };
         std::map<GlesRenderTargetKey, Target> targets_;
+        std::map<std::weak_ptr<const void>, std::shared_ptr<DepthTarget>,
+            std::owner_less<>> depth_targets_;
         std::vector<std::shared_ptr<RetiredResources>> retired_resources_;
         std::vector<std::shared_ptr<ReadbackTransfer>> readbacks_;
         VkDeviceSize readback_bytes_ { };
@@ -784,6 +837,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         bool command_recording_ { };
         bool render_pass_open_ { };
         std::optional<GlesRenderTargetKey> render_pass_target_;
+        VkFramebuffer render_pass_depth_framebuffer_ { };
         std::string renderer_name_;
         std::filesystem::path pipeline_cache_path_;
         mutable std::mutex mutex_;
@@ -1194,6 +1248,22 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     "Vulkan exposes no stencil attachment format"
                 };
             }
+            for (const auto format : { VK_FORMAT_D32_SFLOAT,
+                     VK_FORMAT_D16_UNORM }) {
+                VkFormatProperties properties { };
+                vkGetPhysicalDeviceFormatProperties(
+                    physical_device_, format, &properties);
+                if ((properties.optimalTilingFeatures &
+                        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
+                    depth_format_ = format;
+                    break;
+                }
+            }
+            if (depth_format_ == VK_FORMAT_UNDEFINED) {
+                throw std::runtime_error {
+                    "Vulkan exposes no depth attachment format"
+                };
+            }
 
             VkPhysicalDeviceProperties physical_properties { };
             vkGetPhysicalDeviceProperties(
@@ -1419,6 +1489,20 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             require_success(vkCreateRenderPass(device_, &render_pass_info,
                                 nullptr, &stencil_render_pass_),
                 "vkCreateRenderPass(stencil)");
+
+            auto depth_attachments = stencil_attachments;
+            auto& depth_attachment = depth_attachments[1];
+            depth_attachment.format = depth_format_;
+            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depth_attachment.initialLayout =
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            dependency.srcStageMask |=
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+            render_pass_info.pAttachments = depth_attachments.data();
+            require_success(vkCreateRenderPass(device_, &render_pass_info,
+                                nullptr, &depth_render_pass_),
+                "vkCreateRenderPass(depth)");
 
             std::array<VkDescriptorSetLayoutBinding,
                 1 + gles_abi::texture_unit_count>
@@ -1725,6 +1809,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             }
             target_pool_.clear();
             target_pool_bytes_ = 0;
+            depth_targets_.clear();
             texture_cache_.clear();
             texture_cache_bytes_ = 0;
             if (color_image_pool_ != nullptr) {
@@ -1780,6 +1865,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             }
             if (stencil_render_pass_ != VK_NULL_HANDLE) {
                 vkDestroyRenderPass(device_, stencil_render_pass_, nullptr);
+            }
+            if (depth_render_pass_ != VK_NULL_HANDLE) {
+                vkDestroyRenderPass(device_, depth_render_pass_, nullptr);
             }
             if (pipeline_cache_ != VK_NULL_HANDLE) {
                 vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
@@ -2143,6 +2231,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     {
         if (target.image.image == VK_NULL_HANDLE)
             return;
+        target.depth_framebuffer.reset();
         target.cpu_generation = 0;
         target.valid = false;
         target.dirty.reset();
@@ -2193,6 +2282,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     void VulkanGlesRenderer::destroy_target_framebuffers(
         Target& target) noexcept
     {
+        target.depth_framebuffer.reset();
         if (target.framebuffer != VK_NULL_HANDLE) {
             vkDestroyFramebuffer(device_, target.framebuffer, nullptr);
             target.framebuffer = VK_NULL_HANDLE;
@@ -2239,6 +2329,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         for (const auto& [key, target] : targets_) {
             static_cast<void>(key);
             add(target_allocation_size(target));
+        }
+        for (const auto& [attachment, depth] : depth_targets_) {
+            static_cast<void>(attachment);
+            add(depth->image.allocation_size);
         }
         for (const auto& owner : retired_resources_)
             add(owner->bytes);
@@ -2294,6 +2388,95 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         require_success(vkCreateFramebuffer(device_, &framebuffer_info, nullptr,
                             &target.stencil_framebuffer),
             "vkCreateFramebuffer(stencil)");
+    }
+
+    VulkanGlesRenderer::DepthFramebuffer&
+    VulkanGlesRenderer::ensure_depth_framebuffer(
+        Target& target, const std::shared_ptr<const void>& attachment)
+    {
+        auto depth = depth_targets_.find(attachment);
+        if (depth == depth_targets_.end()) {
+            auto storage = std::make_shared<DepthTarget>();
+            storage->image = create_image(target.image.width,
+                target.image.height, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                false, false, depth_format_, VK_IMAGE_ASPECT_DEPTH_BIT);
+            depth = depth_targets_.emplace(attachment, std::move(storage)).first;
+        }
+        if (target.depth_framebuffer &&
+            target.depth_framebuffer->depth == depth->second) {
+            return *target.depth_framebuffer;
+        }
+
+        if (target.depth_framebuffer) {
+            submit_commands(true, PerfSubmitReason::ResourceLifetime);
+            wait_for_all_slots();
+            target.depth_framebuffer.reset();
+        }
+        auto framebuffer = std::make_unique<DepthFramebuffer>();
+        framebuffer->device = device_;
+        framebuffer->depth = depth->second;
+        const std::array attachments {
+            target.image.view, framebuffer->depth->image.view
+        };
+        auto info = make_vulkan_structure<VkFramebufferCreateInfo>(
+            VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
+        info.renderPass = depth_render_pass_;
+        info.attachmentCount = static_cast<std::uint32_t>(attachments.size());
+        info.pAttachments = attachments.data();
+        info.width = target.image.width;
+        info.height = target.image.height;
+        info.layers = 1U;
+        require_success(vkCreateFramebuffer(
+                            device_, &info, nullptr, &framebuffer->framebuffer),
+            "vkCreateFramebuffer(depth)");
+        target.depth_framebuffer = std::move(framebuffer);
+        return *target.depth_framebuffer;
+    }
+
+    void VulkanGlesRenderer::clear_depth(VkCommandBuffer command,
+        DepthTarget& target, const GlesRasterDepth& depth, bool inverted)
+    {
+        const auto width = static_cast<std::int64_t>(target.image.width);
+        const auto height = static_cast<std::int64_t>(target.image.height);
+        const auto clear = [&](float value, const VkRect2D& rectangle) {
+            VkClearAttachment attachment { };
+            attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            attachment.clearValue.depthStencil.depth = value;
+            const VkClearRect region { rectangle, 0, 1 };
+            vkCmdClearAttachments(command, 1, &attachment, 1, &region);
+        };
+        const VkRect2D extent { { 0, 0 },
+            { target.image.width, target.image.height } };
+        if (!target.initialized) {
+            clear(1.0F, extent);
+            target.initialized = true;
+        }
+        if (!depth.clears)
+            return;
+        for (const auto& entry : *depth.clears) {
+            if (entry.generation <= target.clear_generation)
+                continue;
+            target.clear_generation = entry.generation;
+            if (!entry.scissor) {
+                clear(entry.value, extent);
+                continue;
+            }
+            const auto& box = *entry.scissor;
+            const auto left = std::clamp<std::int64_t>(box[0], 0, width);
+            const auto bottom = std::clamp<std::int64_t>(box[1], 0, height);
+            const auto right = std::clamp<std::int64_t>(
+                static_cast<std::int64_t>(box[0]) + box[2], 0, width);
+            const auto top = std::clamp<std::int64_t>(
+                static_cast<std::int64_t>(box[1]) + box[3], 0, height);
+            if (right <= left || top <= bottom)
+                continue;
+            clear(entry.value,
+                { { static_cast<std::int32_t>(left),
+                      static_cast<std::int32_t>(
+                          inverted ? bottom : height - top) },
+                    { static_cast<std::uint32_t>(right - left),
+                        static_cast<std::uint32_t>(top - bottom) } });
+        }
     }
 
     void VulkanGlesRenderer::upload(Buffer& buffer, const void* data,
@@ -2384,6 +2567,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         vkCmdEndRenderPass(command_slot().command);
         render_pass_open_ = false;
         render_pass_target_.reset();
+        render_pass_depth_framebuffer_ = VK_NULL_HANDLE;
     }
 
     void VulkanGlesRenderer::submit_commands(bool wait, PerfSubmitReason reason,
@@ -2444,12 +2628,20 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             if (texture.last_upload_batch == batch_sequence_)
                 texture.revision = 0;
         }
+        for (auto& [attachment, depth] : depth_targets_) {
+            static_cast<void>(attachment);
+            if (depth->last_batch == batch_sequence_) {
+                depth->initialized = false;
+                depth->clear_generation = 0;
+            }
+        }
         if (command_recording_) {
             static_cast<void>(vkResetCommandBuffer(command_slot().command, 0));
             command_recording_ = false;
         }
         render_pass_open_ = false;
         render_pass_target_.reset();
+        render_pass_depth_framebuffer_ = VK_NULL_HANDLE;
         for (auto& slot : command_slots_) {
             slot.draw_count = 0;
             slot.staging_bytes_used = 0;
@@ -2480,14 +2672,24 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             return VK_BLEND_FACTOR_ZERO;
         case gles_abi::one:
             return VK_BLEND_FACTOR_ONE;
+        case gles_abi::source_color:
+            return VK_BLEND_FACTOR_SRC_COLOR;
+        case gles_abi::one_minus_source_color:
+            return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         case gles_abi::source_alpha:
             return VK_BLEND_FACTOR_SRC_ALPHA;
         case gles_abi::one_minus_source_alpha:
             return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case gles_abi::destination_alpha:
+            return VK_BLEND_FACTOR_DST_ALPHA;
         case gles_abi::one_minus_destination_alpha:
             return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-        case gles_abi::one_minus_source_color:
-            return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        case gles_abi::destination_color:
+            return VK_BLEND_FACTOR_DST_COLOR;
+        case gles_abi::one_minus_destination_color:
+            return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+        case gles_abi::source_alpha_saturate:
+            return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
         case constant_alpha_blend_factor:
             return VK_BLEND_FACTOR_CONSTANT_ALPHA;
         case one_minus_constant_alpha_blend_factor:
@@ -2577,6 +2779,13 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         auto depth_stencil =
             make_vulkan_structure<VkPipelineDepthStencilStateCreateInfo>(
                 VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
+        if (key.depth_function != 0) {
+            // GLES GL_NEVER through GL_ALWAYS have the same order as VkCompareOp.
+            depth_stencil.depthTestEnable = VK_TRUE;
+            depth_stencil.depthWriteEnable = key.depth_write;
+            depth_stencil.depthCompareOp =
+                static_cast<VkCompareOp>(key.depth_function - 0x0200U);
+        }
         if (key.stencil_mode != PipelineKey::StencilMode::Disabled) {
             depth_stencil.stencilTestEnable = VK_TRUE;
             VkStencilOpState stencil { };
@@ -2610,25 +2819,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         blend.dstColorBlendFactor =
             key.blend_enabled ? *destination : VK_BLEND_FACTOR_ZERO;
         blend.colorBlendOp = VK_BLEND_OP_ADD;
-        blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        blend.dstAlphaBlendFactor = key.blend_enabled
-                                        ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-                                        : VK_BLEND_FACTOR_ZERO;
-        const auto constant_alpha_crossfade =
-            key.blend_source == constant_alpha_blend_factor &&
-            key.blend_destination == one_minus_constant_alpha_blend_factor;
-        const auto destination_alpha_mask =
-            key.blend_source == gles_abi::zero &&
-            key.blend_destination == gles_abi::source_alpha;
-        const auto porter_duff_xor =
-            key.blend_source == gles_abi::one_minus_destination_alpha &&
-            key.blend_destination == gles_abi::one_minus_source_alpha;
-        // These operations apply the same factors to all four channels.
-        if (constant_alpha_crossfade || destination_alpha_mask ||
-            porter_duff_xor) {
-            blend.srcAlphaBlendFactor = blend.srcColorBlendFactor;
-            blend.dstAlphaBlendFactor = blend.dstColorBlendFactor;
-        }
+        blend.srcAlphaBlendFactor = key.straight_source_over
+            ? VK_BLEND_FACTOR_ONE
+            : alpha_blend_factor(blend.srcColorBlendFactor);
+        blend.dstAlphaBlendFactor =
+            alpha_blend_factor(blend.dstColorBlendFactor);
         blend.alphaBlendOp = VK_BLEND_OP_ADD;
         blend.colorWriteMask = 0;
         if ((key.color_mask & 0x01U) != 0) {
@@ -2669,9 +2864,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         info.pColorBlendState = &blend_state;
         info.pDynamicState = &dynamic;
         info.layout = pipeline_layout_;
-        info.renderPass = key.stencil_mode == PipelineKey::StencilMode::Disabled
-                              ? render_pass_
-                              : stencil_render_pass_;
+        info.renderPass = render_pass_;
+        if (key.stencil_mode != PipelineKey::StencilMode::Disabled)
+            info.renderPass = stencil_render_pass_;
+        if (key.depth_function != 0)
+            info.renderPass = depth_render_pass_;
         info.subpass = 0;
         VkPipeline created { };
         require_success(vkCreateGraphicsPipelines(device_, pipeline_cache_, 1,
@@ -2806,7 +3003,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkImage image, VkImageLayout old_layout, VkImageLayout new_layout,
         VkPipelineStageFlags source_stage,
         VkPipelineStageFlags destination_stage, VkAccessFlags source_access,
-        VkAccessFlags destination_access, std::uint32_t mip_levels) const
+        VkAccessFlags destination_access, std::uint32_t mip_levels,
+        VkImageAspectFlags aspect) const
     {
         auto barrier = make_vulkan_structure<VkImageMemoryBarrier>(
             VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
@@ -2817,7 +3015,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.aspectMask = aspect;
         barrier.subresourceRange.levelCount = mip_levels;
         barrier.subresourceRange.layerCount = 1;
         vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0,
@@ -4013,8 +4211,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             discard_commands();
             return false;
         }
-        if (!draw(cpu_frame, destination.key(), vertices, gles_abi::triangles,
-                state)) {
+        if (!draw_batch(cpu_frame, destination.key(), vertices,
+                gles_abi::triangles, state,
+                mode == HostCompositeMode::SourceOver)) {
             return false;
         }
         destination.mark_gpu_synchronized(cpu_generation);
@@ -4286,6 +4485,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             : crossfade ? one_minus_constant_alpha_blend_factor
                         : gles_abi::one_minus_source_alpha,
             0x0fU };
+        pipeline_key.straight_source_over =
+            mode == HostCompositeMode::SourceOver;
         const auto selected_pipeline = pipeline(pipeline_key);
         if (selected_pipeline == VK_NULL_HANDLE)
             return false;
@@ -4744,8 +4945,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         VK_SUBPASS_CONTENTS_INLINE);
                     render_pass_open_ = true;
                     render_pass_target_ = destination.key();
-                    const auto selected_pipeline =
-                        pipeline(PipelineKey { mode != HostCompositeMode::Copy,
+                    auto pipeline_key =
+                        PipelineKey { mode != HostCompositeMode::Copy,
                             mode == HostCompositeMode::Copy ? gles_abi::one
                             : crossfade ? constant_alpha_blend_factor
                             : mode == HostCompositeMode::PremultipliedSourceOver
@@ -4754,7 +4955,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                             mode == HostCompositeMode::Copy ? gles_abi::zero
                             : crossfade ? one_minus_constant_alpha_blend_factor
                                         : gles_abi::one_minus_source_alpha,
-                            0x0fU });
+                            0x0fU };
+                    pipeline_key.straight_source_over =
+                        mode == HostCompositeMode::SourceOver;
+                    const auto selected_pipeline = pipeline(pipeline_key);
                     vkCmdBindPipeline(commands.command,
                         VK_PIPELINE_BIND_POINT_GRAPHICS, selected_pipeline);
                     vkCmdBindVertexBuffers(commands.command, 0, 1,
@@ -5207,7 +5411,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     bool VulkanGlesRenderer::draw_batch(DisplayFrame& frame,
         GlesRenderTargetKey target, std::span<const GlesRasterVertex> vertices,
-        std::uint32_t mode, const GlesRasterState& state)
+        std::uint32_t mode, const GlesRasterState& state,
+        bool blend_to_premultiplied)
     {
         // CPU readback takes HostSurface before the renderer mutex.  Resolve
         // the inverse dependency here before serializing Vulkan state so
@@ -5347,6 +5552,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         pipeline_key.blend_enabled = state.blend_enabled;
         pipeline_key.blend_source = state.blend_source;
         pipeline_key.blend_destination = state.blend_destination;
+        pipeline_key.straight_source_over =
+            state.blend_enabled &&
+            (blend_to_premultiplied || state.render_target_premultiplied) &&
+            state.blend_source == gles_abi::source_alpha &&
+            state.blend_destination == gles_abi::one_minus_source_alpha;
+        if (state.depth.test && state.depth.attachment) {
+            pipeline_key.depth_function = state.depth.function;
+            pipeline_key.depth_write = state.depth.write;
+        }
         for (std::size_t component = 0; component < state.color_mask.size();
             ++component) {
             if (state.color_mask[component]) {
@@ -5380,6 +5594,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     std::memory_order_relaxed);
                 return false;
             }
+            auto* depth_framebuffer = pipeline_key.depth_function != 0
+                                          ? &ensure_depth_framebuffer(
+                                                gpu_target, state.depth.attachment)
+                                          : nullptr;
+            const auto depth_framebuffer_handle =
+                depth_framebuffer ? depth_framebuffer->framebuffer : VK_NULL_HANDLE;
 
             const auto texture_cache_over_budget = [&] {
                 return texture_cache_bytes_ > texture_cache_budget_bytes_ ||
@@ -5725,7 +5945,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 nullptr);
 
             begin_commands();
-            if (render_pass_open_ && render_pass_target_ != target)
+            if (render_pass_open_ &&
+                (render_pass_target_ != target ||
+                    render_pass_depth_framebuffer_ != depth_framebuffer_handle))
                 end_render_pass();
             if (!gpu_target.valid ||
                 gpu_target.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
@@ -5926,11 +6148,34 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             render_begin.renderPass = render_pass_;
             render_begin.framebuffer = gpu_target.framebuffer;
             render_begin.renderArea.extent = { frame.width, frame.height };
+            if (depth_framebuffer) {
+                auto& depth = *depth_framebuffer->depth;
+                if (!depth.initialized) {
+                    transition_image(commands.command, depth.image.image,
+                        VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                        1, VK_IMAGE_ASPECT_DEPTH_BIT);
+                }
+                render_begin.renderPass = depth_render_pass_;
+                render_begin.framebuffer = depth_framebuffer_handle;
+            }
             if (!render_pass_open_) {
                 vkCmdBeginRenderPass(commands.command, &render_begin,
                     VK_SUBPASS_CONTENTS_INLINE);
                 render_pass_open_ = true;
                 render_pass_target_ = target;
+                render_pass_depth_framebuffer_ = depth_framebuffer_handle;
+            }
+            if (depth_framebuffer) {
+                auto& depth = *depth_framebuffer->depth;
+                clear_depth(commands.command, depth, state.depth,
+                    state.render_target_inverted_vertical);
+                depth.last_batch = batch_sequence_;
             }
             vkCmdBindPipeline(commands.command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 selected_pipeline);

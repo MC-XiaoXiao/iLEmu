@@ -27,6 +27,7 @@ namespace {
     struct ScreenVertex {
         float x { };
         float y { };
+        float depth { };
         float inverse_w { 1.0F };
         std::array<float, 4> color { };
         std::array<std::array<float, 2>, gles_abi::texture_unit_count>
@@ -46,6 +47,28 @@ namespace {
         const auto dx = orientation * (b.x - a.x);
         const auto dy = orientation * (b.y - a.y);
         return dy > 0.0F || (dy == 0.0F && dx < 0.0F);
+    }
+
+    bool depth_passes(std::uint32_t function, float fragment, float stored)
+    {
+        switch (function) {
+        case 0x0201U: // GL_LESS
+            return fragment < stored;
+        case 0x0202U: // GL_EQUAL
+            return fragment == stored;
+        case 0x0203U: // GL_LEQUAL
+            return fragment <= stored;
+        case 0x0204U: // GL_GREATER
+            return fragment > stored;
+        case 0x0205U: // GL_NOTEQUAL
+            return fragment != stored;
+        case 0x0206U: // GL_GEQUAL
+            return fragment >= stored;
+        case 0x0207U: // GL_ALWAYS
+            return true;
+        default: // GL_NEVER
+            return false;
+        }
     }
 
     std::uint32_t modulate(
@@ -230,40 +253,71 @@ namespace {
         return pack_color(result);
     }
 
-    std::uint32_t source_over(std::uint32_t source, std::uint32_t destination)
+    std::optional<Color> blend_factor(
+        std::uint32_t factor, const Color& source, const Color& destination)
     {
-        const auto source_alpha = (source >> 24U) & 0xffU;
-        const auto inverse = 255U - source_alpha;
-        const auto blend_channel = [&](std::uint32_t shift) {
-            const auto source_channel = (source >> shift) & 0xffU;
-            const auto destination_channel = (destination >> shift) & 0xffU;
-            return (source_channel * source_alpha +
-                       destination_channel * inverse + 127U) /
-                   255U;
+        const auto broadcast = [](float value) {
+            return Color { value, value, value, value };
         };
-        const auto destination_alpha = (destination >> 24U) & 0xffU;
-        const auto alpha = std::min(
-            255U, source_alpha + (destination_alpha * inverse + 127U) / 255U);
-        return (alpha << 24U) | (blend_channel(16U) << 16U) |
-               (blend_channel(8U) << 8U) | blend_channel(0U);
+        const auto inverse = [](Color color) {
+            for (auto& channel : color)
+                channel = 1.0F - channel;
+            return color;
+        };
+        switch (factor) {
+        case gles_abi::zero:
+            return Color { };
+        case gles_abi::one:
+            return broadcast(1.0F);
+        case gles_abi::source_color:
+            return source;
+        case gles_abi::one_minus_source_color:
+            return inverse(source);
+        case gles_abi::source_alpha:
+            return broadcast(source[3]);
+        case gles_abi::one_minus_source_alpha:
+            return broadcast(1.0F - source[3]);
+        case gles_abi::destination_alpha:
+            return broadcast(destination[3]);
+        case gles_abi::one_minus_destination_alpha:
+            return broadcast(1.0F - destination[3]);
+        case gles_abi::destination_color:
+            return destination;
+        case gles_abi::one_minus_destination_color:
+            return inverse(destination);
+        case gles_abi::source_alpha_saturate: {
+            const auto rgb = std::min(source[3], 1.0F - destination[3]);
+            return Color { rgb, rgb, rgb, 1.0F };
+        }
+        default:
+            return std::nullopt;
+        }
     }
 
-    std::uint32_t premultiplied_source_over(
-        std::uint32_t source, std::uint32_t destination)
+    std::uint32_t blend_pixel(const GlesRasterState& state,
+        std::uint32_t source_pixel, std::uint32_t destination_pixel)
     {
-        const auto source_alpha = (source >> 24U) & 0xffU;
-        const auto inverse = 255U - source_alpha;
-        const auto blend_channel = [&](std::uint32_t shift) {
-            return std::min(
-                255U, ((source >> shift) & 0xffU) +
-                          ((((destination >> shift) & 0xffU) * inverse + 127U) /
-                              255U));
-        };
-        const auto destination_alpha = (destination >> 24U) & 0xffU;
-        const auto alpha = std::min(
-            255U, source_alpha + (destination_alpha * inverse + 127U) / 255U);
-        return (alpha << 24U) | (blend_channel(16U) << 16U) |
-               (blend_channel(8U) << 8U) | blend_channel(0U);
+        const auto source = unpack_color(source_pixel);
+        const auto destination = unpack_color(destination_pixel);
+        auto source_factor =
+            blend_factor(state.blend_source, source, destination);
+        const auto destination_factor =
+            blend_factor(state.blend_destination, source, destination);
+        if (!source_factor || !destination_factor)
+            return source_pixel;
+        // Composited premultiplied targets retain coverage when drawing
+        // straight-alpha source-over content into their backing image.
+        if (state.render_target_premultiplied &&
+            state.blend_source == gles_abi::source_alpha &&
+            state.blend_destination == gles_abi::one_minus_source_alpha)
+            (*source_factor)[3] = 1.0F;
+        Color result;
+        for (std::size_t channel = 0; channel < result.size(); ++channel) {
+            result[channel] =
+                source[channel] * (*source_factor)[channel] +
+                destination[channel] * (*destination_factor)[channel];
+        }
+        return pack_color(result);
     }
 
     std::uint32_t apply_color_mask(std::uint32_t source,
@@ -523,7 +577,7 @@ namespace {
 
     void draw_triangle(DisplayFrame& frame,
         const std::array<ScreenVertex, 3>& triangle,
-        const GlesRasterState& state,
+        const GlesRasterState& state, std::span<float> depth_buffer,
         const DisplayFrame* render_target_snapshot)
     {
         const auto area =
@@ -637,6 +691,27 @@ namespace {
                                        triangle[2].inverse_w * w2;
                 if (!std::isfinite(inverse_w) || std::abs(inverse_w) <= 1.0e-6F)
                     continue;
+                if (!depth_buffer.empty()) {
+                    // Window depth is already divided by clip W. Interpolate
+                    // it linearly in screen space, unlike color and UVs.
+                    const auto base = triangle[2].depth;
+                    const auto depth = base + (triangle[0].depth - base) * w0 +
+                                       (triangle[1].depth - base) * w1;
+                    if (!(depth >= 0.0F && depth <= 1.0F))
+                        continue;
+                    // The color target may be inverted independently of the
+                    // bound depth attachment's guest-coordinate storage.
+                    const auto guest_y = state.render_target_inverted_vertical
+                        ? static_cast<std::uint32_t>(y)
+                        : frame.height - 1U - static_cast<std::uint32_t>(y);
+                    auto& stored = depth_buffer[
+                        static_cast<std::size_t>(guest_y) * frame.width +
+                        static_cast<std::size_t>(x)];
+                    if (!depth_passes(state.depth.function, depth, stored))
+                        continue;
+                    if (state.depth.write)
+                        stored = depth;
+                }
                 std::array<float, 4> color { };
                 for (std::size_t component = 0; component < color.size();
                     ++component) {
@@ -650,6 +725,8 @@ namespace {
                 }
                 const auto primary = modulate(0xffffffffU, color);
                 auto pixel = primary;
+                const auto offset = static_cast<std::size_t>(y) * frame.width +
+                                    static_cast<std::size_t>(x);
                 std::optional<std::uint32_t> operation_destination;
                 for (std::size_t unit_index = 0;
                     unit_index < state.texture_units.size(); ++unit_index) {
@@ -657,10 +734,7 @@ namespace {
                     if (!unit.enabled)
                         continue;
                     if (unit.framebuffer_fetch) {
-                        operation_destination =
-                            frame.pixels[static_cast<std::size_t>(y) *
-                                             frame.width +
-                                         x];
+                        operation_destination = frame.pixels[offset];
                         continue;
                     }
                     float texture_s { };
@@ -805,52 +879,8 @@ namespace {
                     }) && state.filter.operation ==
                         GlesFilterProfile::Operation::None)
                     pixel = premultiply_argb(pixel);
-                const auto offset = static_cast<std::size_t>(y) * frame.width +
-                                    static_cast<std::size_t>(x);
-                if (state.blend_enabled &&
-                    state.blend_source == gles_abi::source_alpha &&
-                    state.blend_destination ==
-                        gles_abi::one_minus_source_alpha) {
-                    pixel = source_over(pixel, frame.pixels[offset]);
-                } else if (state.blend_enabled &&
-                           state.blend_source == gles_abi::one &&
-                           state.blend_destination ==
-                               gles_abi::one_minus_source_alpha) {
-                    pixel =
-                        premultiplied_source_over(pixel, frame.pixels[offset]);
-                } else if (state.blend_enabled &&
-                           state.blend_source ==
-                               gles_abi::one_minus_destination_alpha &&
-                           state.blend_destination ==
-                               gles_abi::one_minus_source_alpha) {
-                    const auto source = unpack_color(pixel);
-                    const auto destination = unpack_color(frame.pixels[offset]);
-                    Color blended;
-                    for (std::size_t component = 0; component < 4U; ++component)
-                        blended[component] =
-                            source[component] * (1.0F - destination[3]) +
-                            destination[component] * (1.0F - source[3]);
-                    pixel = pack_color(blended);
-                } else if (state.blend_enabled &&
-                           state.blend_source == gles_abi::one &&
-                           state.blend_destination ==
-                               gles_abi::one_minus_source_color) {
-                    const auto source = unpack_color(pixel);
-                    const auto destination = unpack_color(frame.pixels[offset]);
-                    Color blended;
-                    for (std::size_t component = 0; component < 4U; ++component)
-                        blended[component] = source[component] +
-                            destination[component] * (1.0F - source[component]);
-                    pixel = pack_color(blended);
-                } else if (state.blend_enabled &&
-                           state.blend_source == gles_abi::zero &&
-                           state.blend_destination == gles_abi::source_alpha) {
-                    const auto source_alpha = unpack_color(pixel)[3];
-                    auto destination = unpack_color(frame.pixels[offset]);
-                    for (auto& component : destination)
-                        component *= source_alpha;
-                    pixel = pack_color(destination);
-                }
+                if (state.blend_enabled)
+                    pixel = blend_pixel(state, pixel, frame.pixels[offset]);
                 frame.pixels[offset] = apply_color_mask(
                     pixel, frame.pixels[offset], state.color_mask);
             }
@@ -907,7 +937,7 @@ void clear_gles_frame(DisplayFrame& frame, std::uint32_t color,
 
 bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
     std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
-    const GlesRasterState& state)
+    const GlesRasterState& state, std::span<float> depth_buffer)
 {
     if (state.viewport_width == 0 || state.viewport_height == 0) {
         return false;
@@ -917,6 +947,10 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
             static_cast<std::size_t>(frame.width) * frame.height) {
         return false;
     }
+    if (!state.depth.attachment || !state.depth.test)
+        depth_buffer = { };
+    else if (depth_buffer.size() != frame.pixels.size())
+        return false;
     const auto primitive =
         GlesPrimitiveAssembler::assemble(vertices, mode, state);
     if (!primitive)
@@ -940,6 +974,7 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
         const auto inverse_w = 1.0F / vertex.position[3];
         const auto ndc_x = vertex.position[0] * inverse_w;
         const auto ndc_y = vertex.position[1] * inverse_w;
+        const auto depth = vertex.position[2] * inverse_w * 0.5F + 0.5F;
         const auto window_x =
             static_cast<float>(state.viewport_x) +
             (ndc_x * 0.5F + 0.5F) * static_cast<float>(state.viewport_width);
@@ -949,11 +984,12 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
         const auto host_y = state.render_target_inverted_vertical
                                 ? window_y
                                 : static_cast<float>(frame.height) - window_y;
-        screen.push_back(ScreenVertex { window_x, host_y, inverse_w,
+        screen.push_back(ScreenVertex { window_x, host_y, depth, inverse_w,
             vertex.color, vertex.texture, vertex.projected_texture });
     }
     const auto emit = [&](std::size_t a, std::size_t b, std::size_t c) {
         draw_triangle(frame, { screen[a], screen[b], screen[c] }, raster_state,
+            depth_buffer,
             render_target_snapshot ? &*render_target_snapshot : nullptr);
     };
     if (primitive->mode() == gles_abi::triangles) {

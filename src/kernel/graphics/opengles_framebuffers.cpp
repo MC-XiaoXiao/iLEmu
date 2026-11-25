@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
 #include <memory>
 #include <vector>
 
@@ -48,18 +49,16 @@ namespace {
     };
 
     template <typename Objects>
-    std::uint32_t available_name(const Objects& objects)
+    std::uint32_t available_name(const Objects& objects, std::uint32_t start = 1U)
     {
-        // Names released by deletion are available to both core and OES calls.
-        std::uint32_t name = 1U;
-        for (const auto& [used, object] : objects) {
-            static_cast<void>(object);
-            if (used > name)
-                break;
-            if (used == name && ++name == 0U)
-                return 0U;
-        }
-        return name;
+        auto name = start;
+        do {
+            if (!objects.contains(name))
+                return name;
+            name = name == std::numeric_limits<std::uint32_t>::max()
+                       ? 1U : name + 1U;
+        } while (name != start);
+        return 0U;
     }
 } // namespace
 
@@ -101,13 +100,81 @@ const GlesResourceStore::TextureLevel* OpenGlesHle::current_framebuffer_level(
                : nullptr;
 }
 
+OpenGlesHle::DepthBufferState* OpenGlesHle::current_depth_buffer(
+    UserlandHleCall& call, ContextState& context)
+{
+    if (context.bound_framebuffer == 0) {
+        const auto surface = surfaces_.find(thread(call).draw_surface);
+        return surface != surfaces_.end() && surface->second.depth
+                   ? &*surface->second.depth
+                   : nullptr;
+    }
+    const auto framebuffer = context.framebuffers.find(context.bound_framebuffer);
+    if (framebuffer == context.framebuffers.end())
+        return nullptr;
+    const auto buffer =
+        context.renderbuffers.find(framebuffer->second.depth_renderbuffer);
+    return buffer != context.renderbuffers.end() && buffer->second.depth
+               ? &*buffer->second.depth
+               : nullptr;
+}
+
+void OpenGlesHle::record_depth_clear(
+    DepthBufferState& depth, const ContextState& context)
+{
+    GlesDepthClear clear {
+        depth.clear_generation + 1U, context.depth_clear, std::nullopt
+    };
+    if (context.enabled_capabilities.contains(gles_abi::scissor_test)) {
+        const auto& box = context.scissor_box;
+        const std::int64_t x = box[0], y = box[1];
+        const auto left = std::clamp<std::int64_t>(x, 0, depth.width);
+        const auto bottom = std::clamp<std::int64_t>(y, 0, depth.height);
+        const auto right = std::clamp<std::int64_t>(x + box[2], 0, depth.width);
+        const auto top = std::clamp<std::int64_t>(y + box[3], 0, depth.height);
+        if (left >= right || bottom >= top)
+            return;
+        if (left != 0 || bottom != 0 || right != depth.width ||
+            top != depth.height) {
+            clear.scissor = { static_cast<std::int32_t>(left),
+                static_cast<std::int32_t>(bottom),
+                static_cast<std::int32_t>(right - left),
+                static_cast<std::int32_t>(top - bottom) };
+        }
+    }
+    if (!clear.scissor || !depth.clears) {
+        depth.clears = std::make_shared<std::vector<GlesDepthClear>>(1, clear);
+    } else {
+        // A prepared draw retains the clears from its own command boundary.
+        // A later clear of the same rectangle supersedes the older record.
+        auto clears = depth.clears.use_count() == 1
+                          ? depth.clears
+                          : std::make_shared<std::vector<GlesDepthClear>>(
+                                *depth.clears);
+        clears->push_back(clear);
+        std::erase_if(*clears, [&](const auto& earlier) {
+            return earlier.generation < clear.generation &&
+                   earlier.scissor == clear.scissor;
+        });
+        depth.clears = std::move(clears);
+    }
+    depth.clear_generation = clear.generation;
+}
+
 std::uint32_t OpenGlesHle::ensure_renderbuffer_storage(ContextState& context,
     std::uint32_t name, std::uint32_t width, std::uint32_t height,
     std::uint32_t internal_format)
-{
+try {
     auto renderbuffer = context.renderbuffers.find(name);
     if (renderbuffer == context.renderbuffers.end())
         return gles_abi::invalid_operation;
+    std::optional<DepthBufferState> depth;
+    if (width != 0 && height != 0 &&
+        (internal_format == gles_abi::depth_component16 ||
+            internal_format == gles_abi::depth_component24 ||
+            internal_format == gles_abi::depth24_stencil8)) {
+        depth.emplace(width, height);
+    }
     if (renderbuffer->second.color_texture == 0U) {
         renderbuffer->second.color_texture = resources_.generate_texture();
         resources_.ensure_texture(renderbuffer->second.color_texture);
@@ -119,6 +186,7 @@ std::uint32_t OpenGlesHle::ensure_renderbuffer_storage(ContextState& context,
     renderbuffer->second.width = width;
     renderbuffer->second.height = height;
     renderbuffer->second.internal_format = internal_format;
+    renderbuffer->second.depth = std::move(depth);
     renderbuffer->second.display_oriented = false;
     renderbuffer->second.native_window = 0U;
     renderbuffer->second.drawable_surface_id.reset();
@@ -128,6 +196,8 @@ std::uint32_t OpenGlesHle::ensure_renderbuffer_storage(ContextState& context,
             framebuffer.color_texture = renderbuffer->second.color_texture;
     }
     return gles_abi::no_error;
+} catch (const std::bad_alloc&) {
+    return gles_abi::out_of_memory;
 }
 
 void OpenGlesHle::present_eagl_window_async(UserlandHleCall& call,
@@ -302,7 +372,10 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
             return;
         }
         for (std::int32_t index = 0; index < count; ++index) {
-            const auto name = available_name(context->framebuffers);
+            // Advance through the namespace so a drawable rebuild gets a
+            // fresh name. Deleted names become candidates after wraparound.
+            const auto name = available_name(context->framebuffers,
+                context->next_framebuffer);
             if (name == 0U) {
                 set_gl_error(call, gles_abi::out_of_memory);
                 return;
@@ -314,6 +387,8 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
                 set_gl_error(call, gles_abi::invalid_value);
                 return;
             }
+            context->next_framebuffer =
+                name == std::numeric_limits<std::uint32_t>::max() ? 1U : name + 1U;
         }
     };
     add("_glGenFramebuffers", generate_framebuffers);

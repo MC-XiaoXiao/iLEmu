@@ -10,6 +10,7 @@ add_library(ilemu_device_state STATIC
     darwin_kernel_identity.cpp
     graphics_services_capabilities.cpp
     launchd_job_catalog.cpp
+    legacy_application_containers.cpp
     lockdown_state.cpp
     network_preferences.cpp
     pthread_contract.cpp)
