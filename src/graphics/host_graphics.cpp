@@ -233,12 +233,14 @@ namespace {
                         static_cast<std::uint32_t>(rectangle.y) + y) *
                         frame.width +
                     static_cast<std::uint32_t>(rectangle.x);
+                auto* pixels = frame.pixels.data() + row;
+                if (mode == HostCompositeMode::Copy) {
+                    std::fill_n(pixels, rectangle.width, argb);
+                    continue;
+                }
                 for (std::uint32_t x = 0; x < rectangle.width; ++x) {
-                    auto& pixel = frame.pixels[row + x];
-                    if (mode == HostCompositeMode::Copy) {
-                        pixel = argb;
-                    } else if (mode ==
-                               HostCompositeMode::ConstantAlphaCrossfade) {
+                    auto& pixel = pixels[x];
+                    if (mode == HostCompositeMode::ConstantAlphaCrossfade) {
                         pixel =
                             constant_alpha_crossfade(argb, pixel, global_alpha);
                     } else {
@@ -314,6 +316,39 @@ namespace {
             clipped = { clipped_left, clipped_top,
                 static_cast<std::uint32_t>(clipped_right - clipped_left),
                 static_cast<std::uint32_t>(clipped_bottom - clipped_top) };
+            // Identity nearest copies with equal extents are the common
+            // framebuffer-preservation path. The generic sampler below does
+            // two 64-bit divisions per pixel and allocates a second full
+            // rectangle even though the mapping is one-to-one. The source
+            // snapshot already makes same-surface copies safe, so copy rows
+            // directly and preserve the exact clip semantics.
+            if (mode == HostCompositeMode::Copy &&
+                rotation == HostRotation::Identity &&
+                source_rectangle.width == destination_rectangle.width &&
+                source_rectangle.height == destination_rectangle.height) {
+                const auto source_offset_x =
+                    clipped.x - destination_rectangle.x;
+                const auto source_offset_y =
+                    clipped.y - destination_rectangle.y;
+                for (std::uint32_t y = 0; y < clipped.height; ++y) {
+                    const auto source_row =
+                        (static_cast<std::size_t>(source_rectangle.y) +
+                            static_cast<std::size_t>(source_offset_y) + y) *
+                            source_frame.width +
+                        static_cast<std::size_t>(source_rectangle.x) +
+                        static_cast<std::size_t>(source_offset_x);
+                    const auto destination_row =
+                        (static_cast<std::size_t>(clipped.y) + y) *
+                            destination_frame.width +
+                        static_cast<std::size_t>(clipped.x);
+                    std::copy_n(source_frame.pixels.data() + source_row,
+                        clipped.width,
+                        destination_frame.pixels.data() + destination_row);
+                }
+                destination_mapping.set_damage(clipped);
+                performance_counters().record_host_copy();
+                return true;
+            }
             std::vector<std::uint32_t> sampled(
                 static_cast<std::size_t>(clipped.width) * clipped.height);
             for (std::uint32_t y = 0; y < clipped.height; ++y) {
