@@ -22,6 +22,10 @@ internal object NativeBridge {
 
     fun ownsRunningSession(id: String): Boolean = activityReserved && activeContainerId == id && isRunning()
 
+    external fun beginAndroidTouchBatch(): Boolean
+    external fun annotateAndroidTouchSample(device: Int, finger: Int, action: Int,
+        whenNs: Long, x: Float, y: Float)
+    external fun endAndroidTouchBatch()
     external fun isRunning(): Boolean
     private external fun prepare(): Boolean
     external fun command(path: String, command: String, stop: Boolean): Boolean

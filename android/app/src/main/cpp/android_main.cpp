@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #include "android_host.hpp"
 #include "android_sensors.hpp"
+#include "app/android_touch_timing.hpp"
 #include "app/command_line.hpp"
 
 #include <SDL.h>
@@ -94,6 +95,39 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_xxiao_ilemu_NativeBridge_command(
         env->ReleaseStringUTFChars(command, text);
     env->ReleaseStringUTFChars(path, file);
     return sent ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_xxiao_ilemu_NativeBridge_beginAndroidTouchBatch(JNIEnv*, jobject)
+{
+    return ilemu::android_touch_timing::begin_live_batch() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxiao_ilemu_NativeBridge_annotateAndroidTouchSample(
+    JNIEnv*, jobject, jint device, jint finger, jint action, jlong when_ns,
+    jfloat x, jfloat y)
+{
+    // Android MotionEvent constants for the three actions accepted by Java.
+    Uint32 type = 0;
+    switch (action) {
+    case 0:
+        type = SDL_FINGERDOWN;
+        break;
+    case 1:
+        type = SDL_FINGERUP;
+        break;
+    case 2:
+        type = SDL_FINGERMOTION;
+        break;
+    }
+    ilemu::android_touch_timing::annotate(device, finger, type, when_ns, x, y);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxiao_ilemu_NativeBridge_endAndroidTouchBatch(JNIEnv*, jobject)
+{
+    ilemu::android_touch_timing::finish();
 }
 
 extern "C" int SDL_main(int argc, char** argv)

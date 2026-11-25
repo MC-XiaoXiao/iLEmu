@@ -7,7 +7,9 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
+#include <optional>
 
 namespace ilemu {
 
@@ -22,6 +24,8 @@ struct TouchInput {
     TouchPhase phase { TouchPhase::Down };
     float x { };
     float y { };
+    // Host sample time, when supplied by the input source.
+    std::optional<std::chrono::steady_clock::time_point> host_sample_time { };
 };
 
 } // namespace ilemu

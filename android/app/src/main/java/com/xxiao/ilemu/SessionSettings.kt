@@ -11,7 +11,7 @@ internal data class SessionSettings(val container: Container) {
         "--host-cache", ContainerRepository(context).cache(container).path,
         "--activation", "activated", "--network", "isolated",
         "--gles-backend", "vulkan", "--display", if (container.headless) "headless" else "sdl",
-        "--cores", container.cores.toString(), "--jit-cache-mib", container.jitCacheMiB.toString(), "--jit-cache-budget-mib", "256",
+        "--cores", container.cores.toString(), "--jit-cache-mib", container.jitCacheMiB.toString(),
         "--jit-artifact-disk-mib", "128",
         "--control-stdin"
     )

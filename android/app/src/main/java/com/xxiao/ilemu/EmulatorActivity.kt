@@ -27,6 +27,7 @@ import com.xxiao.ilemu.firmware.FirmwareMetadata
 import com.xxiao.ilemu.ui.PhoneFrame
 import com.xxiao.ilemu.ui.DeviceChassis
 import org.libsdl.app.SDLActivity
+import org.libsdl.app.SDLSurface
 import java.io.File
 
 /** SDL remains the display/input host; Android chrome only sends public control commands. */
@@ -39,6 +40,8 @@ class EmulatorActivity : SDLActivity() {
     private val containerId get() = intent.getStringExtra("containerId")
     private val density get() = resources.displayMetrics.density
     override fun getLibraries(): Array<String> = arrayOf("SDL2", "ilemu")
+    override fun createSDLSurface(context: Context): SDLSurface = TimedTouchSurface(context)
+
     override fun getArguments(): Array<String> {
         val arguments = intent.getStringArrayExtra("arguments") ?: arrayOf("help")
         val delimiter = if (arguments.firstOrNull() == "boot") arguments.indexOf("--") else -1
