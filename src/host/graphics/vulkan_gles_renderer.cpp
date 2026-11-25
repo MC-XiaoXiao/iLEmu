@@ -701,6 +701,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
             VkSemaphore signal_semaphore = VK_NULL_HANDLE);
         void wait_for_slot(CommandSlot& slot);
+        [[nodiscard]] bool try_wait_for_slot(CommandSlot& slot);
         void wait_for_all_slots();
         [[nodiscard]] CommandSlot& command_slot()
         {
@@ -2560,6 +2561,22 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         collect_retired_resources();
     }
 
+    bool VulkanGlesRenderer::try_wait_for_slot(CommandSlot& slot)
+    {
+        if (!slot.in_flight)
+            return true;
+        const auto wait_result = slot.fence->wait(0);
+        if (wait_result == VK_TIMEOUT || wait_result == VK_NOT_READY)
+            return false;
+        require_success(wait_result, "vkWaitForFences");
+        slot.in_flight = false;
+#if defined(__ANDROID__) || defined(__linux__)
+        slot.program_targets.clear();
+#endif
+        collect_retired_resources();
+        return true;
+    }
+
     void VulkanGlesRenderer::wait_for_all_slots()
     {
         for (auto& slot : command_slots_)
@@ -3474,7 +3491,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         // the render fence. Keep presentation in the next ring slot so
         // compositor and presentation semaphore lifetimes cannot alias.
         auto& slot = command_slot();
-        wait_for_slot(slot);
+        // Presentation runs behind the guest renderer but shares its mutex.
+        // Do not wait for a prior GPU submission while holding that mutex:
+        // returning Skipped lets the presenter retry after the fence signals
+        // without turning one slow FIFO frame into a guest long frame.
+        if (!try_wait_for_slot(slot))
+            return PresentResult::Skipped;
 
         std::uint32_t image_index { };
         VkResult acquired;
