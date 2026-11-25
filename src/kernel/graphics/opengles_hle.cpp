@@ -1406,6 +1406,9 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     state.viewport_width = viewport_width;
     state.viewport_height = viewport_height;
     state.resources = &resources_;
+    if (!programmable && !program_draw && context->client_api == 1U &&
+        context->enabled_capabilities.contains(gles_abi::alpha_test))
+        state.alpha_test = context->alpha_test;
     state.blend_enabled =
         context->enabled_capabilities.contains(gles_abi::blend);
     state.cull_enabled =
@@ -2564,6 +2567,26 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         }
         context->line_width = width;
     });
+    const auto alpha_function = [this](UserlandHleCall& call, float reference) {
+        auto* context = current_context(call);
+        const auto function = call.argument(0);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+        } else if (context->client_api != 1U ||
+                   function < gles_abi::never || function > gles_abi::always) {
+            set_gl_error(call, gles_abi::invalid_enum);
+        } else {
+            context->alpha_test = { function,
+                std::fmin(std::fmax(reference, 0.0F), 1.0F) };
+        }
+    };
+    add("_glAlphaFunc", [alpha_function](UserlandHleCall& call) {
+        alpha_function(call, std::bit_cast<float>(call.argument(1)));
+    });
+    add("_glAlphaFuncx", [alpha_function](UserlandHleCall& call) {
+        const auto reference = static_cast<std::int32_t>(call.argument(1));
+        alpha_function(call, static_cast<float>(reference) / 65536.0F);
+    });
     add("_glGetIntegerv", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
         const auto output = call.argument(1);
@@ -2609,6 +2632,17 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 values[index] =
                     static_cast<std::uint32_t>(context->scissor_box[index]);
             }
+            break;
+        case gles_abi::alpha_test:
+        case gles_abi::alpha_test_function:
+            if (context->client_api != 1U) {
+                set_gl_error(call, gles_abi::invalid_enum);
+                return;
+            }
+            values[0] = call.argument(0) == gles_abi::alpha_test_function
+                            ? context->alpha_test.function
+                            : context->enabled_capabilities.contains(
+                                  gles_abi::alpha_test);
             break;
         case gles_abi::color_write_mask:
             count = context->color_mask.size();
@@ -2748,6 +2782,11 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             count = context->current_color.size();
         } else if (call.argument(0) == gles_abi::line_width_query) {
             current[0] = context->line_width;
+            values = &current;
+            count = 1U;
+        } else if (call.argument(0) == gles_abi::alpha_test_reference &&
+                   context->client_api == 1U) {
+            current[0] = context->alpha_test.reference;
             values = &current;
             count = 1U;
         } else if (call.argument(0) == gles_abi::vertex_array_binding_oes) {
@@ -3549,15 +3588,16 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         }
         if (call.argument(0) != gles_abi::texture_environment ||
             !std::isfinite(parameter) || parameter < 0.0F ||
-            parameter >
-                static_cast<float>(std::numeric_limits<std::uint32_t>::max())) {
+            static_cast<double>(parameter) >
+                std::numeric_limits<std::uint32_t>::max()) {
             set_gl_error(call, gles_abi::invalid_enum);
             return false;
         }
         auto& environment = context->texture_units[context->active_texture_unit]
                                 .texture_environment;
         const auto name = call.argument(1);
-        const auto value = static_cast<std::uint32_t>(std::lround(parameter));
+        const auto value = static_cast<std::uint32_t>(
+            std::round(static_cast<double>(parameter)));
         const auto is_one_of = [](std::uint32_t candidate, auto... values) {
             return ((candidate == values) || ...);
         };
@@ -3657,6 +3697,17 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
     };
     add("_glTexEnvi", [set_texture_environment](UserlandHleCall& call) {
         set_texture_environment(call, static_cast<float>(call.argument(2)));
+    });
+    add("_glTexEnvf", [set_texture_environment](UserlandHleCall& call) {
+        set_texture_environment(call, std::bit_cast<float>(call.argument(2)));
+    });
+    add("_glTexEnvx", [set_texture_environment](UserlandHleCall& call) {
+        const auto name = call.argument(1);
+        auto value = static_cast<float>(static_cast<std::int32_t>(
+            call.argument(2)));
+        if (name == gles_abi::rgb_scale || name == gles_abi::alpha_scale)
+            value /= 65536.0F;
+        set_texture_environment(call, value);
     });
     add("_glTexEnvfv", [this, set_texture_environment](UserlandHleCall& call) {
         auto* context = current_context(call);

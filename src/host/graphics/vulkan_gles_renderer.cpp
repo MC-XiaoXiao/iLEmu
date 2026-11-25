@@ -308,6 +308,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::array<std::array<float, 4>, GlesFilterProfile::maximum_taps>
             filter_taps { };
         std::array<std::array<float, 4>, 4> filter_color_columns { };
+        std::int32_t alpha_function { };
+        std::int32_t alpha_reference { };
     };
 
     static_assert(gles_abi::texture_unit_count == 4);
@@ -315,7 +317,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     static_assert(sizeof(GpuTextureEnvironment) == 128);
     static_assert(sizeof(GpuFixedFunctionState) ==
                   128 * gles_abi::texture_unit_count + 32 +
-                      16 * GlesFilterProfile::maximum_taps + 64);
+                      16 * GlesFilterProfile::maximum_taps + 64 + 16);
 
     struct PipelineKey {
         enum class StencilMode : std::uint8_t {
@@ -2996,6 +2998,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             static_cast<std::int32_t>(state.filter.tap_count), 0 };
         result.filter_taps = state.filter.taps;
         result.filter_color_columns = state.filter.color_columns;
+        result.alpha_function = static_cast<std::int32_t>(
+            state.alpha_test.function);
+        result.alpha_reference = static_cast<std::int32_t>(
+            std::lround(state.alpha_test.reference * 255.0F));
         return result;
     }
 

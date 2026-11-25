@@ -82,6 +82,11 @@ struct GlesRasterDepth {
     std::uint32_t function { 0x0201U };
 };
 
+struct GlesAlphaTest {
+    std::uint32_t function { gles_abi::always };
+    float reference { };
+};
+
 struct GlesRasterState {
     GlesRasterFilter filter;
     GlesRasterDepth depth;
@@ -114,6 +119,7 @@ struct GlesRasterState {
         GlesFragmentOperation::TextureEnvironment
     };
     std::size_t fragment_operation_texture_unit { };
+    GlesAlphaTest alpha_test;
 };
 
 [[nodiscard]] std::uint32_t premultiply_argb(std::uint32_t pixel);

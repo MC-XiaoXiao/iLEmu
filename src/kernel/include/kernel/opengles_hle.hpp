@@ -231,6 +231,7 @@ private:
                 return values;
             }();
         std::uint32_t current_program { };
+        GlesAlphaTest alpha_test;
     };
     struct ProgrammableDrawState {
         GlesRasterFilter filter;

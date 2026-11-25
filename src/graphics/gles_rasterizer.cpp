@@ -49,24 +49,25 @@ namespace {
         return dy > 0.0F || (dy == 0.0F && dx < 0.0F);
     }
 
-    bool depth_passes(std::uint32_t function, float fragment, float stored)
+    bool comparison_passes(
+        std::uint32_t function, float fragment, float reference)
     {
         switch (function) {
-        case 0x0201U: // GL_LESS
-            return fragment < stored;
-        case 0x0202U: // GL_EQUAL
-            return fragment == stored;
-        case 0x0203U: // GL_LEQUAL
-            return fragment <= stored;
-        case 0x0204U: // GL_GREATER
-            return fragment > stored;
-        case 0x0205U: // GL_NOTEQUAL
-            return fragment != stored;
-        case 0x0206U: // GL_GEQUAL
-            return fragment >= stored;
-        case 0x0207U: // GL_ALWAYS
+        case gles_abi::less:
+            return fragment < reference;
+        case gles_abi::equal:
+            return fragment == reference;
+        case gles_abi::less_or_equal:
+            return fragment <= reference;
+        case gles_abi::greater:
+            return fragment > reference;
+        case gles_abi::not_equal:
+            return fragment != reference;
+        case gles_abi::greater_or_equal:
+            return fragment >= reference;
+        case gles_abi::always:
             return true;
-        default: // GL_NEVER
+        default:
             return false;
         }
     }
@@ -584,6 +585,8 @@ namespace {
             edge(triangle[0], triangle[1], triangle[2].x, triangle[2].y);
         if (std::abs(area) < 1.0e-6F)
             return;
+        const auto alpha_reference =
+            std::round(state.alpha_test.reference * 255.0F);
         const auto facing_area =
             state.render_target_inverted_vertical ? -area : area;
         const auto front_facing =
@@ -691,12 +694,14 @@ namespace {
                                        triangle[2].inverse_w * w2;
                 if (!std::isfinite(inverse_w) || std::abs(inverse_w) <= 1.0e-6F)
                     continue;
+                float depth { };
+                float* stored_depth = nullptr;
                 if (!depth_buffer.empty()) {
                     // Window depth is already divided by clip W. Interpolate
                     // it linearly in screen space, unlike color and UVs.
                     const auto base = triangle[2].depth;
-                    const auto depth = base + (triangle[0].depth - base) * w0 +
-                                       (triangle[1].depth - base) * w1;
+                    depth = base + (triangle[0].depth - base) * w0 +
+                            (triangle[1].depth - base) * w1;
                     if (!(depth >= 0.0F && depth <= 1.0F))
                         continue;
                     // The color target may be inverted independently of the
@@ -704,13 +709,12 @@ namespace {
                     const auto guest_y = state.render_target_inverted_vertical
                         ? static_cast<std::uint32_t>(y)
                         : frame.height - 1U - static_cast<std::uint32_t>(y);
-                    auto& stored = depth_buffer[
+                    stored_depth = &depth_buffer[
                         static_cast<std::size_t>(guest_y) * frame.width +
                         static_cast<std::size_t>(x)];
-                    if (!depth_passes(state.depth.function, depth, stored))
+                    if (!comparison_passes(
+                            state.depth.function, depth, *stored_depth))
                         continue;
-                    if (state.depth.write)
-                        stored = depth;
                 }
                 std::array<float, 4> color { };
                 for (std::size_t component = 0; component < color.size();
@@ -870,6 +874,12 @@ namespace {
                     pixel = apply_fragment_operation(state.fragment_operation,
                         pixel, *operation_destination);
                 }
+                if (state.alpha_test.function != gles_abi::always &&
+                    !comparison_passes(state.alpha_test.function,
+                        static_cast<float>(pixel >> 24U), alpha_reference))
+                    continue;
+                if (stored_depth && state.depth.write)
+                    *stored_depth = depth;
                 // Blending already applies the source representation selected
                 // by its factors. Only a direct replacement needs conversion
                 // to the premultiplied render-target representation.

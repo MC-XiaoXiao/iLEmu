@@ -23,6 +23,11 @@ namespace {
     constexpr std::uint32_t gl_renderbuffer_height = 0x8d43;
     constexpr std::uint32_t gl_renderbuffer_internal_format = 0x8d44;
     constexpr std::uint32_t gl_renderbuffer_color_format = 0x8e10;
+    constexpr std::uint32_t gl_framebuffer_attachment_object_type = 0x8cd0;
+    constexpr std::uint32_t gl_framebuffer_attachment_object_name = 0x8cd1;
+    constexpr std::uint32_t gl_framebuffer_attachment_texture_level = 0x8cd2;
+    constexpr std::uint32_t gl_framebuffer_attachment_texture_cube_map_face =
+        0x8cd3;
     class DrawableWindowRelease
         : public std::enable_shared_from_this<DrawableWindowRelease> {
     public:
@@ -472,6 +477,72 @@ void OpenGlesHle::register_framebuffers(UserlandHleRegistry& registry)
     };
     add("_glCheckFramebufferStatus", check_framebuffer_status);
     add("_glCheckFramebufferStatusOES", check_framebuffer_status);
+    const auto get_framebuffer_attachment = [this](UserlandHleCall& call) {
+        const auto* context = current_context(call);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        if (call.argument(0) != gles_abi::framebuffer) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        const auto framebuffer =
+            context->framebuffers.find(context->bound_framebuffer);
+        if (framebuffer == context->framebuffers.end()) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        const auto& state = framebuffer->second;
+        std::uint32_t renderbuffer { };
+        std::uint32_t texture { };
+        switch (call.argument(1)) {
+        case gles_abi::color_attachment0:
+            renderbuffer = state.color_renderbuffer;
+            if (renderbuffer == 0U)
+                texture = state.color_texture;
+            break;
+        case gles_abi::depth_attachment:
+            renderbuffer = state.depth_renderbuffer;
+            break;
+        case gles_abi::stencil_attachment:
+            renderbuffer = state.stencil_renderbuffer;
+            break;
+        default:
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        std::uint32_t value { };
+        switch (call.argument(2)) {
+        case gl_framebuffer_attachment_object_type:
+            value = renderbuffer ? gles_abi::renderbuffer
+                                 : texture ? gles_abi::texture_source : 0U;
+            break;
+        case gl_framebuffer_attachment_object_name:
+            value = renderbuffer ? renderbuffer : texture;
+            if (value == 0U) {
+                set_gl_error(call, gles_abi::invalid_enum);
+                return;
+            }
+            break;
+        case gl_framebuffer_attachment_texture_level:
+        case gl_framebuffer_attachment_texture_cube_map_face:
+            if (texture == 0U) {
+                set_gl_error(call, gles_abi::invalid_enum);
+                return;
+            }
+            // This framebuffer model attaches only 2D textures at level zero.
+            break;
+        default:
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        if (call.argument(3) == 0U ||
+            !call.memory().write32(call.argument(3), value))
+            set_gl_error(call, gles_abi::invalid_value);
+    };
+    add("_glGetFramebufferAttachmentParameteriv", get_framebuffer_attachment);
+    add("_glGetFramebufferAttachmentParameterivOES", get_framebuffer_attachment);
     const auto delete_framebuffers = [this](UserlandHleCall& call) {
         if (program_flush_failed_)
             return;

@@ -8,6 +8,13 @@
 #version 450
 
 const int GL_ADD = 0x0104;
+const int GL_LESS = 0x0201;
+const int GL_EQUAL = 0x0202;
+const int GL_LEQUAL = 0x0203;
+const int GL_GREATER = 0x0204;
+const int GL_NOTEQUAL = 0x0205;
+const int GL_GEQUAL = 0x0206;
+const int GL_ALWAYS = 0x0207;
 const int GL_BLEND = 0x0be2;
 const int GL_SRC_COLOR = 0x0300;
 const int GL_ONE_MINUS_SRC_COLOR = 0x0301;
@@ -56,6 +63,8 @@ layout(std140, binding = 0) uniform FixedFunctionState {
     ivec4 filter_flags;
     vec4 filter_taps[16];
     vec4 filter_color_columns[4];
+    int alpha_function;
+    int alpha_reference;
 } fixed_state;
 layout(binding = 1) uniform sampler2D image0;
 layout(binding = 2) uniform sampler2D image1;
@@ -325,6 +334,20 @@ vec4 apply_filter() {
     return vec4(sampled.rgb, luminance * luminance);
 }
 
+bool alpha_passes(float alpha) {
+    int function = fixed_state.alpha_function;
+    if (function == GL_ALWAYS) return true;
+    int value = int(floor(clamp(alpha, 0.0, 1.0) * 255.0 + 0.5));
+    int reference = fixed_state.alpha_reference;
+    if (function == GL_LESS) return value < reference;
+    if (function == GL_EQUAL) return value == reference;
+    if (function == GL_LEQUAL) return value <= reference;
+    if (function == GL_GREATER) return value > reference;
+    if (function == GL_NOTEQUAL) return value != reference;
+    if (function == GL_GEQUAL) return value >= reference;
+    return false;
+}
+
 void main() {
     if (fixed_state.filter_flags.x != 0) {
         output_color = clamp(apply_filter(), 0.0, 1.0);
@@ -372,6 +395,7 @@ void main() {
         result = apply_fragment_operation(
             operation, result, sample_unit_offset(destination_unit, vec2(0.0)));
     }
+    if (!alpha_passes(result.a)) discard;
     if (fixed_state.target_flags.x != 0) result.rgb *= result.a;
     output_color = clamp(result, 0.0, 1.0);
 }
