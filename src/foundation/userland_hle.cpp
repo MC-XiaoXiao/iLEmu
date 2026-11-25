@@ -2646,18 +2646,37 @@ std::size_t UserlandHleRegistry::resolve_mapped_shared_cache_data_symbols(
     const auto path = cache_path.generic_string();
     const auto file_end = file_offset + mapping_size;
     std::size_t resolved = 0U;
-    for (const auto& symbol : shared_cache_data_symbols_) {
-        if (symbol.cache_path != path || symbol.file_offset < file_offset ||
-            symbol.file_offset >= file_end) {
-            continue;
-        }
-        const auto delta = symbol.file_offset - file_offset;
+    // Data symbols are sorted by cache member and file offset when the shared
+    // cache plan is prepared. Mapping callbacks visit every cache data range,
+    // while only a handful of ranges carry registered exports. Narrow the
+    // walk to this member and range before touching the installed-symbol map;
+    // the old full-vector scan made each startup mapping pay for every export
+    // in every cache member.
+    const auto member_begin = std::lower_bound(
+        shared_cache_data_symbols_.begin(), shared_cache_data_symbols_.end(),
+        std::string_view { path },
+        [](const SharedCacheDataSymbol& symbol, std::string_view member) {
+            return std::string_view { symbol.cache_path } < member;
+        });
+    const auto member_end = std::upper_bound(
+        member_begin, shared_cache_data_symbols_.end(), std::string_view { path },
+        [](std::string_view member, const SharedCacheDataSymbol& symbol) {
+            return member < std::string_view { symbol.cache_path };
+        });
+    const auto first = std::lower_bound(member_begin, member_end, file_offset,
+        [](const SharedCacheDataSymbol& symbol, std::uint64_t offset) {
+            return symbol.file_offset < offset;
+        });
+    for (auto symbol = first; symbol != member_end; ++symbol) {
+        if (symbol->file_offset >= file_end)
+            break;
+        const auto delta = symbol->file_offset - file_offset;
         if (delta > std::numeric_limits<std::uint32_t>::max() - mapping_address)
             continue;
         const auto address =
             mapping_address + static_cast<std::uint32_t>(delta);
         const auto [iterator, inserted] =
-            installed_symbols_.insert_or_assign(symbol.symbol, address);
+            installed_symbols_.insert_or_assign(symbol->symbol, address);
         static_cast<void>(iterator);
         if (inserted)
             ++resolved;
