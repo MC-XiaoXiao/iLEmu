@@ -56,6 +56,7 @@ namespace {
             .control_name = "name",
             .control_value = "value",
             .control_selectors = "selectors",
+            .control_multi_selector = "multi-selector",
             .control_selector_kind = "kind",
             .control_transfer_function = "transfer function",
             .control_range_map = "range map",

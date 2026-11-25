@@ -59,6 +59,7 @@ struct IOKitAudioAbi {
         std::string_view control_name;
         std::string_view control_value;
         std::string_view control_selectors;
+        std::string_view control_multi_selector;
         std::string_view control_selector_kind;
         std::string_view control_transfer_function;
         std::string_view control_range_map;

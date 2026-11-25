@@ -325,8 +325,21 @@ namespace {
                 boolean_property(control.read_only));
             properties.emplace(
                 profile.registry.control_variant, number_property(0));
-            properties.emplace(
-                profile.registry.control_value, number_property(control.value));
+            if (control.selected_items) {
+                std::vector<KernelSharedState::IOKitRegistryProperty>
+                    selected_items;
+                selected_items.reserve(control.selected_items->size());
+                for (const auto item : *control.selected_items) {
+                    selected_items.push_back(number_property(item));
+                }
+                properties.emplace(
+                    profile.registry.control_multi_selector, number_property(1));
+                properties.emplace(profile.registry.control_value,
+                    array_property(std::move(selected_items)));
+            } else {
+                properties.emplace(profile.registry.control_value,
+                    number_property(control.value));
+            }
             if (!selector_items.empty()) {
                 properties.emplace(profile.registry.control_selectors,
                     array_property(std::move(selector_items)));
@@ -762,7 +775,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         const auto identifier = static_cast<std::uint32_t>(scalar_input[0]);
         const auto value = static_cast<std::uint32_t>(scalar_input[1]);
         const auto* control = find_control(*device, identifier);
-        if (control == nullptr || !valid_control_value(*control, value))
+        if (control == nullptr || control->selected_items ||
+            !valid_control_value(*control, value))
             return MethodResult { iokit_abi::bad_argument, { } };
         connection.control_values[identifier] = value;
         if (control->scope == output_scope && control->element == 0U &&

@@ -61,6 +61,8 @@ struct IOAudio2ControlDescription {
     bool read_only;
     std::optional<IOAudio2ControlRangeDescription> range;
     std::span<const IOAudio2SelectorItemDescription> items;
+    // Engaged for multi-select controls, including an empty selection.
+    std::optional<std::span<const std::uint32_t>> selected_items { };
 };
 
 struct IOAudio2DeviceDescription {
