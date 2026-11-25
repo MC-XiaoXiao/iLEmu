@@ -85,6 +85,16 @@ namespace {
     constexpr char quartzcore_update_image[] =
         "__ZN2CA3OGL11GLESContext12update_imageEPNS0_7GLImageEPNS_6Render5ImageEjPKc";
 
+    GlesClientBitmapProfile texture_client_bitmap_profile(
+        const UserlandHleCall& call, OpenGlesGuestCapabilitySet capabilities)
+    {
+        // The special SGX pitch belongs to bitmaps submitted through the
+        // driver dispatch table. Public GLES uploads use GL_UNPACK_ALIGNMENT.
+        return call.prefix_argument(0)
+                   ? open_gles_client_bitmap_profile(capabilities)
+                   : GlesClientBitmapProfile::Standard;
+    }
+
     GlesPixelUnpack texture_unpack(UserlandHleCall& call, GlesPixelUnpack unpack,
         std::uint32_t width, std::uint32_t height)
     {
@@ -3450,7 +3460,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             call.argument(7), call.argument(8),
             texture_unpack(call, context->unpack, static_cast<std::uint32_t>(width),
                 static_cast<std::uint32_t>(height)),
-            open_gles_client_bitmap_profile(context->guest_capabilities));
+            texture_client_bitmap_profile(call, context->guest_capabilities));
         if (error != gles_abi::no_error) {
             set_gl_error(call, error);
         }
@@ -3529,7 +3539,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             call.argument(7), call.argument(8),
             texture_unpack(call, context->unpack, static_cast<std::uint32_t>(width),
                 static_cast<std::uint32_t>(height)),
-            open_gles_client_bitmap_profile(context->guest_capabilities));
+            texture_client_bitmap_profile(call, context->guest_capabilities));
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     });
