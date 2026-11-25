@@ -51,7 +51,10 @@ android {
             version = "3.31.6"
         }
     }
-    packaging { jniLibs.useLegacyPackaging = true }
+    // arm64-v8a devices can mmap native libraries directly from the APK.
+    // Legacy packaging compresses the .so files and forces extraction before
+    // the first native call, which adds avoidable launch work.
+    packaging { jniLibs.useLegacyPackaging = false }
     buildFeatures {
         viewBinding = true
         buildConfig = true
