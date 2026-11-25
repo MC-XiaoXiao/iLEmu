@@ -268,35 +268,36 @@ namespace {
         std::uint32_t colour { };
     };
 
-    int expand_channel(int value, int maximum)
+    constexpr int extend_4_to_5(int value)
     {
-        return (value * 255 + maximum / 2) / maximum;
+        return (value << 1) | (value >> 3);
     }
 
     PvrtcColour pvrtc_colour_a(std::uint32_t value)
     {
         if ((value & 0x8000U) != 0) {
-            return { expand_channel((value >> 10U) & 0x1fU, 0x1f),
-                expand_channel((value >> 5U) & 0x1fU, 0x1f),
-                expand_channel((value >> 1U) & 0x0fU, 0x0f), 255 };
+            return { static_cast<int>((value >> 10U) & 0x1fU),
+                static_cast<int>((value >> 5U) & 0x1fU),
+                extend_4_to_5((value >> 1U) & 0x0fU), 15 };
         }
-        return { expand_channel((value >> 8U) & 0x0fU, 0x0f),
-            expand_channel((value >> 4U) & 0x0fU, 0x0f),
-            expand_channel((value >> 1U) & 0x07U, 0x07),
-            expand_channel((value >> 11U) & 0x07U, 0x07) };
+        const auto blue = static_cast<int>((value >> 1U) & 0x07U);
+        return { extend_4_to_5((value >> 8U) & 0x0fU),
+            extend_4_to_5((value >> 4U) & 0x0fU),
+            (blue << 2) | (blue >> 1),
+            static_cast<int>((value >> 11U) & 0x0eU) };
     }
 
     PvrtcColour pvrtc_colour_b(std::uint32_t value)
     {
         if ((value & 0x80000000U) != 0) {
-            return { expand_channel((value >> 26U) & 0x1fU, 0x1f),
-                expand_channel((value >> 21U) & 0x1fU, 0x1f),
-                expand_channel((value >> 16U) & 0x1fU, 0x1f), 255 };
+            return { static_cast<int>((value >> 26U) & 0x1fU),
+                static_cast<int>((value >> 21U) & 0x1fU),
+                static_cast<int>((value >> 16U) & 0x1fU), 15 };
         }
-        return { expand_channel((value >> 23U) & 0x0fU, 0x0f),
-            expand_channel((value >> 19U) & 0x0fU, 0x0f),
-            expand_channel((value >> 15U) & 0x0fU, 0x0f),
-            expand_channel((value >> 27U) & 0x07U, 0x07) };
+        return { extend_4_to_5((value >> 24U) & 0x0fU),
+            extend_4_to_5((value >> 20U) & 0x0fU),
+            extend_4_to_5((value >> 16U) & 0x0fU),
+            static_cast<int>((value >> 27U) & 0x0eU) };
     }
 
     PvrtcColour interpolate_colour(const PvrtcColour& top_left,
@@ -304,27 +305,27 @@ namespace {
         const PvrtcColour& bottom_right, std::uint32_t x, std::uint32_t y,
         std::uint32_t width, std::uint32_t height)
     {
-        const auto blend = [](int first, int second, std::uint32_t position,
-                               std::uint32_t extent) {
-            return (first * static_cast<int>(extent - position) +
-                       second * static_cast<int>(position) +
-                       static_cast<int>(extent / 2U)) /
-                   static_cast<int>(extent);
+        const auto interpolate = [&](int PvrtcColour::*channel) {
+            const auto left = static_cast<int>(width - x);
+            const auto right = static_cast<int>(x);
+            const auto top = static_cast<int>(height - y);
+            const auto bottom = static_cast<int>(y);
+            return (top_left.*channel * left + top_right.*channel * right) *
+                       top +
+                   (bottom_left.*channel * left +
+                       bottom_right.*channel * right) * bottom;
         };
-        const auto top =
-            PvrtcColour { blend(top_left.red, top_right.red, x, width),
-                blend(top_left.green, top_right.green, x, width),
-                blend(top_left.blue, top_right.blue, x, width),
-                blend(top_left.alpha, top_right.alpha, x, width) };
-        const auto bottom =
-            PvrtcColour { blend(bottom_left.red, bottom_right.red, x, width),
-                blend(bottom_left.green, bottom_right.green, x, width),
-                blend(bottom_left.blue, bottom_right.blue, x, width),
-                blend(bottom_left.alpha, bottom_right.alpha, x, width) };
-        return { blend(top.red, bottom.red, y, height),
-            blend(top.green, bottom.green, y, height),
-            blend(top.blue, bottom.blue, y, height),
-            blend(top.alpha, bottom.alpha, y, height) };
+        // Interpolate in PVRTC's 5-bit RGB and 4-bit alpha precision before
+        // expanding the result to 8 bits. An 8-wide word doubles the weights.
+        const auto rgb_shift = width == 8U ? 2 : 1;
+        const auto expand_rgb = [&](int value) {
+            return (value >> rgb_shift) + (value >> (rgb_shift + 5));
+        };
+        const auto alpha = interpolate(&PvrtcColour::alpha);
+        return { expand_rgb(interpolate(&PvrtcColour::red)),
+            expand_rgb(interpolate(&PvrtcColour::green)),
+            expand_rgb(interpolate(&PvrtcColour::blue)),
+            (alpha >> (rgb_shift - 1)) + (alpha >> (rgb_shift + 3)) };
     }
 
     std::uint32_t pvrtc_twiddle(std::uint32_t width, std::uint32_t height,
@@ -461,12 +462,13 @@ namespace {
                     auto bits = word.modulation;
                     if (two_bpp) {
                         if (mode != 0) {
-                            if ((bits & 1U) != 0)
+                            if ((bits & 1U) != 0) {
                                 mode = (bits & (1U << 20U)) != 0 ? 3U : 2U;
-                            if ((bits & (1U << 21U)) != 0)
-                                bits |= 1U << 20U;
-                            else
-                                bits &= ~(1U << 20U);
+                                // The center code's low bit signals the
+                                // direction only for the H/V-only modes.
+                                bits = (bits & ~(1U << 20U)) |
+                                       ((bits & (1U << 21U)) >> 1U);
+                            }
                             bits = (bits & 2U) != 0 ? bits | 1U : bits & ~1U;
                             for (std::uint32_t y = 0; y < 4; ++y) {
                                 for (std::uint32_t x = 0; x < 8; ++x) {
@@ -601,12 +603,8 @@ namespace {
                             modulation_at(x + half_width, y + half_height);
                         const auto index =
                             static_cast<std::size_t>(y * block_width + x);
-                        const auto result = blend_pixel(
+                        pixels_in_word[index] = blend_pixel(
                             upscaled_a[index], upscaled_b[index], value);
-                        pixels_in_word[two_bpp ? index
-                                               : static_cast<std::size_t>(
-                                                     x * word_height + y)] =
-                            result;
                     }
                 }
                 const auto store = [&](int x, int y,
