@@ -16,9 +16,15 @@ internal object FirmwareMetadata {
     init { System.loadLibrary("SDL2"); System.loadLibrary("ilemu") }
     private external fun readPlist(bytes: ByteArray): String?
     private external fun deviceModels(): String
-    fun models(): List<DeviceOption> {
+    private val modelCache by lazy {
         val list = JSONArray(deviceModels())
-        return List(list.length()) { list.getJSONObject(it).let { j -> DeviceOption(j.getString("identifier"), j.getString("name"), j.getString("board"), j.getInt("width"), j.getInt("height")) } }
+        List(list.length()) { list.getJSONObject(it).let { j ->
+            DeviceOption(j.getString("identifier"), j.getString("name"), j.getString("board"),
+                j.getInt("width"), j.getInt("height"))
+        } }
+    }
+    fun models(): List<DeviceOption> {
+        return modelCache
     }
     fun inspect(input: InputStream): FirmwareIdentity {
         return identity(document(input))
