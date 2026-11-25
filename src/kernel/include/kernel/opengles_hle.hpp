@@ -138,6 +138,7 @@ private:
             bool display_oriented { };
             std::optional<DisplayViewport> drawable_viewport;
             std::uint32_t native_window { };
+            std::uint32_t pending_drawable_surface { };
             std::optional<std::uint32_t> drawable_surface_id;
         };
         struct ArrayPointer {
@@ -301,7 +302,11 @@ private:
         const RenderTargetBinding& binding,
         std::span<const std::uint32_t> textures) const;
     void present_eagl_window_async(UserlandHleCall& call,
-        const ContextState& context, const RenderTargetBinding& binding);
+        const ContextState& context,
+        const std::optional<RenderTargetBinding>& binding);
+    [[nodiscard]] std::uint32_t stage_eagl_window_surface(ContextState& context,
+        std::uint32_t name, DisplayGeometry pixels, std::uint32_t window,
+        std::uint32_t pending_surface);
     void complete_drawable_storage(UserlandHleCall& call,
         ResourceIdentity context, ResourceIdentity renderbuffer,
         std::uint32_t name, DisplayGeometry pixels,

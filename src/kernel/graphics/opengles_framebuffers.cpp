@@ -10,8 +10,8 @@
 
 #include <algorithm>
 #include <limits>
-#include <new>
 #include <memory>
+#include <new>
 #include <vector>
 
 namespace ilemu {
@@ -194,6 +194,7 @@ try {
     renderbuffer->second.depth = std::move(depth);
     renderbuffer->second.display_oriented = false;
     renderbuffer->second.native_window = 0U;
+    renderbuffer->second.pending_drawable_surface = 0U;
     renderbuffer->second.drawable_surface_id.reset();
     for (auto& [framebuffer_name, framebuffer] : context.framebuffers) {
         static_cast<void>(framebuffer_name);
@@ -205,28 +206,55 @@ try {
     return gles_abi::out_of_memory;
 }
 
+std::uint32_t OpenGlesHle::stage_eagl_window_surface(ContextState& context,
+    std::uint32_t name, DisplayGeometry pixels, std::uint32_t window,
+    std::uint32_t pending_surface)
+{
+    const auto error = ensure_renderbuffer_storage(
+        context, name, pixels.width, pixels.height, gles_abi::bgra_apple);
+    auto& buffer = context.renderbuffers.at(name);
+    // Preserve QuartzCore's ownership while there is no writable IOSurface.
+    // The previously presented IOSurface belongs to the compositor.
+    if (error != gles_abi::no_error) {
+        resources_.erase_texture(buffer.color_texture);
+        buffer.color_texture = 0U;
+        buffer.drawable_surface_id.reset();
+    }
+    buffer.native_window = window;
+    buffer.pending_drawable_surface = pending_surface;
+    buffer.display_oriented = true;
+    return error;
+}
+
 void OpenGlesHle::present_eagl_window_async(UserlandHleCall& call,
-    const ContextState& context, const RenderTargetBinding& binding)
+    const ContextState& context,
+    const std::optional<RenderTargetBinding>& binding)
 try {
-    const auto& renderbuffer =
-        context.renderbuffers.at(context.bound_renderbuffer);
+    const auto renderbuffer_name = context.bound_renderbuffer;
+    const auto& renderbuffer = context.renderbuffers.at(renderbuffer_name);
     const auto window = GuestEaglWindow::open(call, renderbuffer.native_window);
-    const auto transport =
-        surface_store_->acquire_transport_lease(*binding.backing_identifier);
-    if (!window || !transport) {
+    std::shared_ptr<void> transport;
+    if (renderbuffer.drawable_surface_id && binding &&
+        binding->backing_identifier == renderbuffer.drawable_surface_id) {
+        transport = surface_store_->acquire_transport_lease(
+            *renderbuffer.drawable_surface_id);
+    }
+    if (!window || (renderbuffer.drawable_surface_id && !transport)) {
         call.set_return(0U);
         return;
     }
-    const auto renderbuffer_name = context.bound_renderbuffer;
-    // This resolver stays on the core across both the host wait
-    // and the firmware's window callbacks. No context pointer is
-    // retained through either scheduling boundary.
+    // Guest callbacks and host work can yield. Re-resolve the same drawable
+    // and buffer before altering the attachment on the guest core.
     const auto live =
         [this, context_id = context.identity, buffer_id = renderbuffer.identity,
             renderbuffer_name, binding, address = window->address(),
+            surface_id = renderbuffer.drawable_surface_id,
+            pending = renderbuffer.pending_drawable_surface,
             owner = renderer_owner_, transport]() -> ContextState* {
         static_cast<void>(transport);
-        if (owner != renderer_owner_ || !binding_live(binding))
+        if (owner != renderer_owner_ ||
+            (surface_id &&
+                (!binding_live(*binding) || !native_target_live(*binding))))
             return nullptr;
         const auto found =
             std::ranges::find_if(contexts_, [&](const auto& entry) {
@@ -239,58 +267,76 @@ try {
         if (buffer == state.renderbuffers.end() ||
             buffer->second.identity != buffer_id ||
             buffer->second.native_window != address ||
-            buffer->second.drawable_surface_id != binding.backing_identifier)
+            buffer->second.pending_drawable_surface != pending ||
+            buffer->second.drawable_surface_id != surface_id)
             return nullptr;
         return &state;
     };
-    submit_renderer_async(call, binding.key, false, transport,
-        [this, live, renderbuffer_name, window = *window](
+    const auto rotate = [this, live, renderbuffer_name,
+                            address = window->address()](
+                            UserlandHleCall& completed, bool presented,
+                            std::uint32_t next_surface) {
+        const auto finish = [this, live, renderbuffer_name, address, presented,
+                                next_surface](UserlandHleCall& ready) {
+            auto* current = live();
+            if (program_flush_failed_ || !current) {
+                ready.set_return(0U);
+                return;
+            }
+            auto& buffer = current->renderbuffers.at(renderbuffer_name);
+            const auto attached = next_surface != 0U &&
+                                  attach_eagl_window_surface(ready, *current,
+                                      renderbuffer_name, address, next_surface);
+            if (!attached) {
+                if (presented) {
+                    const DisplayGeometry pixels { buffer.width,
+                        buffer.height };
+                    static_cast<void>(stage_eagl_window_surface(*current,
+                        renderbuffer_name, pixels, address, next_surface));
+                } else {
+                    buffer.native_window = address;
+                    buffer.pending_drawable_surface = next_surface;
+                }
+            }
+            ready.set_return(presented ? 1U : 0U);
+        };
+        enter_graphics_call(completed, [this, finish](UserlandHleCall& ready) {
+            if (pending_program_target_)
+                await_program_flush(ready, finish);
+            else
+                finish(ready);
+        });
+    };
+    if (!renderbuffer.drawable_surface_id) {
+        // A skipped frame leaves the last guest composition visible. Acquire
+        // a fresh target for the next frame, or retry the buffer already held
+        // by QuartzCore when its surface import was temporarily unavailable.
+        if (renderbuffer.pending_drawable_surface != 0U) {
+            rotate(call, false, renderbuffer.pending_drawable_surface);
+        } else {
+            window->acquire(call,
+                [rotate](UserlandHleCall& acquired, std::uint32_t surface) {
+                    rotate(acquired, false, surface);
+                });
+        }
+        return;
+    }
+    submit_renderer_async(call, binding->key, false, transport,
+        [live, rotate, window = *window](
             UserlandHleCall& submitted, bool succeeded) {
             if (!succeeded || !live()) {
                 submitted.set_return(0U);
                 return;
             }
-            window.present(submitted, [this, live, renderbuffer_name,
-                                          address = window.address()](
-                                          UserlandHleCall& completed,
-                                          bool presented,
-                                          std::uint32_t next_surface) {
-                if (!presented) {
-                    completed.set_return(0U);
-                    return;
-                }
-                const auto finish = [this, live, renderbuffer_name, address,
-                                        next_surface](UserlandHleCall& ready) {
-                    auto* current = live();
-                    if (program_flush_failed_ || !current) {
-                        ready.set_return(0U);
+            window.present(
+                submitted, [rotate](UserlandHleCall& completed, bool presented,
+                               std::uint32_t next_surface) {
+                    if (!presented) {
+                        completed.set_return(0U);
                         return;
                     }
-                    if (!attach_eagl_window_surface(ready, *current,
-                            renderbuffer_name, address, next_surface)) {
-                        // The firmware already presented this frame.
-                        // Preserve the existing private next-buffer
-                        // fallback without changing its return value.
-                        auto& buffer =
-                            current->renderbuffers.at(renderbuffer_name);
-                        if (ensure_renderbuffer_storage(*current,
-                                renderbuffer_name, buffer.width, buffer.height,
-                                gles_abi::bgra_apple) == gles_abi::no_error)
-                            buffer.display_oriented = true;
-                    }
-                    ready.set_return(1U);
-                };
-                // A firmware callback can yield to another guest
-                // thread. Respect its accepted GL store work before
-                // rotating the original renderbuffer's attachment.
-                enter_graphics_call(
-                    completed, [this, finish](UserlandHleCall& ready) {
-                        if (pending_program_target_)
-                            await_program_flush(ready, finish);
-                        else
-                            finish(ready);
-                    });
-            });
+                    rotate(completed, true, next_surface);
+                });
         });
 } catch (...) {
     call.set_return(0U);
@@ -331,24 +377,32 @@ void OpenGlesHle::complete_drawable_storage(UserlandHleCall& call,
         }
         auto& context = found->second;
         const auto buffer = context.renderbuffers.find(name);
-        const auto identifier = core_surface_identifier(ready, surface);
-        const auto backing =
-            identifier ? surface_store_->find(*identifier) : std::nullopt;
         if (buffer == context.renderbuffers.end() ||
             buffer->second.identity != renderbuffer_id ||
-            (publication &&
-                (!backing ||
-                    backing->provenance.publication_sequence != publication))) {
+            (window == 0U && buffer->second.native_window != 0U)) {
             ready.set_return(0U);
             return;
         }
-        const auto attached =
-            surface != 0U &&
-            attach_eagl_window_surface(ready, context, name, window, surface);
-        const auto error =
-            attached ? gles_abi::no_error
-                     : ensure_renderbuffer_storage(context, name, pixels.width,
-                           pixels.height, gles_abi::bgra_apple);
+        const auto identifier = core_surface_identifier(ready, surface);
+        const auto backing =
+            identifier ? surface_store_->find(*identifier) : std::nullopt;
+        const auto available_surface =
+            publication &&
+                    (!backing ||
+                        backing->provenance.publication_sequence != publication)
+                ? 0U
+                : surface;
+        const auto attached = available_surface != 0U &&
+                              attach_eagl_window_surface(ready, context, name,
+                                  window, available_surface);
+        auto error = gles_abi::no_error;
+        if (!attached) {
+            error = window != 0U ? stage_eagl_window_surface(context, name,
+                                       pixels, window, available_surface)
+                                 : ensure_renderbuffer_storage(context, name,
+                                       pixels.width, pixels.height,
+                                       gles_abi::bgra_apple);
+        }
         if (error == gles_abi::no_error) {
             buffer->second.display_oriented = true;
             buffer->second.drawable_viewport = viewport;

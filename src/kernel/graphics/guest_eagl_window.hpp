@@ -16,9 +16,9 @@ class UserlandHleCall;
 // allocation and buffer rotation in QuartzCore; GLES only supplies pixels.
 class GuestEaglWindow {
 public:
-    using StorageCompletion =
+    using SurfaceCompletion =
         std::function<void(UserlandHleCall&, std::uint32_t)>;
-    using PresentCompletion =
+    using WindowCompletion =
         std::function<void(UserlandHleCall&, bool, std::uint32_t)>;
 
     [[nodiscard]] static std::optional<GuestEaglWindow> open(
@@ -26,15 +26,14 @@ public:
 
     void release(UserlandHleCall& call,
         std::function<void(UserlandHleCall&)> completion) const;
-    void configure(UserlandHleCall& call, StorageCompletion completion) const;
-    void present(UserlandHleCall& call, PresentCompletion completion) const;
+    void configure(UserlandHleCall& call, WindowCompletion completion) const;
+    void acquire(UserlandHleCall& call, SurfaceCompletion completion) const;
+    void present(UserlandHleCall& call, WindowCompletion completion) const;
 
     [[nodiscard]] std::uint32_t address() const { return address_; }
 
 private:
     explicit GuestEaglWindow(std::uint32_t address) : address_ { address } { }
-
-    void acquire(UserlandHleCall& call, StorageCompletion completion) const;
 
     std::uint32_t address_ { };
 };

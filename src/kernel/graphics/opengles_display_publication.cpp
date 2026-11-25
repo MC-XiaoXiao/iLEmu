@@ -5,6 +5,7 @@
 #include "kernel/opengles_hle.hpp"
 
 #include "foundation/application_display.hpp"
+#include "foundation/output.hpp"
 #include "graphics/surface_store.hpp"
 #include "kernel/kernel_shared_state.hpp"
 
@@ -91,6 +92,7 @@ try {
             current->second.renderbuffers.find(renderbuffer_name);
         return buffer != current->second.renderbuffers.end() &&
                buffer->second.identity == renderbuffer &&
+               buffer->second.native_window == 0U &&
                buffer->second.color_texture == binding.framebuffer_texture;
     };
     if (!surface || !live() || !display_write_allowed(call))

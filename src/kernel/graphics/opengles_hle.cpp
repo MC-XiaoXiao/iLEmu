@@ -835,7 +835,7 @@ OpenGlesHle::SurfaceState* OpenGlesHle::current_pixmap_surface(
 bool OpenGlesHle::attach_eagl_window_surface(UserlandHleCall& call,
     ContextState& context, std::uint32_t renderbuffer_name,
     std::uint32_t window, std::uint32_t surface)
-{
+try {
     const auto identifier = core_surface_identifier(call, surface);
     const auto backing =
         identifier ? surface_store_->find(*identifier) : std::nullopt;
@@ -857,11 +857,14 @@ bool OpenGlesHle::attach_eagl_window_surface(UserlandHleCall& call,
         return false;
     }
     state.native_window = window;
+    state.pending_drawable_surface = 0U;
     state.drawable_surface_id = *identifier;
     state.display_oriented = true;
     context.guest_capabilities =
         open_gles_framebuffer_capabilities(context.guest_capabilities);
     return true;
+} catch (const std::bad_alloc&) {
+    return false;
 }
 
 std::optional<OpenGlesHle::RenderTargetBinding>
@@ -1820,7 +1823,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                                        : std::nullopt;
                         complete_drawable_storage(done, context, renderbuffer,
                             renderbuffer_name, pixels, viewport, window,
-                            backing ? surface : 0U,
+                            surface,
                             backing ? backing->provenance.publication_sequence
                                     : 0U);
                     };
@@ -1834,7 +1837,11 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                     window->configure(
                         completed, [finish, address = window->address()](
                                        UserlandHleCall& configured,
-                                       std::uint32_t surface) {
+                                       bool succeeded, std::uint32_t surface) {
+                            if (!succeeded) {
+                                configured.set_return(0U);
+                                return;
+                            }
                             finish(configured, address, surface);
                         });
                 });
@@ -1877,10 +1884,8 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             context->bound_framebuffer = saved_framebuffer;
             const auto& renderbuffer =
                 context->renderbuffers.at(context->bound_renderbuffer);
-            if (binding && renderbuffer.drawable_surface_id &&
-                binding->backing_identifier ==
-                    renderbuffer.drawable_surface_id) {
-                present_eagl_window_async(call, *context, *binding);
+            if (renderbuffer.native_window != 0U) {
+                present_eagl_window_async(call, *context, binding);
                 return;
             }
             if (!binding) {

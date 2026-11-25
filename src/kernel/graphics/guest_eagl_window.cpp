@@ -47,7 +47,7 @@ std::optional<GuestEaglWindow> GuestEaglWindow::open(
 }
 
 void GuestEaglWindow::acquire(
-    UserlandHleCall& call, StorageCompletion completion) const
+    UserlandHleCall& call, SurfaceCompletion completion) const
 {
     const auto function = callback(call, address_, acquire_offset);
     if (!function) {
@@ -77,11 +77,11 @@ void GuestEaglWindow::release(UserlandHleCall& call,
 }
 
 void GuestEaglWindow::configure(
-    UserlandHleCall& call, StorageCompletion completion) const
+    UserlandHleCall& call, WindowCompletion completion) const
 {
     const auto function = callback(call, address_, configure_offset);
     if (!function) {
-        completion(call, 0U);
+        completion(call, false, 0U);
         return;
     }
     auto& registers = call.cpu().registers();
@@ -92,17 +92,20 @@ void GuestEaglWindow::configure(
             [window = *this,
                 completion](UserlandHleCall& returned) {
                 if (returned.cpu().registers()[0] != 1U) {
-                    completion(returned, 0U);
+                    completion(returned, false, 0U);
                     return;
                 }
-                window.acquire(returned, completion);
+                window.acquire(returned, [completion](UserlandHleCall& acquired,
+                                             std::uint32_t surface) {
+                    completion(acquired, true, surface);
+                });
             })) {
-        completion(call, 0U);
+        completion(call, false, 0U);
     }
 }
 
 void GuestEaglWindow::present(
-    UserlandHleCall& call, PresentCompletion completion) const
+    UserlandHleCall& call, WindowCompletion completion) const
 {
     const auto function = callback(call, address_, present_offset);
     if (!function) {
