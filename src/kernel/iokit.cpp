@@ -2449,7 +2449,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                       std::span<const std::uint64_t> {
                           request->scalar_input.data(),
                           request->scalar_input_count },
-                      request->inband_input, request->scalar_output_capacity);
+                      request->inband_input, request->scalar_output_capacity,
+                      request->inband_output_capacity);
         const auto camera_result =
             display_result || baseband_result || audio_result
                 ? std::optional<kernel_iokit::camera::MethodResult> { }
@@ -2549,7 +2550,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 std::move(display_result->scalar_output),
                 std::move(display_result->inband_output) }
             : audio_result ? ConnectMethodResult { audio_result->return_code,
-                  std::move(audio_result->scalar_output), { } }
+                  std::move(audio_result->scalar_output),
+                  std::move(audio_result->inband_output) }
             : baseband_result
                 ? ConnectMethodResult { baseband_result->return_code,
                       std::move(baseband_result->scalar_output),

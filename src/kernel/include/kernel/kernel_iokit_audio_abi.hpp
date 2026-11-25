@@ -76,6 +76,7 @@ struct IOKitAudioAbi {
         std::uint32_t set_nominal_sample_rate;
         std::uint32_t set_stream_current_format;
         std::uint32_t set_stream_active;
+        std::uint32_t set_control_selected_items;
     };
 
     struct MemoryTypes {

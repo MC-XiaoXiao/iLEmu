@@ -186,6 +186,27 @@ namespace {
         return value;
     }
 
+    void set_registry_control_value(
+        std::map<std::string, KernelSharedState::IOKitRegistryProperty>&
+            properties,
+        const IOKitAudioAbi& profile, std::uint32_t identifier,
+        KernelSharedState::IOKitRegistryProperty value)
+    {
+        for (auto& entry : properties
+                               .at(std::string { profile.registry.controls })
+                               .array_value) {
+            auto& fields = entry.dictionary_value;
+            if (read_u32(fields
+                             .at(std::string { profile.registry.control_id })
+                             .value,
+                    0) == identifier) {
+                fields[std::string { profile.registry.control_value }] =
+                    std::move(value);
+                break;
+            }
+        }
+    }
+
     double read_fixed_sample_rate(
         std::span<const std::byte> bytes, std::size_t offset)
     {
@@ -741,7 +762,7 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const ProcessContext& process, std::uint32_t connection_object,
     std::uint32_t selector, std::span<const std::uint64_t> scalar_input,
     std::span<const std::byte> inband_input,
-    std::uint32_t scalar_output_capacity)
+    std::uint32_t scalar_output_capacity, std::uint32_t inband_output_capacity)
 {
     // The generated IOAudio2 client reserves one scalar result slot for void
     // methods. It is a capacity, not part of a method's input contract.
@@ -791,21 +812,44 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
                     device->uid, value != 0U);
             }
         }
-        for (auto& entry : properties
-                               .at(std::string { profile.registry.controls })
-                               .array_value) {
-            auto& fields = entry.dictionary_value;
-            if (read_u32(fields
-                             .at(std::string { profile.registry.control_id })
-                             .value,
-                    0) == identifier) {
-                fields[std::string { profile.registry.control_value }] =
-                    number_property(value);
-                break;
-            }
-        }
+        set_registry_control_value(
+            properties, profile, identifier, number_property(value));
         notifications.control_value_changed(identifier, value);
         return MethodResult { iokit_abi::success, { } };
+    }
+
+    if (selector == profile.selectors.set_control_selected_items) {
+        // The input begins with the control ID. The reply carries only the
+        // resulting selection, in the same order as the request.
+        constexpr auto word_size = sizeof(std::uint32_t);
+        if (!scalar_input.empty() || inband_input.size() < word_size ||
+            inband_input.size() % word_size != 0) {
+            return MethodResult { iokit_abi::bad_argument, { } };
+        }
+        const auto identifier = read_u32(inband_input, 0);
+        const auto* control = find_control(*device, identifier);
+        const auto selection = inband_input.subspan(word_size);
+        if (control == nullptr || !control->selected_items ||
+            control->read_only || selection.size() > inband_output_capacity ||
+            selection.size() / word_size > control->items.size()) {
+            return MethodResult { iokit_abi::bad_argument, { } };
+        }
+        std::vector<KernelSharedState::IOKitRegistryProperty> items;
+        items.reserve(selection.size() / word_size);
+        for (std::size_t offset = 0; offset < selection.size();
+             offset += word_size) {
+            const auto value = read_u32(selection, offset);
+            if (!valid_control_value(*control, value))
+                return MethodResult { iokit_abi::bad_argument, { } };
+            items.push_back(number_property(value));
+        }
+        auto output = std::vector<std::byte>(selection.begin(), selection.end());
+        set_registry_control_value(
+            properties, profile, identifier, array_property(std::move(items)));
+        // For a multi-selector notification, CoreAudio reloads the array from
+        // the registry using the control ID.
+        notifications.control_value_changed(identifier, 0);
+        return MethodResult { iokit_abi::success, { }, std::move(output) };
     }
 
     if (selector == profile.selectors.set_nominal_sample_rate) {

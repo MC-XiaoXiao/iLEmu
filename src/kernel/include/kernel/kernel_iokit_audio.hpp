@@ -25,6 +25,7 @@ namespace kernel_iokit::audio {
     struct MethodResult {
         std::uint32_t return_code { };
         std::vector<std::uint64_t> scalar_output;
+        std::vector<std::byte> inband_output { };
     };
 
     [[nodiscard]] std::optional<MethodResult> dispatch_connect_method(
@@ -32,7 +33,8 @@ namespace kernel_iokit::audio {
         std::uint32_t connection_object, std::uint32_t selector,
         std::span<const std::uint64_t> scalar_input,
         std::span<const std::byte> inband_input,
-        std::uint32_t scalar_output_capacity);
+        std::uint32_t scalar_output_capacity,
+        std::uint32_t inband_output_capacity);
 
     [[nodiscard]] bool matches_service(std::span<const std::byte> matching);
 

@@ -73,6 +73,7 @@ namespace {
             .set_nominal_sample_rate = 4,
             .set_stream_current_format = 5,
             .set_stream_active = 6,
+            .set_control_selected_items = 8,
         },
     .memory =
         {
