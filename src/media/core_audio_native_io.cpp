@@ -82,11 +82,39 @@ void CoreAudioHle::start_native_io(UserlandHleCall& call)
     }
     if (found == native_io_procs_.end() ||
         found->second.process_id != call.process_id() ||
-        found->second.device != call.argument(0)) {
+        found->second.device != call.argument(0) || found->second.disposing) {
         set_native_io_result(call, parameter_error);
         return;
     }
+    auto& state = found->second;
+    if (state.running) {
+        set_native_io_result(call, 0);
+        return;
+    }
+    if (state.starting || state.in_flight) {
+        if (state.processor == call.cpu().processor_id()) {
+            set_native_io_result(call, parameter_error);
+            return;
+        }
+        call.suspend_until(
+            [this, process_id = call.process_id(), io_proc_id = found->first] {
+                const auto* previous = find_io_proc(process_id, true, io_proc_id);
+                return previous == nullptr || previous->running ||
+                       (!previous->starting && !previous->in_flight);
+            },
+            [this](UserlandHleCall& completed) { start_native_io(completed); });
+        return;
+    }
+    state.starting = true;
     query_native_io_format(call, found->first, NativeFormatQuery::OutputStream);
+}
+
+void CoreAudioHle::finish_native_io_start(UserlandHleCall& call,
+    std::uint32_t io_proc_id, std::uint32_t result)
+{
+    if (auto* state = find_io_proc(call.process_id(), true, io_proc_id))
+        state->starting = false;
+    set_native_io_result(call, result);
 }
 
 void CoreAudioHle::query_native_io_format(
@@ -109,7 +137,7 @@ void CoreAudioHle::query_native_io_format(
         !call.write32(property_address + 8U, 0U) ||
         !call.write32(saved[13] - 8U, size) ||
         !call.write32(saved[13] - 4U, data)) {
-        set_native_io_result(call, parameter_error);
+        finish_native_io_start(call, io_proc_id, parameter_error);
         return;
     }
     auto& registers = call.cpu().registers();
@@ -124,19 +152,19 @@ void CoreAudioHle::query_native_io_format(
                 const auto result = completed.argument(0);
                 completed.cpu().registers() = saved;
                 if (result != 0) {
-                    set_native_io_result(completed, result);
+                    finish_native_io_start(completed, io_proc_id, result);
                     return;
                 }
                 const auto found = native_io_procs_.find(io_proc_id);
                 if (found == native_io_procs_.end()) {
-                    set_native_io_result(completed, parameter_error);
+                    finish_native_io_start(completed, io_proc_id, parameter_error);
                     return;
                 }
                 auto& format = found->second;
                 auto& memory = completed.memory();
                 if (query == NativeFormatQuery::OutputStream) {
                     if (memory.read32(size).value_or(0) != 4U || memory.read32(data).value_or(0) == 0) {
-                        set_native_io_result(completed, unsupported_format);
+                        finish_native_io_start(completed, io_proc_id, unsupported_format);
                         return;
                     }
                     query_native_io_format(completed, io_proc_id, NativeFormatQuery::StreamFormat, memory.read32(data).value_or(0));
@@ -146,7 +174,7 @@ void CoreAudioHle::query_native_io_format(
                     const auto frames = memory.read32(data).value_or(0);
                     if (memory.read32(size).value_or(0) < 4U || frames == 0 ||
                         frames > maximum_buffer_frame_size) {
-                        set_native_io_result(completed, parameter_error);
+                        finish_native_io_start(completed, io_proc_id, parameter_error);
                         return;
                     }
                     format.buffer_frame_size = frames;
@@ -172,7 +200,7 @@ void CoreAudioHle::query_native_io_format(
                     channels > 32U || packet_frames != 1U ||
                     frame_bytes != channels * (bits / 8U) ||
                     packet_bytes != frame_bytes) {
-                    set_native_io_result(completed, unsupported_format);
+                    finish_native_io_start(completed, io_proc_id, unsupported_format);
                     return;
                 }
                 format.sample_rate =
@@ -182,7 +210,7 @@ void CoreAudioHle::query_native_io_format(
                 query_native_io_format(completed, io_proc_id, NativeFormatQuery::FrameCount);
             })) {
         call.cpu().registers() = saved;
-        set_native_io_result(call, unsupported_format);
+        finish_native_io_start(call, io_proc_id, unsupported_format);
     }
 }
 
@@ -209,7 +237,7 @@ void CoreAudioHle::configure_native_io(
     if (state.callback_return == 0 || state.timestamp == 0 ||
         state.output_buffers == 0 || state.output_samples == 0 ||
         !prepare_callback_thread(call, state)) {
-        set_native_io_result(call, parameter_error);
+        finish_native_io_start(call, io_proc_id, parameter_error);
         return;
     }
     state.running = true;
@@ -230,7 +258,7 @@ void CoreAudioHle::configure_native_io(
                        " bytes=" + std::to_string(state.output_sample_bytes) +
                        " rate=" + std::to_string(state.sample_rate) +
                        " channels=" + std::to_string(state.channel_count));
-    set_native_io_result(call, 0);
+    finish_native_io_start(call, io_proc_id, 0);
 }
 
 } // namespace ilemu

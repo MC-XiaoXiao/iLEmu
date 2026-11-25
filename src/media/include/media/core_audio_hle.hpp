@@ -68,8 +68,16 @@ public:
 
 private:
     struct IoProcRegistration;
+    using IoProcContinuation = std::function<void(UserlandHleCall&)>;
     [[nodiscard]] bool prepare_callback_thread(
         UserlandHleCall& call, IoProcRegistration& registration);
+    [[nodiscard]] IoProcRegistration* find_io_proc(
+        std::uint32_t process_id, bool native, std::uint32_t io_proc_id);
+    void retire_io_proc_thread(IoProcRegistration& registration);
+    void stop_io_proc(UserlandHleCall& call, IoProcRegistration& registration,
+        IoProcContinuation completion);
+    void dispose_native_io_proc(
+        UserlandHleCall& call, std::uint32_t io_proc_id, bool use_native_api);
     void device_property_info(UserlandHleCall& call);
     void device_property(UserlandHleCall& call);
     void device_set_property(UserlandHleCall& call);
@@ -93,6 +101,8 @@ private:
     void query_native_io_format(UserlandHleCall& call,
         std::uint32_t io_proc_id, NativeFormatQuery query, std::uint32_t stream = 0);
     void configure_native_io(UserlandHleCall& call, std::uint32_t io_proc_id);
+    void finish_native_io_start(UserlandHleCall& call, std::uint32_t io_proc_id,
+        std::uint32_t result);
     void stop_io(UserlandHleCall& call);
     void complete_io_proc(UserlandHleCall& call, std::uint32_t process_id,
         bool native, std::uint32_t io_proc_id);
@@ -135,6 +145,8 @@ private:
         std::optional<std::size_t> processor;
         bool running { };
         bool in_flight { };
+        bool starting { };
+        bool disposing { };
     };
 
     UserlandHleRegistry& registry_;
