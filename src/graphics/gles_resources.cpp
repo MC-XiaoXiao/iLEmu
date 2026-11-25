@@ -683,6 +683,22 @@ namespace {
 
 } // namespace
 
+std::uint32_t GlesResourceStore::TextureLevel::base_format() const
+{
+    switch (internal_format) {
+    case gles_abi::alpha:
+    case gles_abi::luminance:
+    case gles_abi::luminance_alpha:
+    case gles_abi::rgb:
+        return internal_format;
+    case compressed_rgb_pvrtc_2bpp:
+    case compressed_rgb_pvrtc_4bpp:
+        return gles_abi::rgb;
+    default:
+        return gles_abi::rgba;
+    }
+}
+
 std::uint64_t GlesResourceStore::allocate_texture_revision()
 {
     const auto revision = next_texture_revision_++;

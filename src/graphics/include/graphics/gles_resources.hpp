@@ -50,6 +50,7 @@ public:
             return argb_ ? std::span<const std::uint32_t> { *argb_ }
                          : std::span<const std::uint32_t> { };
         }
+        [[nodiscard]] std::uint32_t base_format() const;
         void set_pixels(std::vector<std::uint32_t> pixels)
         {
             argb_ = pixels.empty() ? nullptr

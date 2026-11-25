@@ -50,6 +50,7 @@ struct GlesTextureEnvironment {
 struct GlesRasterTextureUnit {
     std::uint32_t texture { };
     GlesTextureEnvironment environment;
+    std::uint32_t base_format { gles_abi::rgba };
     bool enabled { };
     bool rectangle { };
     bool projected { };

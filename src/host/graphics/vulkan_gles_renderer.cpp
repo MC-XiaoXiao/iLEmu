@@ -293,7 +293,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::array<std::int32_t, 4> mode_combine_enabled { };
         std::array<float, 4> color { };
         std::array<std::int32_t, 4> rgb_sources { };
-        std::array<std::int32_t, 4> alpha_sources { };
+        std::array<std::int32_t, 4> alpha_sources_base_format { };
         std::array<std::int32_t, 4> rgb_operands { };
         std::array<std::int32_t, 4> alpha_operands { };
         std::array<float, 4> scales_rectangle { };
@@ -2965,14 +2965,17 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             for (std::size_t argument = 0; argument < 3; ++argument) {
                 destination.rgb_sources[argument] = static_cast<std::int32_t>(
                     environment.rgb_sources[argument]);
-                destination.alpha_sources[argument] = static_cast<std::int32_t>(
-                    environment.alpha_sources[argument]);
+                destination.alpha_sources_base_format[argument] =
+                    static_cast<std::int32_t>(
+                        environment.alpha_sources[argument]);
                 destination.rgb_operands[argument] = static_cast<std::int32_t>(
                     environment.rgb_operands[argument]);
                 destination.alpha_operands[argument] =
                     static_cast<std::int32_t>(
                         environment.alpha_operands[argument]);
             }
+            destination.alpha_sources_base_format[3] =
+                static_cast<std::int32_t>(source.base_format);
             destination.scales_rectangle = { environment.rgb_scale,
                 environment.alpha_scale, source.rectangle ? 1.0F : 0.0F, 0.0F };
         }

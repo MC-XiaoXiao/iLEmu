@@ -24,6 +24,9 @@ const int GL_REPLACE = 0x1e01;
 const int GL_MODULATE = 0x2100;
 const int GL_DECAL = 0x2101;
 const int GL_TEXTURE = 0x1702;
+const int GL_ALPHA = 0x1906;
+const int GL_RGB = 0x1907;
+const int GL_LUMINANCE = 0x1909;
 const int GL_COMBINE = 0x8570;
 const int GL_COMBINE_RGB = 0x8571;
 const int GL_COMBINE_ALPHA = 0x8572;
@@ -50,7 +53,7 @@ struct TextureEnvironment {
     ivec4 mode_combine_enabled;
     vec4 color;
     ivec4 rgb_sources;
-    ivec4 alpha_sources;
+    ivec4 alpha_sources_base_format;
     ivec4 rgb_operands;
     ivec4 alpha_operands;
     vec4 scales_rectangle;
@@ -130,7 +133,20 @@ vec4 apply_environment(
     TextureEnvironment environment, vec4 sampled, vec4 primary,
     vec4 previous) {
     int mode = environment.mode_combine_enabled.x;
-    if (mode == GL_REPLACE) return sampled;
+    int base_format = environment.alpha_sources_base_format.w;
+    if (base_format == GL_ALPHA) {
+        if (mode != GL_COMBINE) {
+            if (mode == GL_DECAL) return previous;
+            float alpha = mode == GL_REPLACE ? sampled.a : previous.a * sampled.a;
+            return vec4(previous.rgb, alpha);
+        }
+        sampled.rgb = vec3(0.0);
+    }
+    bool has_alpha = base_format != GL_RGB && base_format != GL_LUMINANCE;
+    if (!has_alpha) sampled.a = 1.0;
+    if (mode == GL_REPLACE) {
+        return vec4(sampled.rgb, has_alpha ? sampled.a : previous.a);
+    }
     if (mode == GL_MODULATE) return previous * sampled;
     if (mode == GL_DECAL) {
         return vec4(
@@ -155,7 +171,7 @@ vec4 apply_environment(
         rgb_arguments[argument] = apply_rgb_operand(
             rgb_source, environment.rgb_operands[argument]);
         vec4 alpha_source = select_source(
-            environment.alpha_sources[argument], sampled,
+            environment.alpha_sources_base_format[argument], sampled,
             environment.color, primary, previous);
         alpha_arguments[argument] = apply_alpha_operand(
             alpha_source, environment.alpha_operands[argument]);
@@ -194,7 +210,9 @@ vec4 apply_unit(int unit, sampler2D image, vec2 coordinate, vec4 previous) {
     vec4 sampled = sample_image(image, coordinate,
         environment.scales_rectangle.z != 0.0,
         environment.scales_rectangle.w != 0.0, environment.clamp_rectangle);
-    return apply_environment(environment, sampled, primary_color, previous);
+    return clamp(
+        apply_environment(environment, sampled, primary_color, previous),
+        0.0, 1.0);
 }
 
 vec4 sample_unit_offset(int unit, vec2 offset) {

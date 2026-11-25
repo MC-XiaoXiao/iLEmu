@@ -1485,6 +1485,8 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
             continue;
         if (const auto* texture = resources_.texture(raster_unit.texture)) {
             const auto level = texture->levels.find(0U);
+            if (context->client_api == 1U && level != texture->levels.end())
+                raster_unit.base_format = level->second.base_format();
             const auto source = level == texture->levels.end() ? nullptr
                 : level->second.surface_id
                     ? surface_store_->host_surface(*level->second.surface_id)

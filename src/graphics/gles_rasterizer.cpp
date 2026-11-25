@@ -165,17 +165,36 @@ namespace {
     }
 
     std::uint32_t apply_texture_environment(
-        const GlesTextureEnvironment& environment, std::uint32_t sampled,
+        const GlesRasterTextureUnit& unit, std::uint32_t sampled,
         std::uint32_t primary_pixel, std::uint32_t previous_pixel)
     {
-        const auto texture = unpack_color(sampled);
+        const auto& environment = unit.environment;
+        auto texture = unpack_color(sampled);
         const auto primary = unpack_color(primary_pixel);
         const auto previous = unpack_color(previous_pixel);
         const auto constant = environment.color;
+        if (unit.base_format == gles_abi::alpha) {
+            if (environment.mode != gles_abi::combine) {
+                if (environment.mode == gles_abi::decal)
+                    return previous_pixel;
+                const auto alpha = environment.mode == gles_abi::replace
+                                       ? texture[3]
+                                       : previous[3] * texture[3];
+                return pack_color(
+                    { previous[0], previous[1], previous[2], alpha });
+            }
+            texture[0] = texture[1] = texture[2] = 0.0F;
+        }
+        const auto has_alpha = unit.base_format != gles_abi::rgb &&
+                               unit.base_format != gles_abi::luminance;
+        if (!has_alpha)
+            texture[3] = 1.0F;
         Color result = previous;
         switch (environment.mode) {
         case gles_abi::replace:
             result = texture;
+            if (!has_alpha)
+                result[3] = previous[3];
             break;
         case gles_abi::modulate:
             for (std::size_t component = 0; component < result.size();
@@ -867,7 +886,7 @@ namespace {
                         operation_destination = sampled;
                     } else {
                         pixel = apply_texture_environment(
-                            unit.environment, sampled, primary, pixel);
+                            unit, sampled, primary, pixel);
                     }
                 }
                 if (operation_destination) {
