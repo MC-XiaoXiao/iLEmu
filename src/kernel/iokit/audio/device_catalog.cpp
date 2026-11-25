@@ -119,6 +119,17 @@ namespace {
             codec_input_sources },
     } };
 
+    constexpr IOAudio2StreamFormatDescription mono_pcm_44100 {
+        .sample_rate = 44100,
+        .format_id = linear_pcm_format,
+        .format_flags = linear_pcm_flags,
+        .bytes_per_packet = 2,
+        .frames_per_packet = 1,
+        .bytes_per_frame = 2,
+        .channels_per_frame = 1,
+        .bits_per_channel = 16,
+    };
+
     constexpr std::array codec_streams{
     IOAudio2StreamDescription{
         .identifier = 1,
@@ -145,17 +156,7 @@ namespace {
         .starting_channel = 1,
         .buffer_mapping_options = 1,
         .buffer_size = 2048,
-        .format =
-            {
-                .sample_rate = 44100,
-                .format_id = linear_pcm_format,
-                .format_flags = linear_pcm_flags,
-                .bytes_per_packet = 2,
-                .frames_per_packet = 1,
-                .bytes_per_frame = 2,
-                .channels_per_frame = 1,
-                .bits_per_channel = 16,
-            },
+        .format = mono_pcm_44100,
         .available_formats = {},
     },
 };
@@ -222,42 +223,82 @@ namespace {
             application_voice_source, false, std::nullopt, voice_sources },
     };
 
-    // Speaker protection is a separate HAL endpoint. Its route handler uses
-    // the UID "Speaker" and resolves the ordinary output controls on that
-    // endpoint before connecting it to the Codec device.
+    // The amplifier plays one mono channel and samples four feedback
+    // channels. VirtualAudio enumerates the feedback sources to build its
+    // speaker-protection monitoring port.
+    constexpr std::uint32_t speaker_period_frames = 16384;
+    constexpr IOAudio2StreamFormatDescription speaker_monitor_format {
+        .sample_rate = 44100,
+        .format_id = linear_pcm_format,
+        .format_flags = linear_pcm_flags,
+        .bytes_per_packet = 8,
+        .frames_per_packet = 1,
+        .bytes_per_frame = 8,
+        .channels_per_frame = 4,
+        .bits_per_channel = 16,
+    };
     constexpr std::array speaker_protection_streams {
         IOAudio2StreamDescription {
-            .identifier = 1,
-            .direction = IOAudio2StreamDirection::Output,
-            .starting_channel = 1,
-            .buffer_mapping_options = 1,
-            .buffer_size = 4096,
-            .format = codec_streams[0].format,
-            .available_formats = {},
-        },
-        IOAudio2StreamDescription {
-            .identifier = 2,
+            .identifier = 100,
             .direction = IOAudio2StreamDirection::Input,
             .starting_channel = 1,
             .buffer_mapping_options = 1,
-            .buffer_size = 2048,
-            .format = codec_streams[1].format,
-            .available_formats = {},
+            .buffer_size =
+                speaker_period_frames * speaker_monitor_format.bytes_per_frame,
+            .format = speaker_monitor_format,
+            .available_formats = { },
+        },
+        IOAudio2StreamDescription {
+            .identifier = 200,
+            .direction = IOAudio2StreamDirection::Output,
+            .starting_channel = 1,
+            .buffer_mapping_options = 1,
+            .buffer_size =
+                speaker_period_frames * mono_pcm_44100.bytes_per_frame,
+            .format = mono_pcm_44100,
+            .available_formats = { },
         },
     };
+    constexpr auto speaker_voltage = four_cc('s', 'p', 'V', '0');
+    constexpr auto speaker_current = four_cc('s', 'p', 'I', '0');
+    constexpr auto speaker_supply_voltage = four_cc('s', 'p', 'P', '0');
+    constexpr auto speaker_boost_voltage = four_cc('s', 'p', 'B', '0');
+    constexpr std::array speaker_monitor_sources {
+        IOAudio2SelectorItemDescription { 0, "Disabled" },
+        IOAudio2SelectorItemDescription {
+            speaker_voltage, "Speaker 0 voltage" },
+        IOAudio2SelectorItemDescription {
+            speaker_current, "Speaker 0 current" },
+        IOAudio2SelectorItemDescription {
+            speaker_supply_voltage, "Speaker 0 power supply voltage" },
+        IOAudio2SelectorItemDescription {
+            speaker_boost_voltage, "Speaker 0 boost voltage" },
+        IOAudio2SelectorItemDescription {
+            four_cc('s', 'p', 'F', '0'), "Speaker 0 flags" },
+    };
+    constexpr std::array speaker_monitor_channels {
+        speaker_voltage,
+        speaker_current,
+        speaker_supply_voltage,
+        speaker_boost_voltage,
+    };
+    constexpr IOAudio2ControlRangeDescription amplifier_volume_range {
+        0xffffff9a00000000ULL, 228U, 0U, 0x0000000080000000ULL
+    };
     constexpr std::array speaker_protection_controls {
-        IOAudio2ControlDescription { 5U, boolean_control_base_class,
+        IOAudio2ControlDescription { 304U, boolean_control_base_class,
+            device_mute_control_class, output_scope, 0U, 0U, false,
+            std::nullopt, { } },
+        IOAudio2ControlDescription { 303U, boolean_control_base_class,
             mute_control_class, output_scope, 0U, 0U, false, std::nullopt,
             { } },
-        IOAudio2ControlDescription { 7U, level_control_base_class,
-            volume_control_class, output_scope, 0U, 254U, false,
-            master_output_range, { } },
-        IOAudio2ControlDescription { 8U, level_control_base_class,
-            volume_control_class, output_scope, 1U, 63U, false,
-            channel_output_range, { } },
-        IOAudio2ControlDescription { 9U, boolean_control_base_class,
-            mute_control_class, output_scope, 1U, 0U, false, std::nullopt,
-            { } },
+        IOAudio2ControlDescription { 305U, level_control_base_class,
+            volume_control_class, output_scope, 0U, 204U, false,
+            amplifier_volume_range, { } },
+        IOAudio2ControlDescription { 350U, selector_control_base_class,
+            data_source_control_class, input_scope, 0U, 0U, false, std::nullopt,
+            speaker_monitor_sources,
+            std::span<const std::uint32_t> { speaker_monitor_channels } },
     };
 
     constexpr std::array device_catalog {
@@ -332,11 +373,11 @@ namespace {
         device_catalog[1],
         duplex_voice,
         IOAudio2DeviceDescription {
-            .name = "Speaker",
+            .name = "CS35L19",
             .manufacturer = "Apple Computer, Inc.",
             .uid = "Speaker",
             .transport_type = built_in_transport_type,
-            .io_buffer_frame_size = 1024,
+            .io_buffer_frame_size = speaker_period_frames,
             .streams = speaker_protection_streams,
             .controls = speaker_protection_controls,
         },
