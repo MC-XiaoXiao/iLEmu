@@ -21,6 +21,8 @@ namespace {
     constexpr std::string_view sgx535_version {
         "OpenGL ES-CM 1.1 IMGSGX535-31.4"
     };
+    // Use the extension's minimum guest limit independently of the host GPU.
+    constexpr std::uint32_t texture_anisotropy_limit = 2;
 
     constexpr OpenGlesGuestCapabilities legacy_mbx_lite {
         "mbx-lite-legacy",
@@ -56,6 +58,8 @@ namespace {
         "GL_APPLE_core_surface_texture GL_APPLE_texture_rectangle",
         2048,
         2048,
+        2,
+        texture_anisotropy_limit,
     };
 
     // The 7A341 SGX535 driver exposes both ES 1.1 and ES 2.0 strings. The HLE
@@ -78,6 +82,8 @@ namespace {
         "GL_APPLE_core_surface_texture GL_APPLE_texture_rectangle",
         2048,
         2048,
+        2,
+        texture_anisotropy_limit,
     };
 
     constexpr OpenGlesGuestCapabilities sgx535_framebuffer_objects {
@@ -88,6 +94,8 @@ namespace {
         sgx535.extensions,
         sgx535.maximum_texture_dimension,
         sgx535.maximum_viewport_dimension,
+        sgx535.texture_units,
+        sgx535.maximum_texture_anisotropy,
     };
 
     // Share the implemented SGX fixed-function contract; hardware identity

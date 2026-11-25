@@ -2739,6 +2739,15 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                 open_gles_guest_capabilities(context->guest_capabilities)
                     .maximum_texture_dimension;
             break;
+        case gles_abi::maximum_texture_anisotropy:
+            values[0] =
+                open_gles_guest_capabilities(context->guest_capabilities)
+                    .maximum_texture_anisotropy;
+            if (values[0] == 0U) {
+                set_gl_error(call, gles_abi::invalid_enum);
+                return;
+            }
+            break;
         case gles_abi::front_face_query:
             values[0] = context->front_face;
             break;
@@ -2787,6 +2796,17 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         } else if (call.argument(0) == gles_abi::alpha_test_reference &&
                    context->client_api == 1U) {
             current[0] = context->alpha_test.reference;
+            values = &current;
+            count = 1U;
+        } else if (call.argument(0) == gles_abi::maximum_texture_anisotropy) {
+            const auto maximum =
+                open_gles_guest_capabilities(context->guest_capabilities)
+                    .maximum_texture_anisotropy;
+            if (maximum == 0U) {
+                set_gl_error(call, gles_abi::invalid_enum);
+                return;
+            }
+            current[0] = static_cast<float>(maximum);
             values = &current;
             count = 1U;
         } else if (call.argument(0) == gles_abi::vertex_array_binding_oes) {

@@ -45,6 +45,7 @@ struct OpenGlesGuestCapabilities {
     std::uint32_t maximum_texture_dimension;
     std::uint32_t maximum_viewport_dimension;
     std::uint32_t texture_units { 2 };
+    std::uint32_t maximum_texture_anisotropy { };
 };
 
 [[nodiscard]] const OpenGlesGuestCapabilities& open_gles_guest_capabilities(
