@@ -382,17 +382,14 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         display_state_->set_orientation_resolver(
             [state = shared_state_, scenes = scene_coordinator_](
                 std::uint32_t owner_process_id) {
-                // A system compositor can publish a frame while an active
-                // client is still visible (for example, a keyboard or volume
-                // HUD over a landscape App). In that state the compositor's
-                // portrait process is not the orientation owner of the pixels.
-                // During Home the client is Exiting instead, so SpringBoard's
-                // portrait frame must win. Keep the process owner as the
-                // default and use the active client only for system-owned
-                // overlay publishes.
+                // Older compositors flatten overlays into their own backing.
+                // Use the active client for their orientation until the system
+                // UI explicitly supplies a panel orientation.
                 const auto foreground_scene = scenes->foreground_client_scene();
                 const auto active_scene = scenes->active_client_scene();
                 std::lock_guard lock { state->mach_mutex };
+                if (state->system_interface_orientation)
+                    return *state->system_interface_orientation;
                 const auto owner = state->processes.find(owner_process_id);
                 const auto owner_is_application =
                     owner != state->processes.end() &&
@@ -564,6 +561,32 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     register_memory_routine_hle(userland_hle_, architecture);
     register_unicode_search_hle(userland_hle_, architecture);
     register_mbx_connect_hle(userland_hle_);
+    userland_hle_.register_function(
+        "/BackBoardServices.framework/BackBoardServices",
+        "_BKSHIDServicesSetDeviceInterfaceOrientation",
+        [this](UserlandHleCall& call) {
+            // UIKit's landscape values are the opposite of UIDeviceOrientation.
+            constexpr std::array interface_orientations {
+                DisplayOrientation::Portrait, DisplayOrientation::PortraitUpsideDown,
+                DisplayOrientation::LandscapeRight, DisplayOrientation::LandscapeLeft
+            };
+            const auto value = call.argument(0);
+            if (value >= 1U && value <= interface_orientations.size()) {
+                std::lock_guard lock { shared_state_->mach_mutex };
+                const auto process =
+                    shared_state_->processes.find(call.process_id());
+                const auto orientation = interface_orientations[value - 1U];
+                if (process != shared_state_->processes.end() &&
+                    process->second.executable_path.ends_with(
+                        "/SpringBoard.app/SpringBoard") &&
+                    shared_state_->system_interface_orientation != orientation) {
+                    shared_state_->system_interface_orientation = orientation;
+                    output_.line("[display] system interface orientation=" +
+                        std::string { display_orientation_name(orientation) });
+                }
+            }
+            call.resume_original_persistently();
+        });
     graphics_services_input::register_springboard_alert_observers(userland_hle_,
         [this](std::uint32_t object,
             graphics_services_input::SpringBoardAlertObservation observation) {

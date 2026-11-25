@@ -1940,6 +1940,9 @@ struct KernelSharedState {
     // LayerKit can open separate IOMobileFramebuffer user clients.
     DisplayGeometry display_geometry { default_display_geometry };
     DisplayGeometry user_interface_geometry { default_display_geometry };
+    // The system UI publishes the panel orientation independently of the
+    // process that owns the foreground scene or submits the next swap.
+    std::optional<DisplayOrientation> system_interface_orientation;
     std::optional<std::uint32_t> requested_display_power_state;
     PanelBacklight panel_backlight;
     std::uint32_t baseband_service { };
