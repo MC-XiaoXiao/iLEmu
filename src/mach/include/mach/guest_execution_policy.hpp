@@ -34,6 +34,11 @@ public:
 
     [[nodiscard]] std::chrono::nanoseconds budget(const XnuScheduler& scheduler,
         const GuestExecutionBudgetRequest& request);
+    [[nodiscard]] bool has_active_turn(XnuThreadId thread,
+        std::chrono::steady_clock::time_point now) const;
+    bool publish_unstarted_turn(XnuThreadId thread,
+        std::chrono::steady_clock::time_point now,
+        std::chrono::steady_clock::time_point deadline);
     void host_completed(XnuThreadId thread);
     [[nodiscard]] std::chrono::steady_clock::time_point deadline(XnuThreadId thread) const
     {

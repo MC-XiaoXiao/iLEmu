@@ -32,6 +32,9 @@ public:
         std::uint32_t host_nanoseconds_per_device_nanosecond = 1);
 
     [[nodiscard]] DeviceMonotonicTime allowed_device_monotonic_time() const;
+    // Use the same origin and rate for an earlier host input sample.
+    [[nodiscard]] DeviceMonotonicTime device_time_at(
+        std::chrono::steady_clock::time_point host_time) const;
     [[nodiscard]] std::chrono::nanoseconds delay_until(
         DeviceMonotonicTime device_monotonic_time) const;
     // Return the stable host deadline corresponding to a future device time.

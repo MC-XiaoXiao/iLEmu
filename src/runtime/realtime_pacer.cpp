@@ -25,10 +25,16 @@ RealtimePacer::RealtimePacer(DeviceMonotonicTime initial_device_monotonic_time,
 
 DeviceMonotonicTime RealtimePacer::allowed_device_monotonic_time() const
 {
+    return device_time_at(std::chrono::steady_clock::now());
+}
+
+DeviceMonotonicTime RealtimePacer::device_time_at(
+    std::chrono::steady_clock::time_point host_time) const
+{
     // iPhone OS 1.0's mach_timebase_info is exposed as 1:1, so one Mach
     // absolute-time unit is one nanosecond in the compatibility kernel.
     const auto elapsed =
-        std::max(std::chrono::steady_clock::now() - initial_host_time_,
+        std::max(host_time - initial_host_time_,
             std::chrono::steady_clock::duration::zero());
     const auto elapsed_nanoseconds =
         std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();

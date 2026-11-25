@@ -175,6 +175,7 @@ namespace {
         bool deferred_svc { };
         bool host_tick_budget_limited { };
         std::optional<GuestHostContinuation> host_continuation;
+        bool new_host_turn { };
     };
 
 } // namespace
@@ -3059,9 +3060,18 @@ void EmulatorSession::run()
             break;
         }
         if (display_presenter) {
+            for (const auto& input : display_presenter->take_text_events()) {
+                note_interactive_host_activity();
+                static_cast<void>(
+                    initial_runtime->kernel->enqueue_text_input(input.utf8));
+            }
             for (const auto& input : display_presenter->take_touch_events()) {
                 note_interactive_host_activity();
-                initial_runtime->kernel->enqueue_touch_input(input);
+                const auto timestamp = realtime_pacer && input.host_sample_time
+                    ? std::optional { realtime_pacer->device_time_at(
+                          *input.host_sample_time) }
+                    : std::nullopt;
+                initial_runtime->kernel->enqueue_touch_input(input, timestamp);
             }
             for (const auto& input : display_presenter->take_button_events()) {
                 note_interactive_host_activity();
@@ -3105,6 +3115,14 @@ void EmulatorSession::run()
                 commands.push_back(std::move(command));
             for (const auto& command : commands) {
                 switch (command.kind) {
+                case LiveControlCommandKind::Text:
+                    note_interactive_host_activity();
+                    output.marker(initial_runtime->kernel->enqueue_text_input(
+                                      command.message)
+                                      ? "[control] text queued"
+                                      : "[control] text rejected: invalid text "
+                                        "or unavailable input route");
+                    break;
                 case LiveControlCommandKind::Touch:
                     note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_touch_input(command.touch);
@@ -3403,7 +3421,8 @@ void EmulatorSession::run()
                     break;
                 case LiveControlCommandKind::Help:
                     output.marker(
-                        "[control] commands: touch down|move|up|cancel x y; "
+                        "[control] commands: text TEXT; key "
+                        "backspace|return|tab; touch down|move|up|cancel x y; "
                         "tap x y [hold-ms]; unlock; "
                         "drag x1 y1 x2 y2 [duration-ms] [steps]; "
                         "button home|lock|volume-up|volume-down down|up; "
@@ -4183,6 +4202,9 @@ void EmulatorSession::run()
             if (selected_runtime->pending_exec &&
                 selected_runtime->pending_exec->processor == index)
                 cpu.halt(Dynarmic::HaltReason::UserDefined6);
+            const auto budget_now = std::chrono::steady_clock::now();
+            const bool new_host_turn = !prepared_slices.empty() &&
+                !guest_execution_policy.has_active_turn(scheduled_value.thread, budget_now);
             const auto host_slice_budget = guest_execution_policy.budget(
                 scheduler,
                 GuestExecutionBudgetRequest {
@@ -4193,6 +4215,7 @@ void EmulatorSession::run()
                     display_callback_work_active ||
                         (input_preferred_thread &&
                             *input_preferred_thread == scheduled_value.thread),
+                    budget_now,
                 });
             auto slice = bounded_execution ? std::min(batch_ticks,
                                                  scheduled_value.tick_budget)
@@ -4218,6 +4241,7 @@ void EmulatorSession::run()
                 },
                 false,
             });
+            prepared_slices.back().new_host_turn = new_host_turn;
         }
 
         // Serial selection can stop after its first lane. Bound that lane too,
@@ -4318,10 +4342,39 @@ void EmulatorSession::run()
             guest_execution_coordinator->run(execution_requests, service_host);
         } else {
             for (auto& prepared : prepared_slices) {
-                if (scheduler.contains(prepared.scheduled.thread)) {
-                    std::array<GuestExecutionRequest*, 1> request { &prepared.execution };
-                    guest_execution_coordinator->run(request, service_host);
+                const auto thread = prepared.scheduled.thread;
+                if (!scheduler.contains(thread))
+                    continue;
+                auto& execution = prepared.execution;
+                // A later serial worker can lose its entire allowance waiting
+                // for earlier workers. Only replace a fresh, unspent turn.
+                if (prepared.new_host_turn && !gdb_server &&
+                    pending_control_commands.empty()) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (execution.host_deadline <= now) {
+                        auto limit = std::min(now + execution.host_slice_budget,
+                            host_slice_now + std::chrono::nanoseconds {
+                                iokit_abi::display_vsync::period_absolute_time });
+                        if (host_control_deadline)
+                            limit = std::min(limit, *host_control_deadline);
+                        if (realtime_pacer) {
+                            if (display_vsync_deadline)
+                                limit = std::min(limit, realtime_pacer->host_deadline_for(
+                                    *display_vsync_deadline));
+                            if (const auto next = initial_runtime->kernel->next_display_vsync_deadline())
+                                limit = std::min(limit, realtime_pacer->host_deadline_for(*next));
+                        }
+                        const auto info = scheduler.info(thread);
+                        if (info && info->state == XnuThreadState::Running &&
+                            !prepared.runtime->kernel->process().exited &&
+                            guest_execution_policy.publish_unstarted_turn(thread, now, limit)) {
+                            execution.host_deadline = limit;
+                            execution.host_slice_budget = limit - now;
+                        }
+                    }
                 }
+                std::array<GuestExecutionRequest*, 1> request { &execution };
+                guest_execution_coordinator->run(request, service_host);
             }
         }
 

@@ -130,6 +130,26 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
     return result;
 }
 
+bool GuestExecutionPolicy::has_active_turn(XnuThreadId thread,
+    std::chrono::steady_clock::time_point now) const
+{
+    const auto history = histories_.find(thread);
+    return history != histories_.end() && history->second.deadline > now;
+}
+
+bool GuestExecutionPolicy::publish_unstarted_turn(XnuThreadId thread,
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::time_point deadline)
+{
+    auto& turn = histories_.at(thread);
+    if (turn.deadline > now || turn.continuation_host_ns != 0U || deadline <= now)
+        return false;
+    turn.deadline = deadline;
+    turn.continuation_budget_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now).count());
+    return true;
+}
+
 void GuestExecutionPolicy::host_completed(XnuThreadId thread)
 {
     const auto found = histories_.find(thread);
