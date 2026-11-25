@@ -609,8 +609,10 @@ namespace {
         void finish_delayed(UserlandHleCall& call)
         {
             const auto session_ref = call.argument(0);
+            constexpr std::uint32_t subduct_offset = 0x10U;
             if (!session_ref ||
-                session_ref > std::numeric_limits<std::uint32_t>::max() - 12U ||
+                session_ref > std::numeric_limits<std::uint32_t>::max() -
+                                  subduct_offset ||
                 call.memory().read8(session_ref + 8U).value_or(1U) != 0U) {
                 call.resume_original_persistently();
                 return;
@@ -618,7 +620,7 @@ namespace {
             // The firmware's public session and the codec's callback session
             // both identify the same VideoToolbox decompression subduct.
             const auto subduct =
-                call.memory().read32(session_ref + 12U).value_or(0U);
+                call.memory().read32(session_ref + subduct_offset).value_or(0U);
             const auto found = std::ranges::find_if(sessions_, [&](const auto&
                                                                        entry) {
                 const auto& session = *entry.second;
