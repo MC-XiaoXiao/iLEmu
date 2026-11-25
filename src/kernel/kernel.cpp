@@ -111,6 +111,76 @@ namespace {
     // address overflow cannot turn an invalid range into a valid wrapped one.
     constexpr std::uint64_t arm_user_vm_max_address = 0x80000000ULL;
 
+    constexpr std::string_view gt_racing_executable {
+        "/GTRacing.app/GTRacing"
+    };
+    constexpr std::string_view ca_transaction_flush {
+        "+[CATransaction flush]"
+    };
+    constexpr std::uint32_t gt_racing_set_status_bar_visibility = 0x00044cdcU;
+
+    bool supports_gt_racing_status_bar_sync(
+        const DeviceModel& device, const DarwinKernelIdentity& firmware)
+    {
+        return device.identity.product_type == "iPhone5,1" &&
+               firmware.build_version == "10B350";
+    }
+
+    bool matches_gt_racing_status_bar_sync(const MachOImage& image)
+    {
+        constexpr std::array uuid {
+            std::byte { 0xf2 },
+            std::byte { 0xc8 },
+            std::byte { 0x00 },
+            std::byte { 0xe0 },
+            std::byte { 0xbe },
+            std::byte { 0x40 },
+            std::byte { 0xc4 },
+            std::byte { 0x3e },
+            std::byte { 0x5a },
+            std::byte { 0x23 },
+            std::byte { 0xa1 },
+            std::byte { 0xbc },
+            std::byte { 0xd1 },
+            std::byte { 0x1d },
+            std::byte { 0xc1 },
+            std::byte { 0xba },
+        };
+        return image.uuid() == uuid &&
+               image.read_vm_u32(gt_racing_set_status_bar_visibility) ==
+                   0x490ab580U &&
+               image.read_vm_u32(0x00044cfcU) == 0x68002301U;
+    }
+
+    void register_gt_racing_status_bar_sync(UserlandHleRegistry& registry)
+    {
+        registry.register_address(
+            std::string { gt_racing_executable },
+            gt_racing_set_status_bar_visibility | 1U,
+            "GTRacingSetStatusBarVisibility",
+            [](UserlandHleCall& call) {
+                // The game asks UIKit to hide the bar with animation when
+                // visibility is zero. Resume then leaves its rendering pthread
+                // outside a CFRunLoop turn, so commit that thread's pending
+                // native transaction before returning to the game.
+                if (call.argument(0) != 0U || call.cpu().processor_id() == 0U) {
+                    call.resume_original_persistently();
+                    return;
+                }
+                call.resume_original_persistently(
+                    [](UserlandHleCall& completed) {
+                        const auto result = completed.argument(0);
+                        if (!completed.call_guest_function(ca_transaction_flush,
+                                [result](UserlandHleCall& flushed) {
+                                    flushed.set_return(result);
+                                })) {
+                            completed.set_return(result);
+                        }
+                    });
+            },
+            matches_gt_racing_status_bar_sync);
+    }
+
     std::pair<PerfDiagnosticSourceKind, std::uint32_t> svc_diagnostic_source(
         const Cpu& cpu, std::uint32_t immediate)
     {
@@ -587,6 +657,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             }
             call.resume_original_persistently();
         });
+    if (supports_gt_racing_status_bar_sync(
+            device_model_, shared_state_->darwin_kernel_identity))
+        register_gt_racing_status_bar_sync(userland_hle_);
     graphics_services_input::register_springboard_alert_observers(userland_hle_,
         [this](std::uint32_t object,
             graphics_services_input::SpringBoardAlertObservation observation) {
@@ -1418,6 +1491,14 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     std::span<const std::byte> code_signature_entitlements,
     const MachOImage* dynamic_linker, const MachOImage* executable)
 {
+    if (guest_path.ends_with(gt_racing_executable) && executable &&
+        supports_gt_racing_status_bar_sync(
+            device_model_, shared_state_->darwin_kernel_identity) &&
+        matches_gt_racing_status_bar_sync(*executable)) {
+        userland_hle_.register_guest_function(
+            "/QuartzCore.framework/QuartzCore",
+            std::string { ca_transaction_flush });
+    }
     process_image_ = guest_path;
     if (is_application_path(guest_path) &&
         guest_working_directory_ == std::filesystem::path { "/" }) {
