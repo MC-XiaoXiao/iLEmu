@@ -14,9 +14,10 @@
 #include <vector>
 
 #include "foundation/display_geometry.hpp"
-#include "graphics/gles_renderer.hpp"
 #include "foundation/system_button_input.hpp"
+#include "foundation/text_input.hpp"
 #include "foundation/touch_input.hpp"
+#include "graphics/gles_renderer.hpp"
 
 namespace ilemu {
 
@@ -49,6 +50,10 @@ public:
     // The caller remains responsible for processing Guest deadlines.
     [[nodiscard]] virtual bool wait_for_event(
         std::chrono::nanoseconds timeout) = 0;
+    [[nodiscard]] virtual std::vector<TextInput> take_text_events()
+    {
+        return { };
+    }
     [[nodiscard]] virtual std::vector<TouchInput> take_touch_events() = 0;
     [[nodiscard]] virtual std::vector<SystemButtonInput>
     take_button_events() = 0;

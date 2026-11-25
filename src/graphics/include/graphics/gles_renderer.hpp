@@ -87,6 +87,7 @@ public:
         std::optional<HostRectangle>* readback_damage = nullptr);
     [[nodiscard]] HostNativeImage native_image(
         const HostSurface& surface) const override;
+    using HostGraphicsDevice::present;
     [[nodiscard]] PresentResult present(
         const std::shared_ptr<HostSurface>& surface) override;
     [[nodiscard]] bool native_presentation_available() const override;

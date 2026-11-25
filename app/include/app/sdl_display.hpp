@@ -52,6 +52,7 @@ public:
     // The caller remains responsible for processing Guest deadlines.
     [[nodiscard]] bool wait_for_event(
         std::chrono::nanoseconds timeout) override;
+    [[nodiscard]] std::vector<TextInput> take_text_events() override;
     [[nodiscard]] std::vector<TouchInput> take_touch_events() override;
     [[nodiscard]] std::vector<SystemButtonInput> take_button_events() override;
     [[nodiscard]] std::vector<RingerSwitchInput>

@@ -29,6 +29,7 @@
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
 #if defined(__ANDROID__) && defined(ILEMU_HAS_SDL2)
+#include "app/android_touch_timing.hpp"
 #include "graphics/gles_work_completion.hpp"
 #endif
 #include "foundation/performance.hpp"
@@ -146,6 +147,9 @@ struct SdlDisplay::Impl {
     DisplayOrientation orientation { DisplayOrientation::Portrait };
 #if defined(ILEMU_HAS_SDL2)
     SDL_Window* window { };
+#if defined(__ANDROID__)
+    android_touch_timing::EventWatch android_touch_watch;
+#endif
     SDL_Renderer* renderer { };
     SDL_Texture* texture { };
     SDL_Window* retired_window { };
@@ -195,6 +199,16 @@ struct SdlDisplay::Impl {
         std::lock_guard lock { sdl_mutex };
         if (window != nullptr && !vulkan_window)
             return;
+#if defined(__ANDROID__)
+        // Android's SDL backend permits one window. The presenter releases
+        // its Vulkan surface before handing this window to the CPU path.
+        if (window != nullptr) {
+            SDL_DestroyWindow(window);
+            window = nullptr;
+            vulkan_window = false;
+            surface_created = false;
+        }
+#endif
         auto* replacement = create_window(false);
         if (replacement == nullptr)
             return;
@@ -362,8 +376,7 @@ struct SdlDisplay::Impl {
         if (!direct_native_admission_open || !native_presenter_warmed ||
             queued_frame_count != 0 || presentation_active ||
             cpu_presentation_active || native_fallback_active ||
-            !pending_cpu_frames.empty() || !host_graphics ||
-            !host_graphics->native_presentation_available() ||
+            !pending_cpu_frames.empty() ||
             frame.panel_refresh || !frame.host_surface || !frame.presentation_lease ||
             frame.nominal_period <= std::chrono::nanoseconds::zero() ||
             frame.orientation != orientation ||
@@ -521,8 +534,7 @@ struct SdlDisplay::Impl {
         input.set_orientation(orientation);
 #if defined(ILEMU_HAS_SDL2)
         if (window != nullptr) {
-            const auto native_presentation =
-                host_graphics && host_graphics->native_presentation_available();
+            const auto native_presentation = presentation_thread.joinable();
             if (native_presentation)
                 stop_native_presenter();
             if (recreate_wayland_window()) {
@@ -1248,6 +1260,9 @@ SdlDisplay::SdlDisplay(
         throw std::runtime_error { "SDL window creation failed: " +
                                    std::string { SDL_GetError() } };
     }
+#if defined(__ANDROID__)
+    impl_->android_touch_watch.start();
+#endif
     impl_->start_cpu_presenter();
 #else
     throw std::runtime_error {
@@ -1280,6 +1295,9 @@ SdlDisplay::~SdlDisplay()
 #if defined(ILEMU_HAS_VULKAN)
             if (impl_->vulkan_library_loaded)
                 SDL_Vulkan_UnloadLibrary();
+#endif
+#if defined(__ANDROID__)
+            impl_->android_touch_watch.stop();
 #endif
             SDL_QuitSubSystem(SDL_INIT_VIDEO);
         }
@@ -1358,8 +1376,11 @@ void SdlDisplay::set_host_graphics(std::shared_ptr<HostGraphicsDevice> graphics)
     }
 #if defined(ILEMU_HAS_SDL2)
     if (impl_->host_graphics &&
-        !impl_->host_graphics->native_presentation_available())
-        impl_->ensure_cpu_window();
+        !impl_->host_graphics->native_presentation_available() &&
+        !impl_->transition_to_cpu_presentation()) {
+        throw std::runtime_error { "SDL CPU presentation setup failed: " +
+                                   std::string { SDL_GetError() } };
+    }
     if (impl_->host_graphics) {
         impl_->start_cpu_presenter();
         if (impl_->host_graphics->native_presentation_available())
@@ -1558,8 +1579,7 @@ bool SdlDisplay::poll_events()
     const auto redraw_requested = impl_->input.take_redraw_request();
     const auto surface_change_requested =
         impl_->input.take_surface_change_request();
-    if (surface_change_requested && impl_->host_graphics &&
-        impl_->host_graphics->native_presentation_available()) {
+    if (surface_change_requested && impl_->presentation_thread.joinable()) {
         impl_->stop_native_presenter();
         static_cast<void>(impl_->host_graphics->refresh_presentation_surface());
         impl_->start_native_presenter();
@@ -1608,9 +1628,10 @@ bool SdlDisplay::poll_events()
     }
     if (frame) {
         const auto requested_orientation = frame->orientation;
+        // A swapchain can be transiently unavailable during recovery. Keep
+        // routing through the worker until its ordered CPU fallback runs.
         native_presentation =
-            !native_failed && impl_->host_graphics &&
-            impl_->host_graphics->native_presentation_available();
+            !native_failed && impl_->presentation_thread.joinable();
         // Window/orientation changes are explicit boundaries. The potentially
         // expensive frame staging itself is still deferred to the native
         // worker.
@@ -1777,6 +1798,11 @@ bool SdlDisplay::wait_for_event(std::chrono::nanoseconds timeout)
     static_cast<void>(timeout);
 #endif
     return impl_->running;
+}
+
+std::vector<TextInput> SdlDisplay::take_text_events()
+{
+    return impl_->input.take_text_events();
 }
 
 std::vector<TouchInput> SdlDisplay::take_touch_events()

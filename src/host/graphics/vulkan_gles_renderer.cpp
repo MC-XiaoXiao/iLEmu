@@ -447,6 +447,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::chrono::nanoseconds nominal_period) override;
         [[nodiscard]] bool native_presentation_available() const override
         {
+            std::lock_guard lock { mutex_ };
             return presentation_swapchain_ != VK_NULL_HANDLE;
         }
         [[nodiscard]] bool release_presentation_surface() override;
@@ -1684,8 +1685,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         info.flags =
             presentation_timing_.swapchain_flags(presentation_surface_);
         VkSwapchainKHR swapchain { };
-        if (vkCreateSwapchainKHR(device_, &info, nullptr, &swapchain) !=
-            VK_SUCCESS) {
+        const auto create_result =
+            vkCreateSwapchainKHR(device_, &info, nullptr, &swapchain);
+        // Passing oldSwapchain retires it even when creation fails. All
+        // replacement callers have already waited for outstanding GPU work.
+        destroy_presentation_swapchain();
+        if (create_result != VK_SUCCESS) {
             return false;
         }
         std::uint32_t swapchain_image_count { };
@@ -1716,7 +1721,6 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 return false;
             }
         }
-        destroy_presentation_swapchain();
         presentation_swapchain_ = swapchain;
         presentation_timing_.attach(swapchain, info.flags);
         presentation_format_ = selected.format;
@@ -3469,41 +3473,37 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         // DZN and other translation layers may retain a presented image beyond
         // the render fence. Keep presentation in the next ring slot so
         // compositor and presentation semaphore lifetimes cannot alias.
-        auto* slot = &command_slot();
-        wait_for_slot(*slot);
+        auto& slot = command_slot();
+        wait_for_slot(slot);
 
         std::uint32_t image_index { };
-        const auto acquire_next_image = [&] {
+        VkResult acquired;
+        {
             const PerformanceLatencyScope latency { PerfLatencyKind::Acquire };
             // The presenter retains this frame and retries Skipped results.
             // Poll while owning renderer state so unavailable swapchain images
             // do not stall Guest draws on the same mutex.
-            return vkAcquireNextImageKHR(device_, presentation_swapchain_,
-                0U, slot->image_available,
+            acquired = vkAcquireNextImageKHR(device_, presentation_swapchain_,
+                0U, slot.image_available,
                 VK_NULL_HANDLE, &image_index);
+        }
+        const auto recover_for_retry = [&](VkResult reason) {
+            bool rebuilt;
+            if (reason == VK_ERROR_SURFACE_LOST_KHR) {
+                rebuilt = recreate_presentation_surface();
+            } else {
+                require_success(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
+                rebuilt = create_presentation_swapchain();
+            }
+            if (rebuilt)
+                return PresentResult::Skipped;
+            last_failure_reason_.store(
+                PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
+            return PresentResult::Failed;
         };
-        auto acquired = acquire_next_image();
-        if (acquired == VK_ERROR_SURFACE_LOST_KHR) {
-            if (!recreate_presentation_surface()) {
-                last_failure_reason_.store(PerfFallbackReason::BackendFailure,
-                    std::memory_order_relaxed);
-                return PresentResult::Failed;
-            }
-            slot = &command_slot();
-            wait_for_slot(*slot);
-            acquired = acquire_next_image();
-        }
-        if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
-            require_success(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
-            if (!create_presentation_swapchain()) {
-                last_failure_reason_.store(PerfFallbackReason::BackendFailure,
-                    std::memory_order_relaxed);
-                return PresentResult::Failed;
-            }
-            slot = &command_slot();
-            wait_for_slot(*slot);
-            acquired = acquire_next_image();
-        }
+        if (acquired == VK_ERROR_SURFACE_LOST_KHR ||
+            acquired == VK_ERROR_OUT_OF_DATE_KHR)
+            return recover_for_retry(acquired);
         if (acquired == VK_TIMEOUT || acquired == VK_NOT_READY)
             return PresentResult::Skipped;
         if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
@@ -3584,7 +3584,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
             0);
         presentation_layouts_[image_index] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        const auto image_available = slot->image_available;
+        const auto image_available = slot.image_available;
         if (image_index >= presentation_render_finished_.size()) {
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
@@ -3610,16 +3610,13 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             result =
                 presentation_timing_.present(queue_, present, nominal_period);
         }
-        if (result == VK_ERROR_SURFACE_LOST_KHR) {
-            if (!recreate_presentation_surface()) {
-                last_failure_reason_.store(PerfFallbackReason::BackendFailure,
-                    std::memory_order_relaxed);
-                return PresentResult::Failed;
-            }
-            return present_target(target, nominal_period);
-        }
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-            acquired == VK_SUBOPTIMAL_KHR) {
+        // No frame was accepted. Return ownership to the bounded presenter
+        // retry loop, including when consecutive surfaces are lost.
+        if (result == VK_ERROR_SURFACE_LOST_KHR ||
+            result == VK_ERROR_OUT_OF_DATE_KHR)
+            return recover_for_retry(result);
+        if (result == VK_SUBOPTIMAL_KHR ||
+            (result == VK_SUCCESS && acquired == VK_SUBOPTIMAL_KHR)) {
             require_success(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
             const auto recreated = create_presentation_swapchain();
             if (!recreated) {
@@ -3628,9 +3625,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             }
             // VK_SUBOPTIMAL_KHR still accepted this frame. Report that outcome
             // even if preparing the next swapchain fails.
-            return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR
-                       ? PresentResult::Queued
-                       : PresentResult::Failed;
+            return PresentResult::Queued;
         }
         if (result != VK_SUCCESS) {
             last_failure_reason_.store(

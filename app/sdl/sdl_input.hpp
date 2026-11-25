@@ -14,6 +14,7 @@
 
 #include "foundation/display_geometry.hpp"
 #include "foundation/system_button_input.hpp"
+#include "foundation/text_input.hpp"
 #include "foundation/touch_input.hpp"
 
 struct SDL_Window;
@@ -40,6 +41,7 @@ public:
     [[nodiscard]] bool poll(SDL_Window* window);
     [[nodiscard]] bool wait(
         SDL_Window* window, std::chrono::nanoseconds timeout);
+    [[nodiscard]] std::vector<TextInput> take_text_events();
     [[nodiscard]] std::vector<TouchInput> take_touch_events();
     [[nodiscard]] std::vector<SystemButtonInput> take_button_events();
     [[nodiscard]] std::vector<RingerSwitchInput> take_ringer_switch_events();
@@ -66,10 +68,17 @@ private:
     void process_event(const SDL_Event& event, int window_width,
         int window_height, DisplayViewport viewport);
 
+    struct PendingTouch {
+        TouchInput input;
+        std::uint32_t sdl_timestamp;
+    };
+
     DisplayGeometry geometry_;
     DisplayGeometry display_geometry_;
     DisplayOrientation orientation_ { DisplayOrientation::Portrait };
-    std::vector<TouchInput> touch_events_;
+    std::vector<TextInput> text_events_;
+    std::unordered_set<std::int32_t> shortcut_keys_;
+    std::vector<PendingTouch> touch_events_;
     std::vector<SystemButtonInput> button_events_;
     std::vector<RingerSwitchInput> ringer_switch_events_;
     bool redraw_requested_ { };

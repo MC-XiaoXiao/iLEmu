@@ -8,6 +8,7 @@
 #include "sdl_input.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <optional>
 
@@ -54,24 +55,26 @@ namespace {
             std::clamp((y - static_cast<float>(viewport.y)) /
                            static_cast<float>(viewport_height),
                 0.0F, 1.0F);
-        const auto guest_width = geometry.valid() ? geometry.width - 1U : 0U;
-        const auto guest_height = geometry.valid() ? geometry.height - 1U : 0U;
-        float guest_x = normalized_x * static_cast<float>(guest_width);
-        float guest_y = normalized_y * static_cast<float>(guest_height);
+        const auto guest_width =
+            static_cast<float>(geometry.valid() ? geometry.width : 0U);
+        const auto guest_height =
+            static_cast<float>(geometry.valid() ? geometry.height : 0U);
+        float guest_x = normalized_x * guest_width;
+        float guest_y = normalized_y * guest_height;
         switch (orientation) {
         case DisplayOrientation::Portrait:
             break;
         case DisplayOrientation::PortraitUpsideDown:
-            guest_x = (1.0F - normalized_x) * static_cast<float>(guest_width);
-            guest_y = (1.0F - normalized_y) * static_cast<float>(guest_height);
+            guest_x = (1.0F - normalized_x) * guest_width;
+            guest_y = (1.0F - normalized_y) * guest_height;
             break;
         case DisplayOrientation::LandscapeLeft:
-            guest_x = normalized_y * static_cast<float>(guest_width);
-            guest_y = (1.0F - normalized_x) * static_cast<float>(guest_height);
+            guest_x = normalized_y * guest_width;
+            guest_y = (1.0F - normalized_x) * guest_height;
             break;
         case DisplayOrientation::LandscapeRight:
-            guest_x = (1.0F - normalized_y) * static_cast<float>(guest_width);
-            guest_y = normalized_x * static_cast<float>(guest_height);
+            guest_x = (1.0F - normalized_y) * guest_width;
+            guest_y = normalized_x * guest_height;
             break;
         }
         const auto viewport_right =
@@ -81,6 +84,10 @@ namespace {
         const auto inside =
             x >= static_cast<float>(viewport.x) && x < viewport_right &&
             y >= static_cast<float>(viewport.y) && y < viewport_bottom;
+        // Touch positions are continuous. Preserve the display scale across
+        // the whole viewport and keep a clamped edge inside the guest bounds.
+        guest_x = std::min(guest_x, std::nextafter(guest_width, 0.0F));
+        guest_y = std::min(guest_y, std::nextafter(guest_height, 0.0F));
         return MappedTouch { TouchInput { phase, guest_x, guest_y }, inside };
     }
 
@@ -103,6 +110,7 @@ namespace {
             return SystemButton::Home;
         case SDLK_l:
             return SystemButton::Lock;
+        case SDLK_EQUALS:
         case SDLK_PLUS:
         case SDLK_KP_PLUS:
             return SystemButton::VolumeUp;
@@ -120,6 +128,8 @@ namespace {
 bool SdlInput::poll(SDL_Window* window)
 {
 #if defined(ILEMU_HAS_SDL2)
+    if (!SDL_IsTextInputActive())
+        SDL_StartTextInput();
     SDL_Event event { };
     while (SDL_PollEvent(&event) != 0) {
         const auto coordinates = input_coordinate_geometry(window);
@@ -176,6 +186,9 @@ void SdlInput::process_event(const SDL_Event& event, int window_width,
     int window_height, DisplayViewport viewport)
 {
 #if defined(ILEMU_HAS_SDL2)
+    const auto queue_touch = [this, &event](TouchInput input) {
+        touch_events_.push_back({ input, event.common.timestamp });
+    };
     switch (event.type) {
     case SDL_WINDOWEVENT:
         switch (event.window.event) {
@@ -197,20 +210,40 @@ void SdlInput::process_event(const SDL_Event& event, int window_width,
     case SDL_QUIT:
         running_ = false;
         break;
+    case SDL_TEXTINPUT:
+        text_events_.push_back(TextInput { event.text.text });
+        break;
     case SDL_KEYDOWN:
-    case SDL_KEYUP:
-        if (event.key.repeat == 0) {
-            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_r) {
-                ringer_switch_events_.push_back(RingerSwitchInput { });
-                break;
+    case SDL_KEYUP: {
+        const auto key = event.key.keysym.sym;
+        const auto down = event.type == SDL_KEYDOWN;
+        const auto control = (event.key.keysym.mod & KMOD_CTRL) != 0;
+        // Remember the Down binding so releasing Ctrl first still releases
+        // the same guest physical button on KeyUp.
+        if ((down && control) || (!down && shortcut_keys_.contains(key))) {
+            if (down && event.key.repeat == 0)
+                shortcut_keys_.insert(key);
+            if (!down)
+                shortcut_keys_.erase(key);
+            if (event.key.repeat == 0) {
+                if (down && key == SDLK_r)
+                    ringer_switch_events_.push_back(RingerSwitchInput { });
+                else if (const auto button = map_key(key))
+                    button_events_.push_back(SystemButtonInput {
+                        *button, down ? SystemButtonPhase::Down
+                                      : SystemButtonPhase::Up });
             }
-            if (const auto button = map_key(event.key.keysym.sym)) {
-                button_events_.push_back(SystemButtonInput { *button,
-                    event.type == SDL_KEYDOWN ? SystemButtonPhase::Down
-                                              : SystemButtonPhase::Up });
-            }
+        } else if (down && (event.key.keysym.mod &
+                               (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) == 0) {
+            if (key == SDLK_BACKSPACE)
+                text_events_.push_back(TextInput { "\b" });
+            else if (key == SDLK_RETURN || key == SDLK_KP_ENTER)
+                text_events_.push_back(TextInput { "\n" });
+            else if (key == SDLK_TAB)
+                text_events_.push_back(TextInput { "\t" });
         }
         break;
+    }
     case SDL_MOUSEBUTTONDOWN:
         if (event.button.button == SDL_BUTTON_LEFT &&
             event.button.which != SDL_TOUCH_MOUSEID) {
@@ -220,13 +253,13 @@ void SdlInput::process_event(const SDL_Event& event, int window_width,
                     viewport, geometry_, orientation_);
             if (mapped.inside) {
                 mouse_active_ = true;
-                touch_events_.push_back(mapped.input);
+                queue_touch(mapped.input);
             }
         }
         break;
     case SDL_MOUSEMOTION:
         if (mouse_active_ && event.motion.which != SDL_TOUCH_MOUSEID) {
-            touch_events_.push_back(
+            queue_touch(
                 map_window_touch(static_cast<float>(event.motion.x),
                     static_cast<float>(event.motion.y), TouchPhase::Move,
                     viewport, geometry_, orientation_)
@@ -236,7 +269,7 @@ void SdlInput::process_event(const SDL_Event& event, int window_width,
     case SDL_MOUSEBUTTONUP:
         if (event.button.button == SDL_BUTTON_LEFT && mouse_active_ &&
             event.button.which != SDL_TOUCH_MOUSEID) {
-            touch_events_.push_back(
+            queue_touch(
                 map_window_touch(static_cast<float>(event.button.x),
                     static_cast<float>(event.button.y), TouchPhase::Up,
                     viewport, geometry_, orientation_)
@@ -251,14 +284,14 @@ void SdlInput::process_event(const SDL_Event& event, int window_width,
         if (mapped.inside) {
             active_fingers_.insert(
                 static_cast<std::int64_t>(event.tfinger.fingerId));
-            touch_events_.push_back(mapped.input);
+            queue_touch(mapped.input);
         }
         break;
     }
     case SDL_FINGERMOTION:
         if (active_fingers_.contains(
                 static_cast<std::int64_t>(event.tfinger.fingerId))) {
-            touch_events_.push_back(map_finger(TouchPhase::Move,
+            queue_touch(map_finger(TouchPhase::Move,
                 event.tfinger.x, event.tfinger.y, window_width, window_height,
                 viewport, geometry_, orientation_)
                     .input);
@@ -267,7 +300,7 @@ void SdlInput::process_event(const SDL_Event& event, int window_width,
     case SDL_FINGERUP:
         if (active_fingers_.erase(
                 static_cast<std::int64_t>(event.tfinger.fingerId)) != 0U) {
-            touch_events_.push_back(map_finger(TouchPhase::Up, event.tfinger.x,
+            queue_touch(map_finger(TouchPhase::Up, event.tfinger.x,
                 event.tfinger.y, window_width, window_height, viewport,
                 geometry_, orientation_)
                     .input);
@@ -284,10 +317,39 @@ void SdlInput::process_event(const SDL_Event& event, int window_width,
 #endif
 }
 
+std::vector<TextInput> SdlInput::take_text_events()
+{
+    auto events = std::move(text_events_);
+    text_events_.clear();
+    return events;
+}
+
 std::vector<TouchInput> SdlInput::take_touch_events()
 {
-    auto events = std::move(touch_events_);
+    std::vector<TouchInput> events;
+#if defined(ILEMU_HAS_SDL2)
+    if (touch_events_.empty())
+        return events;
+
+    // Use one clock reference for the whole batch so queued SDL events keep
+    // their sample intervals even after a slow guest iteration.
+    const auto sdl_now = SDL_GetTicks();
+    const auto host_now = std::chrono::steady_clock::now();
+    events.reserve(touch_events_.size());
+    for (auto& pending : touch_events_) {
+        // SDL event ticks are 32 bits. Unsigned subtraction recovers the age
+        // across rollover as long as the sample is within the last half-cycle.
+        const auto age =
+            static_cast<std::uint32_t>(sdl_now - pending.sdl_timestamp);
+        if (age <= static_cast<std::uint32_t>(
+                       std::numeric_limits<std::int32_t>::max())) {
+            pending.input.host_sample_time =
+                host_now - std::chrono::milliseconds { age };
+        }
+        events.push_back(pending.input);
+    }
     touch_events_.clear();
+#endif
     return events;
 }
 
