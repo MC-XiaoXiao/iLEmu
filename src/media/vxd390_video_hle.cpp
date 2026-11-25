@@ -29,6 +29,9 @@ namespace {
     constexpr std::string_view vxd_image {
         "/AppleVXD390Framework.framework/AppleVXD390Framework"
     };
+    constexpr std::string_view video_toolbox_image {
+        "/VideoToolbox.framework/VideoToolbox"
+    };
     constexpr std::uint32_t bad_argument = 0xe00002c2U;
     constexpr std::uint32_t no_memory = 0xe00002bdU;
     constexpr std::uint32_t unsupported = 0xe00002c7U;
@@ -111,6 +114,7 @@ namespace {
         std::uint32_t scratch { };
         std::uint32_t bitstream { };
         std::uint32_t bitstream_capacity { };
+        std::set<std::uint32_t> pending_frames;
         std::uint64_t decode_calls { };
         std::uint64_t submitted_frames { };
         std::uint64_t returned_frames { };
@@ -137,7 +141,12 @@ namespace {
                 call.set_return(0U);
                 return;
             }
-            if (!frames_[frame_index_].display) {
+            const auto& frame = frames_[frame_index_];
+            if (frame.width == 0U) {
+                fail(call, "decoder returned no frame at end of stream");
+                return;
+            }
+            if (!frame.display) {
                 ++session_->suppressed_frames;
                 emit(call, 0U);
                 return;
@@ -382,6 +391,9 @@ namespace {
             add("_AppleVXD390DecodeFrame", &Vxd390VideoHle::decode);
             add("_AppleVXD390TerminateDecoder", &Vxd390VideoHle::terminate);
             add("_AppleVXD390CloseConnection", &Vxd390VideoHle::close);
+            registry.register_function(std::string { video_toolbox_image },
+                "_VTDecompressionSessionFinishDelayedFrames",
+                [self](UserlandHleCall& call) { self->finish_delayed(call); });
         }
 
     private:
@@ -454,6 +466,7 @@ namespace {
             session->suppressed_frames = 0U;
             session->failures = 0U;
             session->last_frame = 0U;
+            session->pending_frames.clear();
             call.output().line("[video] H.264 session pid=" +
                                std::to_string(call.process_id()) +
                                " size=" + std::to_string(width) + "x" +
@@ -592,8 +605,55 @@ namespace {
                 call.set_return(bad_argument);
                 return;
             }
+            if (length)
+                session->pending_frames.insert(identifier);
+            for (const auto& frame : *frames)
+                session->pending_frames.erase(frame.identifier);
             std::make_shared<FrameDelivery>(
                 std::move(session), std::move(*frames))
+                ->next(call);
+        }
+
+        void finish_delayed(UserlandHleCall& call)
+        {
+            const auto session_ref = call.argument(0);
+            if (!session_ref ||
+                session_ref > std::numeric_limits<std::uint32_t>::max() - 12U ||
+                call.memory().read8(session_ref + 8U).value_or(1U) != 0U) {
+                call.resume_original_persistently();
+                return;
+            }
+            // The firmware's public session and the codec's callback session
+            // both identify the same VideoToolbox decompression subduct.
+            const auto subduct =
+                call.memory().read32(session_ref + 12U).value_or(0U);
+            const auto found = std::ranges::find_if(sessions_, [&](const auto&
+                                                                       entry) {
+                const auto& session = *entry.second;
+                const auto decoder_ref =
+                    call.memory().read32(session.callback_context).value_or(0U);
+                return session.decoder && subduct && decoder_ref &&
+                       call.memory().read32(decoder_ref) == subduct;
+            });
+            if (found == sessions_.end() ||
+                found->second->pending_frames.empty()) {
+                call.resume_original_persistently();
+                return;
+            }
+            auto session = found->second;
+            // H264H4 has no delayed-frame method because the accelerator
+            // completes each decode synchronously. Deliver the host decoder's
+            // reordered frames before the firmware waits for completion.
+            auto frames = session->decoder->decode({ }, 0U, false)
+                              .value_or(std::vector<DecodedVideoFrame> { });
+            for (const auto& frame : frames)
+                session->pending_frames.erase(frame.identifier);
+            for (const auto identifier : session->pending_frames)
+                frames.push_back({ identifier, 0U, 0U, false, { } });
+            session->pending_frames.clear();
+            session->report(call, "finishing delayed frames");
+            std::make_shared<FrameDelivery>(
+                std::move(session), std::move(frames))
                 ->next(call);
         }
 
