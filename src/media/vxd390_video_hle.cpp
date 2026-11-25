@@ -92,7 +92,6 @@ namespace {
                 " decode-calls=" + std::to_string(decode_calls) +
                 " submitted=" + std::to_string(submitted_frames) +
                 " callbacks-returned=" + std::to_string(returned_frames) +
-                " suppressed=" + std::to_string(suppressed_frames) +
                 " failures=" + std::to_string(failures) +
                 " last-frame-id=" + std::to_string(last_frame));
         }
@@ -118,7 +117,6 @@ namespace {
         std::uint64_t decode_calls { };
         std::uint64_t submitted_frames { };
         std::uint64_t returned_frames { };
-        std::uint64_t suppressed_frames { };
         std::uint64_t failures { };
         std::uint32_t last_frame { };
     };
@@ -144,11 +142,6 @@ namespace {
             const auto& frame = frames_[frame_index_];
             if (frame.width == 0U) {
                 fail(call, "decoder returned no frame at end of stream");
-                return;
-            }
-            if (!frame.display) {
-                ++session_->suppressed_frames;
-                emit(call, 0U);
                 return;
             }
             if (!call.memory().write32(session_->scratch, 0U)) {
@@ -463,7 +456,6 @@ namespace {
             session->decode_calls = 0U;
             session->submitted_frames = 0U;
             session->returned_frames = 0U;
-            session->suppressed_frames = 0U;
             session->failures = 0U;
             session->last_frame = 0U;
             session->pending_frames.clear();
@@ -575,8 +567,6 @@ namespace {
                 call.memory().read32(descriptor + 4U).value_or(0U);
             const auto identifier =
                 call.memory().read32(descriptor + 8U).value_or(0U);
-            const auto display =
-                (call.memory().read8(descriptor + 12U).value_or(0U) & 1U) != 0U;
             if (!descriptor || !session->decoder || !session->pool ||
                 !session->callback || length > maximum_access_unit ||
                 (length != 0U && !pointer)) {
@@ -590,9 +580,11 @@ namespace {
                     : std::optional<std::vector<std::byte>> { std::in_place };
             const auto packet =
                 input ? annex_b(*input, session->length_size) : std::nullopt;
-            auto frames =
-                packet ? session->decoder->decode(*packet, identifier, display)
-                       : std::nullopt;
+            // Descriptor byte 12 is the inverse of the codec's 1x realtime
+            // power hint. VideoToolbox applies its own no-output flag after
+            // seeing the decoded frame callback, just as with AppleVXD390.
+            auto frames = packet ? session->decoder->decode(*packet, identifier)
+                                 : std::nullopt;
             if (!frames) {
                 session->record_failure(
                     call, "could not decode an access unit");
@@ -644,12 +636,12 @@ namespace {
             // H264H4 has no delayed-frame method because the accelerator
             // completes each decode synchronously. Deliver the host decoder's
             // reordered frames before the firmware waits for completion.
-            auto frames = session->decoder->decode({ }, 0U, false)
-                              .value_or(std::vector<DecodedVideoFrame> { });
+            auto frames = session->decoder->decode({ }, 0U).value_or(
+                std::vector<DecodedVideoFrame> { });
             for (const auto& frame : frames)
                 session->pending_frames.erase(frame.identifier);
             for (const auto identifier : session->pending_frames)
-                frames.push_back({ identifier, 0U, 0U, false, { } });
+                frames.push_back({ identifier, 0U, 0U, { } });
             session->pending_frames.clear();
             session->report(call, "finishing delayed frames");
             std::make_shared<FrameDelivery>(

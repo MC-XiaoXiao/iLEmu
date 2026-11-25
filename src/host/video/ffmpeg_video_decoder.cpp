@@ -59,8 +59,7 @@ namespace {
         }
 
         std::optional<std::vector<DecodedVideoFrame>> decode(
-            std::span<const std::byte> bytes, std::uint32_t identifier,
-            bool display) override
+            std::span<const std::byte> bytes, std::uint32_t identifier) override
         {
             const bool drain = bytes.empty();
             if (!drain) {
@@ -69,7 +68,7 @@ namespace {
                         packet_.get(), static_cast<int>(bytes.size())) < 0)
                     return std::nullopt;
                 std::memcpy(packet_->data, bytes.data(), bytes.size());
-                packet_->pts = (std::int64_t { display } << 32U) | identifier;
+                packet_->pts = identifier;
             }
             const auto sent = avcodec_send_packet(
                 context_.get(), drain ? nullptr : packet_.get());
@@ -105,9 +104,7 @@ namespace {
             const auto width = static_cast<std::uint32_t>(source.width);
             const auto height = static_cast<std::uint32_t>(source.height);
             DecodedVideoFrame result { static_cast<std::uint32_t>(source.pts),
-                width, height, (source.pts >> 32U) != 0, { } };
-            if (!result.display)
-                return result;
+                width, height, { } };
             scaler_.reset(sws_getCachedContext(scaler_.release(), source.width,
                 source.height, static_cast<AVPixelFormat>(source.format),
                 source.width, source.height, AV_PIX_FMT_BGRA, SWS_BILINEAR,

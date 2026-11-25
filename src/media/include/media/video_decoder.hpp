@@ -17,7 +17,6 @@ struct DecodedVideoFrame {
     std::uint32_t identifier;
     std::uint32_t width;
     std::uint32_t height;
-    bool display;
     std::vector<std::byte> bgra;
 };
 
@@ -27,8 +26,7 @@ public:
     // Input is an Annex B access unit. An empty input drains delayed frames.
     // Frames retain the identifiers of the access units that produced them.
     [[nodiscard]] virtual std::optional<std::vector<DecodedVideoFrame>> decode(
-        std::span<const std::byte> bytes, std::uint32_t identifier,
-        bool display) = 0;
+        std::span<const std::byte> bytes, std::uint32_t identifier) = 0;
 };
 
 using H264DecoderFactory = std::unique_ptr<VideoDecoder> (*)(
