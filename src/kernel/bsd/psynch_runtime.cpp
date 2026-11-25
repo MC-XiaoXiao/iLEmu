@@ -492,6 +492,13 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::unlock_rwlock(
             return sequence_not_after(waiter.sequence, lock_sequence);
         }));
     if (queued_waiters < expected_waiters) {
+        // Unlock syscalls can arrive out of order. Keep a prepost made for
+        // a later handoff so its pending tickets can still trigger the grant.
+        if (rw.prepost_count != 0U &&
+            !sequence_not_after(rw.prepost_sequence_word & generation_mask,
+                sequence_word & generation_mask)) {
+            return { };
+        }
         rw.prepost_count = expected_waiters - queued_waiters;
         rw.prepost_lock_sequence = lock_sequence;
         rw.prepost_sequence_word = sequence_word;
