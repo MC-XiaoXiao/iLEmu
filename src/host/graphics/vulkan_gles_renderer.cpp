@@ -2888,25 +2888,23 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         result.reserve(vertices.size() * 3U);
         const auto emit = [&](std::size_t a, std::size_t b, std::size_t c) {
             const std::array indices { a, b, c };
-            std::array<std::array<float, 2>, 3> normalized { };
-            for (std::size_t index = 0; index < indices.size(); ++index) {
-                const auto& position = vertices[indices[index]].position;
-                if (position[3] == 0.0F)
-                    return;
-                normalized[index] = { position[0] / position[3],
-                    position[1] / position[3] };
-            }
-            const auto area = (normalized[1][0] - normalized[0][0]) *
-                                  (normalized[2][1] - normalized[0][1]) -
-                              (normalized[1][1] - normalized[0][1]) *
-                                  (normalized[2][0] - normalized[0][0]);
-            // A thin image slice can cover a pixel even when its normalized
-            // area is tiny. Discard only genuinely degenerate geometry.
-            if (!std::isfinite(area) || area == 0.0F)
+            const auto& p = vertices[a].position;
+            const auto& q = vertices[b].position;
+            const auto& r = vertices[c].position;
+            const auto minor = [&](std::size_t i, std::size_t j) {
+                return static_cast<double>(q[i]) * r[j] -
+                       static_cast<double>(q[j]) * r[i];
+            };
+            // Clip-space winding uses the determinant of (x,y,w). Dividing
+            // first reverses the winding if one vertex is behind the eye.
+            // Clipping preserves the determinant's sign on the visible part.
+            const auto area = p[0] * minor(1, 3) - p[1] * minor(0, 3) +
+                              p[3] * minor(0, 1);
+            if (!std::isfinite(area) || area == 0.0)
                 return;
             const auto front_facing =
-                state.front_face == gles_abi::counter_clockwise ? area > 0.0F
-                                                                : area < 0.0F;
+                state.front_face == gles_abi::counter_clockwise ? area > 0.0
+                                                                : area < 0.0;
             if (state.cull_enabled &&
                 (state.cull_mode == gles_abi::front_and_back ||
                     (state.cull_mode == gles_abi::front && front_facing) ||
