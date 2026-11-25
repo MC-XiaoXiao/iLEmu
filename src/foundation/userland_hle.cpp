@@ -1199,7 +1199,8 @@ void UserlandHleRegistry::register_objc_class_method(std::string image_suffix,
 }
 
 void UserlandHleRegistry::register_address(std::string image_suffix,
-    std::uint32_t virtual_address, std::string diagnostic_name, Handler handler)
+    std::uint32_t virtual_address, std::string diagnostic_name, Handler handler,
+    std::function<bool(const MachOImage&)> matches_image)
 {
     if (!handler || virtual_address == 0 || diagnostic_name.empty() ||
         registrations_.size() >= userland_hle_call_mask) {
@@ -1219,7 +1220,9 @@ void UserlandHleRegistry::register_address(std::string image_suffix,
     registrations_.push_back(
         Registration { static_cast<std::uint16_t>(registrations_.size() + 1U),
             std::move(image_suffix), std::move(diagnostic_name), false,
-            virtual_address, std::nullopt, false, std::move(handler) });
+            virtual_address, std::nullopt, false, std::move(handler),
+            SymbolLookup::Image, EntryPatch::Memory, { },
+            std::move(matches_image) });
     ++registration_generation_;
 }
 
@@ -1618,6 +1621,10 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
     plan_key += std::to_string(hle_plan_builder_version);
     plan_key.push_back('\n');
     for (const auto& registration : registrations_) {
+        // Predicates inspect standalone executable metadata and cannot be
+        // represented in a shared-cache plan or its serialized rule key.
+        if (registration.matches_image)
+            continue;
         plan_key += rule_key_text(rule_key(registration));
         plan_key += registration.lookup == SymbolLookup::ImageAndCacheLocals
                         ? "locals1|" : "locals0|";
@@ -1769,7 +1776,7 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
         }
 
         for (const auto& registration : registrations_) {
-            if (!registration.virtual_address ||
+            if (!registration.virtual_address || registration.matches_image ||
                 !path_has_suffix(image.path, registration.image_suffix)) {
                 continue;
             }
@@ -2347,7 +2354,10 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
         }
         for (const auto& registration : registrations_) {
             if (!registration.virtual_address ||
-                !path_has_suffix(path, registration.image_suffix)) {
+                !path_has_suffix(path, registration.image_suffix) ||
+                (registration.matches_image &&
+                    (image_header_offset ||
+                        !registration.matches_image(image)))) {
                 continue;
             }
             const bool thumb = (*registration.virtual_address & 1U) != 0;

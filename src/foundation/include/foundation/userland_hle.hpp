@@ -227,11 +227,12 @@ public:
     void register_objc_class_method(std::string image_suffix,
         std::string class_name, std::string selector,
         std::string diagnostic_name, Handler handler);
-    // Register a stripped firmware entry point by its preferred Mach-O virtual
-    // address. Bit 0 selects a Thumb entry, matching Mach symbol convention.
+    // Intercept a stripped routine at its preferred Mach-O virtual address.
+    // Bit 0 selects Thumb. A predicate can verify the image before patching.
     void register_address(std::string image_suffix,
         std::uint32_t virtual_address, std::string diagnostic_name,
-        Handler handler);
+        Handler handler,
+        std::function<bool(const MachOImage&)> matches_image = { });
 
     // Used by shared-cache mapping code to avoid parsing images that cannot
     // contribute an HLE/profile lookup.
@@ -342,6 +343,7 @@ private:
         SymbolLookup lookup { SymbolLookup::Image };
         EntryPatch patch { EntryPatch::Memory };
         std::vector<FirmwareRoutine> thumb_instructions { };
+        std::function<bool(const MachOImage&)> matches_image { };
     };
     [[nodiscard]] static std::optional<std::uint32_t> thumb_instruction_offset(
         const FirmwareRoutine& site, const MachOImage& image,
