@@ -21,6 +21,7 @@ namespace {
     {
         constexpr std::string_view prefixes[] {
             "[control]",
+            "[native-audio-trace]",
             "[device-state]",
             "[loader]",
             "[clock]",

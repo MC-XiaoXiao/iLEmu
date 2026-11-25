@@ -6,6 +6,7 @@
 // emulated audio hardware.
 
 #include "media/core_audio_hle.hpp"
+#include "native_io_trace.hpp"
 #include "media/audio_output_gain.hpp"
 
 #include <algorithm>
@@ -1290,6 +1291,7 @@ void CoreAudioHle::stop_io(UserlandHleCall& call)
 {
     const auto device_id = call.argument(0);
     if (find_device(device_id) == nullptr) {
+        trace_native_io_entry(call);
         auto registration = native_io_procs_.find(call.argument(1));
         if (registration == native_io_procs_.end()) {
             registration = std::find_if(native_io_procs_.begin(),
@@ -1302,7 +1304,7 @@ void CoreAudioHle::stop_io(UserlandHleCall& call)
         if (registration == native_io_procs_.end() ||
             registration->second.process_id != call.process_id() ||
             registration->second.device != device_id) {
-            call.set_return(parameter_error);
+            set_native_io_result(call, parameter_error);
             return;
         }
         registration->second.running = false;
@@ -1314,7 +1316,7 @@ void CoreAudioHle::stop_io(UserlandHleCall& call)
                            std::to_string(call.process_id()) + " id=" +
                            std::to_string(call.argument(1)) + " callbacks=" +
                            std::to_string(registration->second.callback_count));
-        call.set_return(0);
+        set_native_io_result(call, 0);
         return;
     }
     const auto registration = io_procs_.find(call.process_id());
