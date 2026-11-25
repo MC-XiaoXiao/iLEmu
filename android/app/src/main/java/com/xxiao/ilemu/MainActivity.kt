@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ui: ScreenUi
     private lateinit var navigation: MainNavigation
     private var resumed = false
+    private var settingsLoaded = false
     private val items = linkedMapOf<String, ContainerCard>()
     private val handler = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
@@ -42,9 +43,6 @@ class MainActivity : AppCompatActivity() {
         ui = ScreenUi(this)
         navigation = MainNavigation(this) { startActivity(Intent(this, ContainerActivity::class.java)) }
         val body = navigation.libraryContent
-        AppSettingsContent(this, navigation.settingsContent) {
-            DiagnosticsDialog.show(this) { launcher.launch(SessionSettings.smokeArguments()) }
-        }
         count = ui.text("", ScreenUi.Type.BODY, true)
         body.addView(count, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(16); bottomMargin = ui.dp(12) })
         message = ui.notice(body)
@@ -53,13 +51,22 @@ class MainActivity : AppCompatActivity() {
         val backToLibrary = object : OnBackPressedCallback(false) {
             override fun handleOnBackPressed() { navigation.select(R.id.navigation_emulators) }
         }
+        fun loadSettings() {
+            if (settingsLoaded) return
+            AppSettingsContent(this, navigation.settingsContent) {
+                DiagnosticsDialog.show(this) { launcher.launch(SessionSettings.smokeArguments()) }
+            }
+            settingsLoaded = true
+        }
         onBackPressedDispatcher.addCallback(this, backToLibrary)
         navigation.onTabChanged = {
+            if (!navigation.isLibraryVisible) loadSettings()
             backToLibrary.isEnabled = !navigation.isLibraryVisible
             handler.removeCallbacks(refresh)
             if (resumed && navigation.isLibraryVisible) handler.post(refresh)
         }
         navigation.select(savedInstanceState?.getInt("mainTab") ?: R.id.navigation_emulators)
+        if (!navigation.isLibraryVisible) loadSettings()
         if (savedInstanceState == null) handleDebugCommand(intent)
     }
     private fun render() {
