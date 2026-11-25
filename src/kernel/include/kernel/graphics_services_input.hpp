@@ -101,6 +101,10 @@ void record_bootstrap_registration_locked(
     std::uint32_t receiver_process_id = 0,
     SceneCoordinator* scenes = nullptr);
 
+// Thread-safe entry point for committed host text.
+[[nodiscard]] bool enqueue_text(KernelSharedState& state, std::string_view utf8,
+    SceneCoordinator* scenes = nullptr);
+
 // A complete Home Down/Up pair wakes a sleeping lock screen before touch.
 [[nodiscard]] EnqueueResult enqueue_system_button(KernelSharedState& state,
     const SystemButtonInput& input, std::uint64_t* input_sequence = nullptr);

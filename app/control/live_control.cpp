@@ -245,6 +245,15 @@ void LiveControl::wait_for(std::chrono::nanoseconds timeout)
 
 std::vector<LiveControlCommand> LiveControl::parse_line(std::string line)
 {
+    if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+    // Preserve leading/trailing spaces in committed text. The first space
+    // after the command is the delimiter; everything after it is payload.
+    if (line.starts_with("text ")) {
+        auto command = simple_command(LiveControlCommandKind::Text);
+        command.message = line.substr(5);
+        return { std::move(command) };
+    }
     line = trim(std::move(line));
     if (line.empty() || line.front() == '#')
         return { };
@@ -255,6 +264,22 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line)
     if (operation == "sensor") {
         auto command = simple_command(LiveControlCommandKind::Sensor);
         std::getline(parser, command.message);
+        return { std::move(command) };
+    }
+    if (operation == "key") {
+        std::string key, trailing;
+        parser >> key;
+        if (parser >> trailing)
+            return { error_command("key requires backspace, return or tab") };
+        auto command = simple_command(LiveControlCommandKind::Text);
+        if (key == "backspace")
+            command.message = "\b";
+        else if (key == "return")
+            command.message = "\n";
+        else if (key == "tab")
+            command.message = "\t";
+        else
+            return { error_command("key requires backspace, return or tab") };
         return { std::move(command) };
     }
     if (operation == "quit")

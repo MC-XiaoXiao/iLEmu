@@ -36,12 +36,14 @@ struct GraphicsServicesInputAbi {
     std::string_view name;
     std::size_t event_record_size { };
     std::size_t record_timestamp_offset { };
+    std::size_t record_info_size_offset { };
     std::size_t hand_info_size { };
     std::size_t path_info_size { };
     // Read-only layout signatures recovered from firmware accessors. These
     // distinguish native button/lifecycle ABIs; host touch serialization is
     // deliberately absent.
     std::uint32_t idle_duration_reset_event_type { };
+    std::size_t idle_duration_reset_info_size { };
     SystemEvents system_events { };
     struct ApplicationEvents {
         std::uint32_t resume { 2003U };
@@ -55,6 +57,9 @@ struct GraphicsServicesInputAbi {
 
     [[nodiscard]] static const GraphicsServicesInputAbi& for_abi(
         KernelSharedState::GraphicsInputAbi abi);
+
+    [[nodiscard]] static std::optional<std::uint32_t> detect_record_size(
+        const MachOImage& image);
 
     [[nodiscard]] static std::optional<KernelSharedState::GraphicsInputAbi>
     detect(const MachOImage& image);

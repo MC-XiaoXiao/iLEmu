@@ -19,6 +19,7 @@
 #include "foundation/scene_coordinator.hpp"
 #include "foundation/userland_hle.hpp"
 #include "kernel/graphics_services_input_abi.hpp"
+#include "kernel/graphics_services_keyboard.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_iokit_display.hpp"
 #include "mach/mig_wire_abi.hpp"
@@ -110,11 +111,13 @@ namespace {
         std::uint32_t destination, std::uint64_t timestamp,
         std::uint32_t event_type, std::uint64_t input_sequence,
         KernelSharedState::MachMessage::GraphicsInputKind input_kind,
-        KernelSharedState::GraphicsInputAbi abi)
+        KernelSharedState::GraphicsInputAbi abi,
+        std::span<const std::byte> event_info = { })
     {
         const auto& profile = GraphicsServicesInputAbi::for_abi(abi);
         const auto simple_event_message_size =
-            darwin::mig_wire::message_header_size + profile.event_record_size;
+            darwin::mig_wire::message_header_size + profile.event_record_size +
+            event_info.size();
         KernelSharedState::MachMessage message;
         message.bytes.resize(simple_event_message_size, std::byte { 0 });
         message.destination = destination;
@@ -136,6 +139,12 @@ namespace {
             static_cast<std::uint32_t>(timestamp));
         write_word(message.bytes, record + profile.record_timestamp_offset + 4,
             static_cast<std::uint32_t>(timestamp >> 32U));
+        write_word(message.bytes, record + profile.record_info_size_offset,
+            static_cast<std::uint32_t>(event_info.size()));
+        for (std::size_t index = 0; index < event_info.size(); ++index) {
+            message.bytes[record + profile.event_record_size + index] =
+                event_info[index];
+        }
         return message;
     }
 
@@ -174,9 +183,41 @@ namespace {
     {
         const auto abi =
             graphics_input_abi_for_object_locked(state, destination);
+        const auto& profile = GraphicsServicesInputAbi::for_abi(abi);
+        std::array<std::byte, sizeof(std::uint64_t)> idle_duration { };
+        const auto event_info_size =
+            event_type == profile.idle_duration_reset_event_type
+                ? std::min(profile.idle_duration_reset_info_size,
+                      idle_duration.size())
+                : 0U;
+        const auto event_info = std::span<const std::byte> {
+            idle_duration.data(), event_info_size };
         state.enqueue_mach_message_locked(destination,
             make_simple_event_message(destination, state.clock.now(),
-                event_type, input_sequence, input_kind, abi));
+                event_type, input_sequence, input_kind, abi, event_info));
+    }
+
+    void queue_text_idle_reset_locked(
+        KernelSharedState& state, std::uint64_t input_sequence)
+    {
+        const auto service = state.bootstrap_service_objects.find(
+            std::string { system_event_service });
+        const auto destination =
+            service == state.bootstrap_service_objects.end() ? 0U
+                                                             : service->second;
+        const auto abi = system_graphics_input_abi_locked(state, destination);
+        const auto event_type = GraphicsServicesInputAbi::for_abi(abi)
+                                    .idle_duration_reset_event_type;
+        constexpr auto input_kind =
+            KernelSharedState::MachMessage::GraphicsInputKind::OtherSystem;
+        if (service == state.bootstrap_service_objects.end()) {
+            state.pending_graphics_system_events.push_back(
+                KernelSharedState::PendingGraphicsSystemEvent {
+                    event_type, input_sequence, input_kind });
+            return;
+        }
+        queue_simple_event_locked(
+            state, service->second, event_type, input_sequence, input_kind);
     }
 
     bool object_owned_by_process_locked(const KernelSharedState& state,
@@ -274,6 +315,41 @@ namespace {
             return std::nullopt;
         state.application_event_objects_by_process[process_id] = *candidate;
         return *candidate;
+    }
+
+    std::optional<std::uint32_t> text_event_object_locked(
+        KernelSharedState& state, SceneCoordinator* scenes)
+    {
+        if (springboard_alert_owns_input_locked(state) ||
+            state.active_application_event_object == 0U ||
+            state.application_touch_suspended) {
+            return std::nullopt;
+        }
+        const auto port = state.mach_port_objects.lookup(
+            state.active_application_event_object);
+        if (!port)
+            return std::nullopt;
+        const auto process = state.processes.find(port->receive_owner);
+        if (process == state.processes.end() || process->second.exited ||
+            !is_application_executable_path(process->second.executable_path)) {
+            state.active_application_event_object = 0U;
+            state.application_touch_suspended = false;
+            return std::nullopt;
+        }
+        if (scenes) {
+            const auto scene = scenes->client_scene(port->receive_owner);
+            // Some early firmware flattens the App into a SpringBoard-owned
+            // presentation without publishing a ClientScene for the App. The
+            // active event port and foreground route above are still
+            // authoritative in that case. An explicitly published non-active
+            // scene remains a hard rejection so a stale route cannot cross a
+            // lifecycle boundary.
+            if (scene && scene->state != ClientSceneState::Active)
+                return std::nullopt;
+        }
+        state.application_event_objects_by_process[port->receive_owner] =
+            state.active_application_event_object;
+        return state.active_application_event_object;
     }
 
     std::uint64_t allocate_application_launch_token_locked(
@@ -1636,6 +1712,63 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
         service_name };
 }
 
+bool enqueue_text(
+    KernelSharedState& state, std::string_view utf8, SceneCoordinator* scenes)
+{
+    std::lock_guard lock { state.mach_mutex };
+    // Legacy applications expose a direct event port. Otherwise the native
+    // event server owns frontmost routing (including alerts and lock policy).
+    const auto text_object = text_event_object_locked(state, scenes);
+    const auto system = state.bootstrap_service_objects.find(
+        std::string { system_event_service });
+    const auto workspace =
+        state.bootstrap_service_objects.find("PurpleWorkspacePort");
+    const auto native_workspace = !text_object &&
+        system == state.bootstrap_service_objects.end() &&
+        workspace != state.bootstrap_service_objects.end();
+    const auto destination = text_object ? *text_object
+        : system != state.bootstrap_service_objects.end() ? system->second
+        : native_workspace ? workspace->second : 0U;
+    if (destination == 0U)
+        return false;
+    const auto port = state.mach_port_objects.lookup(destination);
+    if (!port)
+        return false;
+    const auto process = state.processes.find(port->receive_owner);
+    if (process == state.processes.end() || process->second.exited)
+        return false;
+    const auto keyboard_profile = process->second.keyboard_wire_profile;
+    const auto payloads =
+        GraphicsServicesKeyboard::encode(utf8, keyboard_profile);
+    if (!payloads)
+        return false;
+    const auto abi = keyboard_profile == KeyboardWireProfile::ScalarCompact
+                         ? KernelSharedState::GraphicsInputAbi::Darwin9_0
+                         : KernelSharedState::GraphicsInputAbi::Darwin11_0;
+    const auto sequence = state.allocate_physical_input_sequence_locked();
+    // This is committed text, not a held hardware key. UIKit's synthetic
+    // character path consumes both phases, so a release would type it twice.
+    for (const auto& payload : *payloads) {
+        state.enqueue_mach_message_locked(destination,
+            make_simple_event_message(destination, state.clock.now(),
+                10U | (!text_object ? 0x20000U : 0U), sequence,
+                KernelSharedState::MachMessage::GraphicsInputKind::None, abi,
+                payload));
+    }
+    if (native_workspace) {
+        state.enqueue_mach_message_locked(destination,
+            make_simple_event_message(destination, state.clock.now(),
+                GraphicsServicesInputAbi::for_abi(abi)
+                    .idle_duration_reset_event_type,
+                sequence,
+                KernelSharedState::MachMessage::GraphicsInputKind::OtherSystem,
+                abi));
+    } else {
+        queue_text_idle_reset_locked(state, sequence);
+    }
+    return true;
+}
+
 EnqueueResult enqueue_system_button(KernelSharedState& state,
     const SystemButtonInput& input, std::uint64_t* input_sequence)
 {
@@ -1658,10 +1791,8 @@ EnqueueResult enqueue_system_button(KernelSharedState& state,
     // also publishes the legacy GraphicsServices port.
     if ((native_controls || service == state.bootstrap_service_objects.end()) &&
         state.hid_event_queue.enqueue(
-            { hid_button(input), state.clock.now(), 1U, { }, sequence })) {
-        state.note_io_event_transition();
+            { hid_button(input), state.clock.now(), 1U, { }, sequence }))
         return EnqueueResult::Queued;
-    }
     if (service == state.bootstrap_service_objects.end()) {
         state.pending_graphics_system_events.push_back(
             KernelSharedState::PendingGraphicsSystemEvent {

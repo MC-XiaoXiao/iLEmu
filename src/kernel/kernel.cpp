@@ -817,13 +817,25 @@ void CompatibilityKernel::set_baseband_receive_eof(bool eof)
     shared_state_->note_io_event_transition();
 }
 
-void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
+bool CompatibilityKernel::enqueue_text_input(std::string_view utf8)
+{
+    if (!display_powered_on())
+        return false;
+    const auto queued = graphics_services_input::enqueue_text(
+        *shared_state_, utf8, scene_coordinator_.get());
+    if (queued)
+        wake_graphics_input_receivers();
+    return queued;
+}
+
+void CompatibilityKernel::enqueue_touch_input(const TouchInput& input,
+    std::optional<std::uint64_t> timestamp)
 {
     const PerformanceLatencyScope latency { PerfLatencyKind::InputEnqueue };
     performance_counters().discard_pending_vsync_callbacks();
     std::uint64_t input_sequence = 0;
     const auto queued =
-        hid_event_system_hle_.enqueue_touch(input, &input_sequence);
+        hid_event_system_hle_.enqueue_touch(input, timestamp, &input_sequence);
     wake_graphics_input_receivers();
     const auto enqueued_at = std::chrono::steady_clock::now();
     const auto phase = [phase = input.phase] {
@@ -1367,9 +1379,16 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
             if (path.ends_with(graphics_services_image)) {
                 const auto profile =
                     GraphicsServicesInputAbi::detect(*image);
+                const auto keyboard_profile =
+                    GraphicsServicesKeyboard::detect(*image);
+                std::lock_guard mach_lock { shared_state_->mach_mutex };
+                if (const auto process =
+                        shared_state_->processes.find(process_.pid);
+                    process != shared_state_->processes.end()) {
+                    process->second.keyboard_wire_profile = keyboard_profile;
+                }
                 if (!profile)
                     return;
-                std::lock_guard mach_lock { shared_state_->mach_mutex };
                 if (const auto process =
                         shared_state_->processes.find(process_.pid);
                     process != shared_state_->processes.end() &&
@@ -1622,6 +1641,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     }
     record.graphics_input_abi =
         KernelSharedState::GraphicsInputAbi::LegacyMouse;
+    record.keyboard_wire_profile = KeyboardWireProfile::Unavailable;
     if (record.arguments.empty())
         record.arguments.push_back(record.executable_path);
     {
@@ -2008,6 +2028,10 @@ CompatibilityKernel::pending_event_poll_candidates()
                                   mach_generation;
     const auto io_changed = !pending_event_poll_observed_ ||
                             pending_event_poll_io_generation_ != io_generation;
+    const auto hid_generation =
+        shared_state_->hid_event_queue.delivery_generation_snapshot();
+    const auto hid_changed = pending_hid_poll_required_locked(hid_generation);
+    pending_event_poll_hid_generation_ = hid_generation;
     const auto mach_snapshot_current = (mach_changed || io_changed) &&
         pending_mach_poll_snapshot_current_locked(io_generation);
     const auto readiness_changed =
@@ -2027,8 +2051,9 @@ CompatibilityKernel::pending_event_poll_candidates()
     const auto file_page_ready = std::any_of(pending_file_page_faults_.begin(),
         pending_file_page_faults_.end(),
         [](const auto& pending) { return pending.second.read->ready(); });
-    if (!file_page_ready && !graphics_changed && !topology_changed && !readiness_changed &&
-        !deadline_due && !sample_due && !host_probe_due) {
+    if (!file_page_ready && !graphics_changed && !topology_changed &&
+        !readiness_changed && !hid_changed && !deadline_due && !sample_due &&
+        !host_probe_due) {
         // Keep the captured outer generation, not a later producer snapshot.
         // A racing enqueue will still differ on the next scheduler pass.
         if (mach_snapshot_current) {
@@ -2071,8 +2096,8 @@ CompatibilityKernel::pending_event_poll_candidates()
         const auto send = pending_mach_sends_.find(processor);
         const auto receive = pending_mach_receives_.find(processor);
         // HID callbacks enter independently of the Mach queue, but registration
-        // alone does not make a parked receiver ready. Input publication changes
-        // the I/O generation; periodic samples use the deadline above.
+        // alone does not make a parked receiver ready. Queued reports and
+        // periodic sensor deadlines are independent wake sources.
         const auto hid_ready = receive != pending_mach_receives_.end() &&
             hid_event_system_hle_.pending_event_ready(
                 process_.pid, processor, guest_now);
@@ -2133,6 +2158,14 @@ CompatibilityKernel::pending_event_poll_candidates()
         pending_event_mach_snapshot_valid_ = true;
     }
     return processors;
+}
+
+bool CompatibilityKernel::pending_hid_poll_required_locked(
+    std::uint64_t delivery_generation) const
+{
+    return pending_event_poll_hid_generation_ != delivery_generation &&
+        shared_state_->hid_event_queue.has_receiver(process_.pid,
+            pending_event_processors_.begin(), pending_event_processors_.end());
 }
 
 bool CompatibilityKernel::pending_mach_poll_snapshot_current_locked(
@@ -2216,6 +2249,8 @@ CompatibilityKernel::next_host_event_poll_deadline()
             pending_event_topology_generation_ ||
         pending_event_poll_io_generation_ !=
             io_event_generation_snapshot_locked() ||
+        pending_hid_poll_required_locked(
+            shared_state_->hid_event_queue.delivery_generation_snapshot()) ||
         pending_event_poll_mach_generation_ !=
             shared_state_->mach_queue_generation_snapshot()) {
         return std::chrono::steady_clock::now();

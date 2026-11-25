@@ -529,7 +529,9 @@ public:
     void set_baseband_capture_enabled(bool enabled);
     void set_baseband_transmit_sink(
         bsd::baseband_device::State::TransmitSink sink);
-    void enqueue_touch_input(const TouchInput& input);
+    [[nodiscard]] bool enqueue_text_input(std::string_view utf8);
+    void enqueue_touch_input(const TouchInput& input,
+        std::optional<std::uint64_t> timestamp = std::nullopt);
     void enqueue_system_button(const SystemButtonInput& input);
     // Returns the live receive owner of the firmware's hardware-input service.
     // Host scheduling may use this identity as a bounded dependency hint; the
@@ -1015,6 +1017,8 @@ private:
     };
     [[nodiscard]] bool pending_mach_poll_snapshot_current_locked(
         std::uint64_t io_generation) const;
+    [[nodiscard]] bool pending_hid_poll_required_locked(
+        std::uint64_t delivery_generation) const;
     [[nodiscard]] bool append_pending_io_mach_dependencies_locked(
         std::size_t processor, std::uint64_t io_generation);
     [[nodiscard]] std::uint64_t io_event_generation_snapshot_locked() const;
@@ -1470,6 +1474,7 @@ private:
     std::uint64_t pending_event_topology_generation_ { 1 };
     std::uint64_t pending_event_poll_topology_generation_ { };
     std::uint64_t pending_event_poll_io_generation_ { };
+    std::uint64_t pending_event_poll_hid_generation_ { };
     std::uint64_t pending_event_poll_mach_generation_ { };
     std::optional<std::uint64_t> pending_event_poll_deadline_;
     std::chrono::steady_clock::time_point pending_event_host_probe_ {

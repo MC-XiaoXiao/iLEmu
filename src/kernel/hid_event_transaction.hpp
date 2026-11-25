@@ -26,11 +26,11 @@ public:
         const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
         DisplayGeometry geometry, DarwinVersion version,
         std::uint64_t sender_id, std::array<float, 2> translation,
-        std::function<void()> completion, ReportDelivery report_delivery);
+        std::function<void(bool)> completion, ReportDelivery report_delivery);
     [[nodiscard]] static bool enqueue(UserlandHleRegistry& registry,
         const HidEventQueue::Observer& observer, HidEventQueue::Event event,
         DisplayGeometry geometry, DarwinVersion version,
-        std::uint64_t sender_id, std::function<void()> completion);
+        std::uint64_t sender_id, std::function<void(bool)> completion);
 };
 
 } // namespace ilemu

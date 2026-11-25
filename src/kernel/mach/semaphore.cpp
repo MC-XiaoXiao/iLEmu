@@ -183,7 +183,10 @@ void CompatibilityKernel::wake_thread_and_maybe_preempt(
 {
     if (!thread)
         return;
-    shared_state_->note_io_event_transition();
+    if (thread->first == process_.pid)
+        note_local_io_event_transition_locked();
+    else
+        shared_state_->note_io_event_transition();
     if (!thread_wake_handler_)
         return;
     const auto wake_result =
@@ -202,7 +205,13 @@ void CompatibilityKernel::wake_threads_and_maybe_preempt(
     Cpu& cpu, std::span<const WokenThread> threads)
 {
     // Polling consumers observe readiness even without a scheduler callback.
-    if (!threads.empty())
+    if (threads.empty())
+        return;
+    const bool process_local = std::all_of(threads.begin(), threads.end(),
+        [this](const WokenThread& thread) { return thread.first == process_.pid; });
+    if (process_local)
+        note_local_io_event_transition_locked();
+    else
         shared_state_->note_io_event_transition();
     if (!thread_wake_handler_)
         return;

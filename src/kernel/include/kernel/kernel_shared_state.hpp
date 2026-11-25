@@ -36,6 +36,7 @@
 #include "kernel/mach_message_qos.hpp"
 #include "kernel/mach_thread_objects.hpp"
 #include "kernel/mach_ipc_dependencies.hpp"
+#include "kernel/graphics_services_keyboard.hpp"
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/compass_device.hpp"
@@ -858,6 +859,9 @@ struct KernelSharedState {
         bool dirty_shutdown { };
         std::uint32_t dyld_all_image_info_address { };
         std::uint32_t dyld_all_image_info_size { };
+        KeyboardWireProfile keyboard_wire_profile {
+            KeyboardWireProfile::Unavailable
+        };
         std::uint32_t task_user_stop_count { };
         std::uint32_t task_legacy_stop_count { };
         std::uint32_t task_resume_port { };

@@ -21,7 +21,6 @@
 #include <string>
 
 namespace ilemu {
-
 HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
     : registry_ { registry }
 {
@@ -197,8 +196,8 @@ void HidEventSystemHle::set_shared_state(
     state_ = std::move(state);
 }
 
-bool HidEventSystemHle::enqueue_touch(
-    const TouchInput& input, std::uint64_t* input_sequence)
+bool HidEventSystemHle::enqueue_touch(const TouchInput& input,
+    std::optional<std::uint64_t> timestamp, std::uint64_t* input_sequence)
 {
     if (!state_)
         return false;
@@ -209,9 +208,9 @@ bool HidEventSystemHle::enqueue_touch(
     const auto sequence = state_->allocate_physical_input_sequence_locked();
     if (input_sequence)
         *input_sequence = sequence;
-    const auto queued =
-        state_->hid_event_queue.enqueue(
-            { sanitized, state_->clock.now(), 1U, { }, sequence });
+    const auto queued = state_->hid_event_queue.enqueue(
+        { sanitized, timestamp ? *timestamp : state_->clock.now(), 1U, { },
+            sequence });
     if (queued) {
         if (input.phase == TouchPhase::Down) {
             state_->pending_application_launch_touch_sequence = sequence;
@@ -220,8 +219,6 @@ bool HidEventSystemHle::enqueue_touch(
         } else if (input.phase == TouchPhase::Cancel)
             state_->pending_application_launch_touch_sequence.reset();
     }
-    if (queued)
-        state_->note_io_event_transition();
     return queued;
 }
 
@@ -350,14 +347,12 @@ bool HidEventSystemHle::prepare_pending_event(
             HidEventTransaction::enqueue(registry_, observed->observer,
                 std::move(observed->event), state_->user_interface_geometry,
                 state_->darwin_version, sender,
-                [this, process, processor] {
+                [this, process, processor](bool) {
                     delivering_processors_.erase(processor);
                     interactive_processors_.erase(processor);
                     if (state_) {
                         state_->note_kernel_event_transition();
-                        if (state_->hid_event_queue.has_pending(
-                                process, processor))
-                            state_->note_io_event_transition();
+                        state_->hid_event_queue.redrive_pending(process, processor);
                     }
                 });
         if (!queued) {
@@ -385,6 +380,9 @@ bool HidEventSystemHle::prepare_pending_event(
     if (!consumer || !event)
         return false;
     std::array<float, 2> translation { };
+    const bool track_touch_handoff =
+        consumer->client_delivery == HidEventQueue::ClientDelivery::NativeQueues &&
+        std::holds_alternative<TouchInput>(event->input);
     if (const auto* contact = std::get_if<TouchInput>(&event->input)) {
         // Measure motion after dequeue/coalescing, relative to the last report
         // delivered to this consumer rather than the last host sample.
@@ -407,14 +405,17 @@ bool HidEventSystemHle::prepare_pending_event(
         registry_, *consumer, *event, state_->user_interface_geometry,
         state_->darwin_version, sender_for(*event),
         translation,
-        [this, process, processor] {
+        [this, process, processor, event = *event, track_touch_handoff](bool delivered) {
             delivering_processors_.erase(processor);
             interactive_processors_.erase(processor);
             if (state_) {
+                if (track_touch_handoff) {
+                    state_->hid_event_queue.note_native_touch_handoff(
+                        process, processor, event, delivered);
+                }
                 state_->note_kernel_event_transition();
                 // A report queued during the callback becomes ready now.
-                if (state_->hid_event_queue.has_pending(process, processor))
-                    state_->note_io_event_transition();
+                state_->hid_event_queue.redrive_pending(process, processor);
             }
         },
         [this, process](
@@ -423,6 +424,10 @@ bool HidEventSystemHle::prepare_pending_event(
                 process, state_->ambient_light_hid_service, data);
         });
     if (!queued) {
+        if (track_touch_handoff) {
+            state_->hid_event_queue.note_native_touch_handoff(
+                process, processor, *event, false);
+        }
         delivering_processors_.erase(processor);
         interactive_processors_.erase(processor);
     }

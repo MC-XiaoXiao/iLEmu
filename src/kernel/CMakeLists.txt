@@ -526,7 +526,8 @@ target_link_libraries(ilemu_kernel_mach_vm PRIVATE
 
 add_library(ilemu_kernel_mach_input STATIC
     mach/input/graphics_services.cpp
-    mach/input/graphics_services_input_abi.cpp)
+    mach/input/graphics_services_input_abi.cpp
+    mach/input/graphics_services_keyboard.cpp)
 add_library(iLEmu::kernel_mach_input ALIAS ilemu_kernel_mach_input)
 ilemu_configure_module(ilemu_kernel_mach_input)
 target_link_libraries(ilemu_kernel_mach_input PUBLIC

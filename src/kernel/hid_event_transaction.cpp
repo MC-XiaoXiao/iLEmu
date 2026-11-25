@@ -142,7 +142,7 @@ namespace {
     class NativeEventTransaction
         : public std::enable_shared_from_this<NativeEventTransaction> {
     public:
-        using Completion = std::function<void()>;
+        using Completion = std::function<void(bool)>;
         NativeEventTransaction(HidEventQueue::Event event, std::uint32_t system,
             DisplayGeometry geometry, DarwinVersion digitizer_abi,
             std::uint64_t sender_id, std::array<float, 2> translation,
@@ -422,7 +422,7 @@ namespace {
             case Step::Accelerometer:
                 root_event_ = call.argument(0);
                 if (!root_event_) {
-                    completion_();
+                    completion_(handed_off_);
                     return;
                 }
                 step_ = Step::AccelerationAxis;
@@ -470,7 +470,7 @@ namespace {
             case Step::Hand:
                 root_event_ = call.argument(0);
                 if (!root_event_) {
-                    completion_();
+                    completion_(handed_off_);
                     return;
                 }
                 step_ = Step::Finger;
@@ -488,7 +488,7 @@ namespace {
             case Step::Keyboard:
                 root_event_ = call.argument(0);
                 if (!root_event_) {
-                    completion_();
+                    completion_(handed_off_);
                     return;
                 }
                 // Hardware keys use the registered service's native filters.
@@ -568,23 +568,28 @@ namespace {
                 symbol = "_dispatch_async_f";
                 break;
             case Step::EnqueueService:
+                handed_off_ = delivery_context_ != 0U;
                 step_ = Step::ReleaseDispatchQueue;
                 symbol = "_dispatch_release";
                 break;
-            case Step::ReleaseDispatchQueue:
             case Step::DispatchService:
+                handed_off_ = true;
+                [[fallthrough]];
+            case Step::ReleaseDispatchQueue:
                 step_ = Step::ReleaseService;
                 symbol = "_CFRelease";
                 break;
-            case Step::ReleaseService:
             case Step::Dispatch:
             case Step::SessionCallback:
             case Step::Callback:
+                handed_off_ = true;
+                [[fallthrough]];
+            case Step::ReleaseService:
                 step_ = Step::ReleaseEvent;
                 symbol = "_CFRelease";
                 break;
             case Step::ReleaseEvent:
-                completion_();
+                completion_(handed_off_);
                 return;
             }
             // All event kinds, including digitizers after service lookup,
@@ -607,7 +612,7 @@ namespace {
                                     : call.continue_deferred_guest_function(
                                           symbol, setup, completed);
             if (!queued) {
-                completion_();
+                completion_(handed_off_);
             }
         }
         HidEventQueue::Event event_;
@@ -622,6 +627,7 @@ namespace {
         HidEventTransaction::ReportDelivery report_delivery_;
         std::uint32_t report_data_ { }, report_length_ { };
         Step step_;
+        bool handed_off_ { };
         std::uint32_t acceleration_axis_ { };
         std::uint32_t root_event_ { };
         std::uint32_t child_event_ { };
@@ -637,7 +643,7 @@ bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
     DisplayGeometry geometry, DarwinVersion digitizer_abi,
     std::uint64_t sender_id, std::array<float, 2> translation,
-    std::function<void()> completion, ReportDelivery report_delivery)
+    std::function<void(bool)> completion, ReportDelivery report_delivery)
 {
     return std::make_shared<NativeEventTransaction>(std::move(event),
         consumer.system, geometry, digitizer_abi, sender_id, translation,
@@ -648,7 +654,7 @@ bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
 bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Observer& observer, HidEventQueue::Event event,
     DisplayGeometry geometry, DarwinVersion digitizer_abi,
-    std::uint64_t sender_id, std::function<void()> completion)
+    std::uint64_t sender_id, std::function<void(bool)> completion)
 {
     return std::make_shared<NativeEventTransaction>(std::move(event), observer,
         geometry, digitizer_abi, sender_id, std::move(completion))

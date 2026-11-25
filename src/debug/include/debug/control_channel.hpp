@@ -19,6 +19,7 @@
 namespace ilemu {
 
 enum class LiveControlCommandKind {
+    Text,
     Touch,
     Gesture,
     Button,

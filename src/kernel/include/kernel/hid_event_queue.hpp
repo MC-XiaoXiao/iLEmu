@@ -76,6 +76,7 @@ public:
             observers_.clear();
         events_.clear();
         contact_origin_.reset();
+        reset_native_touch_handoff_locked();
         refresh_pending_events_locked();
         receiver_generation_.fetch_add(1, std::memory_order_release);
     }
@@ -87,6 +88,7 @@ public:
             consumer_.reset();
             events_.clear();
             contact_origin_.reset();
+            reset_native_touch_handoff_locked();
             changed = true;
         }
         const auto removed = std::erase_if(observers_, [process](const ObserverState& state) {
@@ -171,7 +173,17 @@ public:
             }
         }
         events_pending_.store(true, std::memory_order_release);
+        delivery_generation_.fetch_add(1, std::memory_order_release);
         return true;
+    }
+    [[nodiscard]] std::uint64_t delivery_generation_snapshot() const noexcept
+    {
+        return delivery_generation_.load(std::memory_order_acquire);
+    }
+    void redrive_pending(std::uint32_t process, std::size_t processor)
+    {
+        if (has_pending(process, processor))
+            delivery_generation_.fetch_add(1, std::memory_order_release);
     }
     [[nodiscard]] std::optional<Event> take(
         std::uint32_t process, std::size_t processor)
@@ -180,10 +192,37 @@ public:
         if (!consumer_ || consumer_->process != process ||
             consumer_->processor != processor || events_.empty())
             return std::nullopt;
+        prefer_recent_native_move_locked();
         auto event = events_.front();
         events_.pop_front();
         refresh_pending_events_locked();
         return event;
+    }
+    void note_native_touch_handoff(std::uint32_t process, std::size_t processor,
+        const Event& event, bool delivered)
+    {
+        const auto* touch = std::get_if<TouchInput>(&event.input);
+        if (!touch)
+            return;
+        std::lock_guard lock { mutex_ };
+        if (!consumer_ || consumer_->process != process ||
+            consumer_->processor != processor ||
+            consumer_->client_delivery != ClientDelivery::NativeQueues)
+            return;
+        if (!delivered || touch->phase != TouchPhase::Move) {
+            reset_native_touch_handoff_locked();
+            if (delivered && touch->phase == TouchPhase::Down)
+                last_native_touch_handoff_ = event;
+            return;
+        }
+        if (!last_native_touch_handoff_ ||
+            last_native_touch_handoff_->identity != event.identity) {
+            reset_native_touch_handoff_locked();
+            return;
+        }
+        last_native_touch_handoff_ = event;
+        if (native_touch_moves_delivered_ < initial_native_move_count)
+            ++native_touch_moves_delivered_;
     }
     [[nodiscard]] std::optional<ObserverDelivery> take_observer(
         std::uint32_t process, std::size_t processor)
@@ -274,6 +313,47 @@ public:
     }
 
 private:
+    // Keep the initial report history until the primary native transport has
+    // handed off Down and two following moves. Raw handoff does not establish
+    // that a downstream gesture recognizer has transitioned state.
+    static constexpr unsigned initial_native_move_count = 2;
+
+    void reset_native_touch_handoff_locked()
+    {
+        last_native_touch_handoff_.reset();
+        native_touch_moves_delivered_ = 0;
+    }
+
+    void prefer_recent_native_move_locked()
+    {
+        if (native_touch_moves_delivered_ < initial_native_move_count)
+            return;
+        const auto& last = *last_native_touch_handoff_;
+        const auto& origin = std::get<TouchInput>(last.input);
+        while (events_.size() >= 2) {
+            const auto* first = std::get_if<TouchInput>(&events_[0].input);
+            const auto* next = std::get_if<TouchInput>(&events_[1].input);
+            if (!first || !next || first->phase != TouchPhase::Move ||
+                next->phase != TouchPhase::Move ||
+                events_[0].identity != last.identity ||
+                events_[1].identity != last.identity)
+                return;
+
+            // The latest point of the same segment supersedes interior
+            // moves. Keep turns, pauses and the final move before a
+            // terminal edge or a different event type.
+            const auto dx = static_cast<double>(first->x) - origin.x;
+            const auto dy = static_cast<double>(first->y) - origin.y;
+            const auto step_x = static_cast<double>(next->x) - first->x;
+            const auto step_y = static_cast<double>(next->y) - first->y;
+            const auto dot = dx * step_x + dy * step_y;
+            const auto cross = dx * step_y - dy * step_x;
+            if (dot <= 0 || cross * cross > dot * dot / 16.0)
+                return;
+            events_.pop_front();
+        }
+    }
+
     void refresh_pending_events_locked()
     {
         events_pending_.store(!events_.empty() ||
@@ -283,19 +363,33 @@ private:
     }
     static void append(std::deque<Event>& queue, const Event& event)
     {
-        const auto* touch = std::get_if<TouchInput>(&event.input);
-        if (touch && touch->phase == TouchPhase::Move && !queue.empty()) {
-            const auto* previous = std::get_if<TouchInput>(&queue.back().input);
-            if (previous && previous->phase == TouchPhase::Move &&
-                queue.back().identity == event.identity) {
-                // A digitizer position supersedes an undelivered position of
-                // the same contact. Keep lifecycle edges and other event
-                // types ordered, including the final move before release.
-                queue.back() = event;
-                return;
-            }
-        }
+        constexpr std::ptrdiff_t pending_move_limit = 4;
         queue.push_back(event);
+        const auto* touch = std::get_if<TouchInput>(&event.input);
+        if (!touch || touch->phase != TouchPhase::Move ||
+            queue.size() <= static_cast<std::size_t>(pending_move_limit))
+            return;
+
+        const auto first = queue.end() - (pending_move_limit + 1);
+        if (!std::all_of(first, queue.end() - 1, [&event](const Event& queued) {
+                const auto* previous = std::get_if<TouchInput>(&queued.input);
+                return previous && previous->phase == TouchPhase::Move &&
+                       queued.identity == event.identity;
+            }))
+            return;
+
+        // Keep the first and last moves and thin the most closely spaced
+        // interior samples. A firmware pan needs motion after its first move
+        // passes the recognition threshold, even when the host delivers a burst.
+        const auto sample_span = [](auto sample) {
+            return (sample + 1)->input_sequence - (sample - 1)->input_sequence;
+        };
+        auto discard = first + 1;
+        for (auto sample = discard + 1; sample != queue.end() - 1; ++sample) {
+            if (sample_span(sample) < sample_span(discard))
+                discard = sample;
+        }
+        queue.erase(discard);
     }
 
     struct ObserverState {
@@ -307,9 +401,12 @@ private:
     std::deque<Event> events_;
     std::vector<ObserverState> observers_;
     std::optional<std::array<float, 2>> contact_origin_;
-    // Receiver configuration invalidates scheduler eligibility; queued input
-    // retains the existing receiver cadence without changing this revision.
+    std::optional<Event> last_native_touch_handoff_;
+    unsigned native_touch_moves_delivered_ { };
+    // Registration changes invalidate receiver identity. Queued reports and
+    // callback completions only need to revisit the registered receivers.
     std::atomic_uint64_t receiver_generation_ { 1 };
+    std::atomic_uint64_t delivery_generation_ { 0 };
     std::atomic_bool events_pending_ { false };
 };
 

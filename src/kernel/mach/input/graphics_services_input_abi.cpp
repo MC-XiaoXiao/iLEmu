@@ -21,9 +21,11 @@ namespace {
     .name = "darwin9.0",
     .event_record_size = 48,
     .record_timestamp_offset = 24,
+    .record_info_size_offset = 44,
     .hand_info_size = 20,
     .path_info_size = 16,
     .idle_duration_reset_event_type = 101,
+    .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -37,9 +39,11 @@ namespace {
     .name = "darwin9.3",
     .event_record_size = 48,
     .record_timestamp_offset = 24,
+    .record_info_size_offset = 44,
     .hand_info_size = 36,
     .path_info_size = 24,
     .idle_duration_reset_event_type = 101,
+    .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -53,9 +57,11 @@ constexpr GraphicsServicesInputAbi darwin9_4_abi{
     .name = "darwin9.4",
     .event_record_size = 52,
     .record_timestamp_offset = 28,
+    .record_info_size_offset = 48,
     .hand_info_size = 36,
     .path_info_size = 24,
     .idle_duration_reset_event_type = 101,
+    .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -74,9 +80,11 @@ constexpr GraphicsServicesInputAbi darwin11_0_abi{
     .name = "darwin11.0",
     .event_record_size = 52,
     .record_timestamp_offset = 28,
+    .record_info_size_offset = 48,
     .hand_info_size = 36,
     .path_info_size = 24,
     .idle_duration_reset_event_type = 100,
+    .idle_duration_reset_info_size = 0,
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -456,6 +464,12 @@ const GraphicsServicesInputAbi& GraphicsServicesInputAbi::for_abi(
         return darwin9_0_abi;
     }
     return darwin9_0_abi;
+}
+
+std::optional<std::uint32_t> GraphicsServicesInputAbi::detect_record_size(
+    const MachOImage& image)
+{
+    return detected_event_record_size(image);
 }
 
 std::optional<KernelSharedState::GraphicsInputAbi>
