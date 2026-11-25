@@ -131,6 +131,7 @@ inline constexpr std::uint32_t stencil_buffer_bit = 0x00000400U;
 inline constexpr std::uint32_t color_buffer_bit = 0x00004000U;
 
 inline constexpr std::uint32_t vertex_array = 0x8074U;
+inline constexpr std::uint32_t normal_array = 0x8075U;
 inline constexpr std::uint32_t color_array = 0x8076U;
 inline constexpr std::uint32_t texture_coord_array = 0x8078U;
 inline constexpr std::uint32_t alpha_test = 0x0bc0U;

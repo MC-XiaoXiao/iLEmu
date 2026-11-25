@@ -572,27 +572,29 @@ void OpenGlesHle::set_array_pointer(
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
-    const auto size = static_cast<std::int32_t>(call.argument(0));
-    const auto type = call.argument(1);
-    const auto stride = static_cast<std::int32_t>(call.argument(2));
+    const bool normal = array_name == gles_abi::normal_array;
+    const auto size = normal ? 3 : static_cast<std::int32_t>(call.argument(0));
+    const auto type_index = normal ? 0U : 1U;
+    const auto type = call.argument(type_index);
+    const auto stride = static_cast<std::int32_t>(call.argument(type_index + 1U));
     const auto valid_common_type = type == gles_abi::float_type ||
                                    type == gles_abi::fixed ||
                                    type == gles_abi::short_type;
     bool valid = stride >= 0;
-    if (array_name == gles_abi::vertex_array) {
-        valid = valid && size >= 2 && size <= 4 && valid_common_type;
-    } else if (array_name == gles_abi::color_array) {
+    const bool color = array_name == gles_abi::color_array;
+    if (color) {
         valid = valid && size == 4 &&
                 (valid_common_type || type == gles_abi::unsigned_byte);
     } else {
-        valid = valid && size >= 2 && size <= 4 && valid_common_type;
+        valid = valid && size >= 2 && size <= 4 &&
+                (valid_common_type || type == gles_abi::byte);
     }
     if (!valid) {
         set_gl_error(call,
             stride < 0 ? gles_abi::invalid_value : gles_abi::invalid_enum);
         return;
     }
-    const auto pointer = call.argument(3);
+    const auto pointer = call.argument(type_index + 2U);
     if (context->bound_vertex_array != 0 && context->bound_array_buffer == 0 &&
         pointer != 0) {
         set_gl_error(call, gles_abi::invalid_operation);
@@ -601,14 +603,13 @@ void OpenGlesHle::set_array_pointer(
     auto& arrays = context->vertex_arrays();
     auto* array =
         array_name == gles_abi::vertex_array ? &arrays.vertex_array
-        : array_name == gles_abi::color_array
-            ? &arrays.color_array
+        : normal                            ? &arrays.normal_array
+        : color                             ? &arrays.color_array
             : &arrays.texture_arrays[context->client_active_texture_unit];
     const auto enabled = array->enabled;
     *array = ContextState::ArrayPointer { static_cast<std::uint32_t>(size),
         type, static_cast<std::uint32_t>(stride), pointer,
-        context->bound_array_buffer, array_name == gles_abi::color_array,
-        enabled };
+        context->bound_array_buffer, normal || color, enabled };
 }
 
 bool OpenGlesHle::read_array(UserlandHleCall& call,
@@ -2672,6 +2673,9 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         case gles_abi::vertex_array_binding_oes:
             values[0] = context->bound_vertex_array;
             break;
+        case gles_abi::normal_array:
+            values[0] = context->vertex_arrays().normal_array.enabled;
+            break;
         case gles_abi::array_buffer_binding:
             values[0] = context->bound_array_buffer;
             break;
@@ -3296,6 +3300,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         const auto* context = current_context(call);
         if (context == nullptr) {
             call.set_return(0);
+            return;
+        }
+        if (call.argument(0) == gles_abi::normal_array) {
+            call.set_return(context->vertex_arrays().normal_array.enabled);
             return;
         }
         const auto& unit = context->texture_units[context->active_texture_unit];
@@ -4058,6 +4066,9 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
     add("_glVertexPointer", [this](UserlandHleCall& call) {
         set_array_pointer(call, gles_abi::vertex_array);
     });
+    add("_glNormalPointer", [this](UserlandHleCall& call) {
+        set_array_pointer(call, gles_abi::normal_array);
+    });
     add("_glColorPointer", [this](UserlandHleCall& call) {
         set_array_pointer(call, gles_abi::color_array);
     });
@@ -4074,6 +4085,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         ContextState::ArrayPointer* array { };
         if (call.argument(0) == gles_abi::vertex_array) {
             array = &arrays.vertex_array;
+        } else if (call.argument(0) == gles_abi::normal_array) {
+            array = &arrays.normal_array;
         } else if (call.argument(0) == gles_abi::color_array) {
             array = &arrays.color_array;
         } else if (call.argument(0) == gles_abi::texture_coord_array) {

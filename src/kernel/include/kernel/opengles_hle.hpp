@@ -152,6 +152,7 @@ private:
         struct VertexArrayState {
             std::uint32_t bound_element_array_buffer { };
             ArrayPointer vertex_array;
+            ArrayPointer normal_array { 3, gles_abi::float_type };
             ArrayPointer color_array;
             std::array<ArrayPointer, gles_abi::programmable_texture_unit_count>
                 texture_arrays;
