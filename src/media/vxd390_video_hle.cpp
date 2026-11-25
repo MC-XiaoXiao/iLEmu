@@ -78,7 +78,30 @@ namespace {
     }
 
     struct DecoderSession {
+        void report(UserlandHleCall& call, std::string_view stage) const
+        {
+            if (!call.output().enabled("[video]"))
+                return;
+            call.output().line(
+                "[video] H.264 " + std::string { stage } +
+                " pid=" + std::to_string(call.process_id()) +
+                " decoder=" + std::to_string(handle) +
+                " decode-calls=" + std::to_string(decode_calls) +
+                " submitted=" + std::to_string(submitted_frames) +
+                " callbacks-returned=" + std::to_string(returned_frames) +
+                " suppressed=" + std::to_string(suppressed_frames) +
+                " failures=" + std::to_string(failures) +
+                " last-frame-id=" + std::to_string(last_frame));
+        }
+
+        void record_failure(UserlandHleCall& call, std::string_view stage)
+        {
+            if (++failures == 1U || failures % 64U == 0U)
+                report(call, stage);
+        }
+
         std::unique_ptr<VideoDecoder> decoder;
+        std::uint32_t handle { };
         std::uint32_t width { };
         std::uint32_t height { };
         std::uint32_t length_size { };
@@ -88,7 +111,12 @@ namespace {
         std::uint32_t scratch { };
         std::uint32_t bitstream { };
         std::uint32_t bitstream_capacity { };
-        bool reported_output { };
+        std::uint64_t decode_calls { };
+        std::uint64_t submitted_frames { };
+        std::uint64_t returned_frames { };
+        std::uint64_t suppressed_frames { };
+        std::uint64_t failures { };
+        std::uint32_t last_frame { };
     };
 
     // CoreVideo allocates and owns an IOSurface-backed pixel buffer, so
@@ -110,11 +138,12 @@ namespace {
                 return;
             }
             if (!frames_[frame_index_].display) {
+                ++session_->suppressed_frames;
                 emit(call, 0U);
                 return;
             }
             if (!call.memory().write32(session_->scratch, 0U)) {
-                emit(call, video_decode_failed);
+                fail(call, "could not write the pixel buffer pointer");
                 return;
             }
             invoke(call, "_CVPixelBufferPoolCreatePixelBuffer",
@@ -139,8 +168,10 @@ namespace {
             if (!call.call_guest_function(name,
                     [self = shared_from_this(), step](UserlandHleCall& ready) {
                         self->advance(ready, step);
-                    }))
+                    })) {
+                session_->record_failure(call, name);
                 call.set_return(bad_argument);
+            }
         }
 
         void advance(UserlandHleCall& call, Step step)
@@ -150,7 +181,7 @@ namespace {
             case Step::Allocate:
                 buffer_ = call.memory().read32(session_->scratch).value_or(0U);
                 if (result || !buffer_) {
-                    emit(call, video_decode_failed);
+                    fail(call, "could not allocate a CoreVideo pixel buffer");
                     return;
                 }
                 invoke(call, "_CVPixelBufferGetPixelFormatType", { buffer_ },
@@ -158,7 +189,7 @@ namespace {
                 return;
             case Step::PixelFormat:
                 if (result != pixel_format_bgra) {
-                    emit(call, video_decode_failed);
+                    fail(call, "CoreVideo returned a non-BGRA pixel buffer");
                     return;
                 }
                 invoke(call, "_CVPixelBufferLockBaseAddress", { buffer_, 0U },
@@ -166,7 +197,7 @@ namespace {
                 return;
             case Step::Lock:
                 if (result) {
-                    emit(call, video_decode_failed);
+                    fail(call, "could not lock the CoreVideo pixel buffer");
                     return;
                 }
                 invoke(call, "_CVPixelBufferGetBaseAddress", { buffer_ },
@@ -188,7 +219,10 @@ namespace {
                 return;
             }
             case Step::Unlock:
-                emit(call, result || !copied_ ? video_decode_failed : 0U);
+                if (result || !copied_)
+                    fail(call, "could not fill the CoreVideo pixel buffer");
+                else
+                    emit(call, 0U);
                 return;
             case Step::Release:
                 ++frame_index_;
@@ -216,23 +250,39 @@ namespace {
             return true;
         }
 
+        void fail(UserlandHleCall& call, std::string_view stage)
+        {
+            session_->record_failure(call, stage);
+            emit(call, video_decode_failed);
+        }
+
         void emit(UserlandHleCall& call, std::uint32_t status)
         {
             const auto& frame = frames_[frame_index_];
+            const bool submitted = status == 0U && buffer_ != 0U;
             arguments(call, { session_->callback_context, frame.identifier,
                                 status == 0U ? buffer_ : 0U, status });
-            if (call.call_guest_callback(session_->callback,
-                    [self = shared_from_this()](UserlandHleCall& returned) {
+            if (call.call_guest_callback(
+                    session_->callback, [self = shared_from_this(), submitted](
+                                            UserlandHleCall& returned) {
+                        if (submitted)
+                            ++self->session_->returned_frames;
                         self->release(returned);
                     })) {
-                if (status == 0U && buffer_ && !session_->reported_output) {
-                    session_->reported_output = true;
-                    call.output().line(
-                        "[video] first H.264 frame submitted pid=" +
-                        std::to_string(call.process_id()));
+                if (submitted) {
+                    session_->last_frame = frame.identifier;
+                    if (++session_->submitted_frames == 1U &&
+                        call.output().enabled("[video]")) {
+                        call.output().line(
+                            "[video] first H.264 frame submitted pid=" +
+                            std::to_string(call.process_id()) +
+                            " decoder=" + std::to_string(session_->handle));
+                    }
                 }
                 return;
             }
+            session_->record_failure(
+                call, "could not call the display callback");
             release(call);
         }
 
@@ -356,6 +406,7 @@ namespace {
                 return;
             }
             const auto handle = next_handle_++;
+            session->handle = handle;
             if (!call.memory().write32(output, handle)) {
                 call.set_return(bad_argument);
                 return;
@@ -397,11 +448,17 @@ namespace {
             session->width = width;
             session->height = height;
             session->length_size = length_size;
-            session->reported_output = false;
+            session->decode_calls = 0U;
+            session->submitted_frames = 0U;
+            session->returned_frames = 0U;
+            session->suppressed_frames = 0U;
+            session->failures = 0U;
+            session->last_frame = 0U;
             call.output().line("[video] H.264 session pid=" +
                                std::to_string(call.process_id()) +
                                " size=" + std::to_string(width) + "x" +
-                               std::to_string(height));
+                               std::to_string(height) +
+                               " decoder=" + std::to_string(session->handle));
             call.set_return(0U);
         }
 
@@ -497,6 +554,8 @@ namespace {
         void decode(
             UserlandHleCall& call, std::shared_ptr<DecoderSession> session)
         {
+            if (++session->decode_calls % 120U == 0U)
+                session->report(call, "decode progress");
             const auto descriptor = call.argument(1);
             const auto pointer = call.memory().read32(descriptor).value_or(0U);
             const auto length =
@@ -508,6 +567,7 @@ namespace {
             if (!descriptor || !session->decoder || !session->pool ||
                 !session->callback || length > maximum_access_unit ||
                 (length != 0U && !pointer)) {
+                session->record_failure(call, "invalid decode arguments");
                 call.set_return(bad_argument);
                 return;
             }
@@ -520,7 +580,15 @@ namespace {
             auto frames =
                 packet ? session->decoder->decode(*packet, identifier, display)
                        : std::nullopt;
-            if (!frames || !call.memory().write32(descriptor + 20U, 0U)) {
+            if (!frames) {
+                session->record_failure(
+                    call, "could not decode an access unit");
+                call.set_return(bad_argument);
+                return;
+            }
+            if (!call.memory().write32(descriptor + 20U, 0U)) {
+                session->record_failure(
+                    call, "could not write the decode result");
                 call.set_return(bad_argument);
                 return;
             }
@@ -532,6 +600,7 @@ namespace {
         void terminate(
             UserlandHleCall& call, std::shared_ptr<DecoderSession> session)
         {
+            session->report(call, "decoder ended");
             session->decoder.reset();
             call.set_return(0U);
         }
