@@ -1112,10 +1112,10 @@ void UserlandHleRegistry::register_guest_function(
     }
     const auto dependency =
         std::pair { std::move(image_suffix), std::move(symbol) };
+    // Independent adapters can call the same native guest function.
     if (std::find(guest_functions_.begin(), guest_functions_.end(),
             dependency) != guest_functions_.end()) {
-        throw std::runtime_error { "duplicate guest function registration: " +
-                                   dependency.second };
+        return;
     }
     guest_functions_.push_back(dependency);
     ++registration_generation_;
