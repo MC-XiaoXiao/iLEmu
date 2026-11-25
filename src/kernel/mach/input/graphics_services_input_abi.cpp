@@ -7,6 +7,7 @@
 
 #include "kernel/graphics_services_input_abi.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstdint>
 #include <string_view>
@@ -132,29 +133,52 @@ constexpr GraphicsServicesInputAbi darwin11_0_abi{
         return std::nullopt;
     }
 
-    std::optional<std::uint32_t> thumb_add_w_immediate(
+    std::optional<std::uint32_t> thumb_record_copy_offset(
         const MachOImage& image, const MachSymbol& symbol,
         std::uint8_t source)
     {
-        // ADD.W (immediate) is used by the ARMv7 GraphicsServices accessors
-        // when they advance past the CFRuntime header. Ignore the i bit so the
-        // full 12-bit immediate form is accepted, while bit 7 excludes SUB.W.
+        // An inlined copy can load its first words directly and use ADD.W
+        // to address a later load-multiple group. Recover the beginning of
+        // the copy from the lowest source offset.
         constexpr std::uint16_t add_w_mask = 0xfb80U;
         constexpr std::uint16_t add_w = 0xf100U;
+        std::optional<std::uint32_t> copy_offset;
+        const auto record_offset = [&copy_offset](std::uint32_t displacement) {
+            copy_offset = std::min(copy_offset.value_or(displacement), displacement);
+        };
         for (std::uint32_t offset = 0; offset < 64U; offset += 2U) {
             const auto first = read_thumb_halfword(image, symbol, offset);
-            const auto second =
-                read_thumb_halfword(image, symbol, offset + 2U);
-            if (!first || !second || (*first & add_w_mask) != add_w ||
-                (*first & 0xfU) != source || (*second & 0x8000U) != 0U) {
+            if (!first || (*first & 0xff00U) == 0xbd00U || *first == 0x4770U)
+                break;
+            if ((*first & 0xf800U) < 0xe800U) {
+                if ((*first & 0xf800U) == 0x6800U &&
+                    ((*first >> 3U) & 0x7U) == source) {
+                    record_offset(((*first >> 6U) & 0x1fU) * 4U);
+                    if ((*first & 0x7U) == source)
+                        break;
+                }
                 continue;
             }
-            const auto immediate =
-                (((*first >> 10U) & 1U) << 11U) |
-                (((*second >> 12U) & 0x7U) << 8U) | (*second & 0xffU);
-            return immediate;
+            const auto second = read_thumb_halfword(image, symbol, offset + 2U);
+            if (!second)
+                break;
+            offset += 2U;
+            if ((*first & 0xfU) != source)
+                continue;
+            if ((*first & 0xfff0U) == 0xf8d0U) {
+                record_offset(*second & 0xfffU);
+                if ((*second >> 12U) == source)
+                    break;
+            } else if ((*first & add_w_mask) == add_w && (*second & 0x8000U) == 0U) {
+                const auto immediate =
+                    (((*first >> 10U) & 1U) << 11U) |
+                    (((*second >> 12U) & 0x7U) << 8U) | (*second & 0xffU);
+                record_offset(immediate);
+                if (((*second >> 8U) & 0xfU) == source)
+                    break;
+            }
         }
-        return std::nullopt;
+        return copy_offset;
     }
 
     std::uint32_t thumb_register_count(std::uint16_t register_list)
@@ -365,7 +389,7 @@ constexpr GraphicsServicesInputAbi darwin11_0_abi{
             record_offset && *record_offset >= cf_runtime_base_size) {
             return *record_offset - cf_runtime_base_size;
         }
-        if (const auto record_offset = thumb_add_w_immediate(image, *symbol, 1U);
+        if (const auto record_offset = thumb_record_copy_offset(image, *symbol, 1U);
             record_offset && *record_offset >= cf_runtime_base_size) {
             return *record_offset - cf_runtime_base_size;
         }
