@@ -1025,9 +1025,11 @@ std::optional<std::uint16_t> MachOImage::read_vm_u16(
             segment.file_size - (address - segment.vm_address) < 2) {
             continue;
         }
-        const auto offset = static_cast<std::size_t>(segment.file_offset) +
+        const auto offset = static_cast<std::uint64_t>(segment.file_offset) +
                             (address - segment.vm_address);
         const auto bytes = byte_span();
+        if (offset > bytes.size() || bytes.size() - offset < 2U)
+            return std::nullopt;
         return static_cast<std::uint16_t>(
             std::to_integer<std::uint16_t>(bytes[offset]) |
             (std::to_integer<std::uint16_t>(bytes[offset + 1]) << 8U));

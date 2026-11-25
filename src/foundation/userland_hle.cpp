@@ -992,28 +992,100 @@ void UserlandHleRegistry::register_function(std::string image_suffix,
     ++registration_generation_;
 }
 
-void UserlandHleRegistry::register_thumb_instruction(std::string image_suffix,
-    std::string symbol, std::uint32_t offset, FirmwareRoutine routine,
-    Handler handler)
+void UserlandHleRegistry::register_thumb_instructions(std::string image_suffix,
+    std::string symbol, std::vector<FirmwareRoutine> sites, Handler handler)
 {
-    if (offset == 0U || (offset & 1U) != 0U || routine.size < 4U)
+    std::ranges::sort(sites, [](const auto& left, const auto& right) {
+        return left.size == right.size ? left.digest < right.digest
+                                       : left.size < right.size;
+    });
+    if (sites.empty() ||
+        std::ranges::any_of(sites,
+            [](const auto& site) {
+                return site.size < 4U || site.size > 4096U ||
+                       (site.size & 1U) != 0U;
+            }) ||
+        std::adjacent_find(sites.begin(), sites.end(),
+            [](const auto& left, const auto& right) {
+                return left.size == right.size && left.digest == right.digest;
+            }) != sites.end())
         throw std::invalid_argument { "invalid Thumb instruction site" };
     register_function(std::move(image_suffix), std::move(symbol),
         std::move(handler), SymbolLookup::ImageAndCacheLocals,
         EntryPatch::InstructionFetch);
-    registrations_.back().thumb_instruction =
-        ThumbInstructionSite { offset, routine };
+    registrations_.back().thumb_instructions = std::move(sites);
 }
 
 std::optional<std::uint32_t> UserlandHleRegistry::thumb_instruction_offset(
-    const ThumbInstructionSite& site, const MachSymbol& symbol,
-    ArmArchitectureVersion architecture)
+    const FirmwareRoutine& site, const MachOImage& image,
+    const MachSymbol& symbol, ArmArchitectureVersion architecture)
 {
     if (architecture != ArmArchitectureVersion::Armv7 ||
-        !symbol.thumb_definition() ||
-        site.offset > std::numeric_limits<std::uint32_t>::max() - symbol.value)
+        !symbol.thumb_definition() || (symbol.value & 1U) != 0U)
         return std::nullopt;
-    return site.offset;
+
+    std::uint64_t end = 0U;
+    std::uint32_t section_index = 0U;
+    for (const auto& segment : image.segments()) {
+        for (const auto& section : segment.sections) {
+            if (++section_index == symbol.section &&
+                (segment.initial_protection & 4) != 0 &&
+                (section.flags & 0x80000400U) != 0U &&
+                symbol.value >= section.address) {
+                end =
+                    static_cast<std::uint64_t>(section.address) + section.size;
+            }
+        }
+    }
+    if (end <= symbol.value)
+        return std::nullopt;
+    end = std::min(end, static_cast<std::uint64_t>(symbol.value) + 4096U);
+    end = std::min(end, std::uint64_t { 1 } << 32U);
+    // Without linker function boundaries, stop at the next defined section
+    // symbol. It can mark ARM code or data embedded after a Thumb routine.
+    if (!image.function_starts().empty()) {
+        const auto next = std::upper_bound(image.function_starts().begin(),
+            image.function_starts().end(), symbol.value,
+            [](std::uint32_t address, std::uint32_t start) {
+                return address < (start & ~1U);
+            });
+        if (next != image.function_starts().end())
+            end = std::min(end, static_cast<std::uint64_t>(*next & ~1U));
+    } else {
+        for (const auto& other : image.symbols()) {
+            if (other.section == symbol.section &&
+                (other.type & 0x0eU) == 0x0eU && other.value > symbol.value)
+                end = std::min(end, static_cast<std::uint64_t>(other.value));
+        }
+    }
+    const auto size =
+        static_cast<std::size_t>(end - symbol.value) & ~std::size_t { 1 };
+    if (size < site.size)
+        return std::nullopt;
+    std::vector<std::byte> code(size);
+    for (std::size_t offset = 0U; offset < size; offset += 2U) {
+        const auto instruction = image.read_vm_u16(
+            symbol.value + static_cast<std::uint32_t>(offset));
+        if (!instruction)
+            return std::nullopt;
+        code[offset] = static_cast<std::byte>(*instruction);
+        code[offset + 1U] = static_cast<std::byte>(*instruction >> 8U);
+    }
+    std::optional<std::uint32_t> found;
+    for (std::size_t offset = 0U; offset + site.size <= size;) {
+        const auto bytes = std::span { code }.subspan(offset, site.size);
+        if (std::ranges::equal(sha256(bytes).digest,
+                std::as_bytes(std::span { site.digest }))) {
+            if (found)
+                return std::nullopt;
+            found = static_cast<std::uint32_t>(offset);
+        }
+        const auto instruction = static_cast<std::uint16_t>(
+            std::to_integer<std::uint16_t>(code[offset]) |
+            (std::to_integer<std::uint16_t>(code[offset + 1U]) << 8U));
+        offset += thumb_instruction_is_32_bit(instruction) ? 4U : 2U;
+    }
+    return found;
 }
 
 void UserlandHleRegistry::register_prefix(
@@ -1552,10 +1624,10 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
         plan_key += registration.patch == EntryPatch::InstructionFetch
                         ? "fetch1|"
                         : "fetch0|";
-        if (registration.thumb_instruction) {
-            plan_key += "thumb-offset" +
-                        std::to_string(registration.thumb_instruction->offset) +
-                        "|";
+        for (const auto& site : registration.thumb_instructions) {
+            plan_key += "thumb-scan-v1|" + std::to_string(site.size) + "|";
+            plan_key.append(reinterpret_cast<const char*>(site.digest.data()),
+                site.digest.size());
         }
         plan_key.push_back('\n');
     }
@@ -1668,14 +1740,16 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
                     return path_has_suffix(image.path, dependency.first) &&
                            dependency.second == symbol.name;
                 });
-            if (registration && registration->thumb_instruction) {
-                const auto offset = thumb_instruction_offset(
-                    *registration->thumb_instruction, symbol, architecture);
-                if (offset) {
-                    add_patch(image, location.file_offset + *offset,
-                        thumb_patch_size(*parsed, symbol.value + *offset,
-                            architecture),
-                        true, symbol.name, rule_key(*registration), false);
+            if (registration && !registration->thumb_instructions.empty()) {
+                for (const auto& site : registration->thumb_instructions) {
+                    const auto offset = thumb_instruction_offset(
+                        site, *parsed, symbol, architecture);
+                    if (offset) {
+                        add_patch(image, location.file_offset + *offset,
+                            thumb_patch_size(
+                                *parsed, symbol.value + *offset, architecture),
+                            true, symbol.name, rule_key(*registration), false);
+                    }
                 }
                 // Keep a callable dependency at the function entry, if any.
                 registration = nullptr;
@@ -1911,16 +1985,18 @@ UserlandHleRegistry::ParsedImageCacheEntry& UserlandHleRegistry::cached_image(
             registration = nullptr;
         const auto guest_function = bindings.guest_function(symbol.name);
         const auto guest_data_symbol = bindings.guest_data_symbol(symbol.name);
-        if (registration && registration->thumb_instruction) {
-            const auto offset = thumb_instruction_offset(
-                *registration->thumb_instruction, symbol, architecture);
-            if (offset) {
-                entry.mapped_symbols.push_back(CachedMappedSymbol {
-                    location.symbol_index, location.file_offset + *offset,
-                    registration->id,
-                    static_cast<std::uint8_t>(thumb_patch_size(
-                        *entry.image, symbol.value + *offset, architecture)) });
-                has_instruction_sites = true;
+        if (registration && !registration->thumb_instructions.empty()) {
+            for (const auto& site : registration->thumb_instructions) {
+                const auto offset = thumb_instruction_offset(
+                    site, *entry.image, symbol, architecture);
+                if (offset) {
+                    entry.mapped_symbols.push_back(CachedMappedSymbol {
+                        location.symbol_index, location.file_offset + *offset,
+                        registration->id,
+                        static_cast<std::uint8_t>(thumb_patch_size(*entry.image,
+                            symbol.value + *offset, architecture)) });
+                    has_instruction_sites = true;
+                }
             }
             registration = nullptr;
         }
@@ -2084,13 +2160,15 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
     const auto instruction_site_matches = [&](const Registration& registration,
                                               std::uint32_t address,
                                               std::uint64_t offset) {
-        if (!registration.thumb_instruction)
+        if (registration.thumb_instructions.empty())
             return true;
-        const auto& routine = registration.thumb_instruction->routine;
-        return routine.size <= mapping_file_end - offset &&
-               memory_.accessible(address, routine.size,
-                   MemoryPermission::Execute) &&
-               routine.matches(memory_, address);
+        return std::ranges::any_of(
+            registration.thumb_instructions, [&](const auto& site) {
+                return site.size <= mapping_file_end - offset &&
+                       memory_.accessible(
+                           address, site.size, MemoryPermission::Execute) &&
+                       site.matches(memory_, address);
+            });
     };
     if (use_shared_plan) {
         const auto* image_patches = shared_image_patches;
@@ -2139,7 +2217,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
                     patch.rule ? find_registration(*patch.rule) : nullptr;
                 if (patch.guest_function ||
                     (patch.rule &&
-                        (!registration || !registration->thumb_instruction))) {
+                        (!registration ||
+                            registration->thumb_instructions.empty()))) {
                     pending_plan_symbols.push_back(
                         PendingPlanSymbol { std::string { patch.symbol },
                             runtime_address, patch.thumb });
@@ -2148,16 +2227,21 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
                     !instruction_site_matches(*registration, runtime_address,
                         patch.file_offset))
                     continue;
-                if (const auto installed =
-                        installed_calls_.find(runtime_address);
-                    installed != installed_calls_.end()) {
-                    reapply_installed_patch(runtime_address, installed->second);
-                    continue;
-                }
                 const auto original =
                     memory_.read_bytes(runtime_address, patch.patch_size);
                 if (!original)
                     continue;
+                if (const auto installed =
+                        installed_calls_.find(runtime_address);
+                    installed != installed_calls_.end() &&
+                    (registration->thumb_instructions.empty() ||
+                        (installed->second.id == registration->id &&
+                            installed->second.thumb == patch.thumb &&
+                            installed->second.original_entry == 0U &&
+                            installed->second.original == *original))) {
+                    reapply_installed_patch(runtime_address, installed->second);
+                    continue;
+                }
                 std::vector<std::byte> instruction;
                 if (patch.thumb) {
                     instruction = make_thumb_hle_patch(patch.patch_size);
@@ -2207,7 +2291,7 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
                     ? nullptr
                     : find_registration(cached_symbol.registration_id);
             const bool instruction_site =
-                registration && registration->thumb_instruction;
+                registration && !registration->thumb_instructions.empty();
             if (!instruction_site &&
                 ((hle_relevant &&
                      (!symbol.cache_local || cached_symbol.registration_id != 0U)) ||
@@ -2227,15 +2311,20 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
             const auto patch_size = cached_symbol.patch_size;
             if (symbol_file_offset + patch_size > mapping_file_end)
                 continue;
-            if (const auto installed = installed_calls_.find(runtime_address);
-                installed != installed_calls_.end()) {
-                reapply_installed_patch(runtime_address, installed->second);
-                continue;
-            }
             const auto original =
                 memory_.read_bytes(runtime_address, patch_size);
             if (!original)
                 continue;
+            if (const auto installed = installed_calls_.find(runtime_address);
+                installed != installed_calls_.end() &&
+                (!instruction_site ||
+                    (installed->second.id == registration->id &&
+                        installed->second.thumb == symbol.thumb_definition() &&
+                        installed->second.original_entry == 0U &&
+                        installed->second.original == *original))) {
+                reapply_installed_patch(runtime_address, installed->second);
+                continue;
+            }
             bool queued = false;
             if (symbol.thumb_definition()) {
                 // Thumb SVC has only an eight-bit immediate. The concrete
@@ -2464,7 +2553,15 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
             }
             if (!pending.installed_call)
                 continue;
-            installed_calls_.emplace(
+            if (const auto old = installed_calls_.find(pending.address);
+                old != installed_calls_.end()) {
+                // A remapped instruction site may have a different first
+                // instruction. Its fallback must not reuse the old trampoline.
+                persistent_trampolines_.erase(old->second.original_entry
+                                                  ? old->second.original_entry
+                                                  : pending.address);
+            }
+            installed_calls_.insert_or_assign(
                 pending.address, std::move(*pending.installed_call));
             ++patched;
         }
