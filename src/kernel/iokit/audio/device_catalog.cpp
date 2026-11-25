@@ -210,8 +210,7 @@ namespace {
         },
     };
 
-    // Voice is a routing-control endpoint, not a host PCM stream. The native
-    // HAL and routing engine own its property synchronizer and DSP graph.
+    // The native routing engine selects the source of the Voice endpoint.
     constexpr auto application_voice_source = four_cc('a', 'p', '2', 'v');
     constexpr std::array voice_sources {
         IOAudio2SelectorItemDescription {
@@ -291,10 +290,47 @@ namespace {
         },
     };
 
+    // The separate-amplifier topology has a duplex Voice port. VirtualAudio
+    // enumerates both stream IDs before it can construct the routing graph.
+    constexpr std::uint32_t voice_period_frames = 3072;
+    constexpr auto voice_formats = [] {
+        constexpr std::array rates { 8000U, 11025U, 12000U, 16000U, 22050U,
+            24000U, 32000U, 44100U, 48000U };
+        std::array<IOAudio2StreamFormatDescription, rates.size()> formats;
+        for (std::size_t index = 0; index < rates.size(); ++index) {
+            formats[index] = baseband_telephony_format;
+            formats[index].sample_rate = rates[index];
+        }
+        return formats;
+    }();
+    constexpr auto voice_stream = [](std::uint32_t id,
+                                      IOAudio2StreamDirection direction) {
+        return IOAudio2StreamDescription {
+            .identifier = id,
+            .direction = direction,
+            .starting_channel = 1,
+            .buffer_mapping_options = 1,
+            .buffer_size =
+                voice_period_frames * baseband_telephony_format.bytes_per_frame,
+            .format = baseband_telephony_format,
+            .available_formats = voice_formats,
+        };
+    };
+    constexpr std::array duplex_voice_streams {
+        voice_stream(100, IOAudio2StreamDirection::Input),
+        voice_stream(200, IOAudio2StreamDirection::Output),
+    };
+    constexpr auto duplex_voice = [] {
+        auto device = device_catalog[2];
+        device.io_buffer_frame_size = voice_period_frames;
+        device.streams = duplex_voice_streams;
+        return device;
+    }();
+
     constexpr std::array speaker_protection_device_catalog {
         device_catalog[0],
         device_catalog[1],
-        device_catalog[2],
+        duplex_voice,
         IOAudio2DeviceDescription {
             .name = "Speaker",
             .manufacturer = "Apple Computer, Inc.",
