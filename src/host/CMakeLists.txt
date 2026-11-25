@@ -13,6 +13,15 @@ if(TARGET iLEmu::ffmpeg)
         ILEMU_HAS_FFMPEG=1)
 endif()
 
+add_library(ilemu_host_video STATIC video/ffmpeg_video_decoder.cpp)
+add_library(iLEmu::host_video ALIAS ilemu_host_video)
+ilemu_configure_module(ilemu_host_video)
+target_link_libraries(ilemu_host_video PUBLIC iLEmu::media)
+if(TARGET iLEmu::ffmpeg AND TARGET iLEmu::swscale)
+    target_link_libraries(ilemu_host_video PRIVATE iLEmu::ffmpeg iLEmu::swscale)
+    target_compile_definitions(ilemu_host_video PRIVATE ILEMU_HAS_FFMPEG=1)
+endif()
+
 add_library(ilemu_host_graphics STATIC
     graphics/native_gles.cpp)
 add_library(iLEmu::host_graphics ALIAS ilemu_host_graphics)
@@ -101,6 +110,7 @@ add_library(ilemu_host INTERFACE)
 add_library(iLEmu::host ALIAS ilemu_host)
 target_link_libraries(ilemu_host INTERFACE
     iLEmu::host_audio
+    iLEmu::host_video
     iLEmu::host_graphics
     iLEmu::host_system)
 

@@ -12,6 +12,7 @@
 #include "app/live_control.hpp"
 #include "foundation/device_model.hpp"
 #include "host/ffmpeg_audio_decoder.hpp"
+#include "host/ffmpeg_video_decoder.hpp"
 #include "host/native_gles.hpp"
 #include "host/resource_usage.hpp"
 #include "app/sdl_audio_sink.hpp"
@@ -19,7 +20,11 @@
 
 namespace ilemu {
 
-void DesktopHost::initialize_graphics() { register_native_gles_renderer(); }
+void DesktopHost::initialize_graphics()
+{
+    register_native_gles_renderer();
+    register_ffmpeg_video_decoder();
+}
 
 std::unique_ptr<DisplayPresenter> DesktopHost::create_display(
     const DeviceModel& device)

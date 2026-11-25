@@ -2,10 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Expose the emulated hardware audio-route state to guest CoreMedia
-// sessions.
+// Register the CoreMedia audio-route and native decoder adapters.
 
 #include "media/core_media_hle.hpp"
+#include "media/vxd390_video_hle.hpp"
 
 #include <string>
 #include <string_view>
@@ -22,6 +22,7 @@ namespace {
 
 CoreMediaHle::CoreMediaHle(UserlandHleRegistry& registry)
 {
+    register_vxd390_video_hle(registry);
     registry.register_function(std::string { core_media_image },
         "_CMSessionMgrCopyDeviceRouteForAudioCategory",
         &CoreMediaHle::copy_device_route_for_audio_category);

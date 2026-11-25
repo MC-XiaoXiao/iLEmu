@@ -11,6 +11,8 @@ add_library(ilemu_media STATIC
     core_audio_hle.cpp
     core_audio_native_io.cpp
     core_media_hle.cpp
+    video_decoder.cpp
+    vxd390_video_hle.cpp
     jpeg_encoder.cpp
     media_library_service.cpp)
 add_library(iLEmu::media ALIAS ilemu_media)
