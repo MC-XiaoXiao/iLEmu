@@ -59,13 +59,22 @@ void OpenGlesHle::delete_names(UserlandHleCall& call)
                 set_gl_error(call, gles_abi::invalid_value);
                 break;
             }
-            resources_.erase_buffer(*name);
+            resources_.erase_buffer(call.memory(), *name);
             for (auto& [context_name, context] : contexts_) {
                 static_cast<void>(context_name);
                 if (context.bound_array_buffer == *name)
                     context.bound_array_buffer = 0;
-                if (context.bound_element_array_buffer == *name)
-                    context.bound_element_array_buffer = 0;
+                const auto clear_element_binding =
+                    [&](ContextState::VertexArrayState& state) {
+                        if (state.bound_element_array_buffer == *name)
+                            state.bound_element_array_buffer = 0;
+                    };
+                clear_element_binding(context.default_vertex_array);
+                for (auto& [array_name, state] : context.vertex_array_objects) {
+                    static_cast<void>(array_name);
+                    if (state)
+                        clear_element_binding(*state);
+                }
             }
         }
         return;

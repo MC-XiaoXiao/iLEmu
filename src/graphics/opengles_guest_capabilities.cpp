@@ -159,6 +159,8 @@ std::string open_gles_extensions(
     OpenGlesGuestCapabilitySet kind, std::uint32_t client_api)
 {
     std::string result { open_gles_guest_capabilities(kind).extensions };
+    if (kind == OpenGlesGuestCapabilitySet::Sgx543)
+        result += " GL_OES_vertex_array_object";
     if (client_api >= 2U)
         result += " GL_EXT_shader_framebuffer_fetch";
     return result;

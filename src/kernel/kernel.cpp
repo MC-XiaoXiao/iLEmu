@@ -330,7 +330,14 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , darwin_notify_state_hle_ { userland_hle_ }
     , audio_toolbox_hle_ { userland_hle_ }
     , core_media_hle_ { userland_hle_ }
-    , core_audio_hle_ { userland_hle_, audio_service_ }
+    , core_audio_hle_ { userland_hle_, audio_service_,
+        [this]() -> std::optional<CoreAudioHle::CallbackThreadLayout> {
+            const auto& registration = pthread_runtime_.registration();
+            if (!registration)
+                return std::nullopt;
+            return CoreAudioHle::CallbackThreadLayout {
+                registration->pthread_size, registration->tsd_offset };
+        } }
     , apple80211_hle_ { userland_hle_, wifi_state_,
         [this](const WifiSnapshot& before, const WifiSnapshot& after) {
             apply_wifi_transition(before, after);
@@ -3533,6 +3540,23 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline)
         return;
     }
     signal_state_.initialize(*processor, 0);
+    // As with a firmware HAL's real-time I/O thread, the emulated device must
+    // be able to start a buffer and complete its render RPC within one period.
+    // The audio client may already receive real-time priority from the guest.
+    if (thread_policy_handler_ && callback->period_nanoseconds >= 50'000U) {
+        const auto period = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(callback->period_nanoseconds,
+                std::numeric_limits<std::uint32_t>::max()));
+        const auto computation = std::clamp(period / 4U, 50'000U, 50'000'000U);
+        const std::array<std::uint32_t, 4> policy { period, computation,
+            period, 1U };
+        if (!thread_policy_handler_(process_.pid,
+                static_cast<std::uint32_t>(*processor),
+                darwin::mach::thread_policy::time_constraint_policy, policy)) {
+            output_.write("[coreaudio-device] io-proc realtime policy failed pid=" +
+                          std::to_string(process_.pid) + "\n");
+        }
+    }
     core_audio_hle_.io_proc_thread_scheduled(callback->process_id,
         callback->native, callback->io_proc_id, *processor);
 }

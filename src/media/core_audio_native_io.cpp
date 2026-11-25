@@ -24,7 +24,6 @@ namespace {
     constexpr std::uint32_t stream_format_size = 40;
     constexpr std::uint32_t audio_timestamp_size = 64;
     constexpr std::uint32_t audio_buffer_list_size = 16;
-    constexpr std::uint32_t callback_stack_size = 4096;
     constexpr std::uint32_t maximum_buffer_frame_size = 16384;
 }
 
@@ -165,16 +164,12 @@ void CoreAudioHle::configure_native_io(
         state.zero_output_samples.assign(sample_bytes, std::byte { });
         state.captured_output_samples.resize(sample_bytes);
     }
-    if (state.stack == 0)
-        state.stack = call.allocate_data(callback_stack_size, 16U);
     if (state.callback_return == 0 || state.timestamp == 0 ||
         state.output_buffers == 0 || state.output_samples == 0 ||
-        state.stack == 0) {
+        !prepare_callback_thread(call, state)) {
         call.set_return(parameter_error);
         return;
     }
-    state.thread_r9 = call.cpu().registers()[9];
-    state.cthread_self = call.cpu().cthread_self();
     state.running = true;
     if (output_gain_)
         output_gain_->begin_stream();
@@ -183,6 +178,8 @@ void CoreAudioHle::configure_native_io(
     state.sample_time = 0;
     state.callback_count = 0;
     state.peak_since_report = 0;
+    state.missed_periods = 0;
+    state.max_lateness_since_report = 0;
     call.output().line("[coreaudio-device] native-io-proc start pid=" +
                        std::to_string(call.process_id()) +
                        " device=" + std::to_string(state.device) +

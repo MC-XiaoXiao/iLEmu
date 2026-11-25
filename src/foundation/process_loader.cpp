@@ -171,6 +171,7 @@ PreparedProcessImage ProcessImageLoader::prepare(std::string guest_executable,
     arguments = std::move(invocation.arguments);
 
     auto executable = parse_catalogued(host_path(mapped_executable));
+    executable.require_supported_encryption();
     if (!executable.dynamic_linker() || !executable.entry_point()) {
         throw std::runtime_error {
             "executable lacks LC_LOAD_DYLINKER or LC_UNIXTHREAD"
@@ -178,6 +179,7 @@ PreparedProcessImage ProcessImageLoader::prepare(std::string guest_executable,
     }
     auto dynamic_linker =
         parse_catalogued(host_path(*executable.dynamic_linker()));
+    dynamic_linker.require_supported_encryption();
     if (!dynamic_linker.entry_point()) {
         throw std::runtime_error { "dynamic linker lacks LC_UNIXTHREAD" };
     }
@@ -199,6 +201,8 @@ LoadedProcess ProcessLoader::load(PreparedProcessImage prepared,
     auto arguments = std::move(prepared.arguments);
     auto executable = std::move(prepared.executable);
     auto dynamic_linker = std::move(prepared.dynamic_linker);
+    executable.require_supported_encryption();
+    dynamic_linker.require_supported_encryption();
     if (catalog_) {
         static_cast<void>(catalog_->register_image(executable));
         static_cast<void>(catalog_->register_image(dynamic_linker));

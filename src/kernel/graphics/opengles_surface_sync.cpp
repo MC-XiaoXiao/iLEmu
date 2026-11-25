@@ -12,7 +12,8 @@
 
 namespace ilemu {
 
-void OpenGlesHle::create_pixmap_surface(UserlandHleCall& call, std::uint32_t id)
+void OpenGlesHle::create_pixmap_surface(
+    UserlandHleCall& call, std::uint32_t id, bool depth)
 try {
     const auto backing = surface_store_->find(id);
     constexpr std::size_t limit = 64U * 1024U * 1024U;
@@ -27,7 +28,7 @@ try {
     const auto lease = program_wait(call);
     SurfaceGuestImport::read(
         call, surface_store_, id,
-        [this, backing = *backing, owner, lease](UserlandHleCall& resumed,
+        [this, backing = *backing, owner, lease, depth](UserlandHleCall& resumed,
             std::optional<std::vector<std::uint32_t>> pixels) {
             try {
                 lease->consume();
@@ -39,6 +40,8 @@ try {
                 state.backing_identifier = backing.id;
                 state.width = backing.width;
                 state.height = backing.height;
+                if (depth)
+                    state.depth.emplace(state.width, state.height);
                 state.pixels = std::move(*pixels);
                 if (const auto surface =
                         surface_store_->host_surface(backing.id))
@@ -113,8 +116,7 @@ try {
         return;
     }
     if (host_surface->gpu_generation() > host_surface->cpu_generation()) {
-        state.width = backing->width;
-        state.height = backing->height;
+        state.resize(backing->width, backing->height);
         state.backing_cpu_generation = host_surface->cpu_generation();
         state.refreshed_textures.clear();
         state.dirty = false;
@@ -148,8 +150,7 @@ try {
                 }
                 auto& state = *binding.pixmap_surface;
                 const auto descriptor = binding.host_surface->descriptor();
-                state.width = descriptor.width;
-                state.height = descriptor.height;
+                state.resize(descriptor.width, descriptor.height);
                 state.pixels = std::move(*pixels);
                 state.backing_cpu_generation =
                     binding.host_surface->cpu_generation();

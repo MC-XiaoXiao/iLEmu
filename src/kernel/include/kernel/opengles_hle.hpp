@@ -79,6 +79,17 @@ private:
     // the same numeric name gets a different token; fork copies no observers.
     struct ResourceLifetime { };
     using ResourceIdentity = std::shared_ptr<const ResourceLifetime>;
+    struct DepthBufferState {
+        DepthBufferState(std::uint32_t width, std::uint32_t height)
+            : width { width }, height { height }
+        {
+        }
+
+        std::uint32_t width { }, height { };
+        ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
+        std::shared_ptr<std::vector<GlesDepthClear>> clears;
+        std::uint64_t clear_generation { };
+    };
     struct ThreadState {
         std::uint32_t display { };
         std::uint32_t draw_surface { };
@@ -91,10 +102,19 @@ private:
         std::optional<std::uint32_t> backing_identifier;
         std::uint32_t width { };
         std::uint32_t height { };
+        std::optional<DepthBufferState> depth;
         std::vector<std::uint32_t> pixels;
         std::uint64_t backing_cpu_generation { };
         std::set<std::uint32_t> refreshed_textures;
         bool dirty { };
+
+        void resize(std::uint32_t new_width, std::uint32_t new_height)
+        {
+            if (depth && (width != new_width || height != new_height))
+                depth = DepthBufferState { new_width, new_height };
+            width = new_width;
+            height = new_height;
+        }
     };
     struct ContextState {
         ResourceIdentity identity { std::make_shared<ResourceLifetime>() };
@@ -114,6 +134,7 @@ private:
             std::uint32_t height { };
             std::uint32_t internal_format { };
             std::uint32_t color_texture { };
+            std::optional<DepthBufferState> depth;
             bool display_oriented { };
             std::optional<DisplayViewport> drawable_viewport;
             std::uint32_t native_window { };
@@ -128,13 +149,32 @@ private:
             bool normalized { };
             bool enabled { };
         };
+        struct VertexArrayState {
+            std::uint32_t bound_element_array_buffer { };
+            ArrayPointer vertex_array;
+            ArrayPointer color_array;
+            std::array<ArrayPointer, gles_abi::programmable_texture_unit_count>
+                texture_arrays;
+            std::map<std::uint32_t, ArrayPointer> generic_arrays;
+        };
+        VertexArrayState& vertex_arrays()
+        {
+            return bound_vertex_array == 0
+                       ? default_vertex_array
+                       : *vertex_array_objects.at(bound_vertex_array);
+        }
+        const VertexArrayState& vertex_arrays() const
+        {
+            return bound_vertex_array == 0
+                       ? default_vertex_array
+                       : *vertex_array_objects.at(bound_vertex_array);
+        }
         struct TextureUnitState {
             std::uint32_t bound_texture_2d { };
             std::uint32_t bound_texture_rectangle { };
             GlesTextureEnvironment texture_environment;
             GlesMatrix texture_matrix;
             std::vector<GlesMatrix> texture_stack;
-            ArrayPointer texture_array;
             bool texture_2d_enabled { };
             bool texture_rectangle_enabled { };
         };
@@ -144,9 +184,15 @@ private:
             OpenGlesGuestCapabilitySet::MbxLiteLegacy
         };
         std::uint32_t bound_array_buffer { };
-        std::uint32_t bound_element_array_buffer { };
+        std::uint32_t bound_vertex_array { };
+        std::uint32_t next_vertex_array { 1 };
+        VertexArrayState default_vertex_array;
+        // A reserved name acquires vertex array state on its first bind.
+        std::map<std::uint32_t, std::optional<VertexArrayState>>
+            vertex_array_objects;
         std::uint32_t bound_framebuffer { };
         std::uint32_t bound_renderbuffer { };
+        std::uint32_t next_framebuffer { 1U };
         std::map<std::uint32_t, FramebufferState> framebuffers;
         std::map<std::uint32_t, RenderbufferState> renderbuffers;
         GlesPixelUnpack unpack;
@@ -176,9 +222,6 @@ private:
         GlesMatrix projection_matrix;
         std::vector<GlesMatrix> modelview_stack;
         std::vector<GlesMatrix> projection_stack;
-        ArrayPointer vertex_array;
-        ArrayPointer color_array;
-        std::map<std::uint32_t, ArrayPointer> generic_arrays;
         std::array<std::array<float, 4>, gles_abi::maximum_vertex_attributes>
             current_generic_attributes = [] {
                 std::array<std::array<float, 4>,
@@ -291,6 +334,9 @@ private:
         const UserlandHleRegistry::Handler& handler);
     [[nodiscard]] const GlesResourceStore::TextureLevel*
     current_framebuffer_level(const ContextState& context) const;
+    [[nodiscard]] DepthBufferState* current_depth_buffer(
+        UserlandHleCall& call, ContextState& context);
+    void record_depth_clear(DepthBufferState& depth, const ContextState& context);
     [[nodiscard]] std::uint32_t ensure_renderbuffer_storage(
         ContextState& context, std::uint32_t name, std::uint32_t width,
         std::uint32_t height, std::uint32_t internal_format);
@@ -384,7 +430,8 @@ private:
     void create_surface(UserlandHleCall& call);
     void publish_created_surface(
         UserlandHleCall& call, std::optional<SurfaceState> state);
-    void create_pixmap_surface(UserlandHleCall& call, std::uint32_t id);
+    void create_pixmap_surface(
+        UserlandHleCall& call, std::uint32_t id, bool depth);
     void make_current(UserlandHleCall& call);
     void complete_make_current(UserlandHleCall& call);
     void destroy_surface_after_flush(
@@ -427,6 +474,7 @@ private:
     void register_eagl(UserlandHleRegistry& registry);
     void register_egl(UserlandHleRegistry& registry);
     void register_gles(UserlandHleRegistry& registry);
+    void register_vertex_arrays(UserlandHleRegistry& registry);
     void register_framebuffers(UserlandHleRegistry& registry);
     void register_programmable_gles(UserlandHleRegistry& registry);
     void register_program_queries(UserlandHleRegistry& registry);

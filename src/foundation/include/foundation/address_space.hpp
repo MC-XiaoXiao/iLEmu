@@ -355,11 +355,14 @@ public:
     bool map_shared_mapping(std::uint32_t address, const SharedMapping& mapping,
         PageMappingMode mode, VmInheritance inheritance);
 
-    // A mapping lease is created atomically with a shared-page mapping. Any
-    // guest unmap touching that range invalidates the token, so a later owner
-    // release cannot erase unrelated pages remapped at the same virtual
-    // address.
-    bool unmap_mapping_lease(std::uint64_t mapping_lease_token);
+    // Install and initialize private read/write memory under a mapping lease.
+    [[nodiscard]] std::uint64_t map_anonymous_with_lease(
+        std::uint32_t address, std::uint32_t size,
+        std::span<const std::byte> initial_data);
+    // Guest unmaps touching the range invalidate the lease. Copy data out
+    // only while the lease still owns the range, then remove the mapping.
+    bool unmap_mapping_lease(std::uint64_t mapping_lease_token,
+        std::span<std::byte> data = { });
     // Observe the same range invalidation protocol without owning an unmap.
     // A handle never retains an AddressSpace or calls it from its destructor.
     class MappingObservation {
@@ -521,6 +524,8 @@ public:
 private:
     bool copy_in_batch_locked(std::span<const CopyInOperation> operations,
         bool guest_write);
+    void copy_resident_bytes_locked(
+        std::uint32_t address, std::span<std::byte> data) const;
     struct ParallelView {
         void clear();
         JitPageTableStorage reads;
@@ -628,6 +633,8 @@ private:
     void unmap_range_locked(std::uint32_t address, std::uint64_t end,
         bool flush_shared_files = true);
     void invalidate_mapping_leases_locked(
+        std::uint32_t address, std::uint64_t end);
+    [[nodiscard]] std::uint64_t create_mapping_lease_locked(
         std::uint32_t address, std::uint64_t end);
     void privatize_range_locked(std::uint32_t address, std::uint64_t end);
     bool map_page_ranges(std::uint32_t address, std::uint32_t size,

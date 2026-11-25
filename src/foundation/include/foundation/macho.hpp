@@ -57,6 +57,12 @@ struct MachSegment {
     std::vector<MachSection> sections;
 };
 
+struct MachEncryptionInfo {
+    std::uint32_t file_offset { };
+    std::uint32_t file_size { };
+    std::uint32_t crypt_id { };
+};
+
 struct MachDylibVersion {
     std::uint32_t current { };
     std::uint32_t compatibility { };
@@ -140,6 +146,12 @@ public:
     {
         return segments_;
     }
+    [[nodiscard]] const std::vector<MachEncryptionInfo>& encryption_info() const
+    {
+        return encryption_info_;
+    }
+    [[nodiscard]] const MachEncryptionInfo* encrypted_range() const;
+    void require_supported_encryption() const;
     [[nodiscard]] const std::vector<MachDylib>& dylibs() const
     {
         return dylibs_;
@@ -231,6 +243,7 @@ private:
     std::optional<std::array<std::byte, 16>> uuid_;
     bool fat_container_ { };
     std::vector<MachSegment> segments_;
+    std::vector<MachEncryptionInfo> encryption_info_;
     std::vector<MachDylib> dylibs_;
     std::vector<MachSymbol> symbols_;
     std::vector<MachSymbolFileLocation> symbol_file_locations_;

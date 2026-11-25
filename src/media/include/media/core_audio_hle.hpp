@@ -31,6 +31,14 @@ class UserlandHleRegistry;
 // one physical output device that an emulator has in place of iPhone hardware.
 class CoreAudioHle {
 public:
+    struct CallbackThreadLayout {
+        std::uint32_t pthread_size;
+        std::uint32_t tsd_offset;
+    };
+
+    using CallbackThreadLayoutQuery =
+        std::function<std::optional<CallbackThreadLayout>()>;
+
     struct ScheduledIoProc {
         std::uint32_t process_id { };
         bool native { };
@@ -39,11 +47,12 @@ public:
         std::array<std::uint32_t, 16> registers { };
         std::uint32_t cpsr { };
         std::optional<std::uint32_t> cthread_self;
+        std::uint64_t period_nanoseconds { };
         std::function<void(UserlandHleCall&)> completion;
     };
 
-    CoreAudioHle(
-        UserlandHleRegistry& registry, std::shared_ptr<AudioService> service);
+    CoreAudioHle(UserlandHleRegistry& registry,
+        std::shared_ptr<AudioService> service, CallbackThreadLayoutQuery query);
 
     void set_service(std::shared_ptr<AudioService> service);
     void set_output_gain(std::shared_ptr<AudioOutputGain> output_gain);
@@ -58,6 +67,9 @@ public:
     [[nodiscard]] std::vector<std::size_t> take_retired_io_proc_threads();
 
 private:
+    struct IoProcRegistration;
+    [[nodiscard]] bool prepare_callback_thread(
+        UserlandHleCall& call, IoProcRegistration& registration);
     void device_property_info(UserlandHleCall& call);
     void device_property(UserlandHleCall& call);
     void device_set_property(UserlandHleCall& call);
@@ -111,11 +123,14 @@ private:
         std::vector<std::byte> zero_output_samples;
         std::vector<std::byte> captured_output_samples;
         std::uint32_t stack { };
+        std::uint32_t pthread_storage { };
         std::uint32_t thread_r9 { };
         std::optional<std::uint32_t> cthread_self;
         std::uint64_t next_deadline { };
         std::uint64_t sample_time { };
         std::uint64_t callback_count { };
+        std::uint64_t missed_periods { };
+        std::uint64_t max_lateness_since_report { };
         std::uint32_t peak_since_report { };
         std::optional<std::size_t> processor;
         bool running { };
@@ -124,6 +139,7 @@ private:
 
     UserlandHleRegistry& registry_;
     std::shared_ptr<AudioService> service_;
+    CallbackThreadLayoutQuery callback_thread_layout_;
     std::shared_ptr<AudioOutputGain> output_gain_;
     std::uint32_t buffer_frame_size_ { 1024 };
     struct StreamFormatState {

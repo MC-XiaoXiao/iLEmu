@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -752,9 +753,13 @@ void GlesResourceStore::erase_texture(std::uint32_t name)
     generated_textures_.erase(name);
 }
 
-void GlesResourceStore::erase_buffer(std::uint32_t name)
+void GlesResourceStore::erase_buffer(AddressSpace& memory, std::uint32_t name)
 {
-    buffers_.erase(name);
+    if (const auto found = buffers_.find(name); found != buffers_.end()) {
+        if (found->second.mapping_lease)
+            memory.unmap_mapping_lease(found->second.mapping_lease);
+        buffers_.erase(found);
+    }
     generated_buffers_.erase(name);
 }
 
@@ -1190,13 +1195,18 @@ std::uint32_t GlesResourceStore::upload_buffer(AddressSpace& memory,
     if (size > gles_abi::maximum_resource_bytes) {
         return gles_abi::out_of_memory;
     }
-    std::vector<std::byte> bytes(size);
-    if (data != 0 && size != 0) {
-        const auto source = memory.read_bytes(data, size);
-        if (!source)
-            return gles_abi::invalid_value;
-        bytes = *source;
+    std::vector<std::byte> bytes;
+    try {
+        bytes.resize(size);
+    } catch (const std::bad_alloc&) {
+        return gles_abi::out_of_memory;
     }
+    if (data != 0 && !memory.copy_out(data, bytes))
+        return gles_abi::invalid_value;
+    if (buffer->second.mapping_lease)
+        memory.unmap_mapping_lease(buffer->second.mapping_lease);
+    buffer->second.mapped_address = 0;
+    buffer->second.mapping_lease = 0;
     buffer->second.usage = usage;
     buffer->second.bytes = std::move(bytes);
     return gles_abi::no_error;
@@ -1207,7 +1217,8 @@ std::uint32_t GlesResourceStore::update_buffer(AddressSpace& memory,
     std::uint32_t data)
 {
     auto buffer = buffers_.find(name);
-    if (name == 0 || buffer == buffers_.end()) {
+    if (name == 0 || buffer == buffers_.end() ||
+        buffer->second.mapped_address != 0) {
         return gles_abi::invalid_operation;
     }
     if (offset > buffer->second.bytes.size() ||
@@ -1220,6 +1231,34 @@ std::uint32_t GlesResourceStore::update_buffer(AddressSpace& memory,
     std::copy(
         source->begin(), source->end(), buffer->second.bytes.begin() + offset);
     return gles_abi::no_error;
+}
+
+bool GlesResourceStore::map_buffer(AddressSpace& memory, std::uint32_t name,
+    std::uint32_t address, std::uint32_t mapping_size)
+{
+    auto found = buffers_.find(name);
+    if (found == buffers_.end() || found->second.mapped_address != 0 ||
+        address == 0)
+        return false;
+    auto& buffer = found->second;
+    const auto lease =
+        memory.map_anonymous_with_lease(address, mapping_size, buffer.bytes);
+    if (!lease)
+        return false;
+    buffer.mapped_address = address;
+    buffer.mapping_lease = lease;
+    return true;
+}
+
+bool GlesResourceStore::unmap_buffer(AddressSpace& memory, std::uint32_t name)
+{
+    auto found = buffers_.find(name);
+    if (found == buffers_.end() || found->second.mapped_address == 0)
+        return false;
+    auto& buffer = found->second;
+    buffer.mapped_address = 0;
+    return memory.unmap_mapping_lease(
+        std::exchange(buffer.mapping_lease, 0), buffer.bytes);
 }
 
 GlesResourceStore::Texture* GlesResourceStore::texture(std::uint32_t name)

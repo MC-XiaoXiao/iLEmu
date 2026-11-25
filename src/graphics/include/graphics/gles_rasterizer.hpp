@@ -8,8 +8,10 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_program_interface_profile.hpp"
@@ -66,8 +68,23 @@ struct GlesRasterFilter {
     std::array<std::array<float, 4>, 4> color_columns { };
 };
 
+struct GlesDepthClear {
+    std::uint64_t generation { };
+    float value { 1.0F };
+    std::optional<std::array<std::int32_t, 4>> scissor;
+};
+
+struct GlesRasterDepth {
+    std::shared_ptr<const void> attachment;
+    std::shared_ptr<const std::vector<GlesDepthClear>> clears;
+    bool test { };
+    bool write { true };
+    std::uint32_t function { 0x0201U };
+};
+
 struct GlesRasterState {
     GlesRasterFilter filter;
+    GlesRasterDepth depth;
     // Separates per-context texture namespaces from a shared render target.
     std::uint64_t resource_owner { };
     std::int32_t viewport_x { };
@@ -109,7 +126,7 @@ class GlesSoftwareRasterizer {
 public:
     static bool draw(DisplayFrame& frame,
         std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
-        const GlesRasterState& state);
+        const GlesRasterState& state, std::span<float> depth_buffer = { });
     static bool draw(DisplayState& display,
         std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
         const GlesRasterState& state);

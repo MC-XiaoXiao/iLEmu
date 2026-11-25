@@ -111,8 +111,9 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
         -> const ContextState::ArrayPointer* {
         if (!location)
             return nullptr;
-        const auto array = context.generic_arrays.find(*location);
-        return array == context.generic_arrays.end() ? nullptr : &array->second;
+        const auto& arrays = context.vertex_arrays().generic_arrays;
+        const auto array = arrays.find(*location);
+        return array == arrays.end() ? nullptr : &array->second;
     };
     const auto& attributes = program->draw_attributes;
     const auto* position = array_for(attributes.position);
@@ -124,8 +125,9 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
         *color_location < context.current_generic_attributes.size()) {
         result.current_color =
             context.current_generic_attributes[*color_location];
-        const auto color = context.generic_arrays.find(*color_location);
-        if (color != context.generic_arrays.end())
+        const auto& arrays = context.vertex_arrays().generic_arrays;
+        const auto color = arrays.find(*color_location);
+        if (color != arrays.end())
             result.color_array = color->second;
     }
     for (std::size_t unit = 0; unit < result.texture_arrays.size(); ++unit) {
@@ -575,9 +577,13 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
                    size > 4 || stride < 0 || !valid_type) {
             set_gl_error(call,
                 !valid_type ? gles_abi::invalid_enum : gles_abi::invalid_value);
+        } else if (context->bound_vertex_array != 0 &&
+                   context->bound_array_buffer == 0 && call.argument(5) != 0) {
+            set_gl_error(call, gles_abi::invalid_operation);
         } else {
-            const auto enabled = context->generic_arrays[index].enabled;
-            context->generic_arrays[index] =
+            auto& array = context->vertex_arrays().generic_arrays[index];
+            const auto enabled = array.enabled;
+            array =
                 ContextState::ArrayPointer { static_cast<std::uint32_t>(size),
                     type, static_cast<std::uint32_t>(stride), call.argument(5),
                     context->bound_array_buffer, normalized, enabled };
@@ -590,7 +596,7 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
         } else if (call.argument(0) >= gles_abi::maximum_vertex_attributes) {
             set_gl_error(call, gles_abi::invalid_value);
         } else {
-            context->generic_arrays[call.argument(0)].enabled =
+            context->vertex_arrays().generic_arrays[call.argument(0)].enabled =
                 call.symbol() == "_glEnableVertexAttribArray";
         }
     };

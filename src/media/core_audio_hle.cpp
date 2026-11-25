@@ -263,10 +263,11 @@ namespace {
 
 } // namespace
 
-CoreAudioHle::CoreAudioHle(
-    UserlandHleRegistry& registry, std::shared_ptr<AudioService> service)
+CoreAudioHle::CoreAudioHle(UserlandHleRegistry& registry,
+    std::shared_ptr<AudioService> service, CallbackThreadLayoutQuery query)
     : registry_ { registry }
     , service_ { std::move(service) }
+    , callback_thread_layout_ { std::move(query) }
 {
     const auto register_function = [&](std::string symbol, auto handler) {
         registry.register_function(std::string { core_audio_image },
@@ -425,11 +426,27 @@ std::optional<CoreAudioHle::ScheduledIoProc> CoreAudioHle::take_due_io_proc(
         return std::nullopt;
     }
 
-    // The hardware sample clock advances independently of callback dispatch.
-    // Anchor a new run once; later callbacks retain their scheduled timestamps
-    // so scheduler jitter cannot stretch the PCM timeline on every period.
+    const auto frames = registration.native ? registration.buffer_frame_size
+                                            : buffer_frame_size_;
+    const auto sample_rate = static_cast<std::uint64_t>(std::llround(
+        registration.native ? registration.sample_rate
+                            : device_sample_rate(device->identifier)));
+    const auto period = std::max<std::uint64_t>(1U,
+        static_cast<std::uint64_t>(frames) * virtual_time_units_per_second /
+            sample_rate);
+
     if (registration.next_deadline == 0)
         registration.next_deadline = now;
+    // The device clock advances even when the guest misses a buffer. Keep the
+    // original clock phase and advance sample time alongside host time before
+    // asking the guest to render the current period.
+    const auto lateness = now - registration.next_deadline;
+    const auto missed = lateness / period;
+    registration.next_deadline += missed * period;
+    registration.sample_time += missed * frames;
+    registration.missed_periods += missed;
+    registration.max_lateness_since_report =
+        std::max(registration.max_lateness_since_report, lateness);
 
     const auto stack_pointer = registration.stack + callback_stack_size -
                                callback_stack_argument_space;
@@ -467,10 +484,6 @@ std::optional<CoreAudioHle::ScheduledIoProc> CoreAudioHle::take_due_io_proc(
     callback.registers[2] =
         0; // no emulated input buffers on this output device
     callback.registers[3] = 0;
-    // A host-scheduled callback does not pass through libpthread's usual thread
-    // entry trampoline. Early firmware reads its pthread base directly from r9;
-    // later libSystem reads the CP15 user thread pointer. Preserve both pieces
-    // of the owning firmware thread context without selecting a build version.
     callback.registers[9] = registration.thread_r9;
     callback.cthread_self = registration.cthread_self;
     callback.registers[13] = stack_pointer;
@@ -486,14 +499,7 @@ std::optional<CoreAudioHle::ScheduledIoProc> CoreAudioHle::take_due_io_proc(
         complete_io_proc(call, process_id, native, io_proc_id);
     };
 
-    const auto sample_rate = static_cast<std::uint64_t>(std::llround(
-        registration.native ? registration.sample_rate
-                            : device_sample_rate(device->identifier)));
-    const auto period = std::max<std::uint64_t>(
-        1U, static_cast<std::uint64_t>(registration.native
-                                      ? registration.buffer_frame_size
-                                      : buffer_frame_size_) *
-                virtual_time_units_per_second / sample_rate);
+    callback.period_nanoseconds = period;
     registration.next_deadline += period;
     registration.in_flight = true;
     if (registration.output != nullptr && registration.callback_count < 2U) {
@@ -627,11 +633,15 @@ void CoreAudioHle::complete_io_proc(UserlandHleCall& call,
             " callbacks=" + std::to_string(registration->callback_count) +
             " bytes=" + std::to_string(byte_count) +
             " peak=" + std::to_string(registration->peak_since_report) +
+            " missed-periods=" + std::to_string(registration->missed_periods) +
+            " max-lateness-ns=" +
+                std::to_string(registration->max_lateness_since_report) +
             " gain=" + std::to_string(applied_gain) +
             " status=" + std::to_string(static_cast<unsigned>(result.status)) +
             (result.detail.empty() ? std::string { }
                                    : " detail=" + result.detail));
         registration->peak_since_report = 0;
+        registration->max_lateness_since_report = 0;
     }
 }
 
@@ -1101,6 +1111,54 @@ void CoreAudioHle::start_native_io_at_time(UserlandHleCall& call)
     start_io(call);
 }
 
+bool CoreAudioHle::prepare_callback_thread(
+    UserlandHleCall& call, IoProcRegistration& registration)
+{
+    if (registration.stack == 0)
+        registration.stack = call.allocate_data(callback_stack_size, 16U);
+    if (registration.stack == 0)
+        return false;
+    if (registration.processor)
+        return true;
+
+    const auto layout = callback_thread_layout_();
+    const auto inherited_pointer = call.cpu().cthread_self();
+    registration.thread_r9 = call.cpu().registers()[9];
+    if (!layout || layout->tsd_offset == 0) {
+        registration.cthread_self = inherited_pointer;
+        return true;
+    }
+    if (layout->tsd_offset >= layout->pthread_size ||
+        layout->pthread_size - layout->tsd_offset < sizeof(std::uint32_t))
+        return false;
+
+    // The thread that starts an IOProc can exit during playback. Keep the
+    // scheduler-owned thread's storage and its pthread_self slot independent,
+    // including the unwind state that libSystem keeps in thread-local storage.
+    if (registration.pthread_storage == 0)
+        registration.pthread_storage =
+            call.allocate_data(layout->pthread_size, 16U);
+    if (registration.pthread_storage == 0)
+        return false;
+    const auto storage = registration.pthread_storage;
+    const auto tsd_address = storage + layout->tsd_offset;
+    const std::vector<std::byte> empty_storage(layout->pthread_size);
+    if (!call.memory().copy_in(storage, empty_storage) ||
+        !call.write32(tsd_address, storage))
+        return false;
+    registration.cthread_self = tsd_address;
+
+    const auto previous_tsd = inherited_pointer.value_or(0) & ~3U;
+    if (previous_tsd >= layout->tsd_offset) {
+        const auto previous_storage = previous_tsd - layout->tsd_offset;
+        const auto register_r9 = registration.thread_r9;
+        if (register_r9 >= previous_storage &&
+            register_r9 - previous_storage < layout->pthread_size)
+            registration.thread_r9 = storage + (register_r9 - previous_storage);
+    }
+    return true;
+}
+
 void CoreAudioHle::add_io_proc(UserlandHleCall& call)
 {
     const auto device_id = call.argument(0);
@@ -1202,22 +1260,20 @@ void CoreAudioHle::start_io(UserlandHleCall& call)
         state.zero_output_samples.assign(sample_bytes, std::byte { });
         state.captured_output_samples.resize(sample_bytes);
     }
-    if (state.stack == 0)
-        state.stack = call.allocate_data(callback_stack_size, 16U);
     if (state.callback_return == 0 || state.timestamp == 0 ||
         state.output_buffers == 0 || state.output_samples == 0 ||
-        state.stack == 0) {
+        !prepare_callback_thread(call, state)) {
         call.set_return(parameter_error);
         return;
     }
-    state.thread_r9 = call.cpu().registers()[9];
-    state.cthread_self = call.cpu().cthread_self();
     state.running = true;
     state.in_flight = false;
     state.next_deadline = 0;
     state.sample_time = 0;
     state.callback_count = 0;
     state.peak_since_report = 0;
+    state.missed_periods = 0;
+    state.max_lateness_since_report = 0;
     if (service_ && device != nullptr)
         service_->observe_service_output_stop_mode(device->stop_mode);
     call.output().line(

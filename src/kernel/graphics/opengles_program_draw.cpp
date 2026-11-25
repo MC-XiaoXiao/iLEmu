@@ -33,6 +33,7 @@ bool OpenGlesHle::prepare_program_attributes(UserlandHleCall& call,
             referenced[index] = true;
         }
     }
+    const auto& arrays = context.vertex_arrays().generic_arrays;
     for (const auto& [name, location] : draw.state->attributes) {
         static_cast<void>(name);
         if (location >= context.current_generic_attributes.size())
@@ -40,8 +41,8 @@ bool OpenGlesHle::prepare_program_attributes(UserlandHleCall& call,
         auto& attribute = draw.attributes.emplace_back();
         attribute.location = location;
         attribute.value = context.current_generic_attributes[location];
-        const auto found = context.generic_arrays.find(location);
-        if (found == context.generic_arrays.end() || !found->second.enabled)
+        const auto found = arrays.find(location);
+        if (found == arrays.end() || !found->second.enabled)
             continue;
         const auto& array = found->second;
         const auto component_size =
@@ -68,7 +69,8 @@ bool OpenGlesHle::prepare_program_attributes(UserlandHleCall& call,
         attribute.normalized = array.normalized;
         if (array.buffer) {
             const auto* buffer = resources_.buffer(array.buffer);
-            if (!buffer || start > buffer->bytes.size() ||
+            if (!buffer || buffer->mapped_address != 0 ||
+                start > buffer->bytes.size() ||
                 extent > buffer->bytes.size() - start)
                 return false;
             attribute.stride = stride;

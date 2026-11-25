@@ -66,6 +66,7 @@
 
 #include "debug/gdb_rsp.hpp"
 #include "device_state/darwin_configuration.hpp"
+#include "device_state/legacy_application_containers.hpp"
 #include "device_state/lockdown_state.hpp"
 #include "device_state/network_preferences.hpp"
 #include "foundation/address_space.hpp"
@@ -213,6 +214,12 @@ void EmulatorSession::run()
     device.input.system_gestures.unlock_interaction =
         darwin_configuration.unlock_interaction;
     const auto& darwin_version = darwin_configuration.version;
+    try {
+        prepare_legacy_application_containers(rootfs, darwin_version);
+    } catch (const std::runtime_error& error) {
+        output.line("[device-state] legacy application preparation: " +
+            std::string { error.what() });
+    }
     const auto native_thread_qos = resolve_pthread_contract(darwin_version).supports_bsdthread_ctl;
     SessionCatalog session_catalog { rootfs,
         arm_architecture_for_model(device.processor.model), catalog_manifest,
