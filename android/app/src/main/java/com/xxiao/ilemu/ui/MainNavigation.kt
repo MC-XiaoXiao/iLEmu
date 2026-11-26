@@ -19,19 +19,17 @@ internal class MainNavigation(activity: AppCompatActivity, addContainer: () -> U
     private val ui = ScreenUi(activity)
     private val root = activity.layoutInflater.inflate(R.layout.activity_main, activity.findViewById<ViewGroup>(android.R.id.content), false)
     private val library = destination(activity, activity.getString(R.string.app_name), R.id.library_app_bar, R.id.library_scroll, ui.dp(88))
-    private val settings = destination(activity, activity.getString(R.string.navigation_settings), R.id.settings_app_bar, R.id.settings_scroll)
+    private var settings: Destination? = null
     private val navigation = root.findViewById<BottomNavigationView>(R.id.main_navigation)
     private var selected = R.id.navigation_emulators
     val libraryContent get() = library.content
-    val settingsContent get() = settings.content
+    val settingsContent get() = checkNotNull(settings).content
     val selectedTab get() = selected
     val isLibraryVisible get() = selected == R.id.navigation_emulators
     var onTabChanged: (() -> Unit)? = null
     init {
         val pages = root.findViewById<FrameLayout>(R.id.main_pages)
         pages.addView(library.root)
-        pages.addView(settings.root)
-        settings.root.visibility = View.GONE
         libraryContent.addView(ui.text("版本 ${BuildConfig.VERSION_NAME}", ScreenUi.Type.BODY, true))
         val fab = activity.layoutInflater.inflate(R.layout.add_container_fab, library.root as ViewGroup, false) as FloatingActionButton
         fab.setOnClickListener { addContainer() }
@@ -39,7 +37,9 @@ internal class MainNavigation(activity: AppCompatActivity, addContainer: () -> U
         navigation.setOnItemSelectedListener { item ->
             selected = item.itemId
             library.root.visibility = if (isLibraryVisible) View.VISIBLE else View.GONE
-            settings.root.visibility = if (isLibraryVisible) View.GONE else View.VISIBLE
+            settings?.root?.visibility = if (isLibraryVisible) View.GONE else View.VISIBLE
+            if (!isLibraryVisible)
+                settingsDestination(activity, pages).root.visibility = View.VISIBLE
             onTabChanged?.invoke()
             true
         }
@@ -53,6 +53,19 @@ internal class MainNavigation(activity: AppCompatActivity, addContainer: () -> U
             insets
         }
     }
+
+    private fun settingsDestination(
+        activity: AppCompatActivity, pages: FrameLayout
+    ): Destination {
+        settings?.let { return it }
+        return destination(activity, activity.getString(R.string.navigation_settings),
+            R.id.settings_app_bar, R.id.settings_scroll).also {
+            it.root.visibility = View.GONE
+            pages.addView(it.root)
+            settings = it
+        }
+    }
+
     private fun destination(activity: AppCompatActivity, title: String, appBarId: Int, scrollId: Int, bottomClearance: Int = 0): Destination {
         val view = activity.layoutInflater.inflate(R.layout.main_destination, root.findViewById<FrameLayout>(R.id.main_pages), false)
         view.findViewById<CollapsingToolbarLayout>(R.id.destination_title).apply {
