@@ -129,7 +129,8 @@ namespace {
 
     ArgumentGuard make_thumb_move_guard(std::span<const std::byte> original,
         std::uint32_t entry, std::uint32_t index, std::uint32_t low,
-        std::uint32_t high)
+        std::uint32_t high, std::uint32_t return_offset = 0x96U,
+        bool wide_equal_branch = false)
     {
         ArgumentGuard guard { { }, { }, 16U, 20U };
         auto& code = guard.trampoline;
@@ -145,10 +146,18 @@ namespace {
         code.insert(code.end(), original.begin(), original.end());
         code[guard.original_offset + 6U] =
             std::byte { 0x05 }; // beq second ldr.w
+        code[guard.original_offset + 7U] = std::byte { 0xd0 };
+        if (wide_equal_branch) {
+            // Replace the firmware's four-byte BEQ.W with BEQ + NOP. The
+            // relocated equal path reaches its original pop {r7,pc}; the
+            // unequal path resumes at entry+10, which assigns IP from r0.
+            code[guard.original_offset + 8U] = std::byte { 0x00 };
+            code[guard.original_offset + 9U] = std::byte { 0xbf };
+        }
         append_thumb_prologue_return(code, entry);
         append_halfword(code, 0xf8dfU); // ldr.w pc,[pc]
         append_halfword(code, 0xf000U);
-        append_word(code, (entry + 0x96U) | 1U);
+        append_word(code, (entry + return_offset) | 1U);
         return guard;
     }
 
@@ -205,6 +214,11 @@ namespace {
         if (matches({ 0x80, 0xb5, 0x6f, 0x46, 0x43, 0x1a, 0x46, 0xd0, 0x84,
                 0x46 })) {
             guard = make_thumb_move_guard(original, entry, index, *low, *high);
+            // push {r7,lr}; mov r7,sp; subs r3,r0,r1; beq.w entry+0x2a8
+        } else if (matches({ 0x80, 0xb5, 0x6f, 0x46, 0x43, 0x1a, 0x00, 0xf0,
+                       0x4f, 0x81 })) {
+            guard = make_thumb_move_guard(
+                original, entry, index, *low, *high, 0x2a8U, true);
             // push {r7,lr}; mov r7,sp; sub sp,#4; strh r1,[r7,#-2]
         } else if (index == 2U && matches({ 0x80, 0xb5, 0x6f, 0x46, 0x81, 0xb0,
                                       0x27, 0xf8, 0x02, 0x1c })) {

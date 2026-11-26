@@ -33,7 +33,20 @@ namespace {
             0x77, 0xa9, 0x8e, 0x27, 0x93, 0x0c, 0x49, 0xf3, 0x79, 0x6c, 0x28,
             0xea, 0xef, 0xf4, 0xe5, 0x94, 0x71, 0x1d, 0x60, 0xdf, 0x4c } };
 
-    enum class MemoryRoutine { LegacyFill, PlatformFill, PlatformMove };
+    // Older libsystem_c's Swift memcpy/memmove aliases share this complete
+    // Thumb-2 implementation, including both directions and its jump tables.
+    // Its wide same-address branch differs from libsystem_platform's prologue.
+    constexpr FirmwareRoutine legacy_neon_memory_move { 0x59aU,
+        { 0x35, 0x24, 0x12, 0x9d, 0xd1, 0x74, 0xa7, 0x1b, 0x56, 0x5d, 0xa8,
+            0xa3, 0xb1, 0x54, 0x50, 0xba, 0xa4, 0xcd, 0x2a, 0x2b, 0x0b, 0x13,
+            0x19, 0x49, 0x1e, 0xee, 0x7d, 0x5f, 0xf1, 0x6b, 0x40, 0x42 } };
+
+    enum class MemoryRoutine {
+        LegacyFill,
+        LegacyMove,
+        PlatformFill,
+        PlatformMove
+    };
 
     class MemoryRoutineAccelerator {
     public:
@@ -53,10 +66,13 @@ namespace {
             const AddressSpace::ExclusiveAccess access { memory };
             const auto cpsr = call.cpu().cpsr();
             const auto thumb = (cpsr & (1U << 5U)) != 0U;
-            const bool move = routine_ == MemoryRoutine::PlatformMove;
+            const bool move = routine_ == MemoryRoutine::PlatformMove ||
+                              routine_ == MemoryRoutine::LegacyMove;
             const bool legacy_fill = routine_ == MemoryRoutine::LegacyFill;
-            const auto& fingerprint =
-                move ? neon_memory_move : neon_memory_fill;
+            const auto& fingerprint = routine_ == MemoryRoutine::LegacyMove
+                                          ? legacy_neon_memory_move
+                                      : move ? neon_memory_move
+                                             : neon_memory_fill;
             const auto minimum_host_size = move ? 32U * 1024U
                                            : legacy_fill
                                                ? AddressSpace::page_size
@@ -152,6 +168,12 @@ void register_memory_routine_hle(
         legacy_fill, Lookup::ImageAndCacheLocals, overlay);
     registry.register_function(
         "/libsystem_c.dylib", "_memset", legacy_fill, Lookup::Image, overlay);
+    const UserlandHleRegistry::Handler legacy_move =
+        MemoryRoutineAccelerator { MemoryRoutine::LegacyMove };
+    for (const auto* symbol : { "_memcpy$VARIANT$", "_memmove$VARIANT$" }) {
+        registry.register_prefix("/libsystem_c.dylib", symbol, legacy_move,
+            Lookup::ImageAndCacheLocals, overlay);
+    }
     registry.register_function("/libsystem_platform.dylib", "__platform_memset",
         MemoryRoutineAccelerator { MemoryRoutine::PlatformFill }, Lookup::Image,
         overlay);
