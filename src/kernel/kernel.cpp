@@ -2963,20 +2963,25 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     if (const auto pending = pending_selects_.find(cpu.processor_id());
         pending != pending_selects_.end()) {
         std::uint32_t ready_count = 0;
-        std::vector<std::uint32_t> ready_read_words(
-            pending->second.read_words.size());
-        std::vector<std::uint32_t> ready_write_words(
-            pending->second.write_words.size());
+        std::vector<std::uint32_t> ready_read_words;
+        std::vector<std::uint32_t> ready_write_words;
+        const auto prepare_ready_words = [&] {
+            ready_read_words.resize(pending->second.read_words.size());
+            ready_write_words.resize(pending->second.write_words.size());
+        };
         for (std::size_t word_index = 0;
             word_index < pending->second.read_words.size(); ++word_index) {
-            for (std::uint32_t bit = 0; bit < 32; ++bit) {
+            auto requested = pending->second.read_words[word_index] |
+                pending->second.write_words[word_index];
+            while (requested != 0U) {
+                const auto bit = static_cast<std::uint32_t>(
+                    std::countr_zero(requested));
+                requested &= requested - 1U;
                 const auto fd =
                     static_cast<std::uint32_t>(word_index * 32U + bit);
                 if (fd >= pending->second.descriptor_count)
                     continue;
-                const auto requested = (pending->second.read_words[word_index] |
-                    pending->second.write_words[word_index]) & (1U << bit);
-                if (requested && !descriptor_valid(fd)) {
+                if (!descriptor_valid(fd)) {
                     bsd_error(cpu, ebadf);
                     if (pending->second.temporary_mask)
                         signal_state_.resume(cpu.processor_id());
@@ -2988,12 +2993,16 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
                 if ((pending->second.read_words[word_index] & (1U << bit)) !=
                         0 &&
                     descriptor_readable(fd)) {
+                    if (ready_count == 0U)
+                        prepare_ready_words();
                     ready_read_words[word_index] |= 1U << bit;
                     ++ready_count;
                 }
                 if ((pending->second.write_words[word_index] & (1U << bit)) !=
                         0 &&
                     descriptor_writable(fd)) {
+                    if (ready_count == 0U)
+                        prepare_ready_words();
                     ready_write_words[word_index] |= 1U << bit;
                     ++ready_count;
                 }
@@ -3004,6 +3013,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
             shared_state_->clock.now() >= *pending->second.deadline;
         if (ready_count == 0 && !timed_out)
             return false;
+        // A pure timeout still copies all-zero fd sets through the original path.
+        prepare_ready_words();
         bool copied = true;
         for (std::size_t index = 0; index < ready_read_words.size(); ++index) {
             if (pending->second.read_address != 0) {
