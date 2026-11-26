@@ -2350,17 +2350,17 @@ JitArtifactLookup JitArtifactStore::lookup(const JitArtifactKey& key,
             ++stats_.memory_hits;
             return make_lookup(pending->second.artifact, false);
         }
+        // Guest execution may opt into memory/hotset-only admission. Do not
+        // probe the disk index or wait on a disk flight on that path; a later
+        // background pass can perform the full lookup outside the CPU slice.
+        if (!allow_disk_payload) {
+            ++stats_.misses;
+            return { };
+        }
         const auto disk_artifact = disk_artifacts_.find(key);
         if (disk_artifact == disk_artifacts_.end() ||
             disk_artifact->second.serialized_bytes >
                 std::numeric_limits<std::size_t>::max()) {
-            ++stats_.misses;
-            return { };
-        }
-        // Guest execution may opt into memory/hotset-only admission. Do not
-        // start or wait on a disk flight on that path; a later background pass
-        // can perform the full lookup without extending the CPU slice.
-        if (!allow_disk_payload) {
             ++stats_.misses;
             return { };
         }
