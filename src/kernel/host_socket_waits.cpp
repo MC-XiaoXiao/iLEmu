@@ -219,6 +219,8 @@ std::optional<bool> CompatibilityKernel::deliver_host_readiness(Cpu& cpu)
         return false;
     const auto invocation = pending->second;
     pending_host_readiness_.erase(pending);
+    // Redispatch can replace this snapshot with a different pending wait.
+    pending_io_poll_cache_.erase(processor);
     cpu.registers() = invocation.registers;
     cpu.clear_halt();
     process_.waiting_for_events = false;

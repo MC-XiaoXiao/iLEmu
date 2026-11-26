@@ -3018,6 +3018,7 @@ void EmulatorSession::run()
     std::vector<GuestExecutionRequest*> execution_requests;
     execution_requests.reserve(guest_processor_count);
     std::vector<XnuThreadId> input_receivers;
+    std::vector<std::size_t> pending_event_candidates;
     // Retain the type-erased callback as well as the batch buffers. Converting
     // its captured references to std::function on every run allocates a new
     // callback object at each CPU channel handoff.
@@ -3544,8 +3545,9 @@ void EmulatorSession::run()
                                               *display_urgent_process
                     ? runtime->kernel->display_vsync_receiver_processor()
                     : std::nullopt;
-            for (const auto processor :
-                runtime->kernel->pending_event_poll_candidates()) {
+            runtime->kernel->pending_event_poll_candidates(
+                pending_event_candidates);
+            for (const auto processor : pending_event_candidates) {
                 if (processor >= runtime->cpus->size() ||
                     !runtime->allocated[processor]) {
                     continue;

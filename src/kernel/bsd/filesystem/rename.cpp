@@ -170,6 +170,7 @@ bool CompatibilityKernel::deliver_pending_filesystem_dispatch(Cpu& cpu)
         return false;
     const auto pending = found->second;
     pending_filesystem_dispatches_.erase(found);
+    pending_io_poll_cache_.erase(cpu.processor_id());
     cpu.registers() = pending.registers;
     cpu.clear_halt();
     process_.waiting_for_events = false;

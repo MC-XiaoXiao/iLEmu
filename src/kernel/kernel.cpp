@@ -1946,9 +1946,10 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
     return delivered;
 }
 
-std::vector<std::size_t>
-CompatibilityKernel::pending_event_poll_candidates()
+void CompatibilityKernel::pending_event_poll_candidates(
+    std::vector<std::size_t>& processors)
 {
+    processors.clear();
     const auto diagnostics_enabled =
         performance_counters().cpu_source_diagnostics_enabled();
     const PerformanceLatencyScope latency { PerfLatencyKind::KernelEventPoll,
@@ -2059,9 +2060,10 @@ CompatibilityKernel::pending_event_poll_candidates()
         if (mach_snapshot_current) {
             pending_event_poll_io_generation_ = io_generation;
             pending_event_poll_mach_generation_ = mach_generation;
-            return pending_event_mach_candidates_;
+            processors.assign(pending_event_mach_candidates_.begin(),
+                pending_event_mach_candidates_.end());
         }
-        return { };
+        return;
     }
 
     poll_diagnostics.checkpoint(EventPollDiagnostics::Phase::Scan);
@@ -2072,7 +2074,6 @@ CompatibilityKernel::pending_event_poll_candidates()
     pending_event_poll_io_generation_ = io_generation;
     pending_event_poll_mach_generation_ = mach_generation;
 
-    std::vector<std::size_t> processors;
     const auto append_processor = [&](std::size_t processor) {
         if (processors.empty())
             processors.reserve(pending_event_processors_.size());
@@ -2157,7 +2158,6 @@ CompatibilityKernel::pending_event_poll_candidates()
         pending_event_mach_candidates_ = processors;
         pending_event_mach_snapshot_valid_ = true;
     }
-    return processors;
 }
 
 bool CompatibilityKernel::pending_hid_poll_required_locked(
@@ -2430,15 +2430,25 @@ void CompatibilityKernel::remember_pending_io_not_ready_locked(
         return;
     }
     constexpr auto host_probe_interval = std::chrono::milliseconds { 1 };
+    const auto cached = pending_io_poll_cache_.find(processor);
+    // A due host probe can still find the same wait unready. Its descriptor
+    // classification remains valid until the existing I/O generation changes.
     const auto host_probe_required =
-        pending_io_requires_host_poll_locked(processor);
-    pending_io_poll_cache_[processor] = PendingIoPollCache {
+        cached != pending_io_poll_cache_.end() &&
+                cached->second.io_generation == io_generation
+            ? cached->second.host_probe_required
+            : pending_io_requires_host_poll_locked(processor);
+    const PendingIoPollCache observation {
         io_generation, mach_generation,
         host_probe_required
             ? std::chrono::steady_clock::now() + host_probe_interval
             : std::chrono::steady_clock::time_point::max(),
         host_probe_required
     };
+    if (cached != pending_io_poll_cache_.end())
+        cached->second = observation;
+    else
+        pending_io_poll_cache_.emplace(processor, observation);
 }
 
 std::optional<std::uint64_t>

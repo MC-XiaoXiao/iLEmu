@@ -574,10 +574,12 @@ public:
     bool handle_cpu_exception(Cpu& cpu, const CpuRunResult& result);
     [[nodiscard]] bool cpu_exception_pending(std::size_t slot) const
     { return exception_delivery_.waiting(slot); }
-    // Return only blocked CPU contexts whose readiness may have changed. The
+    // Collect only blocked CPU contexts whose readiness may have changed. The
     // kernel owns the topology/generation/deadline gate so an idle frontend has
     // an O(1) fast path and never rediscovers wait state by scanning CPUs.
-    [[nodiscard]] std::vector<std::size_t> pending_event_poll_candidates();
+    // Caller storage retains capacity and remains independent of kernel state
+    // while delivering candidates changes the pending wait topology.
+    void pending_event_poll_candidates(std::vector<std::size_t>& processors);
     // Bound frontend sleeps while host work is pending, independently of
     // guest timer deadlines. Reuse the indexed readiness/polling state.
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
