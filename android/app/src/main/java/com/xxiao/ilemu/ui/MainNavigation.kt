@@ -7,6 +7,8 @@ import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.appbar.CollapsingToolbarLayout
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -23,6 +25,22 @@ internal class MainNavigation(activity: AppCompatActivity, addContainer: () -> U
     private val navigation = root.findViewById<BottomNavigationView>(R.id.main_navigation)
     private var selected = R.id.navigation_emulators
     val libraryContent get() = library.content
+    val libraryList = RecyclerView(activity).apply {
+        val scroll = library.root.findViewById<ViewGroup>(R.id.library_scroll)
+        val parent = scroll.parent as ViewGroup
+        val index = parent.indexOfChild(scroll)
+        scroll.removeView(library.content)
+        id = scroll.id
+        layoutParams = scroll.layoutParams
+        layoutManager = LinearLayoutManager(activity)
+        itemAnimator = null
+        clipToPadding = false
+        setPadding(library.content.paddingLeft, library.content.paddingTop,
+            library.content.paddingRight, library.content.paddingBottom)
+        library.content.setPadding(0, 0, 0, 0)
+        parent.removeViewAt(index)
+        parent.addView(this, index)
+    }
     val settingsContent get() = checkNotNull(settings).content
     val selectedTab get() = selected
     val isLibraryVisible get() = selected == R.id.navigation_emulators

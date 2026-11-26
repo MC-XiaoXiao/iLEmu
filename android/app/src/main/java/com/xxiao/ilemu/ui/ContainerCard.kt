@@ -16,7 +16,7 @@ import com.xxiao.ilemu.firmware.FirmwareMetadata
 
 /** Read-only summary with independent controls; only the play icon starts a session. */
 internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, private val actions: ContainerActions) {
-    private data class Presentation(val name: String, val device: String, val version: String, val build: String,
+    data class Presentation(val name: String, val device: String, val version: String, val build: String,
         val ready: Boolean, val canPrepare: Boolean, val busy: Boolean, val running: Boolean, val status: String, val progress: Int?)
     private val models = FirmwareMetadata.models().associate { it.identifier to it.name }
     private var rendered: Presentation? = null
@@ -50,22 +50,29 @@ internal class ContainerCard(private val ui: ScreenUi, parent: LinearLayout, pri
     private fun icon(resource: Int, label: String, action: (Container) -> Unit) = ui.iconButton(resource, label) {
         entry?.let(action)
     }.also { rail.addView(it, LinearLayout.LayoutParams(ui.dp(48), ui.dp(48))) }
-    fun update(value: Container, repository: ContainerRepository) {
-        entry = value
-        val busy = ContainerTasks.isBusy(value.id)
-        val running = value.ready && busy && NativeBridge.ownsRunningSession(value.id)
-        val download = if (!value.ready || value.firmware != null) DownloadState.read(repository, value) else null
-        val state = when {
-            busy -> if (value.ready) (if (running) "运行中" else "正在同步数据…") else download!!.summary
-            value.error.isNotEmpty() -> value.error
-            value.dirty -> "数据等待同步"
-            value.ready -> download?.warning.orEmpty()
-            else -> download!!.summary
+    companion object {
+        fun presentation(value: Container, repository: ContainerRepository): Presentation {
+            val busy = ContainerTasks.isBusy(value.id)
+            val running = value.ready && busy && NativeBridge.ownsRunningSession(value.id)
+            val download = if (!value.ready || value.firmware != null) DownloadState.read(repository, value) else null
+            val state = when {
+                busy -> if (value.ready) (if (running) "运行中" else "正在同步数据…") else download!!.summary
+                value.error.isNotEmpty() -> value.error
+                value.dirty -> "数据等待同步"
+                value.ready -> download?.warning.orEmpty()
+                else -> download!!.summary
+            }
+            return Presentation(value.name, value.device, value.version, value.build,
+                value.ready, value.firmware != null, busy, running, state, download?.progressPercent)
         }
-        val presentation = Presentation(value.name, value.device, value.version, value.build,
-            value.ready, value.firmware != null, busy, running, state, download?.progressPercent)
+    }
+    fun update(value: Container, presentation: Presentation) {
+        entry = value
         if (rendered == presentation) return
         rendered = presentation
+        val busy = presentation.busy
+        val running = presentation.running
+        val state = presentation.status
         title.text = value.name
         identity.text = models[value.device]?.let { "$it(${value.device})" } ?: value.device
         configuration.text = "iOS ${value.version.ifEmpty { "—" }}" + value.build.takeIf { it.isNotEmpty() }?.let { "($it)" }.orEmpty()

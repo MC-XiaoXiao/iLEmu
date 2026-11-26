@@ -13,7 +13,7 @@ import com.xxiao.ilemu.containers.ContainerRepository
 import com.xxiao.ilemu.ui.AppSettingsContent
 import com.xxiao.ilemu.ui.MainNavigation
 import com.xxiao.ilemu.ui.ScreenUi
-import com.xxiao.ilemu.ui.ContainerCard
+import com.xxiao.ilemu.ui.ContainerList
 import org.json.JSONArray
 
 /** Read-only container summaries with independent icon actions. */
@@ -21,14 +21,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var repository: ContainerRepository
     private lateinit var launcher: SessionLauncher
     private lateinit var actions: ContainerActions
-    private lateinit var cards: LinearLayout
+    private lateinit var cards: ContainerList
     private lateinit var message: TextView
     private lateinit var count: TextView
     private lateinit var ui: ScreenUi
     private lateinit var navigation: MainNavigation
     private var resumed = false
     private var settingsLoaded = false
-    private val items = linkedMapOf<String, ContainerCard>()
     private val handler = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
         override fun run() { render(); handler.postDelayed(this, 1000) }
@@ -46,7 +45,8 @@ class MainActivity : AppCompatActivity() {
         count = ui.text("", ScreenUi.Type.BODY, true)
         body.addView(count, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(16); bottomMargin = ui.dp(12) })
         message = ui.notice(body)
-        cards = ui.column(); body.addView(cards)
+        cards = ContainerList(ui, body, actions, repository)
+        navigation.libraryList.adapter = cards
         runCatching { repository.migrateLegacy() }.onFailure { message.text = "已有固件识别失败：${it.message}" }
         val backToLibrary = object : OnBackPressedCallback(false) {
             override fun handleOnBackPressed() { navigation.select(R.id.navigation_emulators) }
@@ -74,18 +74,7 @@ class MainActivity : AppCompatActivity() {
             val entries = repository.list()
             val total = "${entries.size} 个容器"
             if (count.text.toString() != total) count.text = total
-            if (items.keys.toList() == entries.map { it.id } && cards.childCount > 0) {
-                entries.forEach { items[it.id]?.update(it, repository) }
-                return
-            }
-            cards.removeAllViews(); items.clear()
-            if (entries.isEmpty()) {
-                val empty = ui.card(cards)
-                ui.label(empty, "从一部 iPhone 开始", "点击右下角的加号，选择固件或导入已准备的固件目录。")
-            }
-            entries.forEach { entry ->
-                items[entry.id] = ContainerCard(ui, cards, actions).also { it.update(entry, repository) }
-            }
+            cards.update(entries)
         }.onFailure { message.text = it.message }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); handleDebugCommand(intent) }
